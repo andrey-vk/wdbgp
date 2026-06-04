@@ -18,4 +18,7 @@ ENV WDBGP_DB=/data/wdbgp.sqlite3 \
 VOLUME ["/data"]
 EXPOSE 8080 179
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.getenv(\"WDBGP_PORT\", \"8080\")}/healthz', timeout=3).read()" || exit 1
+
 ENTRYPOINT ["/app/entrypoint.sh"]

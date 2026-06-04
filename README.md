@@ -122,6 +122,9 @@ docker run --rm \
 Open `/admin`, add users, and monitor the preconfigured OpenCCK feeds. The
 public `/` page identifies the user by source address.
 
+The image includes a Docker healthcheck that requests `/healthz` on the
+configured `WDBGP_PORT`.
+
 Useful commands:
 
 ```sh
