@@ -145,7 +145,8 @@ Useful commands:
 
 ```sh
 python -m unittest discover -s tests
-python -m wdbgp render-bird
+python -m wdbgp render-bird              # redacts BGP passwords
+python -m wdbgp render-bird --show-secrets
 python -m wdbgp sync
 python -m wdbgp stats
 ```
