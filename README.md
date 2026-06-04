@@ -102,7 +102,23 @@ WDBGP_BIRD_LOCAL_ADDRESS=172.31.255.2
 WDBGP_BIRD_LOCAL_ADDRESS_V6=fd00:31:255::2
 ```
 
-Build and run:
+Use the published Docker Hub image:
+
+```sh
+docker run --rm \
+  -p 8080:8080 \
+  -p 179:179 \
+  -v wdbgp-data:/data \
+  -e WDBGP_ADMIN_PASSWORD=change-me \
+  -e WDBGP_SESSION_SECRET=a-long-random-secret \
+  -e WDBGP_LOCAL_ASN=64512 \
+  -e WDBGP_ROUTER_ID=172.31.255.2 \
+  -e WDBGP_BIRD_LOCAL_ADDRESS=172.31.255.2 \
+  -e WDBGP_BIRD_LOCAL_ADDRESS_V6=fd00:31:255::2 \
+  wh1ted/wdbgp:latest
+```
+
+Or build locally:
 
 ```sh
 docker build -t wdbgp:latest .
@@ -156,7 +172,7 @@ uses `172.31.255.2` for the container and `172.31.255.1` for RouterOS:
 /container/envs/add list=wdbgp key=WDBGP_BIRD_LOCAL_ADDRESS_V6 value="fd00:31:255::2"
 
 /container/mounts/add name=wdbgp-data src=disk1/wdbgp-data dst=/data
-/container/add remote-image=YOUR_REGISTRY/wdbgp:latest interface=veth-wdbgp \
+/container/add remote-image=wh1ted/wdbgp:latest interface=veth-wdbgp \
   root-dir=disk1/images/wdbgp mounts=wdbgp-data envlist=wdbgp \
   start-on-boot=yes logging=yes
 ```
