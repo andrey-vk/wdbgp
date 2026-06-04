@@ -1,6 +1,5 @@
 name: Publish Docker Image
 
-# Запуск триггера только при создании релиза
 on:
   release:
     types: [published]
@@ -23,7 +22,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/имя_вашего_репозитория_docker
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/wdbgp
           tags: |
             type=semver,pattern={{version}}
             type=latest
