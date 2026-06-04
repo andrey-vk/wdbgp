@@ -1,5 +1,6 @@
 # wdbgp
 
+[![Tests](https://github.com/andrey-vk/wdbgp/actions/workflows/tests.yml/badge.svg)](https://github.com/andrey-vk/wdbgp/actions/workflows/tests.yml)
 [![Publish Docker Image](https://github.com/andrey-vk/wdbgp/actions/workflows/deploy.yml/badge.svg)](https://github.com/andrey-vk/wdbgp/actions/workflows/deploy.yml)
 [![License](https://img.shields.io/github/license/andrey-vk/wdbgp)](LICENSE)
 [![Docker Image Version](https://img.shields.io/docker/v/wh1ted/wdbgp?label=docker)](https://hub.docker.com/r/wh1ted/wdbgp)
