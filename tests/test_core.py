@@ -113,6 +113,18 @@ class CoreTests(unittest.TestCase):
         self.assertIn("export filter export_user_1_v6;", text)
         self.assertIn("next hop address 198.51.100.254;", text)
 
+    def test_bird_render_can_redact_bgp_passwords(self):
+        with transaction(self.db_path) as db:
+            user = db.execute(
+                "INSERT INTO users(name, peer_ip, peer_asn, bgp_password) VALUES ('u', '198.51.100.1', 65001, 'secret')"
+            ).lastrowid
+            set_user_selection(db, user, set(), set())
+            db.commit()
+        self.assertIn('password "secret";', render(Config(db_path=self.db_path)))
+        redacted = render(Config(db_path=self.db_path), include_secrets=False)
+        self.assertIn('password "<redacted>";', redacted)
+        self.assertNotIn("secret", redacted)
+
     def test_user_form_data_normalizes_addresses(self):
         data = user_data_from_form({
             "name": ["u"],

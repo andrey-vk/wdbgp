@@ -58,7 +58,7 @@ def _local_address(config: Config, peer_ip: str) -> str:
     return config.bird_local_address
 
 
-def render(config: Config) -> str:
+def render(config: Config, include_secrets: bool = True) -> str:
     with contextlib.closing(connect(config.db_path)) as db:
         users = list(db.execute("SELECT * FROM users WHERE enabled = 1 ORDER BY id"))
         all_selected_prefixes = sorted(
@@ -94,7 +94,8 @@ def render(config: Config) -> str:
                 f"  neighbor {user['peer_ip']} as {user['peer_asn']};",
             ])
             if user["bgp_password"]:
-                escaped = user["bgp_password"].replace("\\", "\\\\").replace('"', '\\"')
+                password = user["bgp_password"] if include_secrets else "<redacted>"
+                escaped = password.replace("\\", "\\\\").replace('"', '\\"')
                 lines.append(f'  password "{escaped}";')
             lines.extend(
                 [

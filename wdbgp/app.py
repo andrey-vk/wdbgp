@@ -416,6 +416,11 @@ def sync_loop() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["init", "serve", "sync", "render-bird", "stats"])
+    parser.add_argument(
+        "--show-secrets",
+        action="store_true",
+        help="include BGP passwords in render-bird output",
+    )
     args = parser.parse_args()
     init(CONFIG.db_path)
     if args.command == "init":
@@ -428,7 +433,7 @@ def main() -> None:
         if not ok:
             raise SystemExit(output)
     elif args.command == "render-bird":
-        print(bird.render(CONFIG), end="")
+        print(bird.render(CONFIG, include_secrets=args.show_secrets), end="")
     elif args.command == "stats":
         with contextlib.closing(connect(CONFIG.db_path)) as db:
             categories = db.execute("SELECT COUNT(DISTINCT category) FROM catalog_entries").fetchone()[0]
