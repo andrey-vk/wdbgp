@@ -21,8 +21,8 @@ class Config:
     local_asn: int = int(os.getenv("WDBGP_LOCAL_ASN", "64512"))
     router_id: str = os.getenv("WDBGP_ROUTER_ID", "192.0.2.1")
     bird_local_address: str = os.getenv("WDBGP_BIRD_LOCAL_ADDRESS", "192.0.2.2")
+    bird_local_address_v6: str = os.getenv("WDBGP_BIRD_LOCAL_ADDRESS_V6", "")
     admin_password: str = os.getenv("WDBGP_ADMIN_PASSWORD", "")
     session_secret: str = os.getenv("WDBGP_SESSION_SECRET", "")
     trust_proxy_headers: bool = _bool("WDBGP_TRUST_PROXY_HEADERS")
     sync_interval: int = int(os.getenv("WDBGP_SYNC_INTERVAL", "3600"))
-

@@ -363,12 +363,8 @@ def selection_from_form(form: dict[str, list[str]]) -> tuple[set[str], set[tuple
 def user_data_from_form(form: dict[str, list[str]]) -> dict[str, object]:
     networks = [normalize_cidr(v) for v in first(form, "networks").split(",") if v.strip()]
     peer_address = ipaddress.ip_address(first(form, "peer_ip"))
-    if peer_address.version != 4:
-        raise ValueError("IPv6 BGP peers are not supported yet")
     next_hop_raw = first(form, "next_hop")
     next_hop_address = ipaddress.ip_address(next_hop_raw) if next_hop_raw else None
-    if next_hop_address and next_hop_address.version != 4:
-        raise ValueError("IPv6 next hops are not supported yet")
     return {
         "name": first(form, "name"),
         "networks": networks,

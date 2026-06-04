@@ -21,12 +21,11 @@ class CoreTests(unittest.TestCase):
         payload = {"entries": [{"category": "ai", "service": "example", "cidrs": ["10.0.0.1/24", "10.0.0.0/24"]}]}
         self.assertEqual(parse_entries(payload), [("ai", "example", "10.0.0.0/24")])
 
-    def test_parse_entries_rejects_ipv6_until_it_can_be_announced(self):
+    def test_parse_entries_accepts_ipv6(self):
         payload = {"category": "ai", "service": "example", "cidrs": ["2001:db8::/32"]}
-        with self.assertRaisesRegex(ValueError, "IPv6"):
-            parse_entries(payload)
+        self.assertEqual(parse_entries(payload), [("ai", "example", "2001:db8::/32")])
 
-    def test_parse_opencck_entries_uses_group_and_cidr4(self):
+    def test_parse_opencck_entries_uses_group_and_cidrs(self):
         payload = {
             "chatgpt.com": {
                 "name": "chatgpt.com",
@@ -35,10 +34,17 @@ class CoreTests(unittest.TestCase):
                 "cidr6": ["2001:db8::/32"],
             }
         }
-        self.assertEqual(parse_entries(payload), [("ai", "chatgpt.com", "104.18.0.0/16")])
+        self.assertEqual(
+            parse_entries(payload),
+            [("ai", "chatgpt.com", "104.18.0.0/16"), ("ai", "chatgpt.com", "2001:db8::/32")],
+        )
 
     def test_opencck_metadata_url_removes_data_parameter(self):
         url = "https://iplist.opencck.org/?format=json&data=cidr4"
+        self.assertEqual(metadata_url(url), "https://iplist.opencck.org/?format=json&data=group")
+
+    def test_opencck_metadata_url_supports_cidr6(self):
+        url = "https://iplist.opencck.org/?format=json&data=cidr6"
         self.assertEqual(metadata_url(url), "https://iplist.opencck.org/?format=json&data=group")
 
     def test_beta_opencck_uses_compact_group_metadata(self):
@@ -61,6 +67,13 @@ class CoreTests(unittest.TestCase):
             ],
         )
 
+    def test_flat_opencck_entries_accept_ipv6(self):
+        payload = {"chatgpt.com": ["2001:db8::1/32"]}
+        self.assertEqual(
+            parse_entries(payload, {"chatgpt.com": {"ai"}}, "opencck-beta-v6"),
+            [("ai", "chatgpt.com", "2001:db8::/32")],
+        )
+
     def test_most_specific_user_network_wins(self):
         with transaction(self.db_path) as db:
             a = db.execute("INSERT INTO users(name, peer_ip, peer_asn) VALUES ('a', '192.0.2.1', 65001)").lastrowid
@@ -75,23 +88,29 @@ class CoreTests(unittest.TestCase):
             feed = db.execute("INSERT INTO feeds(name, url) VALUES ('f', 'file:///unused')").lastrowid
             db.executemany(
                 "INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-                [(feed, "ai", "a", "10.0.0.0/24"), (feed, "video", "v", "10.0.1.0/24")],
+                [(feed, "ai", "a", "10.0.0.0/24"), (feed, "video", "v", "2001:db8::/32")],
             )
             user = db.execute("INSERT INTO users(name, peer_ip, peer_asn) VALUES ('u', '192.0.2.1', 65001)").lastrowid
             set_user_selection(db, user, {"ai"}, {("video", "v")})
             db.commit()
-            self.assertEqual(selected_prefixes(db, user), ["10.0.0.0/24", "10.0.1.0/24"])
+            self.assertEqual(selected_prefixes(db, user), ["10.0.0.0/24", "2001:db8::/32"])
 
-    def test_bird_config_has_per_user_filter(self):
+    def test_bird_config_has_per_user_ipv4_and_ipv6_filters(self):
         with transaction(self.db_path) as db:
             feed = db.execute("INSERT INTO feeds(name, url) VALUES ('f', 'file:///unused')").lastrowid
             db.execute("INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, 'ai', 'a', '10.0.0.0/24')", (feed,))
+            db.execute("INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, 'ai', 'a', '2001:db8::/32')", (feed,))
             user = db.execute("INSERT INTO users(name, peer_ip, peer_asn, next_hop) VALUES ('u', '198.51.100.1', 65001, '198.51.100.254')").lastrowid
             set_user_selection(db, user, {"ai"}, set())
             db.commit()
         text = render(Config(db_path=self.db_path))
+        self.assertIn("protocol static catalog_v4", text)
+        self.assertIn("protocol static catalog_v6", text)
         self.assertIn("route 10.0.0.0/24 blackhole;", text)
+        self.assertIn("route 2001:db8::/32 blackhole;", text)
         self.assertIn("neighbor 198.51.100.1 as 65001;", text)
+        self.assertIn("export filter export_user_1_v4;", text)
+        self.assertIn("export filter export_user_1_v6;", text)
         self.assertIn("next hop address 198.51.100.254;", text)
 
     def test_user_form_data_normalizes_addresses(self):
