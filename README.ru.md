@@ -9,11 +9,11 @@
 ![Alpine](https://img.shields.io/badge/alpine-3.23-0d597f)
 ![BIRD](https://img.shields.io/badge/BIRD-2.x-green)
 ![RouterOS](https://img.shields.io/badge/RouterOS-container-blue)
-![IPv4](https://img.shields.io/badge/IP-IPv4_only-orange)
+![Dual Stack](https://img.shields.io/badge/IP-IPv4%20%2B%20IPv6-blueviolet)
 
 [English version](README.md)
 
-`wdbgp` скачивает категоризированные IPv4 CIDR-фиды, собирает динамический
+`wdbgp` скачивает категоризированные IPv4/IPv6 CIDR-фиды, собирает динамический
 каталог сервисов, позволяет пользователям выбирать категории или отдельные
 сервисы и анонсирует выбранные префиксы на пользовательские роутеры через BGP.
 
@@ -45,11 +45,13 @@ MikroTik дальше должен пересылать трафик для ан
 
 ## Формат фидов
 
-По умолчанию установлены два OpenCCK-фида:
+По умолчанию установлены четыре OpenCCK-фида:
 
 ```text
 https://iplist.opencck.org/?format=json&data=cidr4
+https://iplist.opencck.org/?format=json&data=cidr6
 https://beta.iplist.opencck.org/?format=json&data=cidr4
+https://beta.iplist.opencck.org/?format=json&data=cidr6
 ```
 
 Ответ OpenCCK `data=cidr4` не содержит категории. Для каждого OpenCCK-фида
@@ -80,7 +82,8 @@ https://beta.iplist.opencck.org/?format=json&data=cidr4
 
 Также принимается один объект entry или массив entry-объектов верхнего уровня.
 Дублирующиеся префиксы дедуплицируются. Один префикс может относиться к
-нескольким сервисам. Текущая версия намеренно принимает только IPv4.
+нескольким сервисам. Поддерживаются IPv4 и IPv6. Работоспособность IPv6-маршрутов
+зависит от BGP peer и схемы next hop на пользовательском роутере.
 
 Выбор категории включает все текущие и будущие сервисы этой категории. Выбор
 отдельных сервисов добавляет только их. Итоговый набор экспортируемых маршрутов
@@ -96,6 +99,7 @@ WDBGP_SESSION_SECRET=a-long-random-secret
 WDBGP_LOCAL_ASN=64512
 WDBGP_ROUTER_ID=172.31.255.2
 WDBGP_BIRD_LOCAL_ADDRESS=172.31.255.2
+WDBGP_BIRD_LOCAL_ADDRESS_V6=fd00:31:255::2
 ```
 
 Сборка и запуск:
@@ -111,6 +115,7 @@ docker run --rm \
   -e WDBGP_LOCAL_ASN=64512 \
   -e WDBGP_ROUTER_ID=172.31.255.2 \
   -e WDBGP_BIRD_LOCAL_ADDRESS=172.31.255.2 \
+  -e WDBGP_BIRD_LOCAL_ADDRESS_V6=fd00:31:255::2 \
   wdbgp:latest
 ```
 
@@ -136,12 +141,16 @@ python -m wdbgp stats
 /interface/bridge/add name=br-containers
 /interface/bridge/port/add bridge=br-containers interface=veth-wdbgp
 /ip/address/add address=172.31.255.1/30 interface=br-containers
+# Опциональная IPv6-подсеть контейнера:
+# /interface/veth/set veth-wdbgp address=172.31.255.2/30,fd00:31:255::2/64 gateway6=fd00:31:255::1
+# /ipv6/address/add address=fd00:31:255::1/64 interface=br-containers
 
 /container/envs/add list=wdbgp key=WDBGP_ADMIN_PASSWORD value="change-me"
 /container/envs/add list=wdbgp key=WDBGP_SESSION_SECRET value="replace-with-a-long-random-secret"
 /container/envs/add list=wdbgp key=WDBGP_LOCAL_ASN value="64512"
 /container/envs/add list=wdbgp key=WDBGP_ROUTER_ID value="172.31.255.2"
 /container/envs/add list=wdbgp key=WDBGP_BIRD_LOCAL_ADDRESS value="172.31.255.2"
+/container/envs/add list=wdbgp key=WDBGP_BIRD_LOCAL_ADDRESS_V6 value="fd00:31:255::2"
 
 /container/mounts/add name=wdbgp-data src=disk1/wdbgp-data dst=/data
 /container/add remote-image=YOUR_REGISTRY/wdbgp:latest interface=veth-wdbgp \
@@ -155,6 +164,7 @@ python -m wdbgp stats
 - TCP/179 между `172.31.255.2` и настроенными BGP peers;
 - достижимости `172.31.255.2` от каждого peer, если этот адрес используется как
   BGP next hop;
+- достижимости IPv6, если используются IPv6 BGP peers или IPv6 next hops;
 - нужного forwarding path для трафика к анонсированным destination CIDR.
 
 RouterOS containers по умолчанию отключены и должны использовать внешнее
@@ -163,7 +173,6 @@ RouterOS containers по умолчанию отключены и должны �
 
 ## Текущие ограничения
 
-- Только IPv4.
 - Единственный встроенный адаптер нестандартного фида - OpenCCK.
 - Пока нет формы удаления и редактирования фидов.
 - Админские сессии инвалидируются только при смене `WDBGP_SESSION_SECRET`.

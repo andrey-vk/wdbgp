@@ -61,7 +61,9 @@ CREATE TABLE IF NOT EXISTS selected_services (
 
 DEFAULT_FEEDS = (
     ("opencck-main", "https://iplist.opencck.org/?format=json&data=cidr4"),
+    ("opencck-main-v6", "https://iplist.opencck.org/?format=json&data=cidr6"),
     ("opencck-beta", "https://beta.iplist.opencck.org/?format=json&data=cidr4"),
+    ("opencck-beta-v6", "https://beta.iplist.opencck.org/?format=json&data=cidr6"),
 )
 
 

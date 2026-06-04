@@ -9,11 +9,11 @@
 ![Alpine](https://img.shields.io/badge/alpine-3.23-0d597f)
 ![BIRD](https://img.shields.io/badge/BIRD-2.x-green)
 ![RouterOS](https://img.shields.io/badge/RouterOS-container-blue)
-![IPv4](https://img.shields.io/badge/IP-IPv4_only-orange)
+![Dual Stack](https://img.shields.io/badge/IP-IPv4%20%2B%20IPv6-blueviolet)
 
 [Русская версия](README.ru.md)
 
-`wdbgp` downloads categorized IPv4 CIDR feeds, builds a dynamic service catalog,
+`wdbgp` downloads categorized IPv4/IPv6 CIDR feeds, builds a dynamic service catalog,
 lets each VPN-connected user select categories or individual services, and
 announces the resulting prefix set to that user's router over BGP.
 
@@ -44,11 +44,13 @@ rules should allow them only from the required VPN subnets.
 
 ## Feed format
 
-Two OpenCCK feeds are installed automatically:
+Four OpenCCK feeds are installed automatically:
 
 ```text
 https://iplist.opencck.org/?format=json&data=cidr4
+https://iplist.opencck.org/?format=json&data=cidr6
 https://beta.iplist.opencck.org/?format=json&data=cidr4
+https://beta.iplist.opencck.org/?format=json&data=cidr6
 ```
 
 OpenCCK's `data=cidr4` response does not include categories. For each OpenCCK
@@ -80,7 +82,8 @@ The canonical JSON format is:
 
 A single entry object or a top-level array of entry objects is also accepted.
 Duplicate prefixes are deduplicated. A prefix may belong to multiple services.
-The current MVP intentionally rejects IPv6 prefixes.
+IPv4 and IPv6 prefixes are supported. Whether IPv6 routes are usable depends on
+the BGP peer and next-hop design on the user router.
 
 Selecting a category includes every current and future service in that category.
 Selecting individual services adds only those services. The exported route set
@@ -96,6 +99,7 @@ WDBGP_SESSION_SECRET=a-long-random-secret
 WDBGP_LOCAL_ASN=64512
 WDBGP_ROUTER_ID=172.31.255.2
 WDBGP_BIRD_LOCAL_ADDRESS=172.31.255.2
+WDBGP_BIRD_LOCAL_ADDRESS_V6=fd00:31:255::2
 ```
 
 Build and run:
@@ -111,6 +115,7 @@ docker run --rm \
   -e WDBGP_LOCAL_ASN=64512 \
   -e WDBGP_ROUTER_ID=172.31.255.2 \
   -e WDBGP_BIRD_LOCAL_ADDRESS=172.31.255.2 \
+  -e WDBGP_BIRD_LOCAL_ADDRESS_V6=fd00:31:255::2 \
   wdbgp:latest
 ```
 
@@ -136,12 +141,16 @@ uses `172.31.255.2` for the container and `172.31.255.1` for RouterOS:
 /interface/bridge/add name=br-containers
 /interface/bridge/port/add bridge=br-containers interface=veth-wdbgp
 /ip/address/add address=172.31.255.1/30 interface=br-containers
+# Optional IPv6 container subnet:
+# /interface/veth/set veth-wdbgp address=172.31.255.2/30,fd00:31:255::2/64 gateway6=fd00:31:255::1
+# /ipv6/address/add address=fd00:31:255::1/64 interface=br-containers
 
 /container/envs/add list=wdbgp key=WDBGP_ADMIN_PASSWORD value="change-me"
 /container/envs/add list=wdbgp key=WDBGP_SESSION_SECRET value="replace-with-a-long-random-secret"
 /container/envs/add list=wdbgp key=WDBGP_LOCAL_ASN value="64512"
 /container/envs/add list=wdbgp key=WDBGP_ROUTER_ID value="172.31.255.2"
 /container/envs/add list=wdbgp key=WDBGP_BIRD_LOCAL_ADDRESS value="172.31.255.2"
+/container/envs/add list=wdbgp key=WDBGP_BIRD_LOCAL_ADDRESS_V6 value="fd00:31:255::2"
 
 /container/mounts/add name=wdbgp-data src=disk1/wdbgp-data dst=/data
 /container/add remote-image=YOUR_REGISTRY/wdbgp:latest interface=veth-wdbgp \
@@ -154,6 +163,7 @@ Add RouterOS firewall and routing rules for:
 - HTTP access to `172.31.255.2:8080` from user VPN networks;
 - TCP/179 between `172.31.255.2` and configured BGP peers;
 - reachability of `172.31.255.2` from each peer when it is used as BGP next hop;
+- IPv6 reachability if IPv6 BGP peers or IPv6 next hops are used;
 - the desired forwarding path for traffic matching announced destination CIDRs.
 
 RouterOS containers are disabled by default and should use external storage.
@@ -161,7 +171,6 @@ See the official [MikroTik Container documentation](https://help.mikrotik.com/do
 
 ## Current limitations
 
-- IPv4 only.
 - The only built-in non-canonical feed adapter is OpenCCK.
 - No delete/edit form for feeds.
 - Admin sessions are invalidated only when `WDBGP_SESSION_SECRET` changes.

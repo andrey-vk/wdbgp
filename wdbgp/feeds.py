@@ -46,8 +46,6 @@ def parse_entries(
             raise ValueError("each entry requires category, service and cidrs[]")
         for cidr in cidrs:
             network = ipaddress.ip_network(str(cidr).strip(), strict=False)
-            if network.version != 4:
-                raise ValueError(f"IPv6 prefix is not supported yet: {network}")
             result.add((category, service, str(network)))
     return sorted(result)
 
@@ -59,6 +57,7 @@ def _is_opencck_payload(payload: object) -> bool:
         isinstance(value, dict)
         and isinstance(value.get("group"), str)
         and isinstance(value.get("cidr4"), list)
+        and (value.get("cidr6") is None or isinstance(value.get("cidr6"), list))
         for value in payload.values()
     )
 
@@ -79,10 +78,8 @@ def _parse_opencck_entries(payload: dict[object, object]) -> list[tuple[str, str
         service = str(value.get("name") or key).strip()
         if not category or not service:
             raise ValueError("OpenCCK entry requires group and name")
-        for cidr in value["cidr4"]:
+        for cidr in [*value["cidr4"], *value.get("cidr6", [])]:
             network = ipaddress.ip_network(str(cidr).strip(), strict=False)
-            if network.version != 4:
-                raise ValueError(f"IPv6 prefix in OpenCCK cidr4 field: {network}")
             result.add((category, service, str(network)))
     return sorted(result)
 
@@ -99,8 +96,6 @@ def _parse_opencck_cidr_entries(
         assert isinstance(cidrs, list)
         for cidr in cidrs:
             network = ipaddress.ip_network(str(cidr).strip(), strict=False)
-            if network.version != 4:
-                raise ValueError(f"IPv6 prefix in OpenCCK cidr4 response: {network}")
             result.update((category, service, str(network)) for category in categories)
     return sorted(result)
 
@@ -116,7 +111,7 @@ def metadata_url(url: str) -> str:
     if parsed.hostname not in {"iplist.opencck.org", "beta.iplist.opencck.org"}:
         return url
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-    if not any(key == "data" and value == "cidr4" for key, value in query):
+    if not any(key == "data" and value in {"cidr4", "cidr6"} for key, value in query):
         return url
     query = [(key, "group" if key == "data" else value) for key, value in query]
     return urllib.parse.urlunsplit(
