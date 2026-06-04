@@ -1,5 +1,17 @@
 # wdbgp
 
+[![Publish Docker Image](https://github.com/andrey-vk/wdbgp/actions/workflows/deploy.yml/badge.svg)](https://github.com/andrey-vk/wdbgp/actions/workflows/deploy.yml)
+[![License](https://img.shields.io/github/license/andrey-vk/wdbgp)](LICENSE)
+[![Docker Image Version](https://img.shields.io/docker/v/wh1ted/wdbgp?label=docker)](https://hub.docker.com/r/wh1ted/wdbgp)
+[![Docker Pulls](https://img.shields.io/docker/pulls/wh1ted/wdbgp)](https://hub.docker.com/r/wh1ted/wdbgp)
+![Python](https://img.shields.io/badge/python-3.14-blue)
+![Alpine](https://img.shields.io/badge/alpine-3.23-0d597f)
+![BIRD](https://img.shields.io/badge/BIRD-2.x-green)
+![RouterOS](https://img.shields.io/badge/RouterOS-container-blue)
+![IPv4](https://img.shields.io/badge/IP-IPv4_only-orange)
+
+[Русская версия](README.ru.md)
+
 `wdbgp` downloads categorized IPv4 CIDR feeds, builds a dynamic service catalog,
 lets each VPN-connected user select categories or individual services, and
 announces the resulting prefix set to that user's router over BGP.
@@ -150,7 +162,7 @@ See the official [MikroTik Container documentation](https://help.mikrotik.com/do
 
 - IPv4 only.
 - The only built-in non-canonical feed adapter is OpenCCK.
-- No delete/edit form for feeds or peer connection parameters.
+- No delete/edit form for feeds.
 - Admin sessions are invalidated only when `WDBGP_SESSION_SECRET` changes.
 - Large catalogs are rendered into BIRD prefix sets; capacity testing is needed
   for the target MikroTik model and expected route count.
