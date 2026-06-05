@@ -55,12 +55,14 @@ type selectionView struct {
 	Editable   bool
 	Admin      bool
 	Saved      string
+	Filters    filterView
 }
 
 type adminView struct {
-	Feeds      []store.Feed
-	Users      []store.User
-	PeerStates map[string]string
+	Feeds         []store.Feed
+	Users         []store.User
+	PeerStates    map[string]string
+	GlobalFilters filterView
 }
 
 type userEditView struct {
@@ -68,16 +70,26 @@ type userEditView struct {
 	Selection selectionView
 }
 
+type filterView struct {
+	AllowText string
+	DenyText  string
+	Override  bool
+	Editable  bool
+	Admin     bool
+}
+
 func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Server {
 	server := &Server{cfg: cfg, store: s, syncer: syncer, bgp: bgp}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", server.userPage)
 	mux.HandleFunc("POST /selection", server.saveOwnSelection)
+	mux.HandleFunc("POST /filters", server.saveOwnFilters)
 	mux.HandleFunc("GET /admin/login", server.loginPage)
 	mux.HandleFunc("POST /admin/login", server.login)
 	mux.HandleFunc("GET /admin", server.requireAdmin(server.adminPage))
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
 	mux.HandleFunc("POST /admin/sync", server.requireAdmin(server.syncFeeds))
+	mux.HandleFunc("POST /admin/filters", server.requireAdmin(server.saveGlobalFilters))
 	mux.HandleFunc("POST /admin/user", server.requireAdmin(server.addUser))
 	mux.HandleFunc("GET /admin/user/{id}", server.requireAdmin(server.adminUserPage))
 	mux.HandleFunc("POST /admin/user/{id}", server.requireAdmin(server.saveAdminUser))
@@ -141,6 +153,38 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?saved=1", http.StatusSeeOther)
 }
 
+func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
+	user, err := s.store.UserByIP(r.Context(), s.clientIP(r))
+	if store.IsNotFound(err) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if !user.FilterEditable {
+		http.Error(w, "route filters are managed by administrator", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	filters, err := routeFiltersFromForm(r)
+	if err == nil {
+		err = s.store.SetUserRouteFilterConfig(r.Context(), user.ID, r.Form.Has("filter_override"), filters)
+	}
+	if err == nil {
+		err = s.bgp.Reconcile(r.Context())
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/?saved=1", http.StatusSeeOther)
+}
+
 func (s *Server) loginPage(w http.ResponseWriter, _ *http.Request) {
 	s.render(w, http.StatusOK, "Вход", loginTemplate, "")
 }
@@ -180,8 +224,19 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 		log.Printf("read BGP peer states: %v", err)
 		states = map[string]string{}
 	}
+	globalFilters, err := s.store.GlobalRouteFilters(r.Context())
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
 	s.render(w, http.StatusOK, "Админка", adminTemplate, adminView{
 		Feeds: feedList, Users: users, PeerStates: states,
+		GlobalFilters: filterView{
+			AllowText: strings.Join(globalFilters.Allow, "\n"),
+			DenyText:  strings.Join(globalFilters.Deny, "\n"),
+			Editable:  true,
+			Admin:     true,
+		},
 	})
 }
 
@@ -204,6 +259,25 @@ func (s *Server) syncFeeds(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
 		s.internalError(w, err)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+func (s *Server) saveGlobalFilters(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	filters, err := routeFiltersFromForm(r)
+	if err == nil {
+		err = s.store.SetGlobalRouteFilters(r.Context(), filters)
+	}
+	if err == nil {
+		err = s.bgp.Reconcile(r.Context())
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
@@ -271,6 +345,16 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		err = s.bgp.ReloadPeers(r.Context())
+	} else if r.FormValue("action") == "filters" {
+		filters, parseErr := routeFiltersFromForm(r)
+		if parseErr != nil {
+			http.Error(w, parseErr.Error(), http.StatusBadRequest)
+			return
+		}
+		err = s.store.SetUserRouteFilterConfig(r.Context(), id, r.Form.Has("filter_override"), filters)
+		if err == nil {
+			err = s.bgp.Reconcile(r.Context())
+		}
 	} else {
 		categories, services, parseErr := selectionFromValues(r.Form)
 		if parseErr != nil {
@@ -331,7 +415,20 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 		names = append(names, name)
 	}
 	sortStrings(names)
-	view := selectionView{User: user, Editable: editable, Admin: admin}
+	userFilters, err := s.store.UserRouteFilters(ctx, user.ID)
+	if err != nil {
+		return selectionView{}, err
+	}
+	view := selectionView{
+		User: user, Editable: editable, Admin: admin,
+		Filters: filterView{
+			AllowText: strings.Join(userFilters.Allow, "\n"),
+			DenyText:  strings.Join(userFilters.Deny, "\n"),
+			Override:  user.FilterOverride,
+			Editable:  admin || user.FilterEditable,
+			Admin:     admin,
+		},
+	}
 	for _, category := range names {
 		item := categoryView{Name: category, Selected: selectedCategories[category]}
 		for _, service := range catalog[category] {
@@ -378,6 +475,20 @@ func selectionFromValues(values url.Values) ([]string, []store.ServiceKey, error
 	return categories, services, nil
 }
 
+func routeFiltersFromForm(r *http.Request) (store.RouteFilters, error) {
+	filters := store.RouteFilters{
+		Allow: splitCIDRs(r.FormValue("filter_allow")),
+		Deny:  splitCIDRs(r.FormValue("filter_deny")),
+	}
+	return store.NormalizeRouteFilters(filters)
+}
+
+func splitCIDRs(value string) []string {
+	return strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+}
+
 func parseUser(r *http.Request, id int64) (store.User, bool, error) {
 	if err := r.ParseForm(); err != nil {
 		return store.User{}, false, err
@@ -422,7 +533,9 @@ func parseUserForm(r *http.Request, id int64) (store.User, bool, error) {
 		ID: id, Name: name, PeerIP: peerIP.String(), PeerASN: uint32(peerASN),
 		NextHop: nextHop, BGPPassword: r.FormValue("bgp_password"),
 		SelectionLocked: r.Form.Has("locked"), Enabled: id == 0 || r.Form.Has("enabled"),
-		Networks: networks,
+		FilterOverride: r.FormValue("filter_override") == "on",
+		FilterEditable: r.Form.Has("filter_editable"),
+		Networks:       networks,
 	}, r.Form.Has("clear_bgp_password"), nil
 }
 

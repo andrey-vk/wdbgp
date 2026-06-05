@@ -72,8 +72,8 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	}
 	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
 		(feed_id, category, service, cidr) VALUES
-		(1, 'test', 'dual-stack', '203.0.113.0/24'),
-		(1, 'test', 'dual-stack', '2001:db8::/32')`); err != nil {
+		(1, 'test', 'dual-stack', '8.8.8.0/24'),
+		(1, 'test', 'dual-stack', '2606:4700::/32')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
@@ -94,10 +94,10 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	if len(manager.installed) != 1 {
 		t.Fatalf("installed paths = %#v, want only IPv4", manager.installed)
 	}
-	if _, ok := manager.installed["203.0.113.0/24"]; !ok {
+	if _, ok := manager.installed["8.8.8.0/24"]; !ok {
 		t.Fatalf("IPv4 path was not installed: %#v", manager.installed)
 	}
-	if _, ok := manager.installed["2001:db8::/32"]; ok {
+	if _, ok := manager.installed["2606:4700::/32"]; ok {
 		t.Fatalf("IPv6 path installed without a local IPv6 address: %#v", manager.installed)
 	}
 }

@@ -91,4 +91,64 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Параметры пользователя") {
 		t.Fatalf("admin user page: status=%d body=%s", response.Code, response.Body.String())
 	}
+
+	filterForm := url.Values{
+		"filter_override": {"on"},
+		"filter_deny":     {"1.1.1.1/32"},
+	}
+	request = httptest.NewRequest(http.MethodPost, "/filters", strings.NewReader(filterForm.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.RemoteAddr = "192.168.20.15:12345"
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("locked filter update status = %d, want 403", response.Code)
+	}
+
+	if _, err := db.DB.Exec("UPDATE users SET filter_editable = 1 WHERE id = ?", userID); err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/filters", strings.NewReader(filterForm.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.RemoteAddr = "192.168.20.15:12345"
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || bgp.reconciles != 2 {
+		t.Fatalf("filter update: status=%d reconciles=%d", response.Code, bgp.reconciles)
+	}
+	user, err := db.User(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filters, err := db.UserRouteFilters(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !user.FilterOverride || len(filters.Deny) != 1 || filters.Deny[0] != "1.1.1.1/32" {
+		t.Fatalf("saved user filters: user=%#v filters=%#v", user, filters)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "192.168.20.15:12345"
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Фильтрация маршрутов") {
+		t.Fatalf("user filter page: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	globalForm := url.Values{"filter_deny": {"8.8.8.8/32"}}
+	request = httptest.NewRequest(http.MethodPost, "/admin/filters", strings.NewReader(globalForm.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(cookies[0])
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || bgp.reconciles != 3 {
+		t.Fatalf("global filter update: status=%d reconciles=%d", response.Code, bgp.reconciles)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	request.AddCookie(cookies[0])
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Глобальная фильтрация маршрутов") {
+		t.Fatalf("admin filter page: status=%d body=%s", response.Code, response.Body.String())
+	}
 }

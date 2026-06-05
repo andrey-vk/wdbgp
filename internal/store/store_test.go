@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"net/netip"
 	"path/filepath"
 	"testing"
 
@@ -184,6 +185,113 @@ func TestDesiredPrefixesForCategoryAndService(t *testing.T) {
 			t.Fatalf("%s has unexpected users: %#v", prefix, users)
 		}
 	}
+}
+
+func TestDesiredPrefixesSubtractsGlobalDeny(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := addFilteredTestUser(t, s, false)
+	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{Deny: []string{"1.1.1.1/32"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	prefixes, err := s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) != 24 {
+		t.Fatalf("prefix count = %d, want 24", len(prefixes))
+	}
+	for rawPrefix, users := range prefixes {
+		prefix := netip.MustParsePrefix(rawPrefix)
+		if prefix.Contains(netip.MustParseAddr("1.1.1.1")) {
+			t.Fatalf("denied address remains covered by %s", prefix)
+		}
+		if len(users) != 1 || users[0] != userID {
+			t.Fatalf("%s has unexpected users: %v", rawPrefix, users)
+		}
+	}
+}
+
+func TestDesiredPrefixesUsesUserOverride(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := addFilteredTestUser(t, s, true)
+	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{Deny: []string{"1.1.1.1/32"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"1.1.0.0/16"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	prefixes, err := s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) != 1 {
+		t.Fatalf("prefixes = %v, want one user override prefix", prefixes)
+	}
+	if users := prefixes["1.1.0.0/16"]; len(users) != 1 || users[0] != userID {
+		t.Fatalf("override prefix users = %v", users)
+	}
+}
+
+func TestDesiredPrefixesDropsFeedDefaultRoute(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, err := s.AddUser(ctx, User{
+		Name: "default-route", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(1, 'test', 'default', '0.0.0.0/0'),
+		(1, 'test', 'public', '8.8.8.0/24')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserSelection(ctx, tx, userID, []string{"test"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prefixes, err := s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) != 1 {
+		t.Fatalf("prefixes = %v, want only the non-default route", prefixes)
+	}
+	if users := prefixes["8.8.8.0/24"]; len(users) != 1 || users[0] != userID {
+		t.Fatalf("public prefix users = %v", users)
+	}
+}
+
+func addFilteredTestUser(t *testing.T, s *Store, override bool) int64 {
+	t.Helper()
+	ctx := context.Background()
+	userID, err := s.AddUser(ctx, User{
+		Name: "filtered", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		FilterOverride: override, Networks: []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr)
+		VALUES (1, 'test', 'wide', '1.0.0.0/8')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserSelection(ctx, tx, userID, []string{"test"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return userID
 }
 
 func openTestStore(t *testing.T) *Store {
