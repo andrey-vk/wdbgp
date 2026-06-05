@@ -94,6 +94,8 @@ proxy.
 `WDBGP_ADMIN_PASSWORD` and `WDBGP_SESSION_SECRET` are required by `serve`.
 The old `WDBGP_BIRD_LOCAL_ADDRESS` and `WDBGP_BIRD_LOCAL_ADDRESS_V6` names are
 temporarily accepted as compatibility aliases.
+When `WDBGP_BGP_LOCAL_ADDRESS_V6` is empty, IPv6 selections remain stored but
+only IPv4 prefixes are announced.
 
 ## Database migrations
 

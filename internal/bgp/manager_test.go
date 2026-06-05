@@ -2,6 +2,7 @@ package bgp
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -52,5 +53,51 @@ func TestManagerStartsWithoutPeers(t *testing.T) {
 	}
 	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	userID, err := s.AddUser(ctx, store.User{
+		Name: "client", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
+		(feed_id, category, service, cidr) VALUES
+		(1, 'test', 'dual-stack', '203.0.113.0/24'),
+		(1, 'test', 'dual-stack', '2001:db8::/32')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, userID, []string{"test"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	if len(manager.installed) != 1 {
+		t.Fatalf("installed paths = %#v, want only IPv4", manager.installed)
+	}
+	if _, ok := manager.installed["203.0.113.0/24"]; !ok {
+		t.Fatalf("IPv4 path was not installed: %#v", manager.installed)
+	}
+	if _, ok := manager.installed["2001:db8::/32"]; ok {
+		t.Fatalf("IPv6 path installed without a local IPv6 address: %#v", manager.installed)
 	}
 }

@@ -380,6 +380,12 @@ func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 			bestBits, bestID = prefix.Bits(), userID
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return User{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return User{}, err
+	}
 	if bestID == 0 {
 		return User{}, sql.ErrNoRows
 	}

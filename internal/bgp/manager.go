@@ -203,6 +203,15 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	for rawPrefix := range desired {
+		prefix, err := netip.ParsePrefix(rawPrefix)
+		if err != nil {
+			return fmt.Errorf("parse desired prefix %q: %w", rawPrefix, err)
+		}
+		if prefix.Addr().Is6() && m.cfg.LocalAddressV6 == "" {
+			delete(desired, rawPrefix)
+		}
+	}
 	for prefix, installed := range m.installed {
 		users, exists := desired[prefix]
 		signature := signature(users)

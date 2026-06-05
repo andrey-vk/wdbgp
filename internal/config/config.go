@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -31,6 +32,9 @@ func Load() (Config, error) {
 	asn, err := integer("WDBGP_LOCAL_ASN", 64512)
 	if err != nil {
 		return Config{}, err
+	}
+	if asn <= 0 || uint64(asn) > uint64(^uint32(0)) {
+		return Config{}, fmt.Errorf("WDBGP_LOCAL_ASN must be between 1 and %d", uint64(^uint32(0)))
 	}
 	syncSeconds, err := integer("WDBGP_SYNC_INTERVAL", 3600)
 	if err != nil {
@@ -67,6 +71,26 @@ func (c Config) ValidateServe() error {
 	}
 	if c.LocalASN == 0 {
 		return fmt.Errorf("WDBGP_LOCAL_ASN must be greater than zero")
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		return fmt.Errorf("WDBGP_PORT must be between 1 and 65535")
+	}
+	if c.BGPListenPort < 1 || c.BGPListenPort > 65535 {
+		return fmt.Errorf("WDBGP_BGP_PORT must be between 1 and 65535")
+	}
+	routerID, err := netip.ParseAddr(c.RouterID)
+	if err != nil || !routerID.Is4() {
+		return fmt.Errorf("WDBGP_ROUTER_ID must be an IPv4 address")
+	}
+	localV4, err := netip.ParseAddr(c.LocalAddressV4)
+	if err != nil || !localV4.Is4() {
+		return fmt.Errorf("WDBGP_BGP_LOCAL_ADDRESS must be an IPv4 address")
+	}
+	if c.LocalAddressV6 != "" {
+		localV6, err := netip.ParseAddr(c.LocalAddressV6)
+		if err != nil || !localV6.Is6() {
+			return fmt.Errorf("WDBGP_BGP_LOCAL_ADDRESS_V6 must be an IPv6 address")
+		}
 	}
 	if c.SyncInterval <= 0 {
 		return fmt.Errorf("WDBGP_SYNC_INTERVAL must be greater than zero")

@@ -94,6 +94,8 @@ docker run --rm \
 `WDBGP_ADMIN_PASSWORD` и `WDBGP_SESSION_SECRET` обязательны для `serve`.
 Старые имена `WDBGP_BIRD_LOCAL_ADDRESS` и
 `WDBGP_BIRD_LOCAL_ADDRESS_V6` пока принимаются как совместимые aliases.
+Если `WDBGP_BGP_LOCAL_ADDRESS_V6` не задан, IPv6-выбор сохраняется в базе, но
+анонсируются только IPv4-префиксы.
 
 ## Миграции
 
