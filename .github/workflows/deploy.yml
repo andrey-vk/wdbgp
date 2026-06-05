@@ -15,6 +15,7 @@ concurrency:
 jobs:
   push_to_registry:
     name: Build and Push Docker Image
+    if: github.event_name == 'workflow_dispatch' || github.event.action != 'created'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
