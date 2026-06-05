@@ -65,10 +65,12 @@ list permits every selected feed prefix; deny entries are subtracted from the
 result. Subtraction is exact: denying `1.1.1.1/32` from a selected `1.0.0.0/8`
 splits the `/8` into CIDRs that no longer cover `1.1.1.1`.
 
-Each user can inherit the global lists or use a complete per-user override.
-The administrator controls whether that user may edit and enable the override
-from the user interface. Feed-provided default routes are always discarded,
-and route expansion is limited to prevent accidental prefix explosions.
+Each user can inherit the global lists, extend them with per-user lists, or use
+a complete per-user override. In extend mode, allow and deny lists are merged
+with the global lists before filtering. The administrator controls whether that
+user may edit the mode and lists from the user interface. Feed-provided default
+routes are always discarded, and route expansion is limited to prevent
+accidental prefix explosions.
 
 The route-filter migration initializes the global deny list with common private,
 loopback, link-local, documentation, benchmark, multicast, and reserved networks.
@@ -93,6 +95,13 @@ Open `/admin` to add users and edit their selections. `/` identifies a user by
 source IP. Enable `WDBGP_TRUST_PROXY_HEADERS=true` only behind a trusted reverse
 proxy.
 
+Admin login cookies use `WDBGP_ADMIN_COOKIE_SECURE=auto` by default. Cookies are
+marked `Secure` for direct HTTPS requests and for trusted
+`X-Forwarded-Proto: https` requests when `WDBGP_TRUST_PROXY_HEADERS=true`.
+For plain local HTTP debugging, keep `auto` or set
+`WDBGP_ADMIN_COOKIE_SECURE=false`; force `true` only when the admin UI is always
+served over HTTPS.
+
 ### Environment
 
 | Variable | Default |
@@ -105,6 +114,7 @@ proxy.
 | `WDBGP_BGP_LOCAL_ADDRESS` | `192.0.2.2` |
 | `WDBGP_BGP_LOCAL_ADDRESS_V6` | empty |
 | `WDBGP_SYNC_INTERVAL` | `3600` seconds |
+| `WDBGP_ADMIN_COOKIE_SECURE` | `auto` |
 
 `WDBGP_ADMIN_PASSWORD` and `WDBGP_SESSION_SECRET` are required by `serve`.
 The old `WDBGP_BIRD_LOCAL_ADDRESS` and `WDBGP_BIRD_LOCAL_ADDRESS_V6` names are
@@ -136,6 +146,24 @@ go vet ./...
 go build ./cmd/wdbgp
 docker build -t wdbgp:latest .
 ```
+
+Local HTTP debug run:
+
+```sh
+WDBGP_DB=/tmp/wdbgp-dev.sqlite3 \
+WDBGP_HOST=127.0.0.1 \
+WDBGP_PORT=8080 \
+WDBGP_BGP_PORT=1179 \
+WDBGP_ADMIN_PASSWORD=admin \
+WDBGP_SESSION_SECRET=dev-only-long-random-secret \
+WDBGP_LOCAL_ASN=64512 \
+WDBGP_ROUTER_ID=192.0.2.1 \
+WDBGP_BGP_LOCAL_ADDRESS=192.0.2.2 \
+WDBGP_ADMIN_COOKIE_SECURE=false \
+go run ./cmd/wdbgp serve
+```
+
+Then open `http://127.0.0.1:8080/admin` and log in with password `admin`.
 
 ## MikroTik outline
 

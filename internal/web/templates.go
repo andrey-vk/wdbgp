@@ -44,14 +44,18 @@ const selectionBody = `{{$selection := .}}
 <div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> {{.Name}}</label>{{end}}</div>
 </fieldset>{{end}}</div>{{else}}<p class=empty>Каталог пока пуст.</p>{{end}}</form></section>
 {{with .Filters}}<section class=card><h2>Фильтрация маршрутов</h2>
-{{if .Editable}}<p class=muted>Override полностью заменяет глобальные списки. Пустой allow разрешает все выбранные маршруты; deny вырезается из широких префиксов.</p>
+{{if .Editable}}<p class=muted>Режим "дополнить" применяет глобальные и пользовательские списки вместе. Режим "заменить" использует только пользовательские списки. Пустой allow разрешает все выбранные маршруты; deny вырезается из широких префиксов.</p>
 <form method=post action="{{if .Admin}}/admin/user/{{$selection.User.ID}}{{else}}/filters{{end}}">
 {{if .Admin}}<input type=hidden name=action value=filters>{{end}}
-<label><input type=checkbox name=filter_override {{if .Override}}checked{{end}}> использовать пользовательские списки вместо глобальных</label>
+<label>Режим фильтрации <select name=filter_mode>
+<option value="global" {{if eq .Mode "global"}}selected{{end}}>использовать только глобальные списки</option>
+<option value="extend" {{if eq .Mode "extend"}}selected{{end}}>дополнить глобальные списки пользовательскими</option>
+<option value="override" {{if eq .Mode "override"}}selected{{end}}>заменить глобальные списки пользовательскими</option>
+</select></label>
 <div class=grid><label>Allow CIDR, по одному на строку <textarea name=filter_allow placeholder="Пусто = разрешить всё">{{.AllowText}}</textarea></label>
 <label>Deny CIDR, по одному на строку <textarea name=filter_deny placeholder="1.1.1.1/32">{{.DenyText}}</textarea></label></div>
 <button>Сохранить фильтр</button></form>
-{{else}}<p class=muted>{{if .Override}}Используется пользовательский override, управляемый администратором.{{else}}Используются глобальные списки администратора.{{end}}</p>{{end}}
+{{else}}<p class=muted>{{if eq .Mode "override"}}Используются пользовательские списки, управляемые администратором.{{else if eq .Mode "extend"}}Глобальные списки дополнены пользовательскими списками администратора.{{else}}Используются глобальные списки администратора.{{end}}</p>{{end}}
 </section>{{end}}`
 
 const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
@@ -74,7 +78,7 @@ const adminTemplate = `{{with .Data}}
 <label>Имя <input name=name required></label><label>Пользовательские CIDR, через запятую <input name=networks required></label>
 <label>IP BGP peer <input name=peer_ip required></label><label>ASN peer <input type=number min=1 name=peer_asn required></label>
 <label>Next hop для анонсов <input name=next_hop></label><label>BGP MD5 пароль <input type=password name=bgp_password></label></div>
-<label><input type=checkbox name=filter_editable> разрешить пользователю настраивать override фильтра</label>
+<label><input type=checkbox name=filter_editable> разрешить пользователю настраивать режим и списки фильтрации</label>
 <button>Добавить</button></form></section>{{end}}`
 
 const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{with .Data}}
@@ -87,8 +91,8 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <label><input type=checkbox name=clear_bgp_password> очистить BGP MD5 пароль</label>
 <label><input type=checkbox name=enabled {{if .User.Enabled}}checked{{end}}> пользователь включён</label>
 <label><input type=checkbox name=locked {{if .User.SelectionLocked}}checked{{end}}> запретить пользователю менять выбор</label>
-<label><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> разрешить пользователю настраивать override фильтра</label>
-<input type=hidden name=filter_override value="{{if .User.FilterOverride}}on{{end}}">
+<label><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> разрешить пользователю настраивать режим и списки фильтрации</label>
+<input type=hidden name=filter_mode value="{{.User.FilterMode}}">
 <button>Сохранить параметры</button></form>
 <form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('Удалить пользователя? Это также удалит его выбор сервисов.');"><button class=danger>Удалить пользователя</button></form></section>
 {{template "selection" .Selection}}{{end}}`

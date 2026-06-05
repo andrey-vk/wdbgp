@@ -52,7 +52,7 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	bgp := &fakeBGP{}
-	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret"}
+	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret", AdminCookieSecure: "true"}
 	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -96,8 +96,8 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	}
 
 	filterForm := url.Values{
-		"filter_override": {"on"},
-		"filter_deny":     {"1.1.1.1/32"},
+		"filter_mode": {"override"},
+		"filter_deny": {"1.1.1.1/32"},
 	}
 	request = httptest.NewRequest(http.MethodPost, "/filters", strings.NewReader(filterForm.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -127,7 +127,8 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !user.FilterOverride || len(filters.Deny) != 1 || filters.Deny[0] != "1.1.1.1/32" {
+	if user.FilterMode != store.FilterModeOverride || !user.FilterOverride ||
+		len(filters.Deny) != 1 || filters.Deny[0] != "1.1.1.1/32" {
 		t.Fatalf("saved user filters: user=%#v filters=%#v", user, filters)
 	}
 	request = httptest.NewRequest(http.MethodGet, "/", nil)
@@ -153,5 +154,70 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Глобальная фильтрация маршрутов") {
 		t.Fatalf("admin filter page: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminCookieSecureAutoAllowsPlainHTTP(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret", AdminCookieSecure: "auto"}
+	handler := New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
+
+	login := url.Values{"password": {"admin"}}
+	request := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(login.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	cookies := response.Result().Cookies()
+	if response.Code != http.StatusSeeOther || len(cookies) != 1 {
+		t.Fatalf("login: status=%d cookies=%d", response.Code, len(cookies))
+	}
+	if cookies[0].Secure {
+		t.Fatalf("plain HTTP admin cookie must be usable without Secure: %#v", cookies[0])
+	}
+	if !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("admin cookie security attributes: %#v", cookies[0])
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	request.AddCookie(cookies[0])
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("admin page after HTTP login: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminCookieSecureAutoHonorsTrustedForwardedProto(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := config.Config{
+		AdminPassword: "admin", SessionSecret: "secret",
+		AdminCookieSecure: "auto", TrustProxyHeader: true,
+	}
+	handler := New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
+
+	login := url.Values{"password": {"admin"}}
+	request := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(login.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("X-Forwarded-Proto", "https")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	cookies := response.Result().Cookies()
+	if response.Code != http.StatusSeeOther || len(cookies) != 1 {
+		t.Fatalf("login: status=%d cookies=%d", response.Code, len(cookies))
+	}
+	if !cookies[0].Secure {
+		t.Fatalf("HTTPS admin cookie must be Secure: %#v", cookies[0])
 	}
 }
