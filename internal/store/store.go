@@ -172,6 +172,17 @@ INSERT INTO global_route_filters(action, cidr) VALUES
     ('deny', 'ff00::/8');
 `,
 	},
+	{
+		Version: 6,
+		Name:    "add user route filter mode",
+		SQL: `
+ALTER TABLE users ADD COLUMN filter_mode TEXT NOT NULL DEFAULT 'global'
+    CHECK (filter_mode IN ('global', 'extend', 'override'));
+
+UPDATE users
+SET filter_mode = CASE WHEN filter_override_enabled THEN 'override' ELSE 'global' END;
+`,
+	},
 }
 
 type Store struct {
@@ -197,6 +208,7 @@ type User struct {
 	SelectionLocked bool
 	Enabled         bool
 	FilterOverride  bool
+	FilterMode      string
 	FilterEditable  bool
 	Networks        []string
 }
@@ -343,7 +355,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 	query := `SELECT id, name, peer_ip, peer_asn, COALESCE(next_hop, ''),
 	                 COALESCE(bgp_password, ''), selection_locked, enabled,
-	                 filter_override_enabled, filter_editable
+	                 filter_override_enabled, COALESCE(filter_mode, ''), filter_editable
 	          FROM users`
 	if enabledOnly {
 		query += " WHERE enabled = 1"
@@ -360,10 +372,11 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 		if err := rows.Scan(
 			&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
-			&user.FilterOverride, &user.FilterEditable,
+			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
 		); err != nil {
 			return nil, err
 		}
+		user.FilterMode = normalizeFilterMode(user.FilterMode, user.FilterOverride)
 		users = append(users, user)
 	}
 	if err := rows.Err(); err != nil {
@@ -385,13 +398,14 @@ func (s *Store) User(ctx context.Context, id int64) (User, error) {
 	var user User
 	err := s.DB.QueryRowContext(ctx, `SELECT id, name, peer_ip, peer_asn, COALESCE(next_hop, ''),
 		COALESCE(bgp_password, ''), selection_locked, enabled,
-		filter_override_enabled, filter_editable FROM users WHERE id = ?`, id).
+		filter_override_enabled, COALESCE(filter_mode, ''), filter_editable FROM users WHERE id = ?`, id).
 		Scan(&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
-			&user.FilterOverride, &user.FilterEditable)
+			&user.FilterOverride, &user.FilterMode, &user.FilterEditable)
 	if err != nil {
 		return User{}, err
 	}
+	user.FilterMode = normalizeFilterMode(user.FilterMode, user.FilterOverride)
 	user.Networks, err = s.UserNetworks(ctx, id)
 	return user, err
 }
@@ -533,7 +547,7 @@ func SetUserSelection(ctx context.Context, tx *sql.Tx, userID int64, categories 
 
 func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT DISTINCT ce.cidr, u.id, u.filter_override_enabled
+SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled
 FROM users u
 JOIN catalog_entries ce
   ON ce.category IN (SELECT category FROM selected_categories WHERE user_id = u.id)
@@ -550,15 +564,16 @@ ORDER BY ce.cidr, u.id`)
 	}
 	defer rows.Close()
 	type selectedUser struct {
-		override bool
-		prefixes []netip.Prefix
+		filterMode string
+		prefixes   []netip.Prefix
 	}
 	selected := map[int64]*selectedUser{}
 	for rows.Next() {
 		var rawPrefix string
 		var userID int64
+		var filterMode string
 		var override bool
-		if err := rows.Scan(&rawPrefix, &userID, &override); err != nil {
+		if err := rows.Scan(&rawPrefix, &userID, &filterMode, &override); err != nil {
 			return nil, err
 		}
 		prefix, err := netip.ParsePrefix(rawPrefix)
@@ -571,7 +586,7 @@ ORDER BY ce.cidr, u.id`)
 		}
 		user := selected[userID]
 		if user == nil {
-			user = &selectedUser{override: override}
+			user = &selectedUser{filterMode: normalizeFilterMode(filterMode, override)}
 			selected[userID] = user
 		}
 		user.prefixes = append(user.prefixes, prefix.Masked())
@@ -590,11 +605,18 @@ ORDER BY ce.cidr, u.id`)
 	result := map[string][]int64{}
 	for userID, selectedUser := range selected {
 		filters := globalFilters
-		if selectedUser.override {
+		switch selectedUser.filterMode {
+		case FilterModeOverride:
 			filters, err = s.UserRouteFilters(ctx, userID)
 			if err != nil {
 				return nil, err
 			}
+		case FilterModeExtend:
+			userFilters, err := s.UserRouteFilters(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+			filters = mergeRouteFilters(globalFilters, userFilters)
 		}
 		lists, err := parseRouteFilters(filters)
 		if err != nil {
@@ -642,7 +664,11 @@ func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters R
 	})
 }
 
-func (s *Store) SetUserRouteFilterConfig(ctx context.Context, userID int64, enabled bool, filters RouteFilters) error {
+func (s *Store) SetUserRouteFilterConfig(ctx context.Context, userID int64, mode string, filters RouteFilters) error {
+	mode, err := NormalizeFilterMode(mode)
+	if err != nil {
+		return err
+	}
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM user_route_filters WHERE user_id = ?", userID); err != nil {
 			return err
@@ -651,7 +677,8 @@ func (s *Store) SetUserRouteFilterConfig(ctx context.Context, userID int64, enab
 			return err
 		}
 		result, err := tx.ExecContext(ctx,
-			"UPDATE users SET filter_override_enabled = ? WHERE id = ?", enabled, userID)
+			"UPDATE users SET filter_override_enabled = ?, filter_mode = ? WHERE id = ?",
+			mode != FilterModeGlobal, mode, userID)
 		if err != nil {
 			return err
 		}
@@ -663,8 +690,12 @@ func (s *Store) SetUserRouteFilterConfig(ctx context.Context, userID int64, enab
 }
 
 func (s *Store) SetUserFilterOverride(ctx context.Context, userID int64, enabled bool) error {
+	mode := FilterModeGlobal
+	if enabled {
+		mode = FilterModeOverride
+	}
 	result, err := s.DB.ExecContext(ctx,
-		"UPDATE users SET filter_override_enabled = ? WHERE id = ?", enabled, userID)
+		"UPDATE users SET filter_override_enabled = ?, filter_mode = ? WHERE id = ?", enabled, mode, userID)
 	if err != nil {
 		return err
 	}
@@ -672,6 +703,43 @@ func (s *Store) SetUserFilterOverride(ctx context.Context, userID int64, enabled
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+const (
+	FilterModeGlobal   = "global"
+	FilterModeExtend   = "extend"
+	FilterModeOverride = "override"
+)
+
+func NormalizeFilterMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", FilterModeGlobal:
+		return FilterModeGlobal, nil
+	case FilterModeExtend:
+		return FilterModeExtend, nil
+	case FilterModeOverride:
+		return FilterModeOverride, nil
+	default:
+		return "", fmt.Errorf("invalid route filter mode %q", mode)
+	}
+}
+
+func normalizeFilterMode(mode string, override bool) string {
+	normalized, err := NormalizeFilterMode(mode)
+	if err == nil && normalized != FilterModeGlobal {
+		return normalized
+	}
+	if override {
+		return FilterModeOverride
+	}
+	return FilterModeGlobal
+}
+
+func mergeRouteFilters(global, user RouteFilters) RouteFilters {
+	return RouteFilters{
+		Allow: append(append([]string{}, global.Allow...), user.Allow...),
+		Deny:  append(append([]string{}, global.Deny...), user.Deny...),
+	}
 }
 
 type queryer interface {
@@ -787,13 +855,14 @@ func (s *Store) AddFeed(ctx context.Context, name, url string) error {
 
 func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 	var id int64
+	filterMode := normalizeFilterMode(user.FilterMode, user.FilterOverride)
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `INSERT INTO users
 			(name, peer_ip, peer_asn, next_hop, bgp_password, selection_locked, enabled,
-			 filter_override_enabled, filter_editable)
-			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?)`,
+			 filter_override_enabled, filter_mode, filter_editable)
+			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?)`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, user.BGPPassword,
-			user.SelectionLocked, user.Enabled, user.FilterOverride, user.FilterEditable)
+			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode, user.FilterEditable)
 		if err != nil {
 			return err
 		}
@@ -807,6 +876,7 @@ func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 }
 
 func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) error {
+	filterMode := normalizeFilterMode(user.FilterMode, user.FilterOverride)
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		var password any = user.BGPPassword
 		if clearPassword {
@@ -819,9 +889,9 @@ func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) e
 		}
 		result, err := tx.ExecContext(ctx, `UPDATE users SET name=?, peer_ip=?, peer_asn=?,
 			next_hop=NULLIF(?, ''), bgp_password=?, selection_locked=?, enabled=?,
-			filter_override_enabled=?, filter_editable=? WHERE id=?`,
+			filter_override_enabled=?, filter_mode=?, filter_editable=? WHERE id=?`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, password,
-			user.SelectionLocked, user.Enabled, user.FilterOverride, user.FilterEditable, user.ID)
+			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode, user.FilterEditable, user.ID)
 		if err != nil {
 			return err
 		}

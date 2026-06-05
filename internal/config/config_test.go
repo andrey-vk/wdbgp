@@ -18,6 +18,25 @@ func TestLoadRejectsOutOfRangeASN(t *testing.T) {
 	}
 }
 
+func TestLoadAdminCookieSecureDefaultAndOverride(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AdminCookieSecure != "auto" {
+		t.Fatalf("AdminCookieSecure = %q, want auto", cfg.AdminCookieSecure)
+	}
+
+	t.Setenv("WDBGP_ADMIN_COOKIE_SECURE", "false")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AdminCookieSecure != "false" {
+		t.Fatalf("AdminCookieSecure = %q, want false", cfg.AdminCookieSecure)
+	}
+}
+
 func TestValidateServeRejectsInvalidNetworkSettings(t *testing.T) {
 	valid := Config{
 		AdminPassword: "admin", SessionSecret: "secret",
@@ -34,6 +53,7 @@ func TestValidateServeRejectsInvalidNetworkSettings(t *testing.T) {
 		{"router ID", func(cfg *Config) { cfg.RouterID = "2001:db8::1" }},
 		{"local IPv4", func(cfg *Config) { cfg.LocalAddressV4 = "invalid" }},
 		{"local IPv6", func(cfg *Config) { cfg.LocalAddressV6 = "192.0.2.3" }},
+		{"admin cookie secure", func(cfg *Config) { cfg.AdminCookieSecure = "sometimes" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

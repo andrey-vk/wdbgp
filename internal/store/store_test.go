@@ -149,6 +149,64 @@ INSERT INTO catalog_entries VALUES
 	}
 }
 
+func TestMigrationPreservesLegacyFilterOverrideMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-filter-mode.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+);
+INSERT INTO schema_migrations(version, name, applied_at) VALUES
+    (1, 'initial schema', 'now'),
+    (2, 'add OpenCCK IPv6 feeds', 'now'),
+    (3, 'add lookup indexes', 'now'),
+    (4, 'deduplicate feeds by URL', 'now'),
+    (5, 'add route filters', 'now');
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    peer_ip TEXT NOT NULL UNIQUE,
+    peer_asn INTEGER NOT NULL,
+    next_hop TEXT,
+    bgp_password TEXT,
+    selection_locked INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+    filter_editable INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE user_networks (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    cidr TEXT NOT NULL UNIQUE,
+    PRIMARY KEY (user_id, cidr)
+);
+INSERT INTO users(id, name, peer_ip, peer_asn, filter_override_enabled)
+VALUES (7, 'legacy', '172.16.0.2', 65007, 1);
+INSERT INTO user_networks(user_id, cidr) VALUES (7, '192.168.20.0/24');
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	user, err := s.User(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.FilterMode != FilterModeOverride || !user.FilterOverride {
+		t.Fatalf("legacy filter mode not preserved: %#v", user)
+	}
+}
+
 func TestDesiredPrefixesForCategoryAndService(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -236,6 +294,42 @@ func TestDesiredPrefixesUsesUserOverride(t *testing.T) {
 	}
 }
 
+func TestDesiredPrefixesExtendsGlobalFilters(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := addFilteredTestUser(t, s, false)
+	if err := s.SetUserFilterOverride(ctx, userID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserRouteFilterConfig(ctx, userID, FilterModeExtend,
+		RouteFilters{Allow: []string{"1.1.0.0/16"}, Deny: []string{"1.1.1.1/32"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{Deny: []string{"1.1.2.0/24"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	prefixes, err := s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rawPrefix, users := range prefixes {
+		prefix := netip.MustParsePrefix(rawPrefix)
+		if !prefixContains(netip.MustParsePrefix("1.1.0.0/16"), prefix) {
+			t.Fatalf("extended allow leaked prefix %s", rawPrefix)
+		}
+		if prefix.Contains(netip.MustParseAddr("1.1.1.1")) || prefix.Contains(netip.MustParseAddr("1.1.2.1")) {
+			t.Fatalf("extended deny remains covered by %s", rawPrefix)
+		}
+		if len(users) != 1 || users[0] != userID {
+			t.Fatalf("%s has unexpected users: %v", rawPrefix, users)
+		}
+	}
+	if len(prefixes) == 0 {
+		t.Fatal("extended filters produced no prefixes")
+	}
+}
+
 func TestDesiredPrefixesDropsFeedDefaultRoute(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -292,6 +386,10 @@ func addFilteredTestUser(t *testing.T, s *Store, override bool) int64 {
 		t.Fatal(err)
 	}
 	return userID
+}
+
+func prefixContains(parent, child netip.Prefix) bool {
+	return parent.Contains(child.Addr()) && child.Bits() >= parent.Bits()
 }
 
 func openTestStore(t *testing.T) *Store {

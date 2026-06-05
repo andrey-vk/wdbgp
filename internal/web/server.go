@@ -74,6 +74,7 @@ type filterView struct {
 	AllowText string
 	DenyText  string
 	Override  bool
+	Mode      string
 	Editable  bool
 	Admin     bool
 }
@@ -173,7 +174,7 @@ func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
 	}
 	filters, err := routeFiltersFromForm(r)
 	if err == nil {
-		err = s.store.SetUserRouteFilterConfig(r.Context(), user.ID, r.Form.Has("filter_override"), filters)
+		err = s.store.SetUserRouteFilterConfig(r.Context(), user.ID, r.FormValue("filter_mode"), filters)
 	}
 	if err == nil {
 		err = s.bgp.Reconcile(r.Context())
@@ -203,10 +204,26 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		Value:    sessionToken(s.cfg.SessionSecret),
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   s.adminCookieSecure(r),
 		SameSite: http.SameSiteStrictMode,
 	})
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+func (s *Server) adminCookieSecure(r *http.Request) bool {
+	switch s.cfg.AdminCookieSecure {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	if s.cfg.TrustProxyHeader && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	return false
 }
 
 func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +369,7 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, parseErr.Error(), http.StatusBadRequest)
 			return
 		}
-		err = s.store.SetUserRouteFilterConfig(r.Context(), id, r.Form.Has("filter_override"), filters)
+		err = s.store.SetUserRouteFilterConfig(r.Context(), id, r.FormValue("filter_mode"), filters)
 		if err == nil {
 			err = s.bgp.Reconcile(r.Context())
 		}
@@ -426,6 +443,7 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 			AllowText: strings.Join(userFilters.Allow, "\n"),
 			DenyText:  strings.Join(userFilters.Deny, "\n"),
 			Override:  user.FilterOverride,
+			Mode:      user.FilterMode,
 			Editable:  admin || user.FilterEditable,
 			Admin:     admin,
 		},
@@ -535,6 +553,7 @@ func parseUserForm(r *http.Request, id int64) (store.User, bool, error) {
 		NextHop: nextHop, BGPPassword: r.FormValue("bgp_password"),
 		SelectionLocked: r.Form.Has("locked"), Enabled: id == 0 || r.Form.Has("enabled"),
 		FilterOverride: r.FormValue("filter_override") == "on",
+		FilterMode:     r.FormValue("filter_mode"),
 		FilterEditable: r.Form.Has("filter_editable"),
 		Networks:       networks,
 	}, r.Form.Has("clear_bgp_password"), nil
