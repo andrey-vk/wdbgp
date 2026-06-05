@@ -13,7 +13,7 @@ type Config struct {
 	DBPath           string
 	Host             string
 	Port             int
-	BGPListenPort    int
+	BGPListenPort    int32
 	LocalASN         uint32
 	RouterID         string
 	LocalAddressV4   string
@@ -29,18 +29,18 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	asn, err := integer("WDBGP_LOCAL_ASN", 64512)
+	asn, err := unsignedInteger32("WDBGP_LOCAL_ASN", 64512)
 	if err != nil {
 		return Config{}, err
 	}
-	if asn <= 0 || uint64(asn) > uint64(^uint32(0)) {
+	if asn == 0 {
 		return Config{}, fmt.Errorf("WDBGP_LOCAL_ASN must be between 1 and %d", uint64(^uint32(0)))
 	}
 	syncSeconds, err := integer("WDBGP_SYNC_INTERVAL", 3600)
 	if err != nil {
 		return Config{}, err
 	}
-	bgpPort, err := integer("WDBGP_BGP_PORT", 179)
+	bgpPort, err := integer32("WDBGP_BGP_PORT", 179)
 	if err != nil {
 		return Config{}, err
 	}
@@ -49,7 +49,7 @@ func Load() (Config, error) {
 		Host:             env("WDBGP_HOST", "0.0.0.0"),
 		Port:             port,
 		BGPListenPort:    bgpPort,
-		LocalASN:         uint32(asn),
+		LocalASN:         asn,
 		RouterID:         env("WDBGP_ROUTER_ID", "192.0.2.1"),
 		LocalAddressV4:   env("WDBGP_BGP_LOCAL_ADDRESS", env("WDBGP_BIRD_LOCAL_ADDRESS", "192.0.2.2")),
 		LocalAddressV6:   env("WDBGP_BGP_LOCAL_ADDRESS_V6", env("WDBGP_BIRD_LOCAL_ADDRESS_V6", "")),
@@ -110,11 +110,38 @@ func integer(name string, fallback int) (int, error) {
 	if value == "" {
 		return fallback, nil
 	}
-	number, err := strconv.Atoi(value)
+	number, err := strconv.ParseInt(value, 10, 0)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be an integer: %w", name, err)
 	}
-	return number, nil
+	return int(number), nil
+}
+
+func integer32(name string, fallback int32) (int32, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	number, err := strconv.ParseInt(value, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer: %w", name, err)
+	}
+	return int32(number), nil
+}
+
+func unsignedInteger32(name string, fallback uint32) (uint32, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	if strings.HasPrefix(strings.TrimSpace(value), "-") {
+		return 0, fmt.Errorf("%s must be between 1 and %d", name, uint64(^uint32(0)))
+	}
+	number, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer: %w", name, err)
+	}
+	return uint32(number), nil
 }
 
 func boolean(name string) bool {

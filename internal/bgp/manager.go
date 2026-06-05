@@ -72,7 +72,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		Global: &api.Global{
 			Asn:        m.cfg.LocalASN,
 			RouterId:   m.cfg.RouterID,
-			ListenPort: int32(m.cfg.BGPListenPort),
+			ListenPort: m.cfg.BGPListenPort,
 		},
 	}); err != nil {
 		return err

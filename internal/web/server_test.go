@@ -83,6 +83,9 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	if response.Code != http.StatusSeeOther || len(cookies) != 1 {
 		t.Fatalf("login: status=%d cookies=%d", response.Code, len(cookies))
 	}
+	if !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("admin cookie security attributes: %#v", cookies[0])
+	}
 
 	request = httptest.NewRequest(http.MethodGet, "/admin/user/"+strconv.FormatInt(userID, 10), nil)
 	request.AddCookie(cookies[0])
