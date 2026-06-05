@@ -98,9 +98,10 @@ proxy.
 Admin login cookies use `WDBGP_ADMIN_COOKIE_SECURE=auto` by default. Cookies are
 marked `Secure` for direct HTTPS requests and for trusted
 `X-Forwarded-Proto: https` requests when `WDBGP_TRUST_PROXY_HEADERS=true`.
-For plain local HTTP debugging, keep `auto` or set
-`WDBGP_ADMIN_COOKIE_SECURE=false`; force `true` only when the admin UI is always
-served over HTTPS.
+If the admin web UI is accessed without HTTPS, set
+`WDBGP_ADMIN_COOKIE_SECURE=false`; otherwise browsers can reject or ignore the
+admin session cookie and redirect back to the login page after a successful
+password check. Force `true` only when the admin UI is always served over HTTPS.
 
 ### Environment
 
