@@ -1,7 +1,7 @@
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.venv/
 data/
 runtime/
-
+/wdbgp
+*.test
+coverage.out

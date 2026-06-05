@@ -5,63 +5,42 @@
 [![License](https://img.shields.io/github/license/andrey-vk/wdbgp)](LICENSE)
 [![Docker Image Version](https://img.shields.io/docker/v/wh1ted/wdbgp?label=docker)](https://hub.docker.com/r/wh1ted/wdbgp)
 [![Docker Pulls](https://img.shields.io/docker/pulls/wh1ted/wdbgp)](https://hub.docker.com/r/wh1ted/wdbgp)
-![Python](https://img.shields.io/badge/python-3.14-blue)
-![Alpine](https://img.shields.io/badge/alpine-3.23-0d597f)
-![BIRD](https://img.shields.io/badge/BIRD-2.x-green)
+![Go](https://img.shields.io/badge/Go-1.26-00ADD8)
+![Alpine](https://img.shields.io/badge/Alpine-3.23-0d597f)
+![GoBGP](https://img.shields.io/badge/GoBGP-3.x-green)
 ![RouterOS](https://img.shields.io/badge/RouterOS-container-blue)
 ![Dual Stack](https://img.shields.io/badge/IP-IPv4%20%2B%20IPv6-blueviolet)
 
 [Русская версия](README.ru.md)
 
-`wdbgp` downloads categorized IPv4/IPv6 CIDR feeds, builds a dynamic service catalog,
-lets each VPN-connected user select categories or individual services, and
-announces the resulting prefix set to that user's router over BGP.
+`wdbgp` downloads categorized IPv4/IPv6 CIDR feeds, builds a service catalog,
+and announces prefixes selected by each user to that user's router over BGP.
 
-The container includes:
+It is a single statically linked Go binary containing the HTTP server, SQLite
+storage, and GoBGP. Python and BIRD are no longer required. A unique prefix is
+installed in the in-memory GoBGP RIB once; per-peer export policies determine
+which clients receive it.
 
-- a small Python web application with SQLite storage;
-- BIRD 2 as the BGP speaker;
-- one independent BGP export policy per user router.
+## Network model
 
-## Important network model
+The container is an independent BGP speaker with its own `veth` address. It
+does not modify RouterOS through an API.
 
-The container is a BGP speaker with its own `veth` address. It does not modify
-RouterOS BGP configuration through an API.
+- User CIDRs identify web requests; the most specific matching network wins.
+- BGP peer IP and ASN identify the router receiving exported routes.
+- The advertised next hop must be reachable from that router through the
+  intended VPN path.
 
-Each user has two different kinds of addresses:
+Do not expose HTTP or TCP/179 to untrusted networks.
 
-- **User networks** identify web requests. The most specific matching subnet
-  wins.
-- **BGP peer IP** identifies the user's router.
+## Feeds
 
-The BGP next hop must be reachable by the user router through the VPN. Usually
-this is the container's stable BGP source address, routed through the MikroTik.
-The MikroTik must then forward traffic for the announced destinations according
-to the intended policy.
+Main and beta OpenCCK feeds for IPv4 and IPv6 are inserted on first start. The
+first synchronization starts immediately; later runs use
+`WDBGP_SYNC_INTERVAL`. A failed download does not replace the last successful
+snapshot.
 
-Do not expose TCP/179 or the web UI to untrusted networks. RouterOS firewall
-rules should allow them only from the required VPN subnets.
-
-## Feed format
-
-Four OpenCCK feeds are installed automatically:
-
-```text
-https://iplist.opencck.org/?format=json&data=cidr4
-https://iplist.opencck.org/?format=json&data=cidr6
-https://beta.iplist.opencck.org/?format=json&data=cidr4
-https://beta.iplist.opencck.org/?format=json&data=cidr6
-```
-
-OpenCCK's `data=cidr4` response does not include categories. For each OpenCCK
-feed, the service also requests the compact `data=group` response and combines
-the two service-keyed objects. It does not download OpenCCK's much larger full
-JSON response.
-
-The first download starts immediately when the web service starts, then repeats
-every `WDBGP_SYNC_INTERVAL` seconds.
-
-The canonical JSON format is:
+Canonical custom feed format:
 
 ```json
 {
@@ -70,39 +49,16 @@ The canonical JSON format is:
       "category": "ai",
       "service": "openai",
       "cidrs": ["104.18.0.0/16", "172.64.0.0/13"]
-    },
-    {
-      "category": "video",
-      "service": "netflix",
-      "cidrs": ["198.38.96.0/19"]
     }
   ]
 }
 ```
 
-A single entry object or a top-level array of entry objects is also accepted.
-Duplicate prefixes are deduplicated. A prefix may belong to multiple services.
-IPv4 and IPv6 prefixes are supported. Whether IPv6 routes are usable depends on
-the BGP peer and next-hop design on the user router.
+A single entry object and a top-level entry array are also accepted. Prefixes
+are normalized and deduplicated. Selecting a category also includes services
+added to it in future feed updates.
 
-Selecting a category includes every current and future service in that category.
-Selecting individual services adds only those services. The exported route set
-is the union of all selections.
-
-## Run locally
-
-Required environment variables:
-
-```text
-WDBGP_ADMIN_PASSWORD=change-me
-WDBGP_SESSION_SECRET=a-long-random-secret
-WDBGP_LOCAL_ASN=64512
-WDBGP_ROUTER_ID=172.31.255.2
-WDBGP_BIRD_LOCAL_ADDRESS=172.31.255.2
-WDBGP_BIRD_LOCAL_ADDRESS_V6=fd00:31:255::2
-```
-
-Use the published Docker Hub image:
+## Run
 
 ```sh
 docker run --rm \
@@ -113,64 +69,73 @@ docker run --rm \
   -e WDBGP_SESSION_SECRET=a-long-random-secret \
   -e WDBGP_LOCAL_ASN=64512 \
   -e WDBGP_ROUTER_ID=172.31.255.2 \
-  -e WDBGP_BIRD_LOCAL_ADDRESS=172.31.255.2 \
-  -e WDBGP_BIRD_LOCAL_ADDRESS_V6=fd00:31:255::2 \
+  -e WDBGP_BGP_LOCAL_ADDRESS=172.31.255.2 \
+  -e WDBGP_BGP_LOCAL_ADDRESS_V6=fd00:31:255::2 \
   wh1ted/wdbgp:latest
 ```
 
-Or build locally:
+Open `/admin` to add users and edit their selections. `/` identifies a user by
+source IP. Enable `WDBGP_TRUST_PROXY_HEADERS=true` only behind a trusted reverse
+proxy.
+
+### Environment
+
+| Variable | Default |
+| --- | --- |
+| `WDBGP_DB` | `/data/wdbgp.sqlite3` |
+| `WDBGP_HOST` / `WDBGP_PORT` | `0.0.0.0` / `8080` |
+| `WDBGP_BGP_PORT` | `179` |
+| `WDBGP_LOCAL_ASN` | `64512` |
+| `WDBGP_ROUTER_ID` | `192.0.2.1` |
+| `WDBGP_BGP_LOCAL_ADDRESS` | `192.0.2.2` |
+| `WDBGP_BGP_LOCAL_ADDRESS_V6` | empty |
+| `WDBGP_SYNC_INTERVAL` | `3600` seconds |
+
+`WDBGP_ADMIN_PASSWORD` and `WDBGP_SESSION_SECRET` are required by `serve`.
+The old `WDBGP_BIRD_LOCAL_ADDRESS` and `WDBGP_BIRD_LOCAL_ADDRESS_V6` names are
+temporarily accepted as compatibility aliases.
+
+## Database migrations
+
+Transactional SQLite migrations run automatically before every command. An
+existing database from the Python version is upgraded in place without changing
+its user, feed, catalog, or selection data. Applied versions are stored in
+`schema_migrations`.
+
+The application refuses to open an unknown newer schema. Stop the container and
+back up the persistent `/data` volume before major upgrades.
 
 ```sh
+docker run --rm -v wdbgp-data:/data wh1ted/wdbgp:latest migrate
+docker run --rm -v wdbgp-data:/data wh1ted/wdbgp:latest stats
+docker run --rm -v wdbgp-data:/data wh1ted/wdbgp:latest sync
+```
+
+## Development
+
+```sh
+go test ./...
+go vet ./...
+go build ./cmd/wdbgp
 docker build -t wdbgp:latest .
-docker run --rm \
-  -p 8080:8080 \
-  -p 179:179 \
-  -v wdbgp-data:/data \
-  -e WDBGP_ADMIN_PASSWORD=change-me \
-  -e WDBGP_SESSION_SECRET=a-long-random-secret \
-  -e WDBGP_LOCAL_ASN=64512 \
-  -e WDBGP_ROUTER_ID=172.31.255.2 \
-  -e WDBGP_BIRD_LOCAL_ADDRESS=172.31.255.2 \
-  -e WDBGP_BIRD_LOCAL_ADDRESS_V6=fd00:31:255::2 \
-  wdbgp:latest
 ```
 
-Open `/admin`, add users, and monitor the preconfigured OpenCCK feeds. The
-public `/` page identifies the user by source address.
+## MikroTik outline
 
-The image includes a Docker healthcheck that requests `/healthz` on the
-configured `WDBGP_PORT`.
-
-Useful commands:
-
-```sh
-python -m unittest discover -s tests
-python -m wdbgp render-bird              # redacts BGP passwords
-python -m wdbgp render-bird --show-secrets
-python -m wdbgp sync
-python -m wdbgp stats
-```
-
-## MikroTik container outline
-
-The exact addresses and interface names must match the router. This example
-uses `172.31.255.2` for the container and `172.31.255.1` for RouterOS:
+This example uses `172.31.255.2` for the container and `172.31.255.1` for
+RouterOS:
 
 ```routeros
 /interface/veth/add name=veth-wdbgp address=172.31.255.2/30 gateway=172.31.255.1
 /interface/bridge/add name=br-containers
 /interface/bridge/port/add bridge=br-containers interface=veth-wdbgp
 /ip/address/add address=172.31.255.1/30 interface=br-containers
-# Optional IPv6 container subnet:
-# /interface/veth/set veth-wdbgp address=172.31.255.2/30,fd00:31:255::2/64 gateway6=fd00:31:255::1
-# /ipv6/address/add address=fd00:31:255::1/64 interface=br-containers
 
 /container/envs/add list=wdbgp key=WDBGP_ADMIN_PASSWORD value="change-me"
 /container/envs/add list=wdbgp key=WDBGP_SESSION_SECRET value="replace-with-a-long-random-secret"
 /container/envs/add list=wdbgp key=WDBGP_LOCAL_ASN value="64512"
 /container/envs/add list=wdbgp key=WDBGP_ROUTER_ID value="172.31.255.2"
-/container/envs/add list=wdbgp key=WDBGP_BIRD_LOCAL_ADDRESS value="172.31.255.2"
-/container/envs/add list=wdbgp key=WDBGP_BIRD_LOCAL_ADDRESS_V6 value="fd00:31:255::2"
+/container/envs/add list=wdbgp key=WDBGP_BGP_LOCAL_ADDRESS value="172.31.255.2"
 
 /container/mounts/add name=wdbgp-data src=disk1/wdbgp-data dst=/data
 /container/add remote-image=wh1ted/wdbgp:latest interface=veth-wdbgp \
@@ -178,21 +143,13 @@ uses `172.31.255.2` for the container and `172.31.255.1` for RouterOS:
   start-on-boot=yes logging=yes
 ```
 
-Add RouterOS firewall and routing rules for:
+Allow HTTP port 8080 from user networks, TCP/179 between the container and BGP
+peers, and forwarding for the received destination prefixes. Add a container
+IPv6 address and `WDBGP_BGP_LOCAL_ADDRESS_V6` when using IPv6.
 
-- HTTP access to `172.31.255.2:8080` from user VPN networks;
-- TCP/179 between `172.31.255.2` and configured BGP peers;
-- reachability of `172.31.255.2` from each peer when it is used as BGP next hop;
-- IPv6 reachability if IPv6 BGP peers or IPv6 next hops are used;
-- the desired forwarding path for traffic matching announced destination CIDRs.
+## Limitations
 
-RouterOS containers are disabled by default and should use external storage.
-See the official [MikroTik Container documentation](https://help.mikrotik.com/docs/display/ROS/Container).
-
-## Current limitations
-
-- The only built-in non-canonical feed adapter is OpenCCK.
-- No delete/edit form for feeds.
-- Admin sessions are invalidated only when `WDBGP_SESSION_SECRET` changes.
-- Large catalogs are rendered into BIRD prefix sets; capacity testing is needed
-  for the target MikroTik model and expected route count.
+- OpenCCK is the only built-in adapter for a non-canonical feed format.
+- Feeds cannot yet be edited or deleted from the UI.
+- Editing BGP peer settings restarts the embedded BGP server; changing a route
+  selection is applied without a restart.
