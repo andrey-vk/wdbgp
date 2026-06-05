@@ -30,6 +30,11 @@ type Manager struct {
 	installed map[string]installedPath
 }
 
+const (
+	globalPolicyTable = "global"
+	exportPolicyName  = "wdbgp_export"
+)
+
 func NewManager(cfg config.Config, s *store.Store) *Manager {
 	return &Manager{cfg: cfg, store: s, installed: map[string]installedPath{}}
 }
@@ -95,6 +100,10 @@ func (m *Manager) startLocked(ctx context.Context) error {
 			return fmt.Errorf("add peer %s: %w", user.PeerIP, err)
 		}
 	}
+	if err := m.configureGlobalPolicyLocked(ctx, users); err != nil {
+		m.server = nil
+		return err
+	}
 	if err := m.reconcileLocked(ctx); err != nil {
 		m.server = nil
 		return err
@@ -104,49 +113,26 @@ func (m *Manager) startLocked(ctx context.Context) error {
 }
 
 func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
-	policyName := fmt.Sprintf("export_user_%d", user.ID)
-	setName := fmt.Sprintf("user_%d_community", user.ID)
+	communitySetName := userCommunitySetName(user.ID)
 	community := largeCommunity(m.cfg.LocalASN, user.ID)
 	if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
 		DefinedSet: &api.DefinedSet{
 			DefinedType: api.DefinedType_LARGE_COMMUNITY,
-			Name:        setName,
+			Name:        communitySetName,
 			List:        []string{community},
 		},
+		Replace: true,
 	}); err != nil {
 		return err
 	}
-
-	statements := []*api.Statement{}
-	for _, family := range []api.Family_Afi{api.Family_AFI_IP, api.Family_AFI_IP6} {
-		nextHop := &api.NexthopAction{Self: true}
-		if user.NextHop != "" {
-			address, err := netip.ParseAddr(user.NextHop)
-			if err != nil {
-				return err
-			}
-			if (address.Is4() && family == api.Family_AFI_IP) ||
-				(address.Is6() && family == api.Family_AFI_IP6) {
-				nextHop = &api.NexthopAction{Address: address.String()}
-			}
-		}
-		statements = append(statements, &api.Statement{
-			Name: fmt.Sprintf("%s_%s", policyName, strings.ToLower(family.String())),
-			Conditions: &api.Conditions{
-				LargeCommunitySet: &api.MatchSet{Name: setName, Type: api.MatchSet_ANY},
-				AfiSafiIn: []*api.Family{{
-					Afi:  family,
-					Safi: api.Family_SAFI_UNICAST,
-				}},
-			},
-			Actions: &api.Actions{
-				RouteAction: api.RouteAction_ACCEPT,
-				Nexthop:     nextHop,
-			},
-		})
+	neighborSet, err := neighborDefinedSet(userNeighborSetName(user.ID), user.PeerIP)
+	if err != nil {
+		return err
 	}
-	policy := &api.Policy{Name: policyName, Statements: statements}
-	if err := m.server.AddPolicy(ctx, &api.AddPolicyRequest{Policy: policy}); err != nil {
+	if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
+		DefinedSet: neighborSet,
+		Replace:    true,
+	}); err != nil {
 		return err
 	}
 
@@ -177,16 +163,52 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 			{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
 			{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
 		},
-		ApplyPolicy: &api.ApplyPolicy{
-			ImportPolicy: &api.PolicyAssignment{
-				DefaultAction: api.RouteAction_REJECT,
-			},
-			ExportPolicy: &api.PolicyAssignment{
-				Policies:      []*api.Policy{{Name: policyName}},
-				DefaultAction: api.RouteAction_REJECT,
-			},
-		},
 	}})
+}
+
+func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store.User) error {
+	statements := make([]*api.Statement, 0, len(users)*2)
+	for _, user := range users {
+		for _, family := range []api.Family_Afi{api.Family_AFI_IP, api.Family_AFI_IP6} {
+			nextHop, err := nextHopAction(user, family)
+			if err != nil {
+				return err
+			}
+			statements = append(statements, &api.Statement{
+				Name: fmt.Sprintf("export_user_%d_%s", user.ID, strings.ToLower(family.String())),
+				Conditions: &api.Conditions{
+					NeighborSet: &api.MatchSet{
+						Name: userNeighborSetName(user.ID),
+						Type: api.MatchSet_ANY,
+					},
+					LargeCommunitySet: &api.MatchSet{
+						Name: userCommunitySetName(user.ID),
+						Type: api.MatchSet_ANY,
+					},
+				},
+				Actions: &api.Actions{
+					RouteAction: api.RouteAction_ACCEPT,
+					Nexthop:     nextHop,
+				},
+			})
+		}
+	}
+	if err := m.server.AddPolicy(ctx, &api.AddPolicyRequest{
+		Policy: &api.Policy{Name: exportPolicyName, Statements: statements},
+	}); err != nil {
+		return err
+	}
+	if err := m.server.SetPolicyAssignment(ctx, &api.SetPolicyAssignmentRequest{
+		Assignment: &api.PolicyAssignment{
+			Name:          globalPolicyTable,
+			Direction:     api.PolicyDirection_EXPORT,
+			Policies:      []*api.Policy{{Name: exportPolicyName}},
+			DefaultAction: api.RouteAction_REJECT,
+		},
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) Reconcile(ctx context.Context) error {
@@ -318,6 +340,46 @@ func (m *Manager) PeerStates(ctx context.Context) (map[string]string, error) {
 
 func largeCommunity(asn uint32, userID int64) string {
 	return fmt.Sprintf("%d:%d:0", asn, userID)
+}
+
+func nextHopAction(user store.User, family api.Family_Afi) (*api.NexthopAction, error) {
+	nextHop := &api.NexthopAction{Self: true}
+	if user.NextHop == "" {
+		return nextHop, nil
+	}
+	address, err := netip.ParseAddr(user.NextHop)
+	if err != nil {
+		return nil, err
+	}
+	if (address.Is4() && family == api.Family_AFI_IP) ||
+		(address.Is6() && family == api.Family_AFI_IP6) {
+		nextHop = &api.NexthopAction{Address: address.String()}
+	}
+	return nextHop, nil
+}
+
+func userNeighborSetName(userID int64) string {
+	return fmt.Sprintf("user_%d_neighbor", userID)
+}
+
+func userCommunitySetName(userID int64) string {
+	return fmt.Sprintf("user_%d_community", userID)
+}
+
+func neighborDefinedSet(name, rawAddress string) (*api.DefinedSet, error) {
+	address, err := netip.ParseAddr(rawAddress)
+	if err != nil {
+		return nil, err
+	}
+	mask := 32
+	if address.Is6() {
+		mask = 128
+	}
+	return &api.DefinedSet{
+		DefinedType: api.DefinedType_NEIGHBOR,
+		Name:        name,
+		List:        []string{fmt.Sprintf("%s/%d", address, mask)},
+	}, nil
 }
 
 func signature(userIDs []int64) string {

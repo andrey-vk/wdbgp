@@ -3,10 +3,14 @@ package bgp
 import (
 	"context"
 	"database/sql"
+	"net"
 	"path/filepath"
+	"sort"
 	"testing"
+	"time"
 
 	api "github.com/osrg/gobgp/v3/api"
+	"github.com/osrg/gobgp/v3/pkg/server"
 
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/store"
@@ -100,4 +104,282 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	if _, ok := manager.installed["2606:4700::/32"]; ok {
 		t.Fatalf("IPv6 path installed without a local IPv6 address: %#v", manager.installed)
 	}
+}
+
+func TestReconcileBuildsGlobalExportPolicy(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	firstID, err := s.AddUser(ctx, store.User{
+		Name: "first", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := s.AddUser(ctx, store.User{
+		Name: "second", PeerIP: "192.0.2.3", PeerASN: 65002, Enabled: true,
+		Networks: []string{"198.51.101.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
+		(feed_id, category, service, cidr) VALUES
+		(1, 'video', 'youtube', '8.8.8.0/24'),
+		(1, 'video', 'youtube', '8.8.4.0/24'),
+		(1, 'chat', 'telegram', '149.154.160.0/20')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		if err := store.SetUserSelection(ctx, tx, firstID, []string{"video"}, nil); err != nil {
+			return err
+		}
+		return store.SetUserSelection(ctx, tx, secondID, nil,
+			[]store.ServiceKey{{Category: "chat", Service: "telegram"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	sets := map[string][]string{}
+	for _, definedType := range []api.DefinedType{api.DefinedType_LARGE_COMMUNITY, api.DefinedType_NEIGHBOR} {
+		if err := manager.server.ListDefinedSet(ctx, &api.ListDefinedSetRequest{
+			DefinedType: definedType,
+		}, func(set *api.DefinedSet) {
+			sets[set.Name] = append(sets[set.Name], set.List...)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name := range sets {
+		sort.Strings(sets[name])
+	}
+	assertPrefixes(t, sets[userCommunitySetName(firstID)], []string{"^64512:1:0$"})
+	assertPrefixes(t, sets[userCommunitySetName(secondID)], []string{"^64512:2:0$"})
+	assertPrefixes(t, sets[userNeighborSetName(firstID)], []string{"192.0.2.2/32"})
+	assertPrefixes(t, sets[userNeighborSetName(secondID)], []string{"192.0.2.3/32"})
+
+	policies := map[string]*api.Policy{}
+	if err := manager.server.ListPolicy(ctx, &api.ListPolicyRequest{}, func(policy *api.Policy) {
+		policies[policy.Name] = policy
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertPolicyUsesNeighborCommunitySet(t, policies[exportPolicyName],
+		userNeighborSetName(firstID), userCommunitySetName(firstID))
+	assertPolicyUsesNeighborCommunitySet(t, policies[exportPolicyName],
+		userNeighborSetName(secondID), userCommunitySetName(secondID))
+}
+
+func TestPeersReceiveOnlyTheirOwnPrefixes(t *testing.T) {
+	if !canBindLoopback(t, "127.0.0.2") || !canBindLoopback(t, "127.0.0.3") {
+		t.Skip("multiple loopback addresses are not available")
+	}
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	firstID, err := s.AddUser(ctx, store.User{
+		Name: "first", PeerIP: "127.0.0.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := s.AddUser(ctx, store.User{
+		Name: "second", PeerIP: "127.0.0.3", PeerASN: 65002, Enabled: true,
+		Networks: []string{"198.51.101.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
+		(feed_id, category, service, cidr) VALUES
+		(1, 'video', 'youtube', '8.8.8.0/24'),
+		(1, 'chat', 'telegram', '149.154.160.0/20')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		if err := store.SetUserSelection(ctx, tx, firstID, []string{"video"}, nil); err != nil {
+			return err
+		}
+		return store.SetUserSelection(ctx, tx, secondID, []string{"chat"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	port := freeTCPPort(t)
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: int32(port),
+		LocalAddressV4: "127.0.0.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	firstClient := startTestPeer(t, "127.0.0.2", 65001, "192.0.2.11", port)
+	defer firstClient.StopBgp(ctx, &api.StopBgpRequest{})
+	secondClient := startTestPeer(t, "127.0.0.3", 65002, "192.0.2.12", port)
+	defer secondClient.StopBgp(ctx, &api.StopBgpRequest{})
+
+	waitForPrefixes(t, firstClient, []string{"8.8.8.0/24"})
+	waitForPrefixes(t, secondClient, []string{"149.154.160.0/20"})
+
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, firstID, nil, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitForPrefixes(t, firstClient, nil)
+	waitForPrefixes(t, secondClient, []string{"149.154.160.0/20"})
+}
+
+func assertPrefixes(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("prefixes = %v, want %v", got, want)
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("prefixes = %v, want %v", got, want)
+		}
+	}
+}
+
+func assertPolicyUsesNeighborCommunitySet(t *testing.T, policy *api.Policy, neighborSetName, communitySetName string) {
+	t.Helper()
+	if policy == nil {
+		t.Fatalf("policy not found for community set %s", communitySetName)
+	}
+	for _, statement := range policy.Statements {
+		if statement.Conditions != nil &&
+			statement.Conditions.NeighborSet != nil &&
+			statement.Conditions.NeighborSet.Name == neighborSetName &&
+			statement.Conditions.LargeCommunitySet != nil &&
+			statement.Conditions.LargeCommunitySet.Name == communitySetName {
+			return
+		}
+	}
+	t.Fatalf("policy %s does not use neighbor set %s and community set %s: %#v",
+		policy.Name, neighborSetName, communitySetName, policy.Statements)
+}
+
+func canBindLoopback(t *testing.T, address string) bool {
+	t.Helper()
+	listener, err := net.Listen("tcp", net.JoinHostPort(address, "0"))
+	if err != nil {
+		return false
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return true
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port
+}
+
+func startTestPeer(t *testing.T, localAddress string, localASN uint32, routerID string, remotePort int) *server.BgpServer {
+	t.Helper()
+	ctx := context.Background()
+	bgpServer := server.NewBgpServer()
+	go bgpServer.Serve()
+	if err := bgpServer.StartBgp(ctx, &api.StartBgpRequest{
+		Global: &api.Global{
+			Asn:        localASN,
+			RouterId:   routerID,
+			ListenPort: -1,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := bgpServer.AddPeer(ctx, &api.AddPeerRequest{Peer: &api.Peer{
+		Conf: &api.PeerConf{
+			NeighborAddress: "127.0.0.1",
+			PeerAsn:         64512,
+		},
+		Transport: &api.Transport{
+			LocalAddress: localAddress,
+			RemotePort:   uint32(remotePort),
+		},
+		EbgpMultihop: &api.EbgpMultihop{
+			Enabled:     true,
+			MultihopTtl: 64,
+		},
+		AfiSafis: []*api.AfiSafi{
+			{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return bgpServer
+}
+
+func waitForPrefixes(t *testing.T, bgpServer *server.BgpServer, want []string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var got []string
+	for time.Now().Before(deadline) {
+		got = receivedPrefixes(t, bgpServer)
+		if equalStrings(got, want) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("received prefixes = %v, want %v", got, want)
+}
+
+func receivedPrefixes(t *testing.T, bgpServer *server.BgpServer) []string {
+	t.Helper()
+	var prefixes []string
+	err := bgpServer.ListPath(context.Background(), &api.ListPathRequest{
+		TableType: api.TableType_GLOBAL,
+		Family:    ipv4Family(),
+	}, func(destination *api.Destination) {
+		if len(destination.Paths) > 0 {
+			prefixes = append(prefixes, destination.Prefix)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(prefixes)
+	return prefixes
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
 }

@@ -198,6 +198,24 @@ WHERE category IN (
 );
 `,
 	},
+	{
+		Version: 8,
+		Name:    "drop orphan route selections",
+		SQL: `
+DELETE FROM selected_categories
+WHERE NOT EXISTS (
+    SELECT 1 FROM catalog_entries ce
+    WHERE ce.category = selected_categories.category
+);
+
+DELETE FROM selected_services
+WHERE NOT EXISTS (
+    SELECT 1 FROM catalog_entries ce
+    WHERE ce.category = selected_services.category
+      AND ce.service = selected_services.service
+);
+`,
+	},
 }
 
 type Store struct {

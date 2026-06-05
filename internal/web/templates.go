@@ -37,12 +37,30 @@ const selectionBody = `{{$selection := .}}
 {{if not .Editable}}<p class=muted>Выбор заблокирован администратором.</p>{{end}}
 <form class=selection-form method=post action="{{if .Admin}}/admin/user/{{.User.ID}}{{else}}/selection{{end}}">
 {{if .Admin}}<input type=hidden name=action value=selection>{{end}}
-<div class=save-bar><div><strong>{{.User.Name}}</strong><br><span class=muted>Изменения применяются сразу после сохранения</span></div>
+<div class=save-bar><div><strong>{{.User.Name}}</strong><br><span class=muted>Выбрано: <span id=selected-count>{{.SelectedCount}}</span>. Изменения применяются сразу после сохранения</span></div>
 <button {{if not .Editable}}disabled{{end}}>Сохранить маршруты</button></div>
 {{if .Categories}}<div class=catalog-grid>{{range .Categories}}
 <fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>целиком</span></label></legend>
-<div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> {{.Name}}</label>{{end}}</div>
+<div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}</label>{{end}}</div>
 </fieldset>{{end}}</div>{{else}}<p class=empty>Каталог пока пуст.</p>{{end}}</form></section>
+<script>
+document.querySelectorAll('input[name="category"]').forEach(function(categoryInput) {
+  var fieldset = categoryInput.closest('fieldset');
+  var services = fieldset ? fieldset.querySelectorAll('input[name="service"]') : [];
+  var update = function() {
+    services.forEach(function(serviceInput) {
+      serviceInput.disabled = categoryInput.checked || categoryInput.disabled;
+    });
+    var count = document.getElementById('selected-count');
+    if (count) {
+      count.textContent = document.querySelectorAll('input[name="category"]:checked,input[name="service"]:checked:not(:disabled)').length;
+    }
+  };
+  categoryInput.addEventListener('change', update);
+  services.forEach(function(serviceInput) { serviceInput.addEventListener('change', update); });
+  update();
+});
+</script>
 {{with .Filters}}<section class=card><h2>Фильтрация маршрутов</h2>
 {{if .Editable}}<p class=muted>Режим "дополнить" применяет глобальные и пользовательские списки вместе. Режим "заменить" использует только пользовательские списки. Пустой allow разрешает все выбранные маршруты; deny вырезается из широких префиксов.</p>
 <form method=post action="{{if .Admin}}/admin/user/{{$selection.User.ID}}{{else}}/filters{{end}}">

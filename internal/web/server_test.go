@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -154,6 +155,70 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Глобальная фильтрация маршрутов") {
 		t.Fatalf("admin filter page: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestCategorySelectionDisablesContainedServices(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	userID, err := db.AddUser(context.Background(), store.User{
+		Name: "client", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(1, 'Messengers', 'Telegram', '149.154.160.0/20'),
+		(1, 'Messengers', 'Signal', '76.223.92.0/24')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Transaction(context.Background(), func(tx *sql.Tx) error {
+		return store.SetUserSelection(context.Background(), tx, userID, []string{"Messengers"},
+			[]store.ServiceKey{{Category: "Messengers", Service: "Telegram"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "192.168.20.15:12345"
+	response := httptest.NewRecorder()
+	New(config.Config{}, db, feeds.NewSyncer(db), &fakeBGP{}).Handler().ServeHTTP(response, request)
+	body := response.Body.String()
+	if response.Code != http.StatusOK {
+		t.Fatalf("user page status=%d body=%s", response.Code, body)
+	}
+	if !strings.Contains(body, "Выбрано: <span id=selected-count>1</span>") {
+		t.Fatalf("selected count not rendered: %s", body)
+	}
+	if !strings.Contains(body, `value="Messengers:Telegram"  disabled`) {
+		t.Fatalf("contained selected service is not disabled: %s", body)
+	}
+	if !strings.Contains(body, `value="Messengers:Signal"  disabled`) {
+		t.Fatalf("contained unselected service is not disabled: %s", body)
+	}
+}
+
+func TestSelectionFromValuesDropsServicesInsideSelectedCategory(t *testing.T) {
+	values := url.Values{
+		"category": {"Messengers"},
+		"service": {
+			serviceValue("Messengers", "Telegram"),
+			serviceValue("AI", "Copilot"),
+		},
+	}
+	categories, services, err := selectionFromValues(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(categories) != 1 || categories[0] != "Messengers" {
+		t.Fatalf("categories = %#v", categories)
+	}
+	if len(services) != 1 || services[0] != (store.ServiceKey{Category: "AI", Service: "Copilot"}) {
+		t.Fatalf("services = %#v", services)
 	}
 }
 

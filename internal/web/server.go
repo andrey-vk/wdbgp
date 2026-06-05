@@ -47,15 +47,17 @@ type serviceView struct {
 	Name     string
 	Value    string
 	Selected bool
+	Disabled bool
 }
 
 type selectionView struct {
-	User       store.User
-	Categories []categoryView
-	Editable   bool
-	Admin      bool
-	Saved      string
-	Filters    filterView
+	User          store.User
+	Categories    []categoryView
+	Editable      bool
+	Admin         bool
+	Saved         string
+	Filters       filterView
+	SelectedCount int
 }
 
 type adminView struct {
@@ -433,12 +435,19 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 		names = append(names, name)
 	}
 	sortStrings(names)
+	selectedCount := len(selectedCategories)
+	for service := range selectedServices {
+		if !selectedCategories[service.Category] {
+			selectedCount++
+		}
+	}
 	userFilters, err := s.store.UserRouteFilters(ctx, user.ID)
 	if err != nil {
 		return selectionView{}, err
 	}
 	view := selectionView{
 		User: user, Editable: editable, Admin: admin,
+		SelectedCount: selectedCount,
 		Filters: filterView{
 			AllowText: strings.Join(userFilters.Allow, "\n"),
 			DenyText:  strings.Join(userFilters.Deny, "\n"),
@@ -449,11 +458,14 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 		},
 	}
 	for _, category := range names {
-		item := categoryView{Name: category, Selected: selectedCategories[category]}
+		categorySelected := selectedCategories[category]
+		item := categoryView{Name: category, Selected: categorySelected}
 		for _, service := range catalog[category] {
+			key := store.ServiceKey{Category: category, Service: service}
 			item.Services = append(item.Services, serviceView{
 				Name: service, Value: serviceValue(category, service),
-				Selected: selectedServices[store.ServiceKey{Category: category, Service: service}],
+				Selected: !categorySelected && selectedServices[key],
+				Disabled: categorySelected,
 			})
 		}
 		view.Categories = append(view.Categories, item)
@@ -470,6 +482,10 @@ func parseSelection(r *http.Request) ([]string, []store.ServiceKey, error) {
 
 func selectionFromValues(values url.Values) ([]string, []store.ServiceKey, error) {
 	categories := uniqueNonEmpty(values["category"])
+	categorySelected := map[string]bool{}
+	for _, category := range categories {
+		categorySelected[category] = true
+	}
 	var services []store.ServiceKey
 	seen := map[store.ServiceKey]bool{}
 	for _, value := range values["service"] {
@@ -486,7 +502,7 @@ func selectionFromValues(values url.Values) ([]string, []store.ServiceKey, error
 			return nil, nil, err
 		}
 		key := store.ServiceKey{Category: category, Service: service}
-		if category != "" && service != "" && !seen[key] {
+		if category != "" && service != "" && !categorySelected[category] && !seen[key] {
 			seen[key] = true
 			services = append(services, key)
 		}
