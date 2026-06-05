@@ -183,6 +183,21 @@ UPDATE users
 SET filter_mode = CASE WHEN filter_override_enabled THEN 'override' ELSE 'global' END;
 `,
 	},
+	{
+		Version: 7,
+		Name:    "drop legacy OpenCCK feed category selections",
+		SQL: `
+DELETE FROM selected_categories
+WHERE category IN (
+    'opencck-main',
+    'opencck-beta',
+    'opencck-main-v4',
+    'opencck-beta-v4',
+    'opencck-main-v6',
+    'opencck-beta-v6'
+);
+`,
+	},
 }
 
 type Store struct {

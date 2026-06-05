@@ -112,6 +112,9 @@ func (s *Syncer) categoryLookup(ctx context.Context, feed store.Feed) (map[strin
 			rows.Close()
 			return nil, err
 		}
+		if isLegacyOpenCCKFeedCategory(category) {
+			continue
+		}
 		lookup[service] = appendUnique(lookup[service], category)
 	}
 	rows.Close()
@@ -135,6 +138,16 @@ func (s *Syncer) categoryLookup(ctx context.Context, feed store.Feed) (map[strin
 		lookup[service] = appendUnique(lookup[service], category)
 	}
 	return lookup, nil
+}
+
+func isLegacyOpenCCKFeedCategory(category string) bool {
+	switch category {
+	case "opencck-main", "opencck-beta", "opencck-main-v4", "opencck-beta-v4",
+		"opencck-main-v6", "opencck-beta-v6":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Syncer) download(ctx context.Context, rawURL string) ([]byte, error) {

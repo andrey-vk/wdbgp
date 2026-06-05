@@ -33,3 +33,14 @@ func TestMetadataURL(t *testing.T) {
 		t.Fatalf("MetadataURL = %q, want %q", got, want)
 	}
 }
+
+func TestLegacyOpenCCKFeedCategory(t *testing.T) {
+	for _, category := range []string{"opencck-main", "opencck-beta", "opencck-main-v6", "opencck-beta-v6"} {
+		if !isLegacyOpenCCKFeedCategory(category) {
+			t.Fatalf("%q was not recognized as a legacy OpenCCK feed category", category)
+		}
+	}
+	if isLegacyOpenCCKFeedCategory("Messengers") {
+		t.Fatal("normal category was treated as legacy OpenCCK feed category")
+	}
+}
