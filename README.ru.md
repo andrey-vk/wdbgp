@@ -96,6 +96,12 @@ docker run --rm \
 `/` определяет пользователя по исходному IP. Если приложение находится за
 доверенным reverse proxy, включите `WDBGP_TRUST_PROXY_HEADERS=true`.
 
+Cookie админки по умолчанию используют `WDBGP_ADMIN_COOKIE_SECURE=auto`. Если
+web-интерфейс админки доступен без HTTPS, обязательно установите
+`WDBGP_ADMIN_COOKIE_SECURE=false`; иначе браузер может не сохранить session
+cookie и после правильного пароля снова перекинет на страницу входа. Принудите
+`true` только когда админка всегда открывается через HTTPS.
+
 ### Переменные окружения
 
 | Переменная | Значение по умолчанию |
@@ -108,6 +114,7 @@ docker run --rm \
 | `WDBGP_BGP_LOCAL_ADDRESS` | `192.0.2.2` |
 | `WDBGP_BGP_LOCAL_ADDRESS_V6` | пусто |
 | `WDBGP_SYNC_INTERVAL` | `3600` секунд |
+| `WDBGP_ADMIN_COOKIE_SECURE` | `auto` |
 
 `WDBGP_ADMIN_PASSWORD` и `WDBGP_SESSION_SECRET` обязательны для `serve`.
 Старые имена `WDBGP_BIRD_LOCAL_ADDRESS` и
