@@ -58,6 +58,21 @@ A single entry object and a top-level entry array are also accepted. Prefixes
 are normalized and deduplicated. Selecting a category also includes services
 added to it in future feed updates.
 
+## Route filters
+
+The administrator configures global allow and deny CIDR lists. An empty allow
+list permits every selected feed prefix; deny entries are subtracted from the
+result. Subtraction is exact: denying `1.1.1.1/32` from a selected `1.0.0.0/8`
+splits the `/8` into CIDRs that no longer cover `1.1.1.1`.
+
+Each user can inherit the global lists or use a complete per-user override.
+The administrator controls whether that user may edit and enable the override
+from the user interface. Feed-provided default routes are always discarded,
+and route expansion is limited to prevent accidental prefix explosions.
+
+The route-filter migration initializes the global deny list with common private,
+loopback, link-local, documentation, benchmark, multicast, and reserved networks.
+
 ## Run
 
 ```sh

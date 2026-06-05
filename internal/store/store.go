@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrey-vk/wdbgp/internal/prefixfilter"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -128,6 +130,48 @@ WHERE id NOT IN (SELECT MIN(id) FROM feeds GROUP BY url);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_feeds_url ON feeds(url);
 `,
 	},
+	{
+		Version: 5,
+		Name:    "add route filters",
+		SQL: `
+ALTER TABLE users ADD COLUMN filter_override_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN filter_editable INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE global_route_filters (
+    action TEXT NOT NULL CHECK (action IN ('allow', 'deny')),
+    cidr TEXT NOT NULL,
+    PRIMARY KEY (action, cidr)
+);
+CREATE TABLE user_route_filters (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    action TEXT NOT NULL CHECK (action IN ('allow', 'deny')),
+    cidr TEXT NOT NULL,
+    PRIMARY KEY (user_id, action, cidr)
+);
+
+INSERT INTO global_route_filters(action, cidr) VALUES
+    ('deny', '0.0.0.0/8'),
+    ('deny', '10.0.0.0/8'),
+    ('deny', '100.64.0.0/10'),
+    ('deny', '127.0.0.0/8'),
+    ('deny', '169.254.0.0/16'),
+    ('deny', '172.16.0.0/12'),
+    ('deny', '192.0.0.0/24'),
+    ('deny', '192.0.2.0/24'),
+    ('deny', '192.168.0.0/16'),
+    ('deny', '198.18.0.0/15'),
+    ('deny', '198.51.100.0/24'),
+    ('deny', '203.0.113.0/24'),
+    ('deny', '224.0.0.0/4'),
+    ('deny', '240.0.0.0/4'),
+    ('deny', '::/128'),
+    ('deny', '::1/128'),
+    ('deny', '2001:db8::/32'),
+    ('deny', 'fc00::/7'),
+    ('deny', 'fe80::/10'),
+    ('deny', 'ff00::/8');
+`,
+	},
 }
 
 type Store struct {
@@ -152,12 +196,19 @@ type User struct {
 	BGPPassword     string
 	SelectionLocked bool
 	Enabled         bool
+	FilterOverride  bool
+	FilterEditable  bool
 	Networks        []string
 }
 
 type ServiceKey struct {
 	Category string
 	Service  string
+}
+
+type RouteFilters struct {
+	Allow []string
+	Deny  []string
 }
 
 func Open(path string) (*Store, error) {
@@ -291,7 +342,8 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 
 func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 	query := `SELECT id, name, peer_ip, peer_asn, COALESCE(next_hop, ''),
-	                 COALESCE(bgp_password, ''), selection_locked, enabled
+	                 COALESCE(bgp_password, ''), selection_locked, enabled,
+	                 filter_override_enabled, filter_editable
 	          FROM users`
 	if enabledOnly {
 		query += " WHERE enabled = 1"
@@ -308,6 +360,7 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 		if err := rows.Scan(
 			&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
+			&user.FilterOverride, &user.FilterEditable,
 		); err != nil {
 			return nil, err
 		}
@@ -331,9 +384,11 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 func (s *Store) User(ctx context.Context, id int64) (User, error) {
 	var user User
 	err := s.DB.QueryRowContext(ctx, `SELECT id, name, peer_ip, peer_asn, COALESCE(next_hop, ''),
-		COALESCE(bgp_password, ''), selection_locked, enabled FROM users WHERE id = ?`, id).
+		COALESCE(bgp_password, ''), selection_locked, enabled,
+		filter_override_enabled, filter_editable FROM users WHERE id = ?`, id).
 		Scan(&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
-			&user.BGPPassword, &user.SelectionLocked, &user.Enabled)
+			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
+			&user.FilterOverride, &user.FilterEditable)
 	if err != nil {
 		return User{}, err
 	}
@@ -478,7 +533,7 @@ func SetUserSelection(ctx context.Context, tx *sql.Tx, userID int64, categories 
 
 func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT DISTINCT ce.cidr, u.id
+SELECT DISTINCT ce.cidr, u.id, u.filter_override_enabled
 FROM users u
 JOIN catalog_entries ce
   ON ce.category IN (SELECT category FROM selected_categories WHERE user_id = u.id)
@@ -494,16 +549,235 @@ ORDER BY ce.cidr, u.id`)
 		return nil, err
 	}
 	defer rows.Close()
-	result := map[string][]int64{}
+	type selectedUser struct {
+		override bool
+		prefixes []netip.Prefix
+	}
+	selected := map[int64]*selectedUser{}
 	for rows.Next() {
-		var prefix string
+		var rawPrefix string
 		var userID int64
-		if err := rows.Scan(&prefix, &userID); err != nil {
+		var override bool
+		if err := rows.Scan(&rawPrefix, &userID, &override); err != nil {
 			return nil, err
 		}
-		result[prefix] = append(result[prefix], userID)
+		prefix, err := netip.ParsePrefix(rawPrefix)
+		if err != nil {
+			return nil, fmt.Errorf("parse selected prefix %q: %w", rawPrefix, err)
+		}
+		// A feed-provided default route is never a useful service route.
+		if prefix.Bits() == 0 {
+			continue
+		}
+		user := selected[userID]
+		if user == nil {
+			user = &selectedUser{override: override}
+			selected[userID] = user
+		}
+		user.prefixes = append(user.prefixes, prefix.Masked())
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	globalFilters, err := s.GlobalRouteFilters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string][]int64{}
+	for userID, selectedUser := range selected {
+		filters := globalFilters
+		if selectedUser.override {
+			filters, err = s.UserRouteFilters(ctx, userID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		lists, err := parseRouteFilters(filters)
+		if err != nil {
+			return nil, err
+		}
+		filtered, err := prefixfilter.Apply(selectedUser.prefixes, lists, prefixfilter.DefaultMaxPrefixes)
+		if err != nil {
+			return nil, fmt.Errorf("filter routes for user %d: %w", userID, err)
+		}
+		for _, prefix := range filtered {
+			result[prefix.String()] = append(result[prefix.String()], userID)
+			if len(result) > prefixfilter.DefaultMaxPrefixes {
+				return nil, fmt.Errorf("route filters produced more than %d unique routes",
+					prefixfilter.DefaultMaxPrefixes)
+			}
+		}
+	}
+	return result, nil
+}
+
+func (s *Store) GlobalRouteFilters(ctx context.Context) (RouteFilters, error) {
+	return readRouteFilters(ctx, s.DB, "SELECT action, cidr FROM global_route_filters ORDER BY action, cidr")
+}
+
+func (s *Store) UserRouteFilters(ctx context.Context, userID int64) (RouteFilters, error) {
+	return readRouteFilters(ctx, s.DB,
+		"SELECT action, cidr FROM user_route_filters WHERE user_id = ? ORDER BY action, cidr", userID)
+}
+
+func (s *Store) SetGlobalRouteFilters(ctx context.Context, filters RouteFilters) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM global_route_filters"); err != nil {
+			return err
+		}
+		return insertRouteFilters(ctx, tx, 0, filters)
+	})
+}
+
+func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters RouteFilters) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM user_route_filters WHERE user_id = ?", userID); err != nil {
+			return err
+		}
+		return insertRouteFilters(ctx, tx, userID, filters)
+	})
+}
+
+func (s *Store) SetUserRouteFilterConfig(ctx context.Context, userID int64, enabled bool, filters RouteFilters) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM user_route_filters WHERE user_id = ?", userID); err != nil {
+			return err
+		}
+		if err := insertRouteFilters(ctx, tx, userID, filters); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx,
+			"UPDATE users SET filter_override_enabled = ? WHERE id = ?", enabled, userID)
+		if err != nil {
+			return err
+		}
+		if count, _ := result.RowsAffected(); count == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
+	})
+}
+
+func (s *Store) SetUserFilterOverride(ctx context.Context, userID int64, enabled bool) error {
+	result, err := s.DB.ExecContext(ctx,
+		"UPDATE users SET filter_override_enabled = ? WHERE id = ?", enabled, userID)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+type queryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func readRouteFilters(ctx context.Context, db queryer, query string, args ...any) (RouteFilters, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return RouteFilters{}, err
+	}
+	defer rows.Close()
+	var filters RouteFilters
+	for rows.Next() {
+		var action, cidr string
+		if err := rows.Scan(&action, &cidr); err != nil {
+			return RouteFilters{}, err
+		}
+		if action == "allow" {
+			filters.Allow = append(filters.Allow, cidr)
+		} else {
+			filters.Deny = append(filters.Deny, cidr)
+		}
+	}
+	return filters, rows.Err()
+}
+
+func insertRouteFilters(ctx context.Context, tx *sql.Tx, userID int64, filters RouteFilters) error {
+	normalized, err := NormalizeRouteFilters(filters)
+	if err != nil {
+		return err
+	}
+	for _, item := range []struct {
+		action string
+		cidrs  []string
+	}{
+		{"allow", normalized.Allow},
+		{"deny", normalized.Deny},
+	} {
+		for _, cidr := range item.cidrs {
+			query := "INSERT INTO global_route_filters(action, cidr) VALUES (?, ?)"
+			args := []any{item.action, cidr}
+			if userID != 0 {
+				query = "INSERT INTO user_route_filters(user_id, action, cidr) VALUES (?, ?, ?)"
+				args = []any{userID, item.action, cidr}
+			}
+			if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func NormalizeRouteFilters(filters RouteFilters) (RouteFilters, error) {
+	normalize := func(values []string) ([]string, error) {
+		unique := map[string]struct{}{}
+		for _, value := range values {
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			cidr, err := NormalizePrefix(value)
+			if err != nil {
+				return nil, err
+			}
+			unique[cidr] = struct{}{}
+		}
+		result := make([]string, 0, len(unique))
+		for cidr := range unique {
+			result = append(result, cidr)
+		}
+		sort.Strings(result)
+		return result, nil
+	}
+	allow, err := normalize(filters.Allow)
+	if err != nil {
+		return RouteFilters{}, fmt.Errorf("invalid allow prefix: %w", err)
+	}
+	deny, err := normalize(filters.Deny)
+	if err != nil {
+		return RouteFilters{}, fmt.Errorf("invalid deny prefix: %w", err)
+	}
+	return RouteFilters{Allow: allow, Deny: deny}, nil
+}
+
+func parseRouteFilters(filters RouteFilters) (prefixfilter.Lists, error) {
+	parse := func(values []string) ([]netip.Prefix, error) {
+		result := make([]netip.Prefix, 0, len(values))
+		for _, value := range values {
+			prefix, err := netip.ParsePrefix(value)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, prefix.Masked())
+		}
+		return result, nil
+	}
+	allow, err := parse(filters.Allow)
+	if err != nil {
+		return prefixfilter.Lists{}, err
+	}
+	deny, err := parse(filters.Deny)
+	if err != nil {
+		return prefixfilter.Lists{}, err
+	}
+	return prefixfilter.Lists{Allow: allow, Deny: deny}, nil
 }
 
 func (s *Store) AddFeed(ctx context.Context, name, url string) error {
@@ -515,10 +789,11 @@ func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 	var id int64
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `INSERT INTO users
-			(name, peer_ip, peer_asn, next_hop, bgp_password, selection_locked, enabled)
-			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?)`,
+			(name, peer_ip, peer_asn, next_hop, bgp_password, selection_locked, enabled,
+			 filter_override_enabled, filter_editable)
+			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?)`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, user.BGPPassword,
-			user.SelectionLocked, user.Enabled)
+			user.SelectionLocked, user.Enabled, user.FilterOverride, user.FilterEditable)
 		if err != nil {
 			return err
 		}
@@ -543,9 +818,10 @@ func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) e
 			}
 		}
 		result, err := tx.ExecContext(ctx, `UPDATE users SET name=?, peer_ip=?, peer_asn=?,
-			next_hop=NULLIF(?, ''), bgp_password=?, selection_locked=?, enabled=? WHERE id=?`,
+			next_hop=NULLIF(?, ''), bgp_password=?, selection_locked=?, enabled=?,
+			filter_override_enabled=?, filter_editable=? WHERE id=?`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, password,
-			user.SelectionLocked, user.Enabled, user.ID)
+			user.SelectionLocked, user.Enabled, user.FilterOverride, user.FilterEditable, user.ID)
 		if err != nil {
 			return err
 		}

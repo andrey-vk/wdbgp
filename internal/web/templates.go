@@ -6,7 +6,8 @@ const pageStart = `<!doctype html>
 *{box-sizing:border-box} body{font:16px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;max-width:1100px;margin:0 auto;padding:1.5rem 1rem 3rem;color:#18212b;background:#f6f8fb}
 header{display:flex;gap:1rem;justify-content:space-between;align-items:center;margin:0 0 1rem} a{color:#2457a6} h1,h2,h3{margin:.4rem 0 1rem} code{font-size:.9em}
 form{margin:1rem 0} label{display:block;margin:.55rem 0;font-weight:600}
-input:not([type]),input[type=text],input[type=password],input[type=number],input[type=url]{width:100%;max-width:42rem;padding:.6rem .7rem;border:1px solid #c8d2df;border-radius:.55rem;background:white}
+input:not([type]),input[type=text],input[type=password],input[type=number],input[type=url],textarea{width:100%;max-width:42rem;padding:.6rem .7rem;border:1px solid #c8d2df;border-radius:.55rem;background:white}
+textarea{min-height:10rem;font:14px/1.4 ui-monospace,monospace;resize:vertical}
 button,.button{display:inline-block;padding:.65rem 1rem;border:0;border-radius:.6rem;background:#2457a6;color:white;font-weight:700;text-decoration:none;cursor:pointer}
 button.danger{background:#b42318} table{border-collapse:separate;border-spacing:0;width:100%;background:white;border:1px solid #dfe5ee;border-radius:.8rem;overflow:hidden}
 td,th{border-bottom:1px solid #e8edf4;padding:.65rem;text-align:left;vertical-align:top} tr:last-child td{border-bottom:0}
@@ -41,7 +42,17 @@ const selectionBody = `{{$selection := .}}
 {{if .Categories}}<div class=catalog-grid>{{range .Categories}}
 <fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>целиком</span></label></legend>
 <div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> {{.Name}}</label>{{end}}</div>
-</fieldset>{{end}}</div>{{else}}<p class=empty>Каталог пока пуст.</p>{{end}}</form></section>`
+</fieldset>{{end}}</div>{{else}}<p class=empty>Каталог пока пуст.</p>{{end}}</form></section>
+{{with .Filters}}<section class=card><h2>Фильтрация маршрутов</h2>
+{{if .Editable}}<p class=muted>Override полностью заменяет глобальные списки. Пустой allow разрешает все выбранные маршруты; deny вырезается из широких префиксов.</p>
+<form method=post action="{{if .Admin}}/admin/user/{{$selection.User.ID}}{{else}}/filters{{end}}">
+{{if .Admin}}<input type=hidden name=action value=filters>{{end}}
+<label><input type=checkbox name=filter_override {{if .Override}}checked{{end}}> использовать пользовательские списки вместо глобальных</label>
+<div class=grid><label>Allow CIDR, по одному на строку <textarea name=filter_allow placeholder="Пусто = разрешить всё">{{.AllowText}}</textarea></label>
+<label>Deny CIDR, по одному на строку <textarea name=filter_deny placeholder="1.1.1.1/32">{{.DenyText}}</textarea></label></div>
+<button>Сохранить фильтр</button></form>
+{{else}}<p class=muted>{{if .Override}}Используется пользовательский override, управляемый администратором.{{else}}Используются глобальные списки администратора.{{end}}</p>{{end}}
+</section>{{end}}`
 
 const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
@@ -51,12 +62,19 @@ const adminTemplate = `{{with .Data}}
 {{range .Feeds}}<tr><td>{{.Name}}</td><td><code>{{.URL}}</code></td><td>{{.LastSuccess}}</td><td class=error>{{.LastError}}</td></tr>{{end}}</table>
 <form method=post action=/admin/feed><h3>Добавить фид</h3><label>Имя <input name=name required></label><label>URL <input type=url name=url required></label><button>Добавить</button></form>
 <form method=post action=/admin/sync><button>Скачать фиды сейчас</button></form></section>
+<section class=card><h2>Глобальная фильтрация маршрутов</h2>
+<p class=muted>Пустой allow разрешает все выбранные маршруты. Deny-подсети физически вырезаются из более широких анонсов. Default routes из фидов всегда отбрасываются.</p>
+<form method=post action=/admin/filters><div class=grid>
+<label>Allow CIDR, по одному на строку <textarea name=filter_allow placeholder="Пусто = разрешить всё">{{.GlobalFilters.AllowText}}</textarea></label>
+<label>Deny CIDR, по одному на строку <textarea name=filter_deny>{{.GlobalFilters.DenyText}}</textarea></label></div>
+<button>Сохранить глобальный фильтр</button></form></section>
 <section class=card><h2>Пользователи</h2><table><tr><th>Имя</th><th>CIDR</th><th>BGP peer</th><th>ASN</th><th>Состояние</th></tr>
 {{range .Users}}<tr><td><a href="/admin/user/{{.ID}}">{{.Name}}</a></td><td><code>{{join .Networks ", "}}</code></td><td><code>{{.PeerIP}}</code></td><td>{{.PeerASN}}</td><td><span class=status>{{state $.Data.PeerStates .PeerIP}}</span></td></tr>{{end}}</table></section>
 <section class=card><form method=post action=/admin/user><h3>Добавить пользователя</h3><div class=grid>
 <label>Имя <input name=name required></label><label>Пользовательские CIDR, через запятую <input name=networks required></label>
 <label>IP BGP peer <input name=peer_ip required></label><label>ASN peer <input type=number min=1 name=peer_asn required></label>
 <label>Next hop для анонсов <input name=next_hop></label><label>BGP MD5 пароль <input type=password name=bgp_password></label></div>
+<label><input type=checkbox name=filter_editable> разрешить пользователю настраивать override фильтра</label>
 <button>Добавить</button></form></section>{{end}}`
 
 const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{with .Data}}
@@ -69,6 +87,8 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <label><input type=checkbox name=clear_bgp_password> очистить BGP MD5 пароль</label>
 <label><input type=checkbox name=enabled {{if .User.Enabled}}checked{{end}}> пользователь включён</label>
 <label><input type=checkbox name=locked {{if .User.SelectionLocked}}checked{{end}}> запретить пользователю менять выбор</label>
+<label><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> разрешить пользователю настраивать override фильтра</label>
+<input type=hidden name=filter_override value="{{if .User.FilterOverride}}on{{end}}">
 <button>Сохранить параметры</button></form>
 <form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('Удалить пользователя? Это также удалит его выбор сервисов.');"><button class=danger>Удалить пользователя</button></form></section>
 {{template "selection" .Selection}}{{end}}`
