@@ -1,24 +1,29 @@
-FROM python:3.14-alpine3.23
+FROM golang:1.26.3-alpine3.23 AS build
 
-RUN apk add --no-cache bird
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/wdbgp ./cmd/wdbgp
 
-WORKDIR /app
-COPY wdbgp /app/wdbgp
-COPY entrypoint.sh /app/entrypoint.sh
+FROM alpine:3.23
 
-RUN chmod +x /app/entrypoint.sh \
-    && mkdir -p /data /run/bird
+RUN apk add --no-cache ca-certificates \
+    && mkdir -p /data
+
+COPY --from=build /out/wdbgp /usr/local/bin/wdbgp
 
 ENV WDBGP_DB=/data/wdbgp.sqlite3 \
-    WDBGP_BIRD_CONFIG=/etc/bird.conf \
-    WDBGP_BIRD_SOCKET=/run/bird/bird.ctl \
     WDBGP_HOST=0.0.0.0 \
-    WDBGP_PORT=8080
+    WDBGP_PORT=8080 \
+    WDBGP_BGP_PORT=179
 
 VOLUME ["/data"]
 EXPOSE 8080 179
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.getenv(\"WDBGP_PORT\", \"8080\")}/healthz', timeout=3).read()" || exit 1
+    CMD ["wdbgp", "healthcheck"]
 
-ENTRYPOINT ["/app/entrypoint.sh"]
+ENTRYPOINT ["wdbgp"]
+CMD ["serve"]
