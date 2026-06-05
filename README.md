@@ -2,8 +2,8 @@
 
 [![Tests](https://github.com/andrey-vk/wdbgp/actions/workflows/tests.yml/badge.svg)](https://github.com/andrey-vk/wdbgp/actions/workflows/tests.yml)
 [![Publish Docker Image](https://github.com/andrey-vk/wdbgp/actions/workflows/deploy.yml/badge.svg)](https://github.com/andrey-vk/wdbgp/actions/workflows/deploy.yml)
-[![License](https://img.shields.io/github/license/andrey-vk/wdbgp)](LICENSE)
-[![Docker Image Version](https://img.shields.io/docker/v/wh1ted/wdbgp?label=docker)](https://hub.docker.com/r/wh1ted/wdbgp)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Docker Alpha Version](https://img.shields.io/docker/v/wh1ted/wdbgp/alpha?label=docker%20alpha)](https://hub.docker.com/r/wh1ted/wdbgp/tags)
 [![Docker Pulls](https://img.shields.io/docker/pulls/wh1ted/wdbgp)](https://hub.docker.com/r/wh1ted/wdbgp)
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8)
 ![Alpine](https://img.shields.io/badge/Alpine-3.23-0d597f)
@@ -71,7 +71,7 @@ docker run --rm \
   -e WDBGP_ROUTER_ID=172.31.255.2 \
   -e WDBGP_BGP_LOCAL_ADDRESS=172.31.255.2 \
   -e WDBGP_BGP_LOCAL_ADDRESS_V6=fd00:31:255::2 \
-  wh1ted/wdbgp:latest
+  wh1ted/wdbgp:alpha
 ```
 
 Open `/admin` to add users and edit their selections. `/` identifies a user by
