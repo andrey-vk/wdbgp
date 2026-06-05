@@ -7,11 +7,15 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/wdbgp ./cmd/wdbgp
 
-FROM alpine:3.23
+FROM alpine:3.23 AS certs
 
 RUN apk add --no-cache ca-certificates \
     && mkdir -p /data
 
+FROM scratch
+
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=certs /data /data
 COPY --from=build /out/wdbgp /usr/local/bin/wdbgp
 
 ENV WDBGP_DB=/data/wdbgp.sqlite3 \
