@@ -203,6 +203,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		Value:    sessionToken(s.cfg.SessionSecret),
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   true,
 		SameSite: http.SameSiteStrictMode,
 	})
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)

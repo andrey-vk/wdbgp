@@ -11,6 +11,11 @@ func TestLoadRejectsOutOfRangeASN(t *testing.T) {
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "between 1") {
 		t.Fatalf("Load() error = %v, want ASN range error", err)
 	}
+
+	t.Setenv("WDBGP_LOCAL_ASN", "4294967296")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "integer") {
+		t.Fatalf("Load() error = %v, want ASN integer range error", err)
+	}
 }
 
 func TestValidateServeRejectsInvalidNetworkSettings(t *testing.T) {
