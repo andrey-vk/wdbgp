@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -101,6 +102,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("GET /admin/login", server.loginPage)
 	mux.HandleFunc("POST /admin/login", server.login)
 	mux.HandleFunc("GET /admin", server.requireAdmin(server.adminPage))
+	mux.HandleFunc("GET /admin/debug/cidr", server.requireAdmin(server.debugCIDRHandler))
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
 	mux.HandleFunc("POST /admin/feed/{id}", server.requireAdmin(server.updateFeed))
 	mux.HandleFunc("POST /admin/feed/{id}/delete", server.requireAdmin(server.deleteFeed))
@@ -273,6 +275,18 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 			Admin:     true,
 		},
 	})
+}
+
+func (s *Server) debugCIDRHandler(w http.ResponseWriter, r *http.Request) {
+	result, err := s.debugCIDR(r.Context(), r.URL.Query().Get("cidr"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		log.Printf("encode CIDR debug response: %v", err)
+	}
 }
 
 func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
