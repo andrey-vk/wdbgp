@@ -150,6 +150,8 @@ const adminTemplate = `{{with .Data}}
   var empty = document.getElementById('cidr-debug-empty');
   var noItems = {{printf "%q" (tr "debug.no_items")}};
   var coverageLabel = {{printf "%q" (tr "debug.coverage")}};
+  var beforeFiltersLabel = {{printf "%q" (tr "debug.before_filters")}};
+  var afterFiltersLabel = {{printf "%q" (tr "debug.after_filters")}};
   var requestFailed = {{printf "%q" (tr "debug.request_failed")}};
   function percentage(value) {
     return new Intl.NumberFormat(document.documentElement.lang, {maximumFractionDigits: 6}).format(value) + '%';
@@ -165,9 +167,15 @@ const adminTemplate = `{{with .Data}}
     }
     items.forEach(function(item) {
       var row = document.createElement('li');
-      var name = userList ? item.name : item.category + ' / ' + item.service;
-      row.textContent = name + ' — ' + percentage(item.percentage) + ' ' + coverageLabel;
-      if (userList && item.matches && item.matches.length) row.textContent += ': ' + item.matches.join(', ');
+      if (userList) {
+        row.textContent = item.name + ' — ' + beforeFiltersLabel + ': ' +
+          percentage(item.before_percentage) + '; ' + afterFiltersLabel + ': ' +
+          percentage(item.after_percentage);
+        if (item.matches && item.matches.length) row.textContent += ': ' + item.matches.join(', ');
+      } else {
+        row.textContent = item.category + ' / ' + item.service + ' — ' +
+          percentage(item.percentage) + ' ' + coverageLabel;
+      }
       list.appendChild(row);
     });
   }

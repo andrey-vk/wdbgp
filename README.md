@@ -66,7 +66,8 @@ Changing a feed URL clears the old snapshot; deleting a feed removes it.
 
 The admin UI also includes CIDR diagnostics. Enter an IP address or subnet to
 see full and partial service coverage, combined coverage across services, and
-coverage from each enabled user's selected categories and services.
+coverage from each enabled user's selected categories and services before and
+after their effective route filters.
 
 ## Route filters
 
