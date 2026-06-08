@@ -251,6 +251,11 @@ type ServiceKey struct {
 	Service  string
 }
 
+type CatalogPrefix struct {
+	ServiceKey
+	CIDR string
+}
+
 type RouteFilters struct {
 	Allow []string
 	Deny  []string
@@ -518,6 +523,28 @@ ORDER BY ce.category, ce.service`)
 		catalog[category] = append(catalog[category], service)
 	}
 	return catalog, rows.Err()
+}
+
+func (s *Store) EnabledCatalogPrefixes(ctx context.Context) ([]CatalogPrefix, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT DISTINCT ce.category, ce.service, ce.cidr
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+WHERE f.enabled = 1
+ORDER BY ce.category, ce.service, ce.cidr`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var prefixes []CatalogPrefix
+	for rows.Next() {
+		var prefix CatalogPrefix
+		if err := rows.Scan(&prefix.Category, &prefix.Service, &prefix.CIDR); err != nil {
+			return nil, err
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes, rows.Err()
 }
 
 func (s *Store) UserSelection(ctx context.Context, userID int64) (map[string]bool, map[ServiceKey]bool, error) {
