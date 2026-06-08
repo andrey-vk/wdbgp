@@ -106,6 +106,67 @@ WHERE f.name = 'disabled'`).Scan(&disabledEntries); err != nil {
 	}
 }
 
+func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatal(err)
+	}
+	const oldURL = "https://example.test/old"
+	const newURL = "https://example.test/new"
+	if err := db.AddFeed(ctx, "custom", oldURL, true); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed := feedList[0]
+
+	syncer := NewSyncer(db)
+	syncer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != oldURL {
+			t.Fatalf("download URL = %q, want %q", request.URL, oldURL)
+		}
+		feed.URL = newURL
+		if err := db.UpdateFeed(ctx, feed); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{"entries":[
+				{"category":"Test","service":"Stale","cidrs":["8.8.8.0/24"]}
+			]}`)),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	if syncErrors := syncer.SyncAll(ctx); len(syncErrors) != 0 {
+		t.Fatalf("SyncAll errors = %v", syncErrors)
+	}
+	var url, lastSuccess, lastError string
+	if err := db.DB.QueryRow(`
+SELECT url, COALESCE(last_success, ''), COALESCE(last_error, '')
+FROM feeds WHERE id = ?`, feed.ID).Scan(&url, &lastSuccess, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if url != newURL || lastSuccess != "" || lastError != "" {
+		t.Fatalf("feed state = url %q success %q error %q", url, lastSuccess, lastError)
+	}
+	var entries int
+	if err := db.DB.QueryRow("SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feed.ID).
+		Scan(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if entries != 0 {
+		t.Fatalf("stale catalog entries = %d, want 0", entries)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
