@@ -129,6 +129,33 @@ const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
 const adminTemplate = `{{with .Data}}
 <header><h1>{{tr "admin.heading"}}</h1><a href="/">{{tr "user_interface.link"}}</a></header>
+<section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th><th>{{tr "feeds.actions"}}</th></tr>
+{{range .Feeds}}<tr>
+<td><input form="feed-{{.ID}}" name=name value="{{.Name}}" required></td>
+<td><input form="feed-{{.ID}}" type=url name=url value="{{.URL}}" required></td>
+<td><input form="feed-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}} aria-label="{{tr "feeds.enabled"}}"></td>
+<td>{{.LastSuccess}}</td><td class=error>{{.LastError}}</td><td>
+<div class=row-actions>
+<form id="feed-{{.ID}}" method=post action="/admin/feed/{{.ID}}"><button>{{tr "common.save"}}</button></form>
+<form method=post action="/admin/feed/{{.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}');"><button class=danger>{{tr "common.delete"}}</button></form>
+</div></td></tr>{{end}}</table>
+<form method=post action=/admin/feed><h3>{{tr "feeds.add"}}</h3><label>{{tr "feeds.name"}} <input name=name required></label><label>URL <input type=url name=url required></label>
+<label><input type=checkbox name=enabled checked> {{tr "feeds.enabled"}}</label><button>{{tr "common.add"}}</button></form>
+<form method=post action=/admin/sync><button>{{tr "feeds.download_now"}}</button></form></section>
+<section class=card><h2>{{tr "global_filters.heading"}}</h2>
+<p class=muted>{{tr "global_filters.explanation"}}</p>
+<form method=post action=/admin/filters><div class=grid>
+<label>{{tr "filters.allow"}} <textarea name=filter_allow placeholder="{{tr "filters.allow_placeholder"}}">{{.GlobalFilters.AllowText}}</textarea></label>
+<label>{{tr "filters.deny"}} <textarea name=filter_deny>{{.GlobalFilters.DenyText}}</textarea></label></div>
+<button>{{tr "global_filters.save"}}</button></form></section>
+<section class=card><h2>{{tr "users.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "users.cidr"}}</th><th>{{tr "users.peer"}}</th><th>{{tr "users.asn"}}</th><th>{{tr "users.status"}}</th></tr>
+{{range .Users}}<tr><td><a href="/admin/user/{{.ID}}">{{.Name}}</a></td><td><code>{{join .Networks ", "}}</code></td><td><code>{{.PeerIP}}</code></td><td>{{.PeerASN}}</td><td><span class=status>{{state $.Data.PeerStates .PeerIP}}</span></td></tr>{{end}}</table></section>
+<section class=card><form method=post action=/admin/user><h3>{{tr "users.add"}}</h3><div class=grid>
+<label>{{tr "feeds.name"}} <input name=name required></label><label>{{tr "users.networks"}} <input name=networks required></label>
+<label>{{tr "users.peer_ip"}} <input name=peer_ip required></label><label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn required></label>
+<label>{{tr "users.next_hop"}} <input name=next_hop></label><label>{{tr "users.bgp_password"}} <input type=password name=bgp_password></label></div>
+<label><input type=checkbox name=filter_editable> {{tr "users.allow_filter_editing"}}</label>
+<button>{{tr "common.add"}}</button></form></section>
 <section class=card><h2>{{tr "debug.heading"}}</h2><p class=muted>{{tr "debug.description"}}</p>
 <form id=cidr-debug-form><label>{{tr "debug.input"}} <input name=cidr placeholder="8.8.8.8 or 8.8.8.0/24" required></label><button>{{tr "debug.submit"}}</button></form></section>
 <dialog id=cidr-debug-dialog><div class=dialog-body>
@@ -211,34 +238,7 @@ const adminTemplate = `{{with .Data}}
   document.getElementById('cidr-debug-close').addEventListener('click', function() { dialog.close(); });
   dialog.addEventListener('click', function(event) { if (event.target === dialog) dialog.close(); });
 })();
-</script>
-<section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th><th>{{tr "feeds.actions"}}</th></tr>
-{{range .Feeds}}<tr>
-<td><input form="feed-{{.ID}}" name=name value="{{.Name}}" required></td>
-<td><input form="feed-{{.ID}}" type=url name=url value="{{.URL}}" required></td>
-<td><input form="feed-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}} aria-label="{{tr "feeds.enabled"}}"></td>
-<td>{{.LastSuccess}}</td><td class=error>{{.LastError}}</td><td>
-<div class=row-actions>
-<form id="feed-{{.ID}}" method=post action="/admin/feed/{{.ID}}"><button>{{tr "common.save"}}</button></form>
-<form method=post action="/admin/feed/{{.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}');"><button class=danger>{{tr "common.delete"}}</button></form>
-</div></td></tr>{{end}}</table>
-<form method=post action=/admin/feed><h3>{{tr "feeds.add"}}</h3><label>{{tr "feeds.name"}} <input name=name required></label><label>URL <input type=url name=url required></label>
-<label><input type=checkbox name=enabled checked> {{tr "feeds.enabled"}}</label><button>{{tr "common.add"}}</button></form>
-<form method=post action=/admin/sync><button>{{tr "feeds.download_now"}}</button></form></section>
-<section class=card><h2>{{tr "global_filters.heading"}}</h2>
-<p class=muted>{{tr "global_filters.explanation"}}</p>
-<form method=post action=/admin/filters><div class=grid>
-<label>{{tr "filters.allow"}} <textarea name=filter_allow placeholder="{{tr "filters.allow_placeholder"}}">{{.GlobalFilters.AllowText}}</textarea></label>
-<label>{{tr "filters.deny"}} <textarea name=filter_deny>{{.GlobalFilters.DenyText}}</textarea></label></div>
-<button>{{tr "global_filters.save"}}</button></form></section>
-<section class=card><h2>{{tr "users.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "users.cidr"}}</th><th>{{tr "users.peer"}}</th><th>{{tr "users.asn"}}</th><th>{{tr "users.status"}}</th></tr>
-{{range .Users}}<tr><td><a href="/admin/user/{{.ID}}">{{.Name}}</a></td><td><code>{{join .Networks ", "}}</code></td><td><code>{{.PeerIP}}</code></td><td>{{.PeerASN}}</td><td><span class=status>{{state $.Data.PeerStates .PeerIP}}</span></td></tr>{{end}}</table></section>
-<section class=card><form method=post action=/admin/user><h3>{{tr "users.add"}}</h3><div class=grid>
-<label>{{tr "feeds.name"}} <input name=name required></label><label>{{tr "users.networks"}} <input name=networks required></label>
-<label>{{tr "users.peer_ip"}} <input name=peer_ip required></label><label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn required></label>
-<label>{{tr "users.next_hop"}} <input name=next_hop></label><label>{{tr "users.bgp_password"}} <input type=password name=bgp_password></label></div>
-<label><input type=checkbox name=filter_editable> {{tr "users.allow_filter_editing"}}</label>
-<button>{{tr "common.add"}}</button></form></section>{{end}}`
+</script>{{end}}`
 
 const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{with .Data}}
 <header><h1>{{printf (tr "title.user") .User.Name}}</h1><a href=/admin>{{tr "admin.link"}}</a></header>
