@@ -12,11 +12,13 @@ import (
 )
 
 type coverageItem struct {
-	Name       string   `json:"name,omitempty"`
-	Category   string   `json:"category,omitempty"`
-	Service    string   `json:"service,omitempty"`
-	Percentage float64  `json:"percentage"`
-	Matches    []string `json:"matches,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	Category         string   `json:"category,omitempty"`
+	Service          string   `json:"service,omitempty"`
+	Percentage       float64  `json:"percentage,omitempty"`
+	BeforePercentage float64  `json:"before_percentage"`
+	AfterPercentage  float64  `json:"after_percentage"`
+	Matches          []string `json:"matches,omitempty"`
 }
 
 type cidrDebugResult struct {
@@ -43,6 +45,7 @@ func (s *Server) debugCIDR(ctx context.Context, raw string) (cidrDebugResult, er
 		return cidrDebugResult{}, err
 	}
 	serviceRanges := map[store.ServiceKey][]addressRange{}
+	servicePrefixes := map[store.ServiceKey][]netip.Prefix{}
 	for _, entry := range catalog {
 		prefix, err := netip.ParsePrefix(entry.CIDR)
 		if err != nil {
@@ -51,6 +54,11 @@ func (s *Server) debugCIDR(ctx context.Context, raw string) (cidrDebugResult, er
 		if prefix.Addr().BitLen() != target.Addr().BitLen() {
 			continue
 		}
+		// Feed-provided default routes are discarded before route filtering.
+		if prefix.Bits() == 0 {
+			continue
+		}
+		servicePrefixes[entry.ServiceKey] = append(servicePrefixes[entry.ServiceKey], prefix.Masked())
 		if overlap, ok := intersectRanges(prefixRange(target), prefixRange(prefix)); ok {
 			serviceRanges[entry.ServiceKey] = append(serviceRanges[entry.ServiceKey], overlap)
 		}
@@ -94,18 +102,37 @@ func (s *Server) debugCIDR(ctx context.Context, raw string) (cidrDebugResult, er
 		if err != nil {
 			return cidrDebugResult{}, err
 		}
-		var ranges []addressRange
+		var beforeRanges []addressRange
+		var selectedPrefixes []netip.Prefix
 		var matches []string
 		for key, serviceCoverage := range serviceRanges {
 			if categories[key.Category] || services[key] {
-				ranges = append(ranges, serviceCoverage...)
+				beforeRanges = append(beforeRanges, serviceCoverage...)
+				selectedPrefixes = append(selectedPrefixes, servicePrefixes[key]...)
 				matches = append(matches, key.Category+" / "+key.Service)
 			}
 		}
-		if percentage := coveragePercentage(target, ranges); percentage > 0 {
+		beforePercentage := coveragePercentage(target, beforeRanges)
+		if beforePercentage > 0 {
+			filteredPrefixes, err := s.store.ApplyUserRouteFilters(ctx, user, selectedPrefixes)
+			if err != nil {
+				return cidrDebugResult{}, fmt.Errorf("filter routes for user %d: %w", user.ID, err)
+			}
+			var afterRanges []addressRange
+			for _, prefix := range filteredPrefixes {
+				if prefix.Addr().BitLen() != target.Addr().BitLen() {
+					continue
+				}
+				if overlap, ok := intersectRanges(prefixRange(target), prefixRange(prefix)); ok {
+					afterRanges = append(afterRanges, overlap)
+				}
+			}
 			sort.Strings(matches)
 			result.Users = append(result.Users, coverageItem{
-				Name: user.Name, Percentage: percentage, Matches: matches,
+				Name:             user.Name,
+				BeforePercentage: beforePercentage,
+				AfterPercentage:  coveragePercentage(target, afterRanges),
+				Matches:          matches,
 			})
 		}
 	}
@@ -114,8 +141,11 @@ func (s *Server) debugCIDR(ctx context.Context, raw string) (cidrDebugResult, er
 	sortCoverage(result.PartialServices)
 	sortCoverage(result.CombinedServices)
 	sort.Slice(result.Users, func(i, j int) bool {
-		if result.Users[i].Percentage != result.Users[j].Percentage {
-			return result.Users[i].Percentage > result.Users[j].Percentage
+		if result.Users[i].AfterPercentage != result.Users[j].AfterPercentage {
+			return result.Users[i].AfterPercentage > result.Users[j].AfterPercentage
+		}
+		if result.Users[i].BeforePercentage != result.Users[j].BeforePercentage {
+			return result.Users[i].BeforePercentage > result.Users[j].BeforePercentage
 		}
 		return result.Users[i].Name < result.Users[j].Name
 	})

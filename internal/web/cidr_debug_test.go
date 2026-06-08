@@ -36,10 +36,21 @@ func TestCIDRDebugCoverageByServiceAndUser(t *testing.T) {
 
 	addDebugUser(t, db, "full-user", "192.168.20.0/24",
 		[]string{"Full"}, nil)
-	addDebugUser(t, db, "half-user", "192.168.21.0/24", nil,
+	halfUserID := addDebugUser(t, db, "half-user", "192.168.21.0/24", nil,
 		[]store.ServiceKey{{Category: "Parts", Service: "First half"}})
-	addDebugUser(t, db, "parts-user", "192.168.22.0/24",
+	partsUserID := addDebugUser(t, db, "parts-user", "192.168.22.0/24",
 		[]string{"Parts"}, nil)
+	if err := db.SetGlobalRouteFilters(ctx, store.RouteFilters{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetUserRouteFilterConfig(ctx, halfUserID, store.FilterModeOverride,
+		store.RouteFilters{Deny: []string{"10.0.0.0/26"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetUserRouteFilterConfig(ctx, partsUserID, store.FilterModeExtend,
+		store.RouteFilters{Deny: []string{"10.0.0.128/25"}}); err != nil {
+		t.Fatal(err)
+	}
 
 	server := New(config.Config{}, db, feeds.NewSyncer(db), &fakeBGP{})
 	result, err := server.debugCIDR(ctx, "10.0.0.0/24")
@@ -70,7 +81,9 @@ func TestCIDRDebugCoverageByServiceAndUser(t *testing.T) {
 		}
 	}
 	users := coverageByName(result.Users)
-	if users["full-user"] != 100 || users["half-user"] != 50 || users["parts-user"] != 100 {
+	if users["full-user"] != [2]float64{100, 100} ||
+		users["half-user"] != [2]float64{50, 25} ||
+		users["parts-user"] != [2]float64{100, 50} {
 		t.Fatalf("users = %#v", result.Users)
 	}
 	for _, user := range result.Users {
@@ -153,6 +166,17 @@ func TestCIDRDebugEndpointRequiresAdminAndReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestCIDRDebugJSONIncludesZeroPostFilterCoverage(t *testing.T) {
+	item := coverageItem{Name: "blocked", BeforePercentage: 100, AfterPercentage: 0}
+	payload, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"after_percentage":0`) {
+		t.Fatalf("zero post-filter coverage missing from JSON: %s", payload)
+	}
+}
+
 func debugTestStore(t *testing.T) *store.Store {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "debug.sqlite3"))
@@ -185,7 +209,7 @@ func addDebugUser(
 	network string,
 	categories []string,
 	services []store.ServiceKey,
-) {
+) int64 {
 	t.Helper()
 	userID, err := db.AddUser(context.Background(), store.User{
 		Name: name, PeerIP: network[:strings.IndexByte(network, '/')],
@@ -199,6 +223,7 @@ func addDebugUser(
 	}); err != nil {
 		t.Fatal(err)
 	}
+	return userID
 }
 
 func coverageByService(items []coverageItem) map[string]float64 {
@@ -209,10 +234,10 @@ func coverageByService(items []coverageItem) map[string]float64 {
 	return result
 }
 
-func coverageByName(items []coverageItem) map[string]float64 {
-	result := make(map[string]float64, len(items))
+func coverageByName(items []coverageItem) map[string][2]float64 {
+	result := make(map[string][2]float64, len(items))
 	for _, item := range items {
-		result[item.Name] = item.Percentage
+		result[item.Name] = [2]float64{item.BeforePercentage, item.AfterPercentage}
 	}
 	return result
 }
