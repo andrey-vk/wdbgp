@@ -100,6 +100,8 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/login", server.login)
 	mux.HandleFunc("GET /admin", server.requireAdmin(server.adminPage))
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
+	mux.HandleFunc("POST /admin/feed/{id}", server.requireAdmin(server.updateFeed))
+	mux.HandleFunc("POST /admin/feed/{id}/delete", server.requireAdmin(server.deleteFeed))
 	mux.HandleFunc("POST /admin/sync", server.requireAdmin(server.syncFeeds))
 	mux.HandleFunc("POST /admin/filters", server.requireAdmin(server.saveGlobalFilters))
 	mux.HandleFunc("POST /admin/user", server.requireAdmin(server.addUser))
@@ -272,12 +274,59 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
+	feed, err := parseFeed(r, 0)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.store.AddFeed(r.Context(), strings.TrimSpace(r.FormValue("name")),
-		strings.TrimSpace(r.FormValue("url"))); err != nil {
+	if err := s.store.AddFeed(r.Context(), feed.Name, feed.URL, feed.Enabled); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		s.httpError(w, r, "error.bad_feed_id", http.StatusBadRequest)
+		return
+	}
+	feed, err := parseFeed(r, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateFeed(r.Context(), feed); err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+		return
+	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+func (s *Server) deleteFeed(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		s.httpError(w, r, "error.bad_feed_id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.DeleteFeed(r.Context(), id); err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			s.internalError(w, r, err)
+		}
+		return
+	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
@@ -293,6 +342,25 @@ func (s *Server) syncFeeds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+func parseFeed(r *http.Request, id int64) (store.Feed, error) {
+	if err := r.ParseForm(); err != nil {
+		return store.Feed{}, err
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		return store.Feed{}, fmt.Errorf("feed name is required")
+	}
+	rawURL := strings.TrimSpace(r.FormValue("url"))
+	parsedURL, err := url.ParseRequestURI(rawURL)
+	if err != nil || parsedURL.Host == "" ||
+		(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		return store.Feed{}, fmt.Errorf("feed URL must be an absolute HTTP or HTTPS URL")
+	}
+	return store.Feed{
+		ID: id, Name: name, URL: rawURL, Enabled: r.Form.Has("enabled"),
+	}, nil
 }
 
 func (s *Server) saveGlobalFilters(w http.ResponseWriter, r *http.Request) {

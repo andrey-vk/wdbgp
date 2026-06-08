@@ -499,8 +499,12 @@ func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 }
 
 func (s *Store) Catalog(ctx context.Context) (map[string][]string, error) {
-	rows, err := s.DB.QueryContext(ctx,
-		"SELECT DISTINCT category, service FROM catalog_entries ORDER BY category, service")
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT DISTINCT ce.category, ce.service
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+WHERE f.enabled = 1
+ORDER BY ce.category, ce.service`)
 	if err != nil {
 		return nil, err
 	}
@@ -590,7 +594,9 @@ JOIN catalog_entries ce
         AND ss.category = ce.category
         AND ss.service = ce.service
   )
+JOIN feeds f ON f.id = ce.feed_id
 WHERE u.enabled = 1
+  AND f.enabled = 1
 ORDER BY ce.cidr, u.id`)
 	if err != nil {
 		return nil, err
@@ -881,9 +887,67 @@ func parseRouteFilters(filters RouteFilters) (prefixfilter.Lists, error) {
 	return prefixfilter.Lists{Allow: allow, Deny: deny}, nil
 }
 
-func (s *Store) AddFeed(ctx context.Context, name, url string) error {
-	_, err := s.DB.ExecContext(ctx, "INSERT INTO feeds(name, url) VALUES (?, ?)", name, url)
+func (s *Store) AddFeed(ctx context.Context, name, url string, enabled bool) error {
+	_, err := s.DB.ExecContext(ctx,
+		"INSERT INTO feeds(name, url, enabled) VALUES (?, ?, ?)", name, url, enabled)
 	return err
+}
+
+func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		var oldURL string
+		if err := tx.QueryRowContext(ctx, "SELECT url FROM feeds WHERE id = ?", feed.ID).
+			Scan(&oldURL); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE feeds SET name = ?, url = ?, enabled = ? WHERE id = ?",
+			feed.Name, feed.URL, feed.Enabled, feed.ID); err != nil {
+			return err
+		}
+		if oldURL == feed.URL {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", feed.ID)
+		return err
+	})
+}
+
+func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, "DELETE FROM feeds WHERE id = ?", id)
+		if err != nil {
+			return err
+		}
+		deleted, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if deleted == 0 {
+			return sql.ErrNoRows
+		}
+		if _, err := tx.ExecContext(ctx, `
+DELETE FROM selected_categories
+WHERE NOT EXISTS (
+    SELECT 1 FROM catalog_entries ce
+    WHERE ce.category = selected_categories.category
+)`); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
+DELETE FROM selected_services
+WHERE NOT EXISTS (
+    SELECT 1 FROM catalog_entries ce
+    WHERE ce.category = selected_services.category
+      AND ce.service = selected_services.service
+)`)
+		return err
+	})
 }
 
 func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
