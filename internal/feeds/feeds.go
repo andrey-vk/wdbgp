@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,6 +41,8 @@ type Syncer struct {
 	Client *http.Client
 }
 
+var errFeedChanged = errors.New("feed changed during synchronization")
+
 func NewSyncer(s *store.Store) *Syncer {
 	return &Syncer{
 		Store:  s,
@@ -57,7 +60,8 @@ func (s *Syncer) SyncAll(ctx context.Context) []error {
 		if err := s.syncOne(ctx, feed); err != nil {
 			errors = append(errors, fmt.Errorf("%s: %w", feed.Name, err))
 			_, _ = s.Store.DB.ExecContext(ctx,
-				"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), feed.ID)
+				"UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1",
+				err.Error(), feed.ID, feed.URL)
 		}
 	}
 	return errors
@@ -76,7 +80,20 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
 	if err != nil {
 		return err
 	}
-	return s.Store.Transaction(ctx, func(tx *sql.Tx) error {
+	err = s.Store.Transaction(ctx, func(tx *sql.Tx) error {
+		var currentURL string
+		var enabled bool
+		if err := tx.QueryRowContext(ctx,
+			"SELECT url, enabled FROM feeds WHERE id = ?", feed.ID).
+			Scan(&currentURL, &enabled); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return errFeedChanged
+			}
+			return err
+		}
+		if currentURL != feed.URL || !enabled {
+			return errFeedChanged
+		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
 			return err
 		}
@@ -93,10 +110,14 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
 			}
 		}
 		_, err = tx.ExecContext(ctx,
-			"UPDATE feeds SET last_success = ?, last_error = NULL WHERE id = ?",
-			time.Now().UTC().Format(time.RFC3339Nano), feed.ID)
+			"UPDATE feeds SET last_success = ?, last_error = NULL WHERE id = ? AND url = ? AND enabled = 1",
+			time.Now().UTC().Format(time.RFC3339Nano), feed.ID, feed.URL)
 		return err
 	})
+	if errors.Is(err, errFeedChanged) {
+		return nil
+	}
+	return err
 }
 
 func (s *Syncer) categoryLookup(ctx context.Context, feed store.Feed) (map[string][]string, error) {
