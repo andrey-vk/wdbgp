@@ -97,8 +97,8 @@ docker run --rm \
 доверенным reverse proxy, включите `WDBGP_TRUST_PROXY_HEADERS=true`.
 
 Веб-интерфейс доступен на русском и английском языках. Язык выбирается по
-`Accept-Language` браузера, по умолчанию используется русский, а явный выбор
-`EN`/`RU` сохраняется в cookie.
+`Accept-Language` браузера, а явный выбор `EN`/`RU` сохраняется в cookie.
+Fallback-язык задаётся через `WDBGP_DEFAULT_LANGUAGE` и по умолчанию равен `en`.
 
 Cookie админки по умолчанию используют `WDBGP_ADMIN_COOKIE_SECURE=auto`. Если
 web-интерфейс админки доступен без HTTPS, обязательно установите
@@ -119,6 +119,7 @@ cookie и после правильного пароля снова переки
 | `WDBGP_BGP_LOCAL_ADDRESS_V6` | пусто |
 | `WDBGP_SYNC_INTERVAL` | `3600` секунд |
 | `WDBGP_ADMIN_COOKIE_SECURE` | `auto` |
+| `WDBGP_DEFAULT_LANGUAGE` | `en` |
 
 `WDBGP_ADMIN_PASSWORD` и `WDBGP_SESSION_SECRET` обязательны для `serve`.
 Старые имена `WDBGP_BIRD_LOCAL_ADDRESS` и

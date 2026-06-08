@@ -96,8 +96,9 @@ source IP. Enable `WDBGP_TRUST_PROXY_HEADERS=true` only behind a trusted reverse
 proxy.
 
 The web interface is available in English and Russian. It follows the browser's
-`Accept-Language` preference, defaults to Russian, and stores an explicit
-`EN`/`RU` selection in a cookie.
+`Accept-Language` preference and stores an explicit `EN`/`RU` selection in a
+cookie. `WDBGP_DEFAULT_LANGUAGE` controls the fallback language and defaults to
+`en`.
 
 Admin login cookies use `WDBGP_ADMIN_COOKIE_SECURE=auto` by default. Cookies are
 marked `Secure` for direct HTTPS requests and for trusted
@@ -120,6 +121,7 @@ password check. Force `true` only when the admin UI is always served over HTTPS.
 | `WDBGP_BGP_LOCAL_ADDRESS_V6` | empty |
 | `WDBGP_SYNC_INTERVAL` | `3600` seconds |
 | `WDBGP_ADMIN_COOKIE_SECURE` | `auto` |
+| `WDBGP_DEFAULT_LANGUAGE` | `en` |
 
 `WDBGP_ADMIN_PASSWORD` and `WDBGP_SESSION_SECRET` are required by `serve`.
 The old `WDBGP_BIRD_LOCAL_ADDRESS` and `WDBGP_BIRD_LOCAL_ADDRESS_V6` names are

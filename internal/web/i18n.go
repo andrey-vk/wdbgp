@@ -193,7 +193,7 @@ func translate(lang locale, key string) string {
 	return key
 }
 
-func requestLocale(r *http.Request) (locale, bool) {
+func requestLocale(r *http.Request, fallback locale) (locale, bool) {
 	if value := r.URL.Query().Get("lang"); value != "" {
 		if lang, ok := parseLocale(value); ok {
 			return lang, true
@@ -206,13 +206,16 @@ func requestLocale(r *http.Request) (locale, bool) {
 	}
 	header := r.Header.Get("Accept-Language")
 	if header == "" {
-		return localeRussian, false
+		return fallback, false
 	}
 	tags, _, err := language.ParseAcceptLanguage(header)
 	if err != nil || len(tags) == 0 {
-		return localeRussian, false
+		return fallback, false
 	}
-	tag, _, _ := languageMatcher.Match(tags...)
+	tag, _, confidence := languageMatcher.Match(tags...)
+	if confidence == language.No {
+		return fallback, false
+	}
 	if base, _ := tag.Base(); base.String() == "en" {
 		return localeEnglish, false
 	}
