@@ -30,11 +30,12 @@ type BGP interface {
 }
 
 type Server struct {
-	cfg     config.Config
-	store   *store.Store
-	syncer  *feeds.Syncer
-	bgp     BGP
-	handler http.Handler
+	cfg       config.Config
+	store     *store.Store
+	syncer    *feeds.Syncer
+	bgp       BGP
+	templates map[locale]map[string]*template.Template
+	handler   http.Handler
 }
 
 type categoryView struct {
@@ -82,7 +83,10 @@ type filterView struct {
 }
 
 func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Server {
-	server := &Server{cfg: cfg, store: s, syncer: syncer, bgp: bgp}
+	server := &Server{
+		cfg: cfg, store: s, syncer: syncer, bgp: bgp,
+		templates: compileTemplates(),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", server.userPage)
 	mux.HandleFunc("POST /selection", server.saveOwnSelection)
@@ -109,34 +113,34 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 	user, err := s.store.UserByIP(r.Context(), s.clientIP(r))
 	if store.IsNotFound(err) {
-		s.render(w, http.StatusForbidden, "Нет доступа", accessDeniedTemplate, s.clientIP(r))
+		s.render(w, r, http.StatusForbidden, "title.access_denied", "access-denied", s.clientIP(r))
 		return
 	}
 	if err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	view, err := s.selection(r.Context(), user, !user.SelectionLocked, false)
 	if err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	view.Saved = r.URL.Query().Get("saved")
-	s.render(w, http.StatusOK, "Выбор маршрутов", selectionTemplate, view)
+	s.render(w, r, http.StatusOK, "title.selection", "selection", view)
 }
 
 func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 	user, err := s.store.UserByIP(r.Context(), s.clientIP(r))
 	if store.IsNotFound(err) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		s.httpError(w, r, "error.forbidden", http.StatusForbidden)
 		return
 	}
 	if err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	if user.SelectionLocked {
-		http.Error(w, "selection is locked by administrator", http.StatusForbidden)
+		s.httpError(w, r, "error.selection_locked", http.StatusForbidden)
 		return
 	}
 	categories, services, err := parseSelection(r)
@@ -159,19 +163,19 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
 	user, err := s.store.UserByIP(r.Context(), s.clientIP(r))
 	if store.IsNotFound(err) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		s.httpError(w, r, "error.forbidden", http.StatusForbidden)
 		return
 	}
 	if err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	if !user.FilterEditable {
-		http.Error(w, "route filters are managed by administrator", http.StatusForbidden)
+		s.httpError(w, r, "error.filters_managed", http.StatusForbidden)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
 		return
 	}
 	filters, err := routeFiltersFromForm(r)
@@ -188,17 +192,19 @@ func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?saved=1", http.StatusSeeOther)
 }
 
-func (s *Server) loginPage(w http.ResponseWriter, _ *http.Request) {
-	s.render(w, http.StatusOK, "Вход", loginTemplate, "")
+func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
+	s.render(w, r, http.StatusOK, "title.login", "login", "")
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
 		return
 	}
 	if !hmac.Equal([]byte(r.FormValue("password")), []byte(s.cfg.AdminPassword)) {
-		s.render(w, http.StatusUnauthorized, "Вход", loginTemplate, "Неверный пароль")
+		lang, _ := requestLocale(r)
+		s.render(w, r, http.StatusUnauthorized, "title.login", "login",
+			translate(lang, "login.invalid_password"))
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -231,12 +237,12 @@ func (s *Server) adminCookieSecure(r *http.Request) bool {
 func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 	feedList, err := s.store.Feeds(r.Context(), false)
 	if err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	users, err := s.store.Users(r.Context(), false)
 	if err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	states, err := s.bgp.PeerStates(r.Context())
@@ -246,10 +252,10 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 	}
 	globalFilters, err := s.store.GlobalRouteFilters(r.Context())
 	if err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
-	s.render(w, http.StatusOK, "Админка", adminTemplate, adminView{
+	s.render(w, r, http.StatusOK, "title.admin", "admin", adminView{
 		Feeds: feedList, Users: users, PeerStates: states,
 		GlobalFilters: filterView{
 			AllowText: strings.Join(globalFilters.Allow, "\n"),
@@ -262,12 +268,12 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
 		return
 	}
 	if err := s.store.AddFeed(r.Context(), strings.TrimSpace(r.FormValue("name")),
 		strings.TrimSpace(r.FormValue("url"))); err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
@@ -278,7 +284,7 @@ func (s *Server) syncFeeds(w http.ResponseWriter, r *http.Request) {
 		log.Printf("feed sync: %v", err)
 	}
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
@@ -286,7 +292,7 @@ func (s *Server) syncFeeds(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) saveGlobalFilters(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
 		return
 	}
 	filters, err := routeFiltersFromForm(r)
@@ -310,11 +316,11 @@ func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.store.AddUser(r.Context(), user); err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	if err := s.bgp.ReloadPeers(r.Context()); err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
@@ -323,7 +329,7 @@ func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
-		http.Error(w, "bad user id", http.StatusBadRequest)
+		s.httpError(w, r, "error.bad_user_id", http.StatusBadRequest)
 		return
 	}
 	user, err := s.store.User(r.Context(), id)
@@ -332,26 +338,27 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	selection, err := s.selection(r.Context(), user, true, true)
 	if err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
-	s.render(w, http.StatusOK, "Пользователь "+user.Name, userEditTemplate,
+	lang, _ := requestLocale(r)
+	s.renderTitle(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
 		userEditView{User: user, Selection: selection})
 }
 
 func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
-		http.Error(w, "bad user id", http.StatusBadRequest)
+		s.httpError(w, r, "error.bad_user_id", http.StatusBadRequest)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
 		return
 	}
 	if r.FormValue("action") == "settings" {
@@ -361,7 +368,7 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {
-			s.internalError(w, err)
+			s.internalError(w, r, err)
 			return
 		}
 		err = s.bgp.ReloadPeers(r.Context())
@@ -389,7 +396,7 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/user/%d", id), http.StatusSeeOther)
@@ -398,15 +405,15 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
-		http.Error(w, "bad user id", http.StatusBadRequest)
+		s.httpError(w, r, "error.bad_user_id", http.StatusBadRequest)
 		return
 	}
 	if err := s.store.DeleteUser(r.Context(), id); err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	if err := s.bgp.ReloadPeers(r.Context()); err != nil {
-		s.internalError(w, err)
+		s.internalError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
@@ -414,7 +421,7 @@ func (s *Server) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DB.PingContext(r.Context()); err != nil {
-		http.Error(w, "database unavailable", http.StatusServiceUnavailable)
+		s.httpError(w, r, "error.database_unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -599,37 +606,80 @@ func (s *Server) clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-func (s *Server) render(w http.ResponseWriter, status int, title, body string, data any) {
-	tmpl, err := template.New("page").Funcs(template.FuncMap{
-		"join": strings.Join,
-		"state": func(states map[string]string, peer string) string {
-			if value := states[peer]; value != "" {
-				return value
+func compileTemplates() map[locale]map[string]*template.Template {
+	bodies := map[string]string{
+		"access-denied": accessDeniedTemplate,
+		"login":         loginTemplate,
+		"selection":     selectionTemplate,
+		"admin":         adminTemplate,
+		"user-edit":     userEditTemplate,
+	}
+	result := make(map[locale]map[string]*template.Template, len(translations))
+	for lang := range translations {
+		result[lang] = make(map[string]*template.Template, len(bodies))
+		for name, body := range bodies {
+			funcs := template.FuncMap{
+				"join": strings.Join,
+				"state": func(states map[string]string, peer string) string {
+					if value := states[peer]; value != "" {
+						return value
+					}
+					return "UNKNOWN"
+				},
+				"tr": func(key string) string {
+					return translate(lang, key)
+				},
 			}
-			return "UNKNOWN"
-		},
-	}).Parse(pageStart + body + pageEnd)
-	if err != nil {
-		s.internalError(w, err)
-		return
+			result[lang][name] = template.Must(template.New("page").Funcs(funcs).
+				Parse(pageStart + body + pageEnd))
+		}
+	}
+	return result
+}
+
+func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, titleKey, name string, data any) {
+	lang, _ := requestLocale(r)
+	s.renderTitle(w, r, status, translate(lang, titleKey), name, data)
+}
+
+func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int, title, name string, data any) {
+	lang, persist := requestLocale(r)
+	if persist {
+		http.SetCookie(w, &http.Cookie{
+			Name: languageCookieName, Value: string(lang), Path: "/",
+			MaxAge: 365 * 24 * 60 * 60, SameSite: http.SameSiteLaxMode,
+		})
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	if err := tmpl.Execute(w, struct {
-		Title string
-		Data  any
-	}{Title: title, Data: data}); err != nil {
+	if err := s.templates[lang][name].Execute(w, struct {
+		Title      string
+		Lang       string
+		EnglishURL string
+		RussianURL string
+		Data       any
+	}{
+		Title: title, Lang: string(lang),
+		EnglishURL: languageURL(r, localeEnglish),
+		RussianURL: languageURL(r, localeRussian),
+		Data:       data,
+	}); err != nil {
 		log.Printf("render %s: %v", title, err)
 	}
 }
 
-func (s *Server) internalError(w http.ResponseWriter, err error) {
+func (s *Server) httpError(w http.ResponseWriter, r *http.Request, key string, status int) {
+	lang, _ := requestLocale(r)
+	http.Error(w, translate(lang, key), status)
+}
+
+func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, sql.ErrNoRows) {
-		http.NotFound(w, nil)
+		http.NotFound(w, r)
 		return
 	}
 	log.Printf("request failed: %v", err)
-	http.Error(w, "internal server error", http.StatusInternalServerError)
+	s.httpError(w, r, "error.internal", http.StatusInternalServerError)
 }
 
 func pathID(r *http.Request) (int64, error) {
