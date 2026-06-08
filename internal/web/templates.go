@@ -21,6 +21,9 @@ td,th{border-bottom:1px solid #e8edf4;padding:.65rem;text-align:left;vertical-al
 .category-title{display:flex;gap:.55rem;align-items:center;margin:0;font-size:1.05rem}.service-list{padding:.75rem 1rem 1rem}.service-list label{font-weight:500;margin:.4rem 0}
 .empty{background:white;border:1px dashed #b9c5d4;border-radius:1rem;padding:1rem}.status{font:12px ui-monospace,monospace;padding:.2rem .45rem;border-radius:999px;background:#edf2f8}
 .language-switcher{display:flex;justify-content:flex-end;gap:.5rem;margin-bottom:.75rem}.language-switcher a[aria-current=page]{font-weight:700;text-decoration:none;color:#18212b}
+dialog{width:min(52rem,calc(100% - 2rem));max-height:calc(100% - 2rem);border:0;border-radius:1rem;padding:0;box-shadow:0 24px 80px #10294f66}dialog::backdrop{background:#10294f99}
+.dialog-body{padding:1.25rem}.dialog-header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.dialog-header button{background:#667;padding:.45rem .7rem}
+.debug-list{margin:.5rem 0 1rem;padding-left:1.25rem}.debug-list li{margin:.3rem 0}
 </style></head><body><nav class=language-switcher aria-label="{{tr "language.label"}}">
 <a href="{{.EnglishURL}}" title="{{tr "language.english"}}" aria-current="{{if eq .Lang "en"}}page{{else}}false{{end}}">EN</a>
 <a href="{{.RussianURL}}" title="{{tr "language.russian"}}" aria-current="{{if eq .Lang "ru"}}page{{else}}false{{end}}">RU</a>
@@ -126,6 +129,89 @@ const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
 const adminTemplate = `{{with .Data}}
 <header><h1>{{tr "admin.heading"}}</h1><a href="/">{{tr "user_interface.link"}}</a></header>
+<section class=card><h2>{{tr "debug.heading"}}</h2><p class=muted>{{tr "debug.description"}}</p>
+<form id=cidr-debug-form><label>{{tr "debug.input"}} <input name=cidr placeholder="8.8.8.8 or 8.8.8.0/24" required></label><button>{{tr "debug.submit"}}</button></form></section>
+<dialog id=cidr-debug-dialog><div class=dialog-body>
+<div class=dialog-header><h2>{{tr "debug.results"}}</h2><button type=button id=cidr-debug-close aria-label="{{tr "debug.close"}}">×</button></div>
+<p><code id=cidr-debug-query></code></p><p class=error id=cidr-debug-error hidden></p>
+<div id=cidr-debug-content>
+<h3>{{tr "debug.full_services"}}</h3><ul class=debug-list id=cidr-debug-full></ul>
+<h3>{{tr "debug.partial_services"}}</h3><ul class=debug-list id=cidr-debug-partial></ul>
+<h3>{{tr "debug.combined"}}</h3><p id=cidr-debug-combined></p>
+<h3>{{tr "debug.users"}}</h3><ul class=debug-list id=cidr-debug-users></ul>
+<p id=cidr-debug-empty hidden>{{tr "debug.no_matches"}}</p></div>
+</div></dialog>
+<script>
+(function() {
+  var form = document.getElementById('cidr-debug-form');
+  var dialog = document.getElementById('cidr-debug-dialog');
+  var error = document.getElementById('cidr-debug-error');
+  var content = document.getElementById('cidr-debug-content');
+  var empty = document.getElementById('cidr-debug-empty');
+  var noItems = {{printf "%q" (tr "debug.no_items")}};
+  var coverageLabel = {{printf "%q" (tr "debug.coverage")}};
+  var beforeFiltersLabel = {{printf "%q" (tr "debug.before_filters")}};
+  var afterFiltersLabel = {{printf "%q" (tr "debug.after_filters")}};
+  var requestFailed = {{printf "%q" (tr "debug.request_failed")}};
+  function percentage(value) {
+    return new Intl.NumberFormat(document.documentElement.lang, {maximumFractionDigits: 2}).format(value) + '%';
+  }
+  function fillList(id, items, userList) {
+    var list = document.getElementById(id);
+    list.replaceChildren();
+    if (!items.length) {
+      var none = document.createElement('li');
+      none.textContent = noItems;
+      list.appendChild(none);
+      return;
+    }
+    items.forEach(function(item) {
+      var row = document.createElement('li');
+      if (userList) {
+        row.textContent = item.name + ' — ' + beforeFiltersLabel + ': ' +
+          percentage(item.before_percentage) + '; ' + afterFiltersLabel + ': ' +
+          percentage(item.after_percentage);
+        if (item.matches && item.matches.length) row.textContent += ': ' + item.matches.join(', ');
+      } else {
+        row.textContent = item.category + ' / ' + item.service + ' — ' +
+          percentage(item.percentage) + ' ' + coverageLabel;
+      }
+      list.appendChild(row);
+    });
+  }
+  form.addEventListener('submit', async function(event) {
+    event.preventDefault();
+    error.hidden = true;
+    content.hidden = false;
+    var cidr = new FormData(form).get('cidr');
+    try {
+      var response = await fetch('/admin/debug/cidr?cidr=' + encodeURIComponent(cidr));
+      if (!response.ok) throw new Error((await response.text()).trim() || requestFailed);
+      var result = await response.json();
+      document.getElementById('cidr-debug-query').textContent = result.query;
+      fillList('cidr-debug-full', result.full_services || [], false);
+      fillList('cidr-debug-partial', result.partial_services || [], false);
+      fillList('cidr-debug-users', result.users || [], true);
+      var combined = document.getElementById('cidr-debug-combined');
+      var combinedNames = (result.combined_services || []).map(function(item) {
+        return item.category + ' / ' + item.service;
+      });
+      combined.textContent = combinedNames.length
+        ? percentage(result.combined_percentage) + ' ' + coverageLabel + ': ' + combinedNames.join(', ')
+        : noItems;
+      empty.hidden = Boolean((result.full_services || []).length || (result.partial_services || []).length || (result.users || []).length);
+    } catch (failure) {
+      document.getElementById('cidr-debug-query').textContent = cidr;
+      content.hidden = true;
+      error.textContent = failure.message || requestFailed;
+      error.hidden = false;
+    }
+    dialog.showModal();
+  });
+  document.getElementById('cidr-debug-close').addEventListener('click', function() { dialog.close(); });
+  dialog.addEventListener('click', function(event) { if (event.target === dialog) dialog.close(); });
+})();
+</script>
 <section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th><th>{{tr "feeds.actions"}}</th></tr>
 {{range .Feeds}}<tr>
 <td><input form="feed-{{.ID}}" name=name value="{{.Name}}" required></td>

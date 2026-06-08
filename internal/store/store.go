@@ -251,6 +251,11 @@ type ServiceKey struct {
 	Service  string
 }
 
+type CatalogPrefix struct {
+	ServiceKey
+	CIDR string
+}
+
 type RouteFilters struct {
 	Allow []string
 	Deny  []string
@@ -520,6 +525,28 @@ ORDER BY ce.category, ce.service`)
 	return catalog, rows.Err()
 }
 
+func (s *Store) EnabledCatalogPrefixes(ctx context.Context) ([]CatalogPrefix, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT DISTINCT ce.category, ce.service, ce.cidr
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+WHERE f.enabled = 1
+ORDER BY ce.category, ce.service, ce.cidr`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var prefixes []CatalogPrefix
+	for rows.Next() {
+		var prefix CatalogPrefix
+		if err := rows.Scan(&prefix.Category, &prefix.Service, &prefix.CIDR); err != nil {
+			return nil, err
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes, rows.Err()
+}
+
 func (s *Store) UserSelection(ctx context.Context, userID int64) (map[string]bool, map[ServiceKey]bool, error) {
 	categories := map[string]bool{}
 	services := map[ServiceKey]bool{}
@@ -743,25 +770,8 @@ ORDER BY ce.cidr, u.id`)
 	}
 	result := map[string][]int64{}
 	for userID, selectedUser := range selected {
-		filters := globalFilters
-		switch selectedUser.filterMode {
-		case FilterModeOverride:
-			filters, err = s.UserRouteFilters(ctx, userID)
-			if err != nil {
-				return nil, err
-			}
-		case FilterModeExtend:
-			userFilters, err := s.UserRouteFilters(ctx, userID)
-			if err != nil {
-				return nil, err
-			}
-			filters = mergeRouteFilters(globalFilters, userFilters)
-		}
-		lists, err := parseRouteFilters(filters)
-		if err != nil {
-			return nil, err
-		}
-		filtered, err := prefixfilter.Apply(selectedUser.prefixes, lists, prefixfilter.DefaultMaxPrefixes)
+		filtered, err := s.applyUserRouteFilters(
+			ctx, userID, selectedUser.filterMode, selectedUser.prefixes, globalFilters)
 		if err != nil {
 			return nil, fmt.Errorf("filter routes for user %d: %w", userID, err)
 		}
@@ -774,6 +784,48 @@ ORDER BY ce.cidr, u.id`)
 		}
 	}
 	return result, nil
+}
+
+func (s *Store) ApplyUserRouteFilters(
+	ctx context.Context,
+	user User,
+	prefixes []netip.Prefix,
+) ([]netip.Prefix, error) {
+	globalFilters, err := s.GlobalRouteFilters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.applyUserRouteFilters(ctx, user.ID,
+		normalizeFilterMode(user.FilterMode, user.FilterOverride), prefixes, globalFilters)
+}
+
+func (s *Store) applyUserRouteFilters(
+	ctx context.Context,
+	userID int64,
+	filterMode string,
+	prefixes []netip.Prefix,
+	globalFilters RouteFilters,
+) ([]netip.Prefix, error) {
+	filters := globalFilters
+	var err error
+	switch filterMode {
+	case FilterModeOverride:
+		filters, err = s.UserRouteFilters(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+	case FilterModeExtend:
+		userFilters, err := s.UserRouteFilters(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		filters = mergeRouteFilters(globalFilters, userFilters)
+	}
+	lists, err := parseRouteFilters(filters)
+	if err != nil {
+		return nil, err
+	}
+	return prefixfilter.Apply(prefixes, lists, prefixfilter.DefaultMaxPrefixes)
 }
 
 func (s *Store) GlobalRouteFilters(ctx context.Context) (RouteFilters, error) {
