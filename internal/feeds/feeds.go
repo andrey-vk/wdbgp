@@ -101,8 +101,11 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
 
 func (s *Syncer) categoryLookup(ctx context.Context, feed store.Feed) (map[string][]string, error) {
 	lookup := map[string][]string{}
-	rows, err := s.Store.DB.QueryContext(ctx,
-		"SELECT DISTINCT category, service FROM catalog_entries WHERE feed_id != ?", feed.ID)
+	rows, err := s.Store.DB.QueryContext(ctx, `
+SELECT DISTINCT ce.category, ce.service
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+WHERE ce.feed_id != ? AND f.enabled = 1`, feed.ID)
 	if err != nil {
 		return nil, err
 	}
