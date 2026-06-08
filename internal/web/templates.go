@@ -154,7 +154,7 @@ const adminTemplate = `{{with .Data}}
   var afterFiltersLabel = {{printf "%q" (tr "debug.after_filters")}};
   var requestFailed = {{printf "%q" (tr "debug.request_failed")}};
   function percentage(value) {
-    return new Intl.NumberFormat(document.documentElement.lang, {maximumFractionDigits: 6}).format(value) + '%';
+    return new Intl.NumberFormat(document.documentElement.lang, {maximumFractionDigits: 2}).format(value) + '%';
   }
   function fillList(id, items, userList) {
     var list = document.getElementById(id);

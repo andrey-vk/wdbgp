@@ -170,6 +170,9 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Глобальная фильтрация маршрутов") {
 		t.Fatalf("admin filter page: status=%d body=%s", response.Code, response.Body.String())
 	}
+	if !strings.Contains(response.Body.String(), "maximumFractionDigits: 2") {
+		t.Fatalf("admin debug percentages should be limited to two fraction digits: body=%s", response.Body.String())
+	}
 
 	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
 	request.Header.Set("Accept-Language", "en")
