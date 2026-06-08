@@ -53,13 +53,15 @@ type serviceView struct {
 }
 
 type selectionView struct {
-	User          store.User
-	Categories    []categoryView
-	Editable      bool
-	Admin         bool
-	Saved         string
-	Filters       filterView
-	SelectedCount int
+	User                    store.User
+	Categories              []categoryView
+	Editable                bool
+	Admin                   bool
+	Saved                   string
+	Filters                 filterView
+	SelectedCategoryCount   int
+	SelectedCoveredServices int
+	SelectedServiceCount    int
 }
 
 type adminView struct {
@@ -515,19 +517,12 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 		names = append(names, name)
 	}
 	sortStrings(names)
-	selectedCount := len(selectedCategories)
-	for service := range selectedServices {
-		if !selectedCategories[service.Category] {
-			selectedCount++
-		}
-	}
 	userFilters, err := s.store.UserRouteFilters(ctx, user.ID)
 	if err != nil {
 		return selectionView{}, err
 	}
 	view := selectionView{
 		User: user, Editable: editable, Admin: admin,
-		SelectedCount: selectedCount,
 		Filters: filterView{
 			AllowText: strings.Join(userFilters.Allow, "\n"),
 			DenyText:  strings.Join(userFilters.Deny, "\n"),
@@ -540,8 +535,15 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 	for _, category := range names {
 		categorySelected := selectedCategories[category]
 		item := categoryView{Name: category, Selected: categorySelected}
+		if categorySelected {
+			view.SelectedCategoryCount++
+			view.SelectedCoveredServices += len(catalog[category])
+		}
 		for _, service := range catalog[category] {
 			key := store.ServiceKey{Category: category, Service: service}
+			if !categorySelected && selectedServices[key] {
+				view.SelectedServiceCount++
+			}
 			item.Services = append(item.Services, serviceView{
 				Name: service, Value: serviceValue(category, service),
 				Selected: !categorySelected && selectedServices[key],
@@ -701,6 +703,9 @@ func compileTemplates() map[locale]map[string]*template.Template {
 				},
 				"tr": func(key string) string {
 					return translate(lang, key)
+				},
+				"plural": func(count int, oneKey, fewKey, manyKey string) string {
+					return pluralTranslation(lang, count, oneKey, fewKey, manyKey)
 				},
 			}
 			result[lang][name] = template.Must(template.New("page").Funcs(funcs).
