@@ -513,6 +513,87 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	}
 }
 
+func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	if _, err := s.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddFeed(ctx, "enabled", "https://example.test/enabled", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddFeed(ctx, "disabled", "https://example.test/disabled", false); err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := s.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var enabledID, disabledID int64
+	for _, feed := range feeds {
+		switch feed.Name {
+		case "enabled":
+			enabledID = feed.ID
+		case "disabled":
+			disabledID = feed.ID
+		}
+	}
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'Visible', 'Keep', '8.8.8.0/24'),
+		(?, 'Visible', 'Remove', '8.8.4.0/24'),
+		(?, 'Shared', 'Service', '9.9.9.0/24'),
+		(?, 'HiddenCategory', 'Any', '1.1.1.0/24'),
+		(?, 'HiddenServices', 'Hidden', '1.0.0.0/24'),
+		(?, 'Shared', 'Service', '2.2.2.0/24')`,
+		enabledID, enabledID, enabledID, disabledID, disabledID, disabledID); err != nil {
+		t.Fatal(err)
+	}
+	userID, err := s.AddUser(ctx, User{
+		Name: "client", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserSelection(ctx, tx, userID,
+			[]string{"HiddenCategory", "Shared"},
+			[]ServiceKey{
+				{Category: "HiddenServices", Service: "Hidden"},
+				{Category: "Visible", Service: "Remove"},
+			})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetVisibleUserSelection(ctx, tx, userID, nil,
+			[]ServiceKey{{Category: "Visible", Service: "Keep"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	categories, services, err := s.UserSelection(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(categories) != 1 || !categories["HiddenCategory"] {
+		t.Fatalf("categories = %#v, want disabled-only category", categories)
+	}
+	wantServices := map[ServiceKey]bool{
+		{Category: "HiddenServices", Service: "Hidden"}: true,
+		{Category: "Visible", Service: "Keep"}:          true,
+	}
+	if len(services) != len(wantServices) {
+		t.Fatalf("services = %#v, want %#v", services, wantServices)
+	}
+	for service := range wantServices {
+		if !services[service] {
+			t.Fatalf("service %v was not preserved/saved: %#v", service, services)
+		}
+	}
+}
+
 func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

@@ -330,6 +330,118 @@ func TestAdminCanManageFeeds(t *testing.T) {
 	}
 }
 
+func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", false); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var enabledID, disabledID int64
+	for _, feed := range feedList {
+		switch feed.Name {
+		case "enabled":
+			enabledID = feed.ID
+		case "disabled":
+			disabledID = feed.ID
+		}
+	}
+	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'Visible', 'Keep', '8.8.8.0/24'),
+		(?, 'Visible', 'Remove', '8.8.4.0/24'),
+		(?, 'HiddenCategory', 'Any', '1.1.1.0/24'),
+		(?, 'HiddenServices', 'Hidden', '1.0.0.0/24')`,
+		enabledID, enabledID, disabledID, disabledID); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Config{
+		AdminPassword: "admin", SessionSecret: "secret", DefaultLanguage: "en",
+	}
+	bgp := &fakeBGP{}
+	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	tests := []struct {
+		name       string
+		network    string
+		admin      bool
+		wantStatus int
+	}{
+		{name: "user save", network: "192.168.20.0/24", wantStatus: http.StatusSeeOther},
+		{name: "admin save", network: "192.168.30.0/24", admin: true, wantStatus: http.StatusSeeOther},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			userID, err := db.AddUser(context.Background(), store.User{
+				Name:    "client-" + strconv.Itoa(index),
+				PeerIP:  "172.16.0." + strconv.Itoa(index+2),
+				PeerASN: 65001 + uint32(index), Enabled: true,
+				Networks: []string{test.network},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Transaction(context.Background(), func(tx *sql.Tx) error {
+				return store.SetUserSelection(context.Background(), tx, userID,
+					[]string{"HiddenCategory"},
+					[]store.ServiceKey{
+						{Category: "HiddenServices", Service: "Hidden"},
+						{Category: "Visible", Service: "Remove"},
+					})
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			form := url.Values{"service": {serviceValue("Visible", "Keep")}}
+			target := "/selection"
+			if test.admin {
+				target = "/admin/user/" + strconv.FormatInt(userID, 10)
+				form.Set("action", "selection")
+			}
+			request := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
+			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			request.RemoteAddr = strings.TrimSuffix(test.network, "0/24") + "15:12345"
+			if test.admin {
+				request.AddCookie(adminCookie)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+
+			categories, services, err := db.UserSelection(context.Background(), userID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(categories) != 1 || !categories["HiddenCategory"] {
+				t.Fatalf("categories = %#v", categories)
+			}
+			if len(services) != 2 ||
+				!services[store.ServiceKey{Category: "HiddenServices", Service: "Hidden"}] ||
+				!services[store.ServiceKey{Category: "Visible", Service: "Keep"}] {
+				t.Fatalf("services = %#v", services)
+			}
+		})
+	}
+	if bgp.reconciles != len(tests) {
+		t.Fatalf("BGP reconciles = %d, want %d", bgp.reconciles, len(tests))
+	}
+}
+
 func TestLocalizedPages(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
 	if err != nil {

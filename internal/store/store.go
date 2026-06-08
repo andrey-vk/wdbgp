@@ -582,6 +582,106 @@ func SetUserSelection(ctx context.Context, tx *sql.Tx, userID int64, categories 
 	return nil
 }
 
+func SetVisibleUserSelection(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID int64,
+	categories []string,
+	services []ServiceKey,
+) error {
+	rows, err := tx.QueryContext(ctx, `
+SELECT sc.category
+FROM selected_categories sc
+WHERE sc.user_id = ?
+  AND EXISTS (
+      SELECT 1
+      FROM catalog_entries ce
+      JOIN feeds f ON f.id = ce.feed_id
+      WHERE ce.category = sc.category AND f.enabled = 0
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM catalog_entries ce
+      JOIN feeds f ON f.id = ce.feed_id
+      WHERE ce.category = sc.category AND f.enabled = 1
+  )`, userID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var category string
+		if err := rows.Scan(&category); err != nil {
+			rows.Close()
+			return err
+		}
+		categories = append(categories, category)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	rows, err = tx.QueryContext(ctx, `
+SELECT ss.category, ss.service
+FROM selected_services ss
+WHERE ss.user_id = ?
+  AND EXISTS (
+      SELECT 1
+      FROM catalog_entries ce
+      JOIN feeds f ON f.id = ce.feed_id
+      WHERE ce.category = ss.category
+        AND ce.service = ss.service
+        AND f.enabled = 0
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM catalog_entries ce
+      JOIN feeds f ON f.id = ce.feed_id
+      WHERE ce.category = ss.category
+        AND ce.service = ss.service
+        AND f.enabled = 1
+  )`, userID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var service ServiceKey
+		if err := rows.Scan(&service.Category, &service.Service); err != nil {
+			rows.Close()
+			return err
+		}
+		services = append(services, service)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	return SetUserSelection(ctx, tx, userID, uniqueStrings(categories), uniqueServices(services))
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func uniqueServices(values []ServiceKey) []ServiceKey {
+	seen := make(map[ServiceKey]bool, len(values))
+	result := make([]ServiceKey, 0, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
 func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled

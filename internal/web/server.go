@@ -153,7 +153,7 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 	categories, services, err := parseSelection(r)
 	if err == nil {
 		err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
-			return store.SetUserSelection(r.Context(), tx, user.ID, categories, services)
+			return store.SetVisibleUserSelection(r.Context(), tx, user.ID, categories, services)
 		})
 	}
 	if err == nil {
@@ -462,7 +462,7 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
-			return store.SetUserSelection(r.Context(), tx, id, categories, services)
+			return store.SetVisibleUserSelection(r.Context(), tx, id, categories, services)
 		})
 		if err == nil {
 			err = s.bgp.Reconcile(r.Context())
