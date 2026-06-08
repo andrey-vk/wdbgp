@@ -13,6 +13,7 @@ button.danger{background:#b42318} table{border-collapse:separate;border-spacing:
 td,th{border-bottom:1px solid #e8edf4;padding:.65rem;text-align:left;vertical-align:top} tr:last-child td{border-bottom:0}
 .card{background:white;border:1px solid #dfe5ee;border-radius:1rem;padding:1rem;margin:1rem 0;box-shadow:0 8px 24px #16233a0d}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1rem}.row-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.feed-actions{flex-wrap:nowrap}.feed-actions form{margin:0}.feed-actions button{padding:.45rem .65rem;border-radius:.5rem;white-space:nowrap}
 .muted{color:#667}.error{color:#a00}.ok{color:#075}.pill{display:inline-block;padding:.15rem .5rem;border-radius:999px;background:#edf2f8;color:#445}
 .selection-form{padding-bottom:5.5rem}.save-bar{position:sticky;top:.5rem;z-index:2;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:#10294f;color:white;border-radius:1rem;padding:.8rem 1rem;box-shadow:0 12px 28px #10294f40}
 .save-bar .muted{color:#d7e4f5}.save-bar button{background:#33a36f}.save-bar button:disabled{background:#71829b;cursor:not-allowed}
@@ -135,7 +136,7 @@ const adminTemplate = `{{with .Data}}
 <td><input form="feed-{{.ID}}" type=url name=url value="{{.URL}}" required></td>
 <td><input form="feed-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}} aria-label="{{tr "feeds.enabled"}}"></td>
 <td>{{.LastSuccess}}</td><td class=error>{{.LastError}}</td><td>
-<div class=row-actions>
+<div class="row-actions feed-actions">
 <form id="feed-{{.ID}}" method=post action="/admin/feed/{{.ID}}"><button>{{tr "common.save"}}</button></form>
 <form method=post action="/admin/feed/{{.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}');"><button class=danger>{{tr "common.delete"}}</button></form>
 </div></td></tr>{{end}}</table>
