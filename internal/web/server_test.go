@@ -53,7 +53,10 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	bgp := &fakeBGP{}
-	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret", AdminCookieSecure: "true"}
+	cfg := config.Config{
+		AdminPassword: "admin", SessionSecret: "secret",
+		AdminCookieSecure: "true", DefaultLanguage: "ru",
+	}
 	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -208,7 +211,8 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.RemoteAddr = "192.168.20.15:12345"
 	response := httptest.NewRecorder()
-	New(config.Config{}, db, feeds.NewSyncer(db), &fakeBGP{}).Handler().ServeHTTP(response, request)
+	New(config.Config{DefaultLanguage: "ru"}, db, feeds.NewSyncer(db), &fakeBGP{}).
+		Handler().ServeHTTP(response, request)
 	body := response.Body.String()
 	if response.Code != http.StatusOK {
 		t.Fatalf("user page status=%d body=%s", response.Code, body)
@@ -231,22 +235,36 @@ func TestLocalizedPages(t *testing.T) {
 	}
 	defer db.Close()
 
-	handler := New(config.Config{}, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
-
 	tests := []struct {
-		name       string
-		target     string
-		accept     string
-		cookie     *http.Cookie
-		wantLang   string
-		wantText   string
-		wantCookie string
+		name            string
+		defaultLanguage string
+		target          string
+		accept          string
+		cookie          *http.Cookie
+		wantLang        string
+		wantText        string
+		wantCookie      string
 	}{
 		{
-			name:     "Russian default",
+			name:     "English default",
 			target:   "/",
-			wantLang: "ru",
-			wantText: "Нет доступа",
+			wantLang: "en",
+			wantText: "Access denied",
+		},
+		{
+			name:            "Configured Russian default",
+			defaultLanguage: "ru",
+			target:          "/",
+			wantLang:        "ru",
+			wantText:        "Нет доступа",
+		},
+		{
+			name:            "Unsupported browser language uses configured default",
+			defaultLanguage: "ru",
+			target:          "/",
+			accept:          "de",
+			wantLang:        "ru",
+			wantText:        "Нет доступа",
 		},
 		{
 			name:     "English browser preference",
@@ -275,6 +293,8 @@ func TestLocalizedPages(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			handler := New(config.Config{DefaultLanguage: test.defaultLanguage},
+				db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
 			request := httptest.NewRequest(http.MethodGet, test.target, nil)
 			request.RemoteAddr = "192.0.2.10:12345"
 			request.Header.Set("Accept-Language", test.accept)

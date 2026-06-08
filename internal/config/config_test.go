@@ -37,6 +37,26 @@ func TestLoadAdminCookieSecureDefaultAndOverride(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultLanguage(t *testing.T) {
+	t.Setenv("WDBGP_DEFAULT_LANGUAGE", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultLanguage != "en" {
+		t.Fatalf("DefaultLanguage = %q, want en", cfg.DefaultLanguage)
+	}
+
+	t.Setenv("WDBGP_DEFAULT_LANGUAGE", "RU")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultLanguage != "ru" {
+		t.Fatalf("DefaultLanguage = %q, want ru", cfg.DefaultLanguage)
+	}
+}
+
 func TestValidateServeRejectsInvalidNetworkSettings(t *testing.T) {
 	valid := Config{
 		AdminPassword: "admin", SessionSecret: "secret",
@@ -54,6 +74,7 @@ func TestValidateServeRejectsInvalidNetworkSettings(t *testing.T) {
 		{"local IPv4", func(cfg *Config) { cfg.LocalAddressV4 = "invalid" }},
 		{"local IPv6", func(cfg *Config) { cfg.LocalAddressV6 = "192.0.2.3" }},
 		{"admin cookie secure", func(cfg *Config) { cfg.AdminCookieSecure = "sometimes" }},
+		{"default language", func(cfg *Config) { cfg.DefaultLanguage = "de" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

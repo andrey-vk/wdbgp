@@ -21,6 +21,7 @@ type Config struct {
 	AdminPassword     string
 	SessionSecret     string
 	AdminCookieSecure string
+	DefaultLanguage   string
 	TrustProxyHeader  bool
 	SyncInterval      time.Duration
 }
@@ -57,6 +58,7 @@ func Load() (Config, error) {
 		AdminPassword:     os.Getenv("WDBGP_ADMIN_PASSWORD"),
 		SessionSecret:     os.Getenv("WDBGP_SESSION_SECRET"),
 		AdminCookieSecure: strings.ToLower(env("WDBGP_ADMIN_COOKIE_SECURE", "auto")),
+		DefaultLanguage:   strings.ToLower(env("WDBGP_DEFAULT_LANGUAGE", "en")),
 		TrustProxyHeader:  boolean("WDBGP_TRUST_PROXY_HEADERS"),
 		SyncInterval:      time.Duration(syncSeconds) * time.Second,
 	}
@@ -75,6 +77,11 @@ func (c Config) ValidateServe() error {
 	case "", "auto", "true", "false":
 	default:
 		return fmt.Errorf("WDBGP_ADMIN_COOKIE_SECURE must be auto, true, or false")
+	}
+	switch c.DefaultLanguage {
+	case "", "en", "ru":
+	default:
+		return fmt.Errorf("WDBGP_DEFAULT_LANGUAGE must be en or ru")
 	}
 	if c.LocalASN == 0 {
 		return fmt.Errorf("WDBGP_LOCAL_ASN must be greater than zero")

@@ -30,12 +30,13 @@ type BGP interface {
 }
 
 type Server struct {
-	cfg       config.Config
-	store     *store.Store
-	syncer    *feeds.Syncer
-	bgp       BGP
-	templates map[locale]map[string]*template.Template
-	handler   http.Handler
+	cfg         config.Config
+	store       *store.Store
+	syncer      *feeds.Syncer
+	bgp         BGP
+	defaultLang locale
+	templates   map[locale]map[string]*template.Template
+	handler     http.Handler
 }
 
 type categoryView struct {
@@ -83,9 +84,13 @@ type filterView struct {
 }
 
 func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Server {
+	defaultLang, ok := parseLocale(cfg.DefaultLanguage)
+	if !ok {
+		defaultLang = localeEnglish
+	}
 	server := &Server{
 		cfg: cfg, store: s, syncer: syncer, bgp: bgp,
-		templates: compileTemplates(),
+		defaultLang: defaultLang, templates: compileTemplates(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", server.userPage)
@@ -202,7 +207,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !hmac.Equal([]byte(r.FormValue("password")), []byte(s.cfg.AdminPassword)) {
-		lang, _ := requestLocale(r)
+		lang, _ := requestLocale(r, s.defaultLang)
 		s.render(w, r, http.StatusUnauthorized, "title.login", "login",
 			translate(lang, "login.invalid_password"))
 		return
@@ -346,7 +351,7 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	lang, _ := requestLocale(r)
+	lang, _ := requestLocale(r, s.defaultLang)
 	s.renderTitle(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
 		userEditView{User: user, Selection: selection})
 }
@@ -638,12 +643,12 @@ func compileTemplates() map[locale]map[string]*template.Template {
 }
 
 func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, titleKey, name string, data any) {
-	lang, _ := requestLocale(r)
+	lang, _ := requestLocale(r, s.defaultLang)
 	s.renderTitle(w, r, status, translate(lang, titleKey), name, data)
 }
 
 func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int, title, name string, data any) {
-	lang, persist := requestLocale(r)
+	lang, persist := requestLocale(r, s.defaultLang)
 	if persist {
 		http.SetCookie(w, &http.Cookie{
 			Name: languageCookieName, Value: string(lang), Path: "/",
@@ -669,7 +674,7 @@ func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int,
 }
 
 func (s *Server) httpError(w http.ResponseWriter, r *http.Request, key string, status int) {
-	lang, _ := requestLocale(r)
+	lang, _ := requestLocale(r, s.defaultLang)
 	http.Error(w, translate(lang, key), status)
 }
 
