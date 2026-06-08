@@ -228,6 +228,108 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	}
 }
 
+func TestAdminCanManageFeeds(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	bgp := &fakeBGP{}
+	cfg := config.Config{
+		AdminPassword: "admin", SessionSecret: "secret", DefaultLanguage: "en",
+	}
+	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	addForm := url.Values{
+		"name":    {"custom"},
+		"url":     {"https://example.test/feed.json"},
+		"enabled": {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/feed", strings.NewReader(addForm.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("add feed: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	feedList, err := db.Feeds(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed := feedList[len(feedList)-1]
+	if feed.Name != "custom" || !feed.Enabled {
+		t.Fatalf("added feed = %#v", feed)
+	}
+	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr)
+		VALUES (?, 'Custom', 'Example', '203.0.113.0/24')`, feed.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	updateForm := url.Values{
+		"name": {"custom-renamed"},
+		"url":  {feed.URL},
+	}
+	request = httptest.NewRequest(http.MethodPost,
+		"/admin/feed/"+strconv.FormatInt(feed.ID, 10), strings.NewReader(updateForm.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || bgp.reconciles != 1 {
+		t.Fatalf("update feed: status=%d reconciles=%d body=%s",
+			response.Code, bgp.reconciles, response.Body.String())
+	}
+	feedList, err = db.Feeds(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed = feedList[len(feedList)-1]
+	if feed.Name != "custom-renamed" || feed.Enabled {
+		t.Fatalf("updated feed = %#v", feed)
+	}
+	var entries int
+	if err := db.DB.QueryRow("SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feed.ID).
+		Scan(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if entries != 1 {
+		t.Fatalf("disabled feed snapshot entries = %d, want 1", entries)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `value="custom-renamed"`) ||
+		!strings.Contains(response.Body.String(), "/admin/feed/"+strconv.FormatInt(feed.ID, 10)+"/delete") {
+		t.Fatalf("managed feed not rendered: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost,
+		"/admin/feed/"+strconv.FormatInt(feed.ID, 10)+"/delete", nil)
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || bgp.reconciles != 2 {
+		t.Fatalf("delete feed: status=%d reconciles=%d body=%s",
+			response.Code, bgp.reconciles, response.Body.String())
+	}
+	feedList, err = db.Feeds(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, existing := range feedList {
+		if existing.ID == feed.ID {
+			t.Fatalf("deleted feed remains: %#v", existing)
+		}
+	}
+}
+
 func TestLocalizedPages(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
 	if err != nil {

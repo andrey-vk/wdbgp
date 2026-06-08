@@ -58,6 +58,12 @@ A single entry object and a top-level entry array are also accepted. Prefixes
 are normalized and deduplicated. Selecting a category also includes services
 added to it in future feed updates.
 
+Feeds can be added, edited, enabled, disabled, and deleted from the admin UI.
+Disabling a feed keeps its last downloaded snapshot and user selections in the
+database, but excludes its services and prefixes from the catalog and BGP
+announcements. Re-enabling it restores that snapshot until the next sync.
+Changing a feed URL clears the old snapshot; deleting a feed removes it.
+
 ## Route filters
 
 The administrator configures global allow and deny CIDR lists. An empty allow
@@ -202,6 +208,5 @@ IPv6 address and `WDBGP_BGP_LOCAL_ADDRESS_V6` when using IPv6.
 ## Limitations
 
 - OpenCCK is the only built-in adapter for a non-canonical feed format.
-- Feeds cannot yet be edited or deleted from the UI.
 - Editing BGP peer settings restarts the embedded BGP server; changing a route
   selection is applied without a restart.

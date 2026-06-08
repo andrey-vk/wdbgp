@@ -84,9 +84,18 @@ const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
 const adminTemplate = `{{with .Data}}
 <header><h1>{{tr "admin.heading"}}</h1><a href="/">{{tr "user_interface.link"}}</a></header>
-<section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th></tr>
-{{range .Feeds}}<tr><td>{{.Name}}</td><td><code>{{.URL}}</code></td><td>{{.LastSuccess}}</td><td class=error>{{.LastError}}</td></tr>{{end}}</table>
-<form method=post action=/admin/feed><h3>{{tr "feeds.add"}}</h3><label>{{tr "feeds.name"}} <input name=name required></label><label>URL <input type=url name=url required></label><button>{{tr "common.add"}}</button></form>
+<section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th><th>{{tr "feeds.actions"}}</th></tr>
+{{range .Feeds}}<tr>
+<td><input form="feed-{{.ID}}" name=name value="{{.Name}}" required></td>
+<td><input form="feed-{{.ID}}" type=url name=url value="{{.URL}}" required></td>
+<td><input form="feed-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}} aria-label="{{tr "feeds.enabled"}}"></td>
+<td>{{.LastSuccess}}</td><td class=error>{{.LastError}}</td><td>
+<div class=row-actions>
+<form id="feed-{{.ID}}" method=post action="/admin/feed/{{.ID}}"><button>{{tr "common.save"}}</button></form>
+<form method=post action="/admin/feed/{{.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}');"><button class=danger>{{tr "common.delete"}}</button></form>
+</div></td></tr>{{end}}</table>
+<form method=post action=/admin/feed><h3>{{tr "feeds.add"}}</h3><label>{{tr "feeds.name"}} <input name=name required></label><label>URL <input type=url name=url required></label>
+<label><input type=checkbox name=enabled checked> {{tr "feeds.enabled"}}</label><button>{{tr "common.add"}}</button></form>
 <form method=post action=/admin/sync><button>{{tr "feeds.download_now"}}</button></form></section>
 <section class=card><h2>{{tr "global_filters.heading"}}</h2>
 <p class=muted>{{tr "global_filters.explanation"}}</p>
