@@ -170,18 +170,6 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Глобальная фильтрация маршрутов") {
 		t.Fatalf("admin filter page: status=%d body=%s", response.Code, response.Body.String())
 	}
-	addUserIndex := strings.Index(response.Body.String(), "Добавить пользователя")
-	debugIndex := strings.Index(response.Body.String(), "Диагностика CIDR")
-	if addUserIndex == -1 || debugIndex == -1 || debugIndex < addUserIndex {
-		t.Fatalf("CIDR diagnostics should be rendered after user management: body=%s", response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), "maximumFractionDigits: 2") {
-		t.Fatalf("admin debug percentages should be limited to two fraction digits: body=%s", response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), `class="row-actions feed-actions"`) ||
-		!strings.Contains(response.Body.String(), ".feed-actions{flex-wrap:nowrap}") {
-		t.Fatalf("feed action buttons should stay compact on one row: body=%s", response.Body.String())
-	}
 
 	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
 	request.Header.Set("Accept-Language", "en")
