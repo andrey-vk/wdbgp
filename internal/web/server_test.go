@@ -64,6 +64,17 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 		t.Fatalf("user page: status=%d body=%s", response.Code, response.Body.String())
 	}
 
+	request = httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Accept-Language", "en")
+	request.RemoteAddr = "192.168.20.15:12345"
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), "Service selection") ||
+		!strings.Contains(response.Body.String(), `<html lang="en">`) {
+		t.Fatalf("English user page: status=%d body=%s", response.Code, response.Body.String())
+	}
+
 	form := url.Values{"service": {serviceValue("Messengers", "Telegram")}}
 	request = httptest.NewRequest(http.MethodPost, "/selection", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -156,6 +167,17 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Глобальная фильтрация маршрутов") {
 		t.Fatalf("admin filter page: status=%d body=%s", response.Code, response.Body.String())
 	}
+
+	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	request.Header.Set("Accept-Language", "en")
+	request.AddCookie(cookies[0])
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), "Global route filtering") ||
+		!strings.Contains(response.Body.String(), `<html lang="en">`) {
+		t.Fatalf("English admin page: status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func TestCategorySelectionDisablesContainedServices(t *testing.T) {
@@ -199,6 +221,104 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	}
 	if !strings.Contains(body, `value="Messengers:Signal"  disabled`) {
 		t.Fatalf("contained unselected service is not disabled: %s", body)
+	}
+}
+
+func TestLocalizedPages(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	handler := New(config.Config{}, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
+
+	tests := []struct {
+		name       string
+		target     string
+		accept     string
+		cookie     *http.Cookie
+		wantLang   string
+		wantText   string
+		wantCookie string
+	}{
+		{
+			name:     "Russian default",
+			target:   "/",
+			wantLang: "ru",
+			wantText: "Нет доступа",
+		},
+		{
+			name:     "English browser preference",
+			target:   "/",
+			accept:   "en-US,en;q=0.9,ru;q=0.8",
+			wantLang: "en",
+			wantText: "Access denied",
+		},
+		{
+			name:       "Query overrides browser and persists",
+			target:     "/?lang=en",
+			accept:     "ru",
+			wantLang:   "en",
+			wantText:   "Access denied",
+			wantCookie: "en",
+		},
+		{
+			name:     "Cookie overrides browser",
+			target:   "/",
+			accept:   "en",
+			cookie:   &http.Cookie{Name: languageCookieName, Value: "ru"},
+			wantLang: "ru",
+			wantText: "Нет доступа",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, test.target, nil)
+			request.RemoteAddr = "192.0.2.10:12345"
+			request.Header.Set("Accept-Language", test.accept)
+			if test.cookie != nil {
+				request.AddCookie(test.cookie)
+			}
+			response := httptest.NewRecorder()
+
+			handler.ServeHTTP(response, request)
+
+			body := response.Body.String()
+			if response.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body=%s", response.Code, http.StatusForbidden, body)
+			}
+			if !strings.Contains(body, `<html lang="`+test.wantLang+`">`) {
+				t.Fatalf("language %q not rendered: %s", test.wantLang, body)
+			}
+			if !strings.Contains(body, test.wantText) {
+				t.Fatalf("text %q not rendered: %s", test.wantText, body)
+			}
+			if test.wantCookie != "" {
+				cookies := response.Result().Cookies()
+				if len(cookies) != 1 || cookies[0].Name != languageCookieName ||
+					cookies[0].Value != test.wantCookie || cookies[0].MaxAge <= 0 {
+					t.Fatalf("language cookie = %#v", cookies)
+				}
+			}
+		})
+	}
+}
+
+func TestTranslationCatalogsHaveMatchingKeys(t *testing.T) {
+	for key := range translations[localeEnglish] {
+		if translations[localeRussian][key] == "" {
+			t.Errorf("Russian translation missing for %q", key)
+		}
+	}
+	for key := range translations[localeRussian] {
+		if translations[localeEnglish][key] == "" {
+			t.Errorf("English translation missing for %q", key)
+		}
+	}
+	if got := translate(localeEnglish, "missing.key"); got != "missing.key" {
+		t.Fatalf("missing translation = %q, want key", got)
 	}
 }
 

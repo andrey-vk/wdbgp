@@ -95,6 +95,10 @@ Open `/admin` to add users and edit their selections. `/` identifies a user by
 source IP. Enable `WDBGP_TRUST_PROXY_HEADERS=true` only behind a trusted reverse
 proxy.
 
+The web interface is available in English and Russian. It follows the browser's
+`Accept-Language` preference, defaults to Russian, and stores an explicit
+`EN`/`RU` selection in a cookie.
+
 Admin login cookies use `WDBGP_ADMIN_COOKIE_SECURE=auto` by default. Cookies are
 marked `Secure` for direct HTTPS requests and for trusted
 `X-Forwarded-Proto: https` requests when `WDBGP_TRUST_PROXY_HEADERS=true`.
