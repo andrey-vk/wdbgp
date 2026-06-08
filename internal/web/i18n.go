@@ -47,6 +47,16 @@ var translations = map[locale]map[string]string{
 		"selection.save_failed":      "BGP announcements could not be updated.",
 		"selection.locked":           "Selection is locked by the administrator.",
 		"selection.selected":         "Selected:",
+		"selection.category_one":     "category",
+		"selection.category_few":     "categories",
+		"selection.category_many":    "categories",
+		"selection.service_one":      "service",
+		"selection.service_few":      "services",
+		"selection.service_many":     "services",
+		"selection.in_categories":    "in them",
+		"selection.standalone_one":   "standalone service",
+		"selection.standalone_few":   "standalone services",
+		"selection.standalone_many":  "standalone services",
 		"selection.apply_hint":       "Changes take effect immediately after saving",
 		"selection.save":             "Save routes",
 		"selection.whole_category":   "all",
@@ -131,6 +141,16 @@ var translations = map[locale]map[string]string{
 		"selection.save_failed":      "Не удалось обновить BGP-анонсы.",
 		"selection.locked":           "Выбор заблокирован администратором.",
 		"selection.selected":         "Выбрано:",
+		"selection.category_one":     "категория",
+		"selection.category_few":     "категории",
+		"selection.category_many":    "категорий",
+		"selection.service_one":      "сервис",
+		"selection.service_few":      "сервиса",
+		"selection.service_many":     "сервисов",
+		"selection.in_categories":    "в них",
+		"selection.standalone_one":   "отдельный сервис",
+		"selection.standalone_few":   "отдельных сервиса",
+		"selection.standalone_many":  "отдельных сервисов",
 		"selection.apply_hint":       "Изменения применяются сразу после сохранения",
 		"selection.save":             "Сохранить маршруты",
 		"selection.whole_category":   "целиком",
@@ -203,6 +223,22 @@ func translate(lang locale, key string) string {
 		return message
 	}
 	return key
+}
+
+func pluralTranslation(lang locale, count int, oneKey, fewKey, manyKey string) string {
+	key := manyKey
+	if lang == localeRussian {
+		mod10 := count % 10
+		mod100 := count % 100
+		if mod10 == 1 && mod100 != 11 {
+			key = oneKey
+		} else if mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) {
+			key = fewKey
+		}
+	} else if count == 1 {
+		key = oneKey
+	}
+	return translate(lang, key)
 }
 
 func requestLocale(r *http.Request, fallback locale) (locale, bool) {

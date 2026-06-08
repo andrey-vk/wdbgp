@@ -41,13 +41,57 @@ const selectionBody = `{{$selection := .}}
 {{if not .Editable}}<p class=muted>{{tr "selection.locked"}}</p>{{end}}
 <form class=selection-form method=post action="{{if .Admin}}/admin/user/{{.User.ID}}{{else}}/selection{{end}}">
 {{if .Admin}}<input type=hidden name=action value=selection>{{end}}
-<div class=save-bar><div><strong>{{.User.Name}}</strong><br><span class=muted>{{tr "selection.selected"}} <span id=selected-count>{{.SelectedCount}}</span>. {{tr "selection.apply_hint"}}</span></div>
+<div class=save-bar><div><strong>{{.User.Name}}</strong><br><span class=muted>{{tr "selection.selected"}}
+<span id=selected-category-count>{{.SelectedCategoryCount}}</span>
+<span id=selected-category-label data-one="{{tr "selection.category_one"}}" data-few="{{tr "selection.category_few"}}" data-many="{{tr "selection.category_many"}}">{{plural .SelectedCategoryCount "selection.category_one" "selection.category_few" "selection.category_many"}}</span>
+(<span id=selected-covered-service-count>{{.SelectedCoveredServices}}</span>
+<span id=selected-covered-service-label data-one="{{tr "selection.service_one"}}" data-few="{{tr "selection.service_few"}}" data-many="{{tr "selection.service_many"}}">{{plural .SelectedCoveredServices "selection.service_one" "selection.service_few" "selection.service_many"}}</span> {{tr "selection.in_categories"}}).
+<span id=selected-service-count>{{.SelectedServiceCount}}</span>
+<span id=selected-service-label data-one="{{tr "selection.standalone_one"}}" data-few="{{tr "selection.standalone_few"}}" data-many="{{tr "selection.standalone_many"}}">{{plural .SelectedServiceCount "selection.standalone_one" "selection.standalone_few" "selection.standalone_many"}}</span>.
+{{tr "selection.apply_hint"}}</span></div>
 <button {{if not .Editable}}disabled{{end}}>{{tr "selection.save"}}</button></div>
 {{if .Categories}}<div class=catalog-grid>{{range .Categories}}
 <fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>{{tr "selection.whole_category"}}</span></label></legend>
 <div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}</label>{{end}}</div>
 </fieldset>{{end}}</div>{{else}}<p class=empty>{{tr "selection.empty"}}</p>{{end}}</form></section>
 <script>
+function selectionPluralForm(count) {
+  if (document.documentElement.lang !== 'ru') {
+    return count === 1 ? 'one' : 'many';
+  }
+  var mod10 = count % 10;
+  var mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'one';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'few';
+  return 'many';
+}
+function updateSelectionLabel(id, count) {
+  var label = document.getElementById(id);
+  if (label) label.textContent = label.dataset[selectionPluralForm(count)];
+}
+function updateSelectionCounts() {
+  var categoryCount = 0;
+  var coveredServiceCount = 0;
+  var standaloneServiceCount = 0;
+  document.querySelectorAll('fieldset.category-card').forEach(function(fieldset) {
+    var categoryInput = fieldset.querySelector('input[name="category"]');
+    var services = fieldset.querySelectorAll('input[name="service"]');
+    if (categoryInput && categoryInput.checked) {
+      categoryCount++;
+      coveredServiceCount += services.length;
+    } else {
+      services.forEach(function(serviceInput) {
+        if (serviceInput.checked) standaloneServiceCount++;
+      });
+    }
+  });
+  document.getElementById('selected-category-count').textContent = categoryCount;
+  document.getElementById('selected-covered-service-count').textContent = coveredServiceCount;
+  document.getElementById('selected-service-count').textContent = standaloneServiceCount;
+  updateSelectionLabel('selected-category-label', categoryCount);
+  updateSelectionLabel('selected-covered-service-label', coveredServiceCount);
+  updateSelectionLabel('selected-service-label', standaloneServiceCount);
+}
 document.querySelectorAll('input[name="category"]').forEach(function(categoryInput) {
   var fieldset = categoryInput.closest('fieldset');
   var services = fieldset ? fieldset.querySelectorAll('input[name="service"]') : [];
@@ -55,15 +99,13 @@ document.querySelectorAll('input[name="category"]').forEach(function(categoryInp
     services.forEach(function(serviceInput) {
       serviceInput.disabled = categoryInput.checked || categoryInput.disabled;
     });
-    var count = document.getElementById('selected-count');
-    if (count) {
-      count.textContent = document.querySelectorAll('input[name="category"]:checked,input[name="service"]:checked:not(:disabled)').length;
-    }
+    updateSelectionCounts();
   };
   categoryInput.addEventListener('change', update);
   services.forEach(function(serviceInput) { serviceInput.addEventListener('change', update); });
   update();
 });
+updateSelectionCounts();
 </script>
 {{with .Filters}}<section class=card><h2>{{tr "filters.heading"}}</h2>
 {{if .Editable}}<p class=muted>{{tr "filters.explanation"}}</p>
