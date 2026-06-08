@@ -198,12 +198,13 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	}
 	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		(1, 'Messengers', 'Telegram', '149.154.160.0/20'),
-		(1, 'Messengers', 'Signal', '76.223.92.0/24')`); err != nil {
+		(1, 'Messengers', 'Signal', '76.223.92.0/24'),
+		(1, 'AI', 'Copilot', '140.82.112.0/20')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Transaction(context.Background(), func(tx *sql.Tx) error {
 		return store.SetUserSelection(context.Background(), tx, userID, []string{"Messengers"},
-			[]store.ServiceKey{{Category: "Messengers", Service: "Telegram"}})
+			[]store.ServiceKey{{Category: "AI", Service: "Copilot"}})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -217,8 +218,17 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("user page status=%d body=%s", response.Code, body)
 	}
-	if !strings.Contains(body, "Выбрано: <span id=selected-count>1</span>") {
-		t.Fatalf("selected count not rendered: %s", body)
+	for _, want := range []string{
+		`<span id=selected-category-count>1</span>`,
+		`>категория</span>`,
+		`<span id=selected-covered-service-count>2</span>`,
+		`>сервиса</span> в них`,
+		`<span id=selected-service-count>1</span>`,
+		`>отдельный сервис</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("selection details %q not rendered: %s", want, body)
+		}
 	}
 	if !strings.Contains(body, `value="Messengers:Telegram"  disabled`) {
 		t.Fatalf("contained selected service is not disabled: %s", body)
@@ -553,6 +563,30 @@ func TestTranslationCatalogsHaveMatchingKeys(t *testing.T) {
 	}
 	if got := translate(localeEnglish, "missing.key"); got != "missing.key" {
 		t.Fatalf("missing translation = %q, want key", got)
+	}
+}
+
+func TestSelectionPluralTranslations(t *testing.T) {
+	tests := []struct {
+		lang  locale
+		count int
+		want  string
+	}{
+		{localeEnglish, 1, "category"},
+		{localeEnglish, 2, "categories"},
+		{localeRussian, 1, "категория"},
+		{localeRussian, 2, "категории"},
+		{localeRussian, 5, "категорий"},
+		{localeRussian, 11, "категорий"},
+		{localeRussian, 22, "категории"},
+	}
+	for _, test := range tests {
+		got := pluralTranslation(test.lang, test.count,
+			"selection.category_one", "selection.category_few", "selection.category_many")
+		if got != test.want {
+			t.Errorf("pluralTranslation(%q, %d) = %q, want %q",
+				test.lang, test.count, got, test.want)
+		}
 	}
 }
 
