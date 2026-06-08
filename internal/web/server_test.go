@@ -178,6 +178,10 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	if !strings.Contains(response.Body.String(), "maximumFractionDigits: 2") {
 		t.Fatalf("admin debug percentages should be limited to two fraction digits: body=%s", response.Body.String())
 	}
+	if !strings.Contains(response.Body.String(), `class="row-actions feed-actions"`) ||
+		!strings.Contains(response.Body.String(), ".feed-actions{flex-wrap:nowrap}") {
+		t.Fatalf("feed action buttons should stay compact on one row: body=%s", response.Body.String())
+	}
 
 	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
 	request.Header.Set("Accept-Language", "en")
