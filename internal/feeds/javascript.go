@@ -73,10 +73,15 @@ func (r adapterRunner) run(
 	if err != nil {
 		return nil, fmt.Errorf("compile adapter: %w", err)
 	}
-	timer := time.AfterFunc(timeout, func() {
-		vm.Interrupt("adapter execution timed out")
-	})
-	defer timer.Stop()
+	executionDone := make(chan struct{})
+	defer close(executionDone)
+	go func() {
+		select {
+		case <-runCtx.Done():
+			vm.Interrupt(runCtx.Err())
+		case <-executionDone:
+		}
+	}()
 	if _, err := vm.RunProgram(program); err != nil {
 		return nil, fmt.Errorf("initialize adapter: %w", err)
 	}
@@ -187,15 +192,8 @@ func (a *adapterHTTP) get(rawURL string) (string, error) {
 		(parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return "", fmt.Errorf("adapter HTTP URL must be absolute HTTP or HTTPS")
 	}
-	host := strings.ToLower(parsed.Hostname())
-	if !a.allowedHosts[host] {
-		return "", fmt.Errorf("adapter HTTP host %q is not allowed", host)
-	}
-	if address, err := netip.ParseAddr(host); err == nil && !isPublicAddress(address) {
-		return "", fmt.Errorf("adapter HTTP address %q is not public", host)
-	}
-	if a.requests >= maxAdapterRequests {
-		return "", fmt.Errorf("adapter exceeded %d HTTP requests", maxAdapterRequests)
+	if err := a.validateURL(parsed); err != nil {
+		return "", err
 	}
 	a.requests++
 
@@ -204,7 +202,22 @@ func (a *adapterHTTP) get(rawURL string) (string, error) {
 		return "", err
 	}
 	request.Header.Set("User-Agent", "wdbgp-go/1.0")
-	response, err := a.client.Do(request)
+	client := *a.client
+	previousRedirect := client.CheckRedirect
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if err := a.validateURL(request.URL); err != nil {
+			return err
+		}
+		a.requests++
+		if previousRedirect != nil {
+			return previousRedirect(request, via)
+		}
+		return nil
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return "", err
 	}
@@ -226,36 +239,122 @@ func (a *adapterHTTP) get(rawURL string) (string, error) {
 	return string(body), nil
 }
 
+func (a *adapterHTTP) validateURL(parsed *url.URL) error {
+	host := strings.ToLower(parsed.Hostname())
+	if !a.allowedHosts[host] {
+		return fmt.Errorf("adapter HTTP host %q is not allowed", host)
+	}
+	if address, err := netip.ParseAddr(host); err == nil {
+		if !isPublicAddress(address) {
+			return fmt.Errorf("adapter HTTP address %q is not public", host)
+		}
+		return a.reserveRequest()
+	}
+	if transport, ok := a.client.Transport.(*http.Transport); ok && transport.Proxy != nil {
+		request := &http.Request{URL: parsed}
+		proxyURL, err := transport.Proxy(request)
+		if err != nil {
+			return err
+		}
+		if proxyURL != nil {
+			addresses, err := net.DefaultResolver.LookupNetIP(a.ctx, "ip", host)
+			if err != nil {
+				return err
+			}
+			if !hasPublicAddress(addresses) {
+				return fmt.Errorf("host %q has no public addresses", host)
+			}
+		}
+	}
+	return a.reserveRequest()
+}
+
+func (a *adapterHTTP) reserveRequest() error {
+	if a.requests >= maxAdapterRequests {
+		return fmt.Errorf("adapter exceeded %d HTTP requests", maxAdapterRequests)
+	}
+	return nil
+}
+
 func newHTTPClient(timeout time.Duration) *http.Client {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	proxy := http.ProxyFromEnvironment
 	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(address)
-			if err != nil {
-				return nil, err
-			}
-			addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-			if err != nil {
-				return nil, err
-			}
-			for _, address := range addresses {
-				if !isPublicAddress(address) {
-					continue
-				}
-				return dialer.DialContext(ctx, network,
-					net.JoinHostPort(address.String(), port))
-			}
-			return nil, fmt.Errorf("host %q has no public addresses", host)
-		},
+		Proxy: proxy,
+		DialContext: publicDialContext(
+			net.DefaultResolver.LookupNetIP,
+			dialer.DialContext,
+			proxyHosts(proxy),
+		),
 		ForceAttemptHTTP2: true,
 	}
 	return &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
 	}
+}
+
+type lookupNetIPFunc func(context.Context, string, string) ([]netip.Addr, error)
+type dialContextFunc func(context.Context, string, string) (net.Conn, error)
+
+func publicDialContext(
+	lookup lookupNetIPFunc,
+	dial dialContextFunc,
+	proxies map[string]bool,
+) dialContextFunc {
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		if proxies[strings.ToLower(host)] {
+			return dial(ctx, network, address)
+		}
+		addresses, err := lookup(ctx, "ip", host)
+		if err != nil {
+			return nil, err
+		}
+		var dialErrors []error
+		for _, resolved := range addresses {
+			if !isPublicAddress(resolved) {
+				continue
+			}
+			connection, err := dial(ctx, network,
+				net.JoinHostPort(resolved.String(), port))
+			if err == nil {
+				return connection, nil
+			}
+			dialErrors = append(dialErrors, err)
+		}
+		if len(dialErrors) > 0 {
+			return nil, errors.Join(dialErrors...)
+		}
+		return nil, fmt.Errorf("host %q has no public addresses", host)
+	}
+}
+
+func proxyHosts(proxy func(*http.Request) (*url.URL, error)) map[string]bool {
+	hosts := map[string]bool{}
+	for _, rawURL := range []string{"http://example.com", "https://example.com"} {
+		request, err := http.NewRequest(http.MethodGet, rawURL, nil)
+		if err != nil {
+			continue
+		}
+		proxyURL, err := proxy(request)
+		if err == nil && proxyURL != nil && proxyURL.Hostname() != "" {
+			hosts[strings.ToLower(proxyURL.Hostname())] = true
+		}
+	}
+	return hosts
+}
+
+func hasPublicAddress(addresses []netip.Addr) bool {
+	for _, address := range addresses {
+		if isPublicAddress(address) {
+			return true
+		}
+	}
+	return false
 }
 
 func isPublicAddress(address netip.Addr) bool {
