@@ -41,10 +41,16 @@ const selectionBody = `{{$selection := .}}
 <header><h1>{{.User.Name}}</h1>{{if not .Admin}}<a href="/admin">{{tr "admin.link"}}</a>{{end}}</header>
 <section class=card><h2>{{tr "selection.heading"}}</h2>
 <p class=muted>{{tr "selection.category_hint"}}</p>
+<label>{{tr "catalog.mode"}}
+<select id=catalog-mode-select {{if not .CanChangeMode}}disabled{{end}}>
+{{range .Modes}}<option value="{{.ID}}" {{if eq .ID $selection.User.CatalogModeID}}selected{{end}}>{{.Name}}{{if not .Enabled}} ({{tr "catalog.disabled"}}){{end}}</option>{{end}}
+</select></label>
+{{if not .CanChangeMode}}<p class=muted>{{tr "catalog.managed"}}</p>{{end}}
 {{if eq .Saved "1"}}<p class=ok>{{tr "selection.saved"}}</p>{{else if eq .Saved "0"}}<p class=error>{{tr "selection.save_failed"}}</p>{{end}}
 {{if not .Editable}}<p class=muted>{{tr "selection.locked"}}</p>{{end}}
 <form class=selection-form method=post action="{{if .Admin}}/admin/user/{{.User.ID}}{{else}}/selection{{end}}">
 {{if .Admin}}<input type=hidden name=action value=selection>{{end}}
+<input type=hidden name=catalog_mode_id value="{{.User.CatalogModeID}}">
 <div class=save-bar><div><strong>{{.User.Name}}</strong><br><span class=muted>{{tr "selection.selected"}}
 <span id=selected-category-count>{{.SelectedCategoryCount}}</span>
 <span id=selected-category-label data-one="{{tr "selection.category_one"}}" data-few="{{tr "selection.category_few"}}" data-many="{{tr "selection.category_many"}}">{{plural .SelectedCategoryCount "selection.category_one" "selection.category_few" "selection.category_many"}}</span>
@@ -59,6 +65,14 @@ const selectionBody = `{{$selection := .}}
 <div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}</label>{{end}}</div>
 </fieldset>{{end}}</div>{{else}}<p class=empty>{{tr "selection.empty"}}</p>{{end}}</form></section>
 <script>
+var catalogModeSelect = document.getElementById('catalog-mode-select');
+if (catalogModeSelect && !catalogModeSelect.disabled) {
+  catalogModeSelect.addEventListener('change', function() {
+    var target = new URL(window.location.href);
+    target.searchParams.set('mode', catalogModeSelect.value);
+    window.location.href = target.toString();
+  });
+}
 function selectionPluralForm(count) {
   if (document.documentElement.lang !== 'ru') {
     return count === 1 ? 'one' : 'many';
@@ -130,10 +144,20 @@ const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
 const adminTemplate = `{{with .Data}}
 <header><h1>{{tr "admin.heading"}}</h1><a href="/">{{tr "user_interface.link"}}</a></header>
-<section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th><th>{{tr "feeds.actions"}}</th></tr>
-{{range .Feeds}}<tr>
+<section class=card><h2>{{tr "catalog.modes"}}</h2>
+<p class=muted>{{tr "catalog.modes_hint"}}</p>
+<table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "catalog.key"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.actions"}}</th></tr>
+{{range .Modes}}<tr>
+<td><input form="mode-{{.ID}}" name=name value="{{.Name}}" required></td>
+<td><code>{{.Key}}</code></td>
+<td><input form="mode-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}}></td>
+<td><form id="mode-{{.ID}}" method=post action="/admin/mode/{{.ID}}"><button>{{tr "common.save"}}</button></form></td>
+</tr>{{end}}</table></section>
+<section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "catalog.mode"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th><th>{{tr "feeds.actions"}}</th></tr>
+{{range .Feeds}}{{$feed := .}}<tr>
 <td><input form="feed-{{.ID}}" name=name value="{{.Name}}" required></td>
 <td><input form="feed-{{.ID}}" type=url name=url value="{{.URL}}" required></td>
+<td><select form="feed-{{$feed.ID}}" name=catalog_mode_id>{{range $.Data.Modes}}<option value="{{.ID}}" {{if eq .ID $feed.ModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></td>
 <td><input form="feed-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}} aria-label="{{tr "feeds.enabled"}}"></td>
 <td>{{.LastSuccess}}</td><td class=error>{{.LastError}}</td><td>
 <div class="row-actions feed-actions">
@@ -141,6 +165,7 @@ const adminTemplate = `{{with .Data}}
 <form method=post action="/admin/feed/{{.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}');"><button class=danger>{{tr "common.delete"}}</button></form>
 </div></td></tr>{{end}}</table>
 <form method=post action=/admin/feed><h3>{{tr "feeds.add"}}</h3><label>{{tr "feeds.name"}} <input name=name required></label><label>URL <input type=url name=url required></label>
+<label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Modes}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></label>
 <label><input type=checkbox name=enabled checked> {{tr "feeds.enabled"}}</label><button>{{tr "common.add"}}</button></form>
 <form method=post action=/admin/sync><button>{{tr "feeds.download_now"}}</button></form></section>
 <section class=card><h2>{{tr "global_filters.heading"}}</h2>
@@ -149,16 +174,19 @@ const adminTemplate = `{{with .Data}}
 <label>{{tr "filters.allow"}} <textarea name=filter_allow placeholder="{{tr "filters.allow_placeholder"}}">{{.GlobalFilters.AllowText}}</textarea></label>
 <label>{{tr "filters.deny"}} <textarea name=filter_deny>{{.GlobalFilters.DenyText}}</textarea></label></div>
 <button>{{tr "global_filters.save"}}</button></form></section>
-<section class=card><h2>{{tr "users.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "users.cidr"}}</th><th>{{tr "users.peer"}}</th><th>{{tr "users.asn"}}</th><th>{{tr "users.status"}}</th></tr>
-{{range .Users}}<tr><td><a href="/admin/user/{{.ID}}">{{.Name}}</a></td><td><code>{{join .Networks ", "}}</code></td><td><code>{{.PeerIP}}</code></td><td>{{.PeerASN}}</td><td><span class=status>{{state $.Data.PeerStates .PeerIP}}</span></td></tr>{{end}}</table></section>
+<section class=card><h2>{{tr "users.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "users.cidr"}}</th><th>{{tr "catalog.mode"}}</th><th>{{tr "users.peer"}}</th><th>{{tr "users.asn"}}</th><th>{{tr "users.status"}}</th></tr>
+{{range .Users}}<tr><td><a href="/admin/user/{{.ID}}">{{.Name}}</a></td><td><code>{{join .Networks ", "}}</code></td><td>{{.CatalogModeName}}</td><td><code>{{.PeerIP}}</code></td><td>{{.PeerASN}}</td><td><span class=status>{{state $.Data.PeerStates .PeerIP}}</span></td></tr>{{end}}</table></section>
 <section class=card><form method=post action=/admin/user><h3>{{tr "users.add"}}</h3><div class=grid>
 <label>{{tr "feeds.name"}} <input name=name required></label><label>{{tr "users.networks"}} <input name=networks required></label>
 <label>{{tr "users.peer_ip"}} <input name=peer_ip required></label><label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn required></label>
-<label>{{tr "users.next_hop"}} <input name=next_hop></label><label>{{tr "users.bgp_password"}} <input type=password name=bgp_password></label></div>
+<label>{{tr "users.next_hop"}} <input name=next_hop></label><label>{{tr "users.bgp_password"}} <input type=password name=bgp_password></label>
+<label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Modes}}{{if .Enabled}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}</select></label></div>
 <label><input type=checkbox name=filter_editable> {{tr "users.allow_filter_editing"}}</label>
+<label><input type=checkbox name=catalog_mode_editable> {{tr "users.allow_mode_editing"}}</label>
 <button>{{tr "common.add"}}</button></form></section>
 <section class=card><h2>{{tr "debug.heading"}}</h2><p class=muted>{{tr "debug.description"}}</p>
-<form id=cidr-debug-form><label>{{tr "debug.input"}} <input name=cidr placeholder="8.8.8.8 or 8.8.8.0/24" required></label><button>{{tr "debug.submit"}}</button></form></section>
+<form id=cidr-debug-form><label>{{tr "catalog.mode"}} <select name=mode required>{{range .Modes}}{{if .Enabled}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}</select></label>
+<label>{{tr "debug.input"}} <input name=cidr placeholder="8.8.8.8 or 8.8.8.0/24" required></label><button>{{tr "debug.submit"}}</button></form></section>
 <dialog id=cidr-debug-dialog><div class=dialog-body>
 <div class=dialog-header><h2>{{tr "debug.results"}}</h2><button type=button id=cidr-debug-close aria-label="{{tr "debug.close"}}">×</button></div>
 <p><code id=cidr-debug-query></code></p><p class=error id=cidr-debug-error hidden></p>
@@ -212,8 +240,9 @@ const adminTemplate = `{{with .Data}}
     error.hidden = true;
     content.hidden = false;
     var cidr = new FormData(form).get('cidr');
+    var mode = new FormData(form).get('mode');
     try {
-      var response = await fetch('/admin/debug/cidr?cidr=' + encodeURIComponent(cidr));
+      var response = await fetch('/admin/debug/cidr?mode=' + encodeURIComponent(mode) + '&cidr=' + encodeURIComponent(cidr));
       if (!response.ok) throw new Error((await response.text()).trim() || requestFailed);
       var result = await response.json();
       document.getElementById('cidr-debug-query').textContent = result.query;
@@ -248,10 +277,12 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <label>{{tr "feeds.name"}} <input name=name value="{{.User.Name}}" required></label><label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
 <label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" required></label><label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn value="{{.User.PeerASN}}" required></label>
 <label>{{tr "users.next_hop"}} <input name=next_hop value="{{.User.NextHop}}"></label><label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{if .User.BGPPassword}}{{tr "user.password_set"}}{{else}}{{tr "user.password_not_set"}}{{end}}"></label></div>
+<label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Selection.Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.User.CatalogModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
 <label><input type=checkbox name=clear_bgp_password> {{tr "user.clear_password"}}</label>
 <label><input type=checkbox name=enabled {{if .User.Enabled}}checked{{end}}> {{tr "user.enabled"}}</label>
 <label><input type=checkbox name=locked {{if .User.SelectionLocked}}checked{{end}}> {{tr "user.lock_selection"}}</label>
 <label><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> {{tr "users.allow_filter_editing"}}</label>
+<label><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
 <input type=hidden name=filter_mode value="{{.User.FilterMode}}">
 <button>{{tr "user.save"}}</button></form>
 <form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><button class=danger>{{tr "user.delete"}}</button></form></section>
