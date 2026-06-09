@@ -26,6 +26,69 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if len(feeds) != 5 {
 		t.Fatalf("feed count = %d, want 5", len(feeds))
 	}
+	adapters, err := s.FeedAdapters(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adapters) != 3 {
+		t.Fatalf("adapter count = %d, want 3", len(adapters))
+	}
+	for _, adapter := range adapters {
+		if adapter.Source == "" || adapter.Revision != 1 {
+			t.Fatalf("built-in adapter was not seeded: %#v", adapter)
+		}
+	}
+	for _, feed := range feeds {
+		wantAdapterID := int64(2)
+		if feed.Name == "ipranges" {
+			wantAdapterID = 3
+		}
+		if feed.AdapterID != wantAdapterID {
+			t.Fatalf("feed %q adapter = %d, want %d",
+				feed.Name, feed.AdapterID, wantAdapterID)
+		}
+	}
+}
+
+func TestResetBuiltInFeedAdapter(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	original, err := s.FeedAdapter(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := original
+	changed.Name = "Changed"
+	changed.Source = "function sync() { return []; }\n"
+	changed.AllowedHosts = "example.test"
+	if err := s.UpdateFeedAdapter(ctx, changed); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetFeedAdapter(ctx, changed.ID); err != nil {
+		t.Fatal(err)
+	}
+	reset, err := s.FeedAdapter(ctx, changed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.Name != original.Name ||
+		reset.Source != original.Source ||
+		reset.AllowedHosts != original.AllowedHosts ||
+		reset.Revision != original.Revision+2 ||
+		!reset.BuiltIn {
+		t.Fatalf("reset adapter = %#v, original = %#v", reset, original)
+	}
+
+	customID, err := s.AddFeedAdapter(ctx, FeedAdapter{
+		Key: "custom", Name: "Custom",
+		Source: "function sync() { return []; }\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetFeedAdapter(ctx, customID); err == nil {
+		t.Fatal("custom adapter reset succeeded")
+	}
 }
 
 func TestMigrateLegacyPythonDatabasePreservesData(t *testing.T) {

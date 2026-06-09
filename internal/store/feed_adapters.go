@@ -1,0 +1,255 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+)
+
+const canonicalJSONAdapter = `
+function sync(feed, api) {
+    var value = JSON.parse(api.httpGet(feed.url));
+    if (Array.isArray(value)) {
+        return value;
+    }
+    if (value && Array.isArray(value.entries)) {
+        return value.entries;
+    }
+    return [value];
+}
+`
+
+const openCCKAdapter = `
+function sync(feed, api) {
+    var data = JSON.parse(api.httpGet(feed.url));
+    var metadataURL = feed.url.replace(
+        /([?&])data=cidr[46](&|$)/,
+        "$1data=group$2"
+    );
+    var groups = metadataURL === feed.url
+        ? {}
+        : JSON.parse(api.httpGet(metadataURL));
+    var result = [];
+
+    Object.keys(data).forEach(function (key) {
+        var item = data[key];
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+            result.push({
+                category: item.group,
+                service: item.name || key,
+                cidrs: (item.cidr4 || []).concat(item.cidr6 || [])
+            });
+            return;
+        }
+        result.push({
+            category: groups[key] || feed.name,
+            service: key,
+            cidrs: item
+        });
+    });
+    return result;
+}
+`
+
+const ipRangesAdapter = `
+var services = [
+    ["M247", "Infrastructure", "M247", true],
+    ["adobe", "Platforms", "Adobe", true],
+    ["akamai", "Infrastructure", "Akamai", true],
+    ["alibaba", "Platforms", "Alibaba", true],
+    ["amazon", "Cloud providers", "Amazon AWS", true],
+    ["apple", "Platforms", "Apple", false],
+    ["apple-proxy", "Privacy", "Apple Private Relay", true],
+    ["avito", "Platforms", "Avito", true],
+    ["azure", "Cloud providers", "Microsoft Azure", true],
+    ["backblaze", "Cloud providers", "Backblaze", true],
+    ["beeline", "Networks", "Beeline", false],
+    ["bing", "Platforms", "Bing", false],
+    ["cachefly", "Infrastructure", "CacheFly", true],
+    ["cloudflare", "Infrastructure", "Cloudflare", true],
+    ["constant", "Infrastructure", "Constant", true],
+    ["corbina", "Networks", "Corbina", false],
+    ["digitalocean", "Cloud providers", "DigitalOcean", true],
+    ["edgecast", "Infrastructure", "EdgeCast", true],
+    ["expressvpn", "Privacy", "ExpressVPN", true],
+    ["facebook", "Platforms", "Facebook", true],
+    ["fastly", "Infrastructure", "Fastly", true],
+    ["github", "Platforms", "GitHub", true],
+    ["google", "Platforms", "Google", true],
+    ["googlecloud", "Cloud providers", "Google Cloud", true],
+    ["hetzner", "Cloud providers", "Hetzner", true],
+    ["hostinger", "Cloud providers", "Hostinger", true],
+    ["huggingface", "Platforms", "Hugging Face", false],
+    ["imperva", "Infrastructure", "Imperva", true],
+    ["kinopub", "Platforms", "Kinopub", true],
+    ["linode", "Cloud providers", "Linode", true],
+    ["microsoft", "Platforms", "Microsoft", true],
+    ["mts", "Networks", "MTS", true],
+    ["mtscloud", "Cloud providers", "MTS Cloud", false],
+    ["mullvad", "Privacy", "Mullvad", true],
+    ["nordvpn", "Privacy", "NordVPN", true],
+    ["oracle", "Cloud providers", "Oracle Cloud", false],
+    ["ovh", "Cloud providers", "OVHcloud", true],
+    ["ozonru", "Platforms", "Ozon", true],
+    ["pia", "Privacy", "Private Internet Access", false],
+    ["protonvpn", "Privacy", "ProtonVPN", true],
+    ["qrator", "Infrastructure", "Qrator", true],
+    ["rambler", "Platforms", "Rambler", true],
+    ["rostelecom", "Networks", "Rostelecom", true],
+    ["rugov", "Government", "Russian government sites", true],
+    ["sber", "Platforms", "Sber", true],
+    ["surfshark", "Privacy", "Surfshark", true],
+    ["telegram", "Platforms", "Telegram", true],
+    ["tiktok", "Platforms", "TikTok", true],
+    ["twitter", "Platforms", "Twitter / X", true],
+    ["vercel", "Infrastructure", "Vercel", false],
+    ["vkontakte", "Platforms", "VKontakte", true],
+    ["vpnhosts", "Privacy", "Popular VPN hosts", true],
+    ["yahoo", "Platforms", "Yahoo", true],
+    ["yandex", "Platforms", "Yandex", true],
+    ["yandexcloud", "Cloud providers", "Yandex Cloud", true],
+    ["youtube", "Platforms", "YouTube", false]
+];
+
+function sync(feed, api) {
+    var result = [];
+    services.forEach(function (item) {
+        var families = item[3] ? ["ipv4", "ipv6"] : ["ipv4"];
+        families.forEach(function (family) {
+            var url = "https://raw.githubusercontent.com/antonme/ipranges/main/"
+                + item[0] + "/" + family + "_merged.txt";
+            result.push({
+                category: item[1],
+                service: item[2],
+                cidrs: api.httpGet(url).split(/\s+/).filter(Boolean)
+            });
+        });
+    });
+    return result;
+}
+`
+
+type builtInAdapter struct {
+	name         string
+	source       string
+	allowedHosts string
+}
+
+var builtInAdapters = map[string]builtInAdapter{
+	"canonical-json": {
+		name: "Canonical JSON", source: canonicalJSONAdapter,
+	},
+	"opencck": {
+		name: "OpenCCK", source: openCCKAdapter,
+	},
+	"ipranges": {
+		name: "IPRanges", source: ipRangesAdapter,
+		allowedHosts: "raw.githubusercontent.com",
+	},
+}
+
+func (s *Store) seedBuiltInAdapters(ctx context.Context) error {
+	for key, adapter := range builtInAdapters {
+		if _, err := s.DB.ExecContext(ctx, `
+UPDATE feed_adapters
+SET source = ?
+WHERE key = ? AND source = ''`,
+			normalizedBuiltInSource(adapter.source), key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func IsBuiltInFeedAdapter(key string) bool {
+	_, ok := builtInAdapters[key]
+	return ok
+}
+
+func (s *Store) ResetFeedAdapter(ctx context.Context, id int64) error {
+	var key string
+	if err := s.DB.QueryRowContext(ctx,
+		"SELECT key FROM feed_adapters WHERE id = ?", id).Scan(&key); err != nil {
+		return err
+	}
+	adapter, ok := builtInAdapters[key]
+	if !ok {
+		return fmt.Errorf("adapter %q is not built in", key)
+	}
+	result, err := s.DB.ExecContext(ctx, `
+UPDATE feed_adapters
+SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1
+WHERE id = ?`,
+		adapter.name, normalizedBuiltInSource(adapter.source),
+		adapter.allowedHosts, id)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func normalizedBuiltInSource(source string) string {
+	return strings.TrimSpace(source) + "\n"
+}
+
+func (s *Store) AddFeedAdapter(ctx context.Context, adapter FeedAdapter) (int64, error) {
+	result, err := s.DB.ExecContext(ctx, `
+INSERT INTO feed_adapters(key, name, language, api_version, source, allowed_hosts)
+VALUES (?, ?, 'javascript', 1, ?, ?)`,
+		adapter.Key, adapter.Name, adapter.Source, adapter.AllowedHosts)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+func (s *Store) UpdateFeedAdapter(ctx context.Context, adapter FeedAdapter) error {
+	result, err := s.DB.ExecContext(ctx, `
+UPDATE feed_adapters
+SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1
+WHERE id = ?`,
+		adapter.Name, adapter.Source, adapter.AllowedHosts, adapter.ID)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func ValidateFeedAdapter(adapter FeedAdapter) error {
+	if adapter.ID == 0 {
+		key := strings.TrimSpace(adapter.Key)
+		if key == "" {
+			return fmt.Errorf("adapter key is required")
+		}
+		for _, character := range key {
+			if character >= 'a' && character <= 'z' ||
+				character >= '0' && character <= '9' ||
+				character == '.' || character == '_' || character == '-' {
+				continue
+			}
+			return fmt.Errorf("adapter key contains unsupported character %q", character)
+		}
+	}
+	if strings.TrimSpace(adapter.Name) == "" {
+		return fmt.Errorf("adapter name is required")
+	}
+	if strings.TrimSpace(adapter.Source) == "" {
+		return fmt.Errorf("adapter source is required")
+	}
+	return nil
+}

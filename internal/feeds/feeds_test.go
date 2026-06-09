@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
@@ -51,6 +52,78 @@ func TestLegacyOpenCCKFeedCategory(t *testing.T) {
 	}
 	if isLegacyOpenCCKFeedCategory("Messengers") {
 		t.Fatal("normal category was treated as legacy OpenCCK feed category")
+	}
+}
+
+func TestJavaScriptAdapterNormalizesResult(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://example.test/feed" {
+			t.Fatalf("request URL = %q", request.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`["149.154.167.99/20"]`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	entries, err := (adapterRunner{client: client, timeout: time.Second}).run(
+		context.Background(),
+		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed"},
+		store.FeedAdapter{
+			Key: "test", APIVersion: 1, Source: `
+function sync(feed, api) {
+    return [{
+        category: "Messengers",
+        service: "Telegram",
+        cidrs: JSON.parse(api.httpGet(feed.url))
+    }];
+}`,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].CIDR != "149.154.160.0/20" {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
+func TestJavaScriptAdapterRejectsUnlistedHost(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		t.Fatal("HTTP client must not be called")
+		return nil, nil
+	})}
+	_, err := (adapterRunner{client: client, timeout: time.Second}).run(
+		context.Background(),
+		store.Feed{URL: "https://example.test/feed"},
+		store.FeedAdapter{
+			Key: "test", APIVersion: 1,
+			Source: `function sync(feed, api) {
+                api.httpGet("https://other.test/feed");
+                return [];
+            }`,
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "is not allowed") {
+		t.Fatalf("error = %v, want disallowed host", err)
+	}
+}
+
+func TestJavaScriptAdapterTimesOut(t *testing.T) {
+	_, err := (adapterRunner{
+		client: &http.Client{}, timeout: 10 * time.Millisecond,
+	}).run(
+		context.Background(),
+		store.Feed{URL: "https://example.test/feed"},
+		store.FeedAdapter{
+			Key: "test", APIVersion: 1,
+			Source: `function sync() { while (true) {} }`,
+		},
+	)
+	if err == nil ||
+		(!strings.Contains(err.Error(), "timed out") &&
+			!strings.Contains(err.Error(), "deadline exceeded")) {
+		t.Fatalf("error = %v, want timeout", err)
 	}
 }
 
@@ -167,53 +240,54 @@ FROM feeds WHERE id = ?`, feed.ID).Scan(&url, &lastSuccess, &lastError); err != 
 	}
 }
 
-func TestDownloadIPRangesBuildsServiceCatalog(t *testing.T) {
-	var requests int
-	syncer := &Syncer{Client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		requests++
-		if request.URL.Host != "raw.githubusercontent.com" ||
-			!strings.HasPrefix(request.URL.Path, "/antonme/ipranges/main/") {
-			t.Fatalf("unexpected IPRanges URL: %s", request.URL)
-		}
-		body := "203.0.113.99/24\n"
-		if strings.Contains(request.URL.Path, "ipv6_merged.txt") {
-			body = "2001:db8:1::1/48\n"
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Header:     make(http.Header),
-		}, nil
-	})}}
-
-	entries, err := syncer.downloadIPRanges(context.Background())
+func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	expectedRequests := 0
-	for _, service := range ipRangesServices {
-		expectedRequests++
-		if service.ipv6 {
-			expectedRequests++
-		}
+	defer db.Close()
+	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatal(err)
 	}
-	if requests != expectedRequests || len(entries) != expectedRequests {
-		t.Fatalf("requests=%d entries=%d, want %d", requests, len(entries), expectedRequests)
+	if err := db.AddFeed(ctx, "custom", "https://example.test/feed", true); err != nil {
+		t.Fatal(err)
 	}
-	var telegramV4, googleCloudV6, youtubeV4 bool
-	for _, entry := range entries {
-		if entry.Service == "Telegram" && entry.CIDR == "203.0.113.0/24" {
-			telegramV4 = true
-		}
-		if entry.Service == "Google Cloud" && entry.CIDR == "2001:db8:1::/48" {
-			googleCloudV6 = true
-		}
-		if entry.Service == "YouTube" && entry.CIDR == "203.0.113.0/24" {
-			youtubeV4 = true
-		}
+	feedList, err := db.Feeds(ctx, true)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !telegramV4 || !googleCloudV6 || !youtubeV4 {
-		t.Fatalf("missing normalized service entries: %#v", entries)
+	feed := feedList[0]
+	adapter, err := db.FeedAdapter(ctx, feed.AdapterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	syncer := NewSyncer(db)
+	syncer.Client = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		adapter.Name = "changed during sync"
+		if err := db.UpdateFeedAdapter(ctx, adapter); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{"entries":[
+                {"category":"Test","service":"Stale","cidrs":["8.8.8.0/24"]}
+            ]}`)),
+			Header: make(http.Header),
+		}, nil
+	})}
+	if syncErrors := syncer.SyncAll(ctx); len(syncErrors) != 0 {
+		t.Fatalf("SyncAll errors = %v", syncErrors)
+	}
+	var entries int
+	if err := db.DB.QueryRow(
+		"SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feed.ID).
+		Scan(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if entries != 0 {
+		t.Fatalf("stale catalog entries = %d, want 0", entries)
 	}
 }
 

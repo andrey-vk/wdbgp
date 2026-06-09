@@ -340,6 +340,38 @@ WHERE feed_id = (
 );
 `,
 	},
+	{
+		Version: 11,
+		Name:    "add script feed adapters",
+		SQL: `
+CREATE TABLE feed_adapters (
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL UNIQUE,
+    language TEXT NOT NULL DEFAULT 'javascript'
+        CHECK (language = 'javascript'),
+    api_version INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL DEFAULT '',
+    allowed_hosts TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 1
+);
+
+INSERT INTO feed_adapters(id, key, name, allowed_hosts) VALUES
+    (1, 'canonical-json', 'Canonical JSON', ''),
+    (2, 'opencck', 'OpenCCK', ''),
+    (3, 'ipranges', 'IPRanges', 'raw.githubusercontent.com');
+
+ALTER TABLE feeds ADD COLUMN adapter_id INTEGER REFERENCES feed_adapters(id);
+UPDATE feeds SET adapter_id = CASE
+    WHEN name = 'ipranges' OR url = 'https://github.com/antonme/ipranges' THEN 3
+    WHEN url LIKE 'https://iplist.opencck.org/%'
+      OR url LIKE 'https://beta.iplist.opencck.org/%' THEN 2
+    ELSE 1
+END;
+
+CREATE INDEX idx_feeds_adapter ON feeds(adapter_id);
+`,
+	},
 }
 
 type Store struct {
@@ -351,9 +383,22 @@ type Feed struct {
 	Name        string
 	URL         string
 	ModeID      int64
+	AdapterID   int64
 	Enabled     bool
 	LastSuccess string
 	LastError   string
+}
+
+type FeedAdapter struct {
+	ID           int64
+	Key          string
+	Name         string
+	Language     string
+	APIVersion   int
+	Source       string
+	AllowedHosts string
+	Revision     int64
+	BuiltIn      bool
 }
 
 type CatalogMode struct {
@@ -485,7 +530,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			return err
 		}
 	}
-	return nil
+	return s.seedBuiltInAdapters(ctx)
 }
 
 func NormalizePrefix(value string) (string, error) {
@@ -509,9 +554,11 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 }
 
 func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
-	query := `SELECT f.id, f.name, f.url, f.mode_id, f.enabled,
+	query := `SELECT f.id, f.name, f.url, f.mode_id, f.adapter_id, f.enabled,
 	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
-	          FROM feeds f JOIN catalog_modes m ON m.id = f.mode_id`
+	          FROM feeds f
+	          JOIN catalog_modes m ON m.id = f.mode_id
+	          JOIN feed_adapters a ON a.id = f.adapter_id`
 	if enabledOnly {
 		query += " WHERE f.enabled = 1 AND m.enabled = 1"
 	}
@@ -525,7 +572,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	for rows.Next() {
 		var feed Feed
 		if err := rows.Scan(
-			&feed.ID, &feed.Name, &feed.URL, &feed.ModeID,
+			&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
 			&feed.Enabled, &feed.LastSuccess, &feed.LastError,
 		); err != nil {
 			return nil, err
@@ -533,6 +580,58 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 		feeds = append(feeds, feed)
 	}
 	return feeds, rows.Err()
+}
+
+func (s *Store) Feed(ctx context.Context, id int64) (Feed, error) {
+	var feed Feed
+	err := s.DB.QueryRowContext(ctx, `
+SELECT id, name, url, mode_id, adapter_id, enabled,
+       COALESCE(last_success, ''), COALESCE(last_error, '')
+FROM feeds
+WHERE id = ?`, id).Scan(
+		&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
+		&feed.Enabled, &feed.LastSuccess, &feed.LastError,
+	)
+	return feed, err
+}
+
+func (s *Store) FeedAdapters(ctx context.Context) ([]FeedAdapter, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT id, key, name, language, api_version, source, allowed_hosts, revision
+FROM feed_adapters
+ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var adapters []FeedAdapter
+	for rows.Next() {
+		var adapter FeedAdapter
+		if err := rows.Scan(
+			&adapter.ID, &adapter.Key, &adapter.Name, &adapter.Language,
+			&adapter.APIVersion, &adapter.Source, &adapter.AllowedHosts,
+			&adapter.Revision,
+		); err != nil {
+			return nil, err
+		}
+		adapter.BuiltIn = IsBuiltInFeedAdapter(adapter.Key)
+		adapters = append(adapters, adapter)
+	}
+	return adapters, rows.Err()
+}
+
+func (s *Store) FeedAdapter(ctx context.Context, id int64) (FeedAdapter, error) {
+	var adapter FeedAdapter
+	err := s.DB.QueryRowContext(ctx, `
+SELECT id, key, name, language, api_version, source, allowed_hosts, revision
+FROM feed_adapters
+WHERE id = ?`, id).Scan(
+		&adapter.ID, &adapter.Key, &adapter.Name, &adapter.Language,
+		&adapter.APIVersion, &adapter.Source, &adapter.AllowedHosts,
+		&adapter.Revision,
+	)
+	adapter.BuiltIn = IsBuiltInFeedAdapter(adapter.Key)
+	return adapter, err
 }
 
 func (s *Store) CatalogModes(ctx context.Context, enabledOnly bool) ([]CatalogMode, error) {
@@ -1305,25 +1404,40 @@ func (s *Store) AddFeedForMode(
 	modeID int64,
 	enabled bool,
 ) error {
+	return s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled)
+}
+
+func (s *Store) AddFeedForModeAdapter(
+	ctx context.Context,
+	name string,
+	url string,
+	modeID int64,
+	adapterID int64,
+	enabled bool,
+) error {
 	_, err := s.DB.ExecContext(ctx,
-		"INSERT INTO feeds(name, url, mode_id, enabled) VALUES (?, ?, ?, ?)",
-		name, url, modeID, enabled)
+		"INSERT INTO feeds(name, url, mode_id, adapter_id, enabled) VALUES (?, ?, ?, ?, ?)",
+		name, url, modeID, adapterID, enabled)
 	return err
 }
 
 func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		var oldURL string
-		if err := tx.QueryRowContext(ctx, "SELECT url FROM feeds WHERE id = ?", feed.ID).
-			Scan(&oldURL); err != nil {
+		var oldAdapterID int64
+		if err := tx.QueryRowContext(ctx,
+			"SELECT url, adapter_id FROM feeds WHERE id = ?", feed.ID).
+			Scan(&oldURL, &oldAdapterID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE feeds SET name = ?, url = ?, mode_id = ?, enabled = ? WHERE id = ?",
-			feed.Name, feed.URL, feed.ModeID, feed.Enabled, feed.ID); err != nil {
+			`UPDATE feeds
+			 SET name = ?, url = ?, mode_id = ?, adapter_id = ?, enabled = ?
+			 WHERE id = ?`,
+			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.ID); err != nil {
 			return err
 		}
-		if oldURL == feed.URL {
+		if oldURL == feed.URL && oldAdapterID == feed.AdapterID {
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx,
