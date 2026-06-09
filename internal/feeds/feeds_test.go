@@ -171,6 +171,10 @@ func TestDownloadIPRangesBuildsServiceCatalog(t *testing.T) {
 	var requests int
 	syncer := &Syncer{Client: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		requests++
+		if request.URL.Host != "raw.githubusercontent.com" ||
+			!strings.HasPrefix(request.URL.Path, "/antonme/ipranges/main/") {
+			t.Fatalf("unexpected IPRanges URL: %s", request.URL)
+		}
 		body := "203.0.113.99/24\n"
 		if strings.Contains(request.URL.Path, "ipv6_merged.txt") {
 			body = "2001:db8:1::1/48\n"
@@ -196,16 +200,19 @@ func TestDownloadIPRangesBuildsServiceCatalog(t *testing.T) {
 	if requests != expectedRequests || len(entries) != expectedRequests {
 		t.Fatalf("requests=%d entries=%d, want %d", requests, len(entries), expectedRequests)
 	}
-	var telegramV4, googleV6 bool
+	var telegramV4, googleCloudV6, youtubeV4 bool
 	for _, entry := range entries {
 		if entry.Service == "Telegram" && entry.CIDR == "203.0.113.0/24" {
 			telegramV4 = true
 		}
 		if entry.Service == "Google Cloud" && entry.CIDR == "2001:db8:1::/48" {
-			googleV6 = true
+			googleCloudV6 = true
+		}
+		if entry.Service == "YouTube" && entry.CIDR == "203.0.113.0/24" {
+			youtubeV4 = true
 		}
 	}
-	if !telegramV4 || !googleV6 {
+	if !telegramV4 || !googleCloudV6 || !youtubeV4 {
 		t.Fatalf("missing normalized service entries: %#v", entries)
 	}
 }
@@ -257,7 +264,7 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(catalog["Cloud providers"]) == 0 ||
-		len(catalog["Bots"]) == 0 ||
+		len(catalog["Infrastructure"]) == 0 ||
 		len(catalog["Platforms"]) == 0 {
 		t.Fatalf("IPRanges catalog = %#v", catalog)
 	}

@@ -24,9 +24,9 @@ which clients receive it.
 ## Catalog modes
 
 The built-in modes are `OpenCCK`, for broad service coverage based largely on
-ASN and shared infrastructure ranges, and `IPRanges`, for narrower provider,
-bot, monitoring, and privacy-service ranges from
-[lord-alfred/ipranges](https://github.com/lord-alfred/ipranges).
+ASN and shared infrastructure ranges, and `IPRanges`, for provider, platform,
+CDN, network, and privacy-service ranges from
+[antonme/ipranges](https://github.com/antonme/ipranges).
 
 Administrators can enable or disable modes and assign each feed to a mode. Each
 user has one active mode and independent category/service selections retained
@@ -39,8 +39,10 @@ contribute routes. CIDR diagnostics inspect one selected mode and show only
 users whose active mode matches it.
 
 The built-in IPRanges adapter downloads the upstream merged IPv4/IPv6 lists and
-maps them into separate catalog services. The mode is initially disabled;
-enable it and run a feed sync before configuring users.
+maps them into separate catalog services. Upstream combines public provider
+data, ASN-derived ranges, and DNS-resolved service addresses, so list scope
+varies by service. The mode is initially disabled; enable it and run a feed
+sync before configuring users.
 
 ## Network model
 
