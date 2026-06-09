@@ -436,6 +436,77 @@ VALUES (7, 'Messengers', 'Telegram');
 	}
 }
 
+func TestCatalogModeMigrationReusesExistingIPRangesFeeds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "version-8-ipranges.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON;
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations[:8] {
+		if _, err := db.Exec(migration.SQL); err != nil {
+			t.Fatalf("apply migration %d: %v", migration.Version, err)
+		}
+		if _, err := db.Exec(
+			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, 'now')",
+			migration.Version, migration.Name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`
+INSERT INTO feeds(id, name, url) VALUES
+    (20, 'ipranges', 'https://example.test/old-ipranges'),
+    (21, 'lord-alfred', 'https://github.com/lord-alfred/ipranges');
+INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+    (20, 'Platforms', 'Telegram', '149.154.160.0/20'),
+    (21, 'Platforms', 'Discord', '162.159.128.0/17');
+`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var feedID, modeID, feedCount, entryCount int64
+	var name, feedURL string
+	if err := s.DB.QueryRow(`
+SELECT id, name, url, mode_id FROM feeds
+WHERE name = 'ipranges' OR url = 'https://github.com/lord-alfred/ipranges'
+`).Scan(&feedID, &name, &feedURL, &modeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(`
+SELECT COUNT(*) FROM feeds
+WHERE name = 'ipranges' OR url = 'https://github.com/lord-alfred/ipranges'
+`).Scan(&feedCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feedID).
+		Scan(&entryCount); err != nil {
+		t.Fatal(err)
+	}
+	if feedID != 20 || name != "ipranges" ||
+		feedURL != "https://github.com/lord-alfred/ipranges" ||
+		modeID != IPRangesCatalogModeID ||
+		feedCount != 1 || entryCount != 2 {
+		t.Fatalf("feed=%d name=%q url=%q mode=%d feeds=%d entries=%d",
+			feedID, name, feedURL, modeID, feedCount, entryCount)
+	}
+}
+
 func TestDesiredPrefixesForCategoryAndService(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

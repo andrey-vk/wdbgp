@@ -159,15 +159,33 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	modeID, err := formModeID(r, user.CatalogModeID)
+	if err != nil {
+		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
+		return
+	}
 	if user.SelectionLocked {
-		s.httpError(w, r, "error.selection_locked", http.StatusForbidden)
+		if modeID == user.CatalogModeID {
+			s.httpError(w, r, "error.selection_locked", http.StatusForbidden)
+			return
+		}
+		if !user.CatalogEditable {
+			s.httpError(w, r, "error.catalog_managed", http.StatusForbidden)
+			return
+		}
+		err = s.store.SetUserCatalogMode(r.Context(), user.ID, modeID, true)
+		if err == nil {
+			err = s.bgp.Reconcile(r.Context())
+		}
+		if err != nil {
+			log.Printf("save catalog mode for user %d: %v", user.ID, err)
+			http.Redirect(w, r, "/?saved=0", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/?saved=1", http.StatusSeeOther)
 		return
 	}
 	categories, services, err := parseSelection(r)
-	modeID, modeErr := formModeID(r, user.CatalogModeID)
-	if err == nil && modeErr != nil {
-		err = modeErr
-	}
 	if err == nil && modeID != user.CatalogModeID && !user.CatalogEditable {
 		s.httpError(w, r, "error.catalog_managed", http.StatusForbidden)
 		return
