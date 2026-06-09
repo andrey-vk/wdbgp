@@ -15,6 +15,7 @@ td,th{border-bottom:1px solid #e8edf4;padding:.65rem;text-align:left;vertical-al
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1rem}.row-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
 .feed-actions{flex-wrap:nowrap}.feed-actions form{margin:0}.feed-actions button{padding:.45rem .65rem;border-radius:.5rem;white-space:nowrap}
 .muted{color:#667}.error{color:#a00}.ok{color:#075}.pill{display:inline-block;padding:.15rem .5rem;border-radius:999px;background:#edf2f8;color:#445}
+.error-output{white-space:pre-wrap;overflow:auto;padding:1rem;border-radius:.6rem;background:#fff1f0;color:#8a1c13;border:1px solid #f2b8b5}
 .selection-form{padding-bottom:5.5rem}.save-bar{position:sticky;top:.5rem;z-index:2;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:#10294f;color:white;border-radius:1rem;padding:.8rem 1rem;box-shadow:0 12px 28px #10294f40}
 .save-bar .muted{color:#d7e4f5}.save-bar button{background:#33a36f}.save-bar button:disabled{background:#71829b;cursor:not-allowed}
 .catalog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem;margin-top:1rem}fieldset.category-card{border:1px solid #dfe5ee;border-radius:1rem;background:white;margin:0;padding:0;overflow:hidden}
@@ -36,6 +37,38 @@ const accessDeniedTemplate = `<h1>{{tr "access_denied.heading"}}</h1><p>IP: <cod
 
 const loginTemplate = `<h1>{{tr "admin.heading"}}</h1>{{if .Data}}<p class=error>{{.Data}}</p>{{end}}
 <form method=post><label>{{tr "login.password"}} <input type=password name=password autofocus required></label><button>{{tr "login.submit"}}</button></form>`
+
+const adapterTestTemplate = `{{with .Data}}
+<header><h1>{{tr "adapters.test_result"}}</h1><a href="/admin/adapter/{{.Adapter.ID}}">{{tr "adapters.back_to_editor"}}</a></header>
+<section class=card>
+<p><strong>{{tr "adapters.adapter"}}:</strong> {{.Adapter.Name}}</p>
+<p><strong>{{tr "adapters.feed"}}:</strong> {{.Feed.Name}} <code>{{.Feed.URL}}</code></p>
+<p class=ok>{{printf (tr "adapters.test_success") .TotalEntries}}</p>
+{{if .Truncated}}<p class=muted>{{tr "adapters.preview_truncated"}}</p>{{end}}
+{{if .Entries}}<table><tr><th>{{tr "catalog.category"}}</th><th>{{tr "catalog.service"}}</th><th>CIDR</th></tr>
+{{range .Entries}}<tr><td>{{.Category}}</td><td>{{.Service}}</td><td><code>{{.CIDR}}</code></td></tr>{{end}}</table>
+{{else}}<p class=muted>{{tr "adapters.preview_empty"}}</p>{{end}}
+</section>{{end}}`
+
+const adapterEditTemplate = `{{with .Data}}
+<header><h1>{{.Adapter.Name}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>
+<section class=card>
+<p><code>{{.Adapter.Key}}</code> · rev. {{.Adapter.Revision}}{{if .Adapter.BuiltIn}} · {{tr "adapters.built_in"}}{{end}}</p>
+{{if .Error}}<h2>{{tr "adapters.error"}}</h2><pre class=error-output>{{.Error}}</pre>{{end}}
+<form method=post action="/admin/adapter/{{.Adapter.ID}}">
+<label>{{tr "feeds.name"}} <input name=name value="{{.Adapter.Name}}" required></label>
+<label>{{tr "adapters.allowed_hosts"}} <input name=allowed_hosts value="{{.Adapter.AllowedHosts}}"></label>
+<label>{{tr "adapters.source"}} <textarea name=source rows=30 required>{{.Adapter.Source}}</textarea></label>
+<label>{{tr "adapters.test_feed"}} <select name=feed_id>
+<option value="">{{tr "adapters.select_feed"}}</option>
+{{range .Feeds}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+</select></label>
+<div class=row-actions><button>{{tr "common.save"}}</button>
+<button type=submit formaction="/admin/adapter/{{.Adapter.ID}}/test">{{tr "adapters.test"}}</button></div>
+</form>
+{{if .Adapter.BuiltIn}}<form method=post action="/admin/adapter/{{.Adapter.ID}}/reset" onsubmit="return confirm('{{tr "adapters.reset_confirm"}}');">
+<button class=danger>{{tr "adapters.reset"}}</button></form>{{end}}
+</section>{{end}}`
 
 const selectionBody = `{{$selection := .}}
 <header><h1>{{.User.Name}}</h1>{{if not .Admin}}<a href="/admin">{{tr "admin.link"}}</a>{{end}}</header>
@@ -153,10 +186,11 @@ const adminTemplate = `{{with .Data}}
 <td><input form="mode-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}}></td>
 <td><form id="mode-{{.ID}}" method=post action="/admin/mode/{{.ID}}"><button>{{tr "common.save"}}</button></form></td>
 </tr>{{end}}</table></section>
-<section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "catalog.mode"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th><th>{{tr "feeds.actions"}}</th></tr>
+<section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "adapters.adapter"}}</th><th>{{tr "catalog.mode"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th><th>{{tr "feeds.actions"}}</th></tr>
 {{range .Feeds}}{{$feed := .}}<tr>
 <td><input form="feed-{{.ID}}" name=name value="{{.Name}}" required></td>
 <td><input form="feed-{{.ID}}" type=url name=url value="{{.URL}}" required></td>
+<td><select form="feed-{{$feed.ID}}" name=adapter_id>{{range $.Data.Adapters}}<option value="{{.ID}}" {{if eq .ID $feed.AdapterID}}selected{{end}}>{{.Name}}</option>{{end}}</select></td>
 <td><select form="feed-{{$feed.ID}}" name=catalog_mode_id>{{range $.Data.Modes}}<option value="{{.ID}}" {{if eq .ID $feed.ModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></td>
 <td><input form="feed-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}} aria-label="{{tr "feeds.enabled"}}"></td>
 <td>{{.LastSuccess}}</td><td class=error>{{.LastError}}</td><td>
@@ -165,9 +199,25 @@ const adminTemplate = `{{with .Data}}
 <form method=post action="/admin/feed/{{.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}');"><button class=danger>{{tr "common.delete"}}</button></form>
 </div></td></tr>{{end}}</table>
 <form method=post action=/admin/feed><h3>{{tr "feeds.add"}}</h3><label>{{tr "feeds.name"}} <input name=name required></label><label>URL <input type=url name=url required></label>
+<label>{{tr "adapters.adapter"}} <select name=adapter_id>{{range .Adapters}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></label>
 <label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Modes}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></label>
 <label><input type=checkbox name=enabled checked> {{tr "feeds.enabled"}}</label><button>{{tr "common.add"}}</button></form>
 <form method=post action=/admin/sync><button>{{tr "feeds.download_now"}}</button></form></section>
+<section class=card><h2>{{tr "adapters.heading"}}</h2>
+<p class=muted>{{tr "adapters.hint"}}</p>
+<table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "catalog.key"}}</th><th>{{tr "adapters.revision"}}</th><th>{{tr "feeds.actions"}}</th></tr>
+{{range .Adapters}}<tr><td>{{.Name}}</td><td><code>{{.Key}}</code></td><td>{{.Revision}}</td>
+<td><a class=button href="/admin/adapter/{{.ID}}">{{tr "adapters.edit"}}</a></td></tr>{{end}}</table>
+<details><summary><strong>{{tr "adapters.add"}}</strong></summary>
+<form method=post action=/admin/adapter>
+<label>{{tr "catalog.key"}} <input name=key pattern="[a-z0-9._-]+" required></label>
+<label>{{tr "feeds.name"}} <input name=name required></label>
+<label>{{tr "adapters.allowed_hosts"}} <input name=allowed_hosts></label>
+<label>{{tr "adapters.source"}} <textarea name=source rows=20 required>function sync(feed, api) {
+    return [];
+}
+</textarea></label>
+<button>{{tr "common.add"}}</button></form></details></section>
 <section class=card><h2>{{tr "global_filters.heading"}}</h2>
 <p class=muted>{{tr "global_filters.explanation"}}</p>
 <form method=post action=/admin/filters><div class=grid>

@@ -70,9 +70,24 @@ type selectionView struct {
 type adminView struct {
 	Modes         []store.CatalogMode
 	Feeds         []store.Feed
+	Adapters      []store.FeedAdapter
 	Users         []store.User
 	PeerStates    map[string]string
 	GlobalFilters filterView
+}
+
+type adapterTestView struct {
+	Adapter      store.FeedAdapter
+	Feed         store.Feed
+	Entries      []feeds.Entry
+	TotalEntries int
+	Truncated    bool
+}
+
+type adapterEditView struct {
+	Adapter store.FeedAdapter
+	Feeds   []store.Feed
+	Error   string
 }
 
 type userEditView struct {
@@ -110,6 +125,11 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
 	mux.HandleFunc("POST /admin/feed/{id}", server.requireAdmin(server.updateFeed))
 	mux.HandleFunc("POST /admin/feed/{id}/delete", server.requireAdmin(server.deleteFeed))
+	mux.HandleFunc("POST /admin/adapter", server.requireAdmin(server.addFeedAdapter))
+	mux.HandleFunc("GET /admin/adapter/{id}", server.requireAdmin(server.feedAdapterPage))
+	mux.HandleFunc("POST /admin/adapter/{id}", server.requireAdmin(server.updateFeedAdapter))
+	mux.HandleFunc("POST /admin/adapter/{id}/test", server.requireAdmin(server.testFeedAdapter))
+	mux.HandleFunc("POST /admin/adapter/{id}/reset", server.requireAdmin(server.resetFeedAdapter))
 	mux.HandleFunc("POST /admin/sync", server.requireAdmin(server.syncFeeds))
 	mux.HandleFunc("POST /admin/filters", server.requireAdmin(server.saveGlobalFilters))
 	mux.HandleFunc("POST /admin/user", server.requireAdmin(server.addUser))
@@ -290,6 +310,11 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	adapters, err := s.store.FeedAdapters(r.Context())
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	users, err := s.store.Users(r.Context(), false)
 	if err != nil {
 		s.internalError(w, r, err)
@@ -306,7 +331,8 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, http.StatusOK, "title.admin", "admin", adminView{
-		Modes: modes, Feeds: feedList, Users: users, PeerStates: states,
+		Modes: modes, Feeds: feedList, Adapters: adapters,
+		Users: users, PeerStates: states,
 		GlobalFilters: filterView{
 			AllowText: strings.Join(globalFilters.Allow, "\n"),
 			DenyText:  strings.Join(globalFilters.Deny, "\n"),
@@ -371,12 +397,179 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.store.AddFeedForMode(
-		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.Enabled); err != nil {
+	if err := s.store.AddFeedForModeAdapter(
+		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+func (s *Server) addFeedAdapter(w http.ResponseWriter, r *http.Request) {
+	adapter, err := parseFeedAdapter(r, 0)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	id, err := s.store.AddFeedAdapter(r.Context(), adapter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/admin/adapter/%d", id), http.StatusSeeOther)
+}
+
+func (s *Server) feedAdapterPage(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad adapter id", http.StatusBadRequest)
+		return
+	}
+	adapter, err := s.store.FeedAdapter(r.Context(), id)
+	if err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			s.internalError(w, r, err)
+		}
+		return
+	}
+	s.renderFeedAdapterEditor(w, r, http.StatusOK, adapter, "")
+}
+
+func (s *Server) updateFeedAdapter(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad adapter id", http.StatusBadRequest)
+		return
+	}
+	adapter, err := parseFeedAdapter(r, id)
+	if err != nil {
+		s.renderFeedAdapterEditor(w, r, http.StatusBadRequest,
+			adapter, feeds.FormatAdapterError(err))
+		return
+	}
+	if err := s.store.UpdateFeedAdapter(r.Context(), adapter); err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/admin/adapter/%d", id), http.StatusSeeOther)
+}
+
+func (s *Server) testFeedAdapter(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad adapter id", http.StatusBadRequest)
+		return
+	}
+	adapter, err := parseFeedAdapter(r, id)
+	if err != nil {
+		s.renderFeedAdapterEditor(w, r, http.StatusBadRequest,
+			adapter, feeds.FormatAdapterError(err))
+		return
+	}
+	feedID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("feed_id")), 10, 64)
+	if err != nil || feedID <= 0 {
+		http.Error(w, "invalid feed id", http.StatusBadRequest)
+		return
+	}
+	feed, err := s.store.Feed(r.Context(), feedID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			s.internalError(w, r, err)
+		}
+		return
+	}
+	if feed.AdapterID != id {
+		http.Error(w, "feed does not use this adapter", http.StatusBadRequest)
+		return
+	}
+	stored, err := s.store.FeedAdapter(r.Context(), id)
+	if err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			s.internalError(w, r, err)
+		}
+		return
+	}
+	adapter.Key = stored.Key
+	adapter.Revision = stored.Revision
+	entries, err := s.syncer.TestAdapter(r.Context(), feed, adapter)
+	if err != nil {
+		s.renderFeedAdapterEditor(w, r, http.StatusBadRequest,
+			adapter, feeds.FormatAdapterError(err))
+		return
+	}
+	const previewLimit = 100
+	view := adapterTestView{
+		Adapter: adapter, Feed: feed, Entries: entries, TotalEntries: len(entries),
+	}
+	if len(view.Entries) > previewLimit {
+		view.Entries = view.Entries[:previewLimit]
+		view.Truncated = true
+	}
+	s.render(w, r, http.StatusOK, "title.adapter_test", "adapter-test", view)
+}
+
+func (s *Server) resetFeedAdapter(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad adapter id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.ResetFeedAdapter(r.Context(), id); err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/admin/adapter/%d", id), http.StatusSeeOther)
+}
+
+func (s *Server) renderFeedAdapterEditor(
+	w http.ResponseWriter,
+	r *http.Request,
+	status int,
+	adapter store.FeedAdapter,
+	errorMessage string,
+) {
+	stored, err := s.store.FeedAdapter(r.Context(), adapter.ID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			s.internalError(w, r, err)
+		}
+		return
+	}
+	if adapter.Key == "" {
+		adapter.Key = stored.Key
+	}
+	adapter.Revision = stored.Revision
+	adapter.BuiltIn = stored.BuiltIn
+	feedList, err := s.store.Feeds(r.Context(), false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	var adapterFeeds []store.Feed
+	for _, feed := range feedList {
+		if feed.AdapterID == adapter.ID {
+			adapterFeeds = append(adapterFeeds, feed)
+		}
+	}
+	s.render(w, r, status, "title.adapter_edit", "adapter-edit", adapterEditView{
+		Adapter: adapter, Feeds: adapterFeeds, Error: errorMessage,
+	})
 }
 
 func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
@@ -455,10 +648,39 @@ func parseFeed(r *http.Request, id int64) (store.Feed, error) {
 	if err != nil {
 		return store.Feed{}, err
 	}
+	adapterID := int64(1)
+	if rawAdapterID := strings.TrimSpace(r.FormValue("adapter_id")); rawAdapterID != "" {
+		adapterID, err = strconv.ParseInt(rawAdapterID, 10, 64)
+		if err != nil || adapterID <= 0 {
+			return store.Feed{}, fmt.Errorf("invalid adapter id")
+		}
+	}
 	return store.Feed{
-		ID: id, Name: name, URL: rawURL, ModeID: modeID,
+		ID: id, Name: name, URL: rawURL, ModeID: modeID, AdapterID: adapterID,
 		Enabled: r.Form.Has("enabled"),
 	}, nil
+}
+
+func parseFeedAdapter(r *http.Request, id int64) (store.FeedAdapter, error) {
+	if err := r.ParseForm(); err != nil {
+		return store.FeedAdapter{ID: id}, err
+	}
+	adapter := store.FeedAdapter{
+		ID:           id,
+		Key:          strings.TrimSpace(r.FormValue("key")),
+		Name:         strings.TrimSpace(r.FormValue("name")),
+		Language:     "javascript",
+		APIVersion:   1,
+		Source:       r.FormValue("source"),
+		AllowedHosts: strings.TrimSpace(r.FormValue("allowed_hosts")),
+	}
+	if err := store.ValidateFeedAdapter(adapter); err != nil {
+		return adapter, err
+	}
+	if err := feeds.ValidateAdapterSource(adapter.Source); err != nil {
+		return adapter, err
+	}
+	return adapter, nil
 }
 
 func (s *Server) saveGlobalFilters(w http.ResponseWriter, r *http.Request) {
@@ -852,6 +1074,8 @@ func (s *Server) clientIP(r *http.Request) string {
 func compileTemplates() map[locale]map[string]*template.Template {
 	bodies := map[string]string{
 		"access-denied": accessDeniedTemplate,
+		"adapter-edit":  adapterEditTemplate,
+		"adapter-test":  adapterTestTemplate,
 		"login":         loginTemplate,
 		"selection":     selectionTemplate,
 		"admin":         adminTemplate,
