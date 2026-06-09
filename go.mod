@@ -3,6 +3,7 @@ module github.com/andrey-vk/wdbgp
 go 1.26
 
 require (
+	github.com/dop251/goja v0.0.0-20260607120635-348e6bea910d
 	github.com/osrg/gobgp/v3 v3.37.0
 	golang.org/x/text v0.37.0
 	google.golang.org/protobuf v1.36.10
@@ -11,10 +12,13 @@ require (
 
 require (
 	github.com/dgryski/go-farm v0.0.0-20200201041132-a6ae2369ad13 // indirect
+	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/eapache/channels v1.1.0 // indirect
 	github.com/eapache/queue v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
+	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
+	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/k-sone/critbitgo v1.4.0 // indirect

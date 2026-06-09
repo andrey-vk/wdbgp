@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"database/sql"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -472,6 +473,178 @@ func TestAdminCanManageFeeds(t *testing.T) {
 	}
 }
 
+func TestAdminCanEditFeedAdapter(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret"}
+	handler := New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adapter, err := db.FeedAdapter(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/admin/adapter/1", nil)
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), "api.httpGet(feed.url)") ||
+		!strings.Contains(response.Body.String(), "/admin/adapter/1/reset") {
+		t.Fatalf("adapter editor: status=%d body=%s",
+			response.Code, response.Body.String())
+	}
+	form := url.Values{
+		"name":          {"Edited canonical"},
+		"allowed_hosts": {"cdn.example.test"},
+		"source":        {`function sync(feed, api) { return []; }`},
+	}
+	request = httptest.NewRequest(http.MethodPost, "/admin/adapter/1",
+		strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("edit adapter: status=%d body=%s", response.Code, response.Body.String())
+	}
+	updated, err := db.FeedAdapter(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Name != "Edited canonical" ||
+		updated.AllowedHosts != "cdn.example.test" ||
+		updated.Revision != adapter.Revision+1 {
+		t.Fatalf("updated adapter = %#v", updated)
+	}
+
+	form.Set("source", `function sync(`)
+	request = httptest.NewRequest(http.MethodPost, "/admin/adapter/1",
+		strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "feed-adapter.js") ||
+		!strings.Contains(response.Body.String(), "function sync(") {
+		t.Fatalf("invalid adapter: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/admin/adapter/1/reset", nil)
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("reset adapter: status=%d body=%s", response.Code, response.Body.String())
+	}
+	reset, err := db.FeedAdapter(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.Name != adapter.Name ||
+		reset.Source != adapter.Source ||
+		reset.AllowedHosts != adapter.AllowedHosts ||
+		reset.Revision != adapter.Revision+2 {
+		t.Fatalf("reset adapter = %#v, original = %#v", reset, adapter)
+	}
+}
+
+func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddFeed(context.Background(), "preview",
+		"https://example.test/feed", false); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed := feedList[len(feedList)-1]
+	adapter, err := db.FeedAdapter(context.Background(), feed.AdapterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syncer := feeds.NewSyncer(db)
+	syncer.Client = &http.Client{Transport: testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != feed.URL {
+			t.Fatalf("request URL = %q, want %q", request.URL, feed.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`["149.154.167.99/20"]`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret"}
+	handler := New(cfg, db, syncer, &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	form := url.Values{
+		"name":          {"Unsaved name"},
+		"allowed_hosts": {adapter.AllowedHosts},
+		"feed_id":       {strconv.FormatInt(feed.ID, 10)},
+		"source": {`function sync(feed, api) {
+            return [{
+                category: "Messengers",
+                service: "Telegram",
+                cidrs: JSON.parse(api.httpGet(feed.url))
+            }];
+        }`},
+	}
+	request := httptest.NewRequest(http.MethodPost,
+		"/admin/adapter/"+strconv.FormatInt(adapter.ID, 10)+"/test",
+		strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), "149.154.160.0/20") ||
+		!strings.Contains(response.Body.String(), "Unsaved name") {
+		t.Fatalf("test adapter: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var entries int
+	if err := db.DB.QueryRow(
+		"SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feed.ID).
+		Scan(&entries); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := db.FeedAdapter(context.Background(), adapter.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries != 0 || stored.Revision != adapter.Revision || stored.Name != adapter.Name {
+		t.Fatalf("test changed state: entries=%d adapter=%#v", entries, stored)
+	}
+
+	form.Set("source", `function sync() {
+        throw new Error("preview failed");
+    }`)
+	request = httptest.NewRequest(http.MethodPost,
+		"/admin/adapter/"+strconv.FormatInt(adapter.ID, 10)+"/test",
+		strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "preview failed") ||
+		!strings.Contains(response.Body.String(), "canonical-json.js:2") {
+		t.Fatalf("runtime adapter error: status=%d body=%s",
+			response.Code, response.Body.String())
+	}
+}
+
 func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
 	if err != nil {
@@ -805,4 +978,10 @@ func TestAdminCookieSecureAutoHonorsTrustedForwardedProto(t *testing.T) {
 	if !cookies[0].Secure {
 		t.Fatalf("HTTPS admin cookie must be Secure: %#v", cookies[0])
 	}
+}
+
+type testRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn testRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
 }
