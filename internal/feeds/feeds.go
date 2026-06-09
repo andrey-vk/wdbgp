@@ -37,82 +37,20 @@ type openCCKEntry struct {
 }
 
 type Syncer struct {
-	Store  *store.Store
-	Client *http.Client
+	Store         *store.Store
+	Client        *http.Client
+	ScriptTimeout time.Duration
 }
 
 var errFeedChanged = errors.New("feed changed during synchronization")
 
 const ipRangesURL = "https://github.com/antonme/ipranges"
 
-var ipRangesServices = []struct {
-	slug     string
-	category string
-	service  string
-	ipv6     bool
-}{
-	{"M247", "Infrastructure", "M247", true},
-	{"adobe", "Platforms", "Adobe", true},
-	{"akamai", "Infrastructure", "Akamai", true},
-	{"alibaba", "Platforms", "Alibaba", true},
-	{"amazon", "Cloud providers", "Amazon AWS", true},
-	{"apple", "Platforms", "Apple", false},
-	{"apple-proxy", "Privacy", "Apple Private Relay", true},
-	{"avito", "Platforms", "Avito", true},
-	{"azure", "Cloud providers", "Microsoft Azure", true},
-	{"backblaze", "Cloud providers", "Backblaze", true},
-	{"beeline", "Networks", "Beeline", false},
-	{"bing", "Platforms", "Bing", false},
-	{"cachefly", "Infrastructure", "CacheFly", true},
-	{"cloudflare", "Infrastructure", "Cloudflare", true},
-	{"constant", "Infrastructure", "Constant", true},
-	{"corbina", "Networks", "Corbina", false},
-	{"digitalocean", "Cloud providers", "DigitalOcean", true},
-	{"edgecast", "Infrastructure", "EdgeCast", true},
-	{"expressvpn", "Privacy", "ExpressVPN", true},
-	{"facebook", "Platforms", "Facebook", true},
-	{"fastly", "Infrastructure", "Fastly", true},
-	{"github", "Platforms", "GitHub", true},
-	{"google", "Platforms", "Google", true},
-	{"googlecloud", "Cloud providers", "Google Cloud", true},
-	{"hetzner", "Cloud providers", "Hetzner", true},
-	{"hostinger", "Cloud providers", "Hostinger", true},
-	{"huggingface", "Platforms", "Hugging Face", false},
-	{"imperva", "Infrastructure", "Imperva", true},
-	{"kinopub", "Platforms", "Kinopub", true},
-	{"linode", "Cloud providers", "Linode", true},
-	{"microsoft", "Platforms", "Microsoft", true},
-	{"mts", "Networks", "MTS", true},
-	{"mtscloud", "Cloud providers", "MTS Cloud", false},
-	{"mullvad", "Privacy", "Mullvad", true},
-	{"nordvpn", "Privacy", "NordVPN", true},
-	{"oracle", "Cloud providers", "Oracle Cloud", false},
-	{"ovh", "Cloud providers", "OVHcloud", true},
-	{"ozonru", "Platforms", "Ozon", true},
-	{"pia", "Privacy", "Private Internet Access", false},
-	{"protonvpn", "Privacy", "ProtonVPN", true},
-	{"qrator", "Infrastructure", "Qrator", true},
-	{"rambler", "Platforms", "Rambler", true},
-	{"rostelecom", "Networks", "Rostelecom", true},
-	{"rugov", "Government", "Russian government sites", true},
-	{"sber", "Platforms", "Sber", true},
-	{"surfshark", "Privacy", "Surfshark", true},
-	{"telegram", "Platforms", "Telegram", true},
-	{"tiktok", "Platforms", "TikTok", true},
-	{"twitter", "Platforms", "Twitter / X", true},
-	{"vercel", "Infrastructure", "Vercel", false},
-	{"vkontakte", "Platforms", "VKontakte", true},
-	{"vpnhosts", "Privacy", "Popular VPN hosts", true},
-	{"yahoo", "Platforms", "Yahoo", true},
-	{"yandex", "Platforms", "Yandex", true},
-	{"yandexcloud", "Cloud providers", "Yandex Cloud", true},
-	{"youtube", "Platforms", "YouTube", false},
-}
-
 func NewSyncer(s *store.Store) *Syncer {
 	return &Syncer{
-		Store:  s,
-		Client: &http.Client{Timeout: 120 * time.Second},
+		Store:         s,
+		Client:        newHTTPClient(120 * time.Second),
+		ScriptTimeout: 120 * time.Second,
 	}
 }
 
@@ -133,37 +71,50 @@ func (s *Syncer) SyncAll(ctx context.Context) []error {
 	return errors
 }
 
+func (s *Syncer) TestAdapter(
+	ctx context.Context,
+	feed store.Feed,
+	adapter store.FeedAdapter,
+) ([]Entry, error) {
+	return (adapterRunner{
+		client: s.Client, timeout: s.ScriptTimeout,
+	}).run(ctx, feed, adapter)
+}
+
 func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
-	lookup, err := s.categoryLookup(ctx, feed)
+	adapter, err := s.Store.FeedAdapter(ctx, feed.AdapterID)
 	if err != nil {
 		return err
 	}
-	var entries []Entry
-	if strings.TrimSuffix(feed.URL, "/") == ipRangesURL {
-		entries, err = s.downloadIPRanges(ctx)
-	} else {
-		var payload []byte
-		payload, err = s.download(ctx, feed.URL)
-		if err == nil {
-			entries, err = Parse(payload, lookup, feed.Name)
-		}
-	}
+	entries, err := s.TestAdapter(ctx, feed, adapter)
 	if err != nil {
 		return err
 	}
 	err = s.Store.Transaction(ctx, func(tx *sql.Tx) error {
 		var currentURL string
 		var currentModeID int64
+		var currentAdapterID int64
+		var currentAdapterRevision int64
 		var enabled bool
 		if err := tx.QueryRowContext(ctx,
-			"SELECT url, mode_id, enabled FROM feeds WHERE id = ?", feed.ID).
-			Scan(&currentURL, &currentModeID, &enabled); err != nil {
+			`SELECT f.url, f.mode_id, f.adapter_id, f.enabled, a.revision
+			 FROM feeds f
+			 JOIN feed_adapters a ON a.id = f.adapter_id
+			 WHERE f.id = ?`, feed.ID).
+			Scan(
+				&currentURL, &currentModeID, &currentAdapterID, &enabled,
+				&currentAdapterRevision,
+			); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errFeedChanged
 			}
 			return err
 		}
-		if currentURL != feed.URL || currentModeID != feed.ModeID || !enabled {
+		if currentURL != feed.URL ||
+			currentModeID != feed.ModeID ||
+			currentAdapterID != feed.AdapterID ||
+			currentAdapterRevision != adapter.Revision ||
+			!enabled {
 			return errFeedChanged
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
@@ -261,38 +212,6 @@ func (s *Syncer) download(ctx context.Context, rawURL string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %s", response.Status)
 	}
 	return io.ReadAll(response.Body)
-}
-
-func (s *Syncer) downloadIPRanges(ctx context.Context) ([]Entry, error) {
-	var entries []Entry
-	for _, item := range ipRangesServices {
-		families := []string{"ipv4"}
-		if item.ipv6 {
-			families = append(families, "ipv6")
-		}
-		for _, family := range families {
-			rawURL := fmt.Sprintf(
-				"https://raw.githubusercontent.com/antonme/ipranges/main/%s/%s_merged.txt",
-				item.slug, family)
-			payload, err := s.download(ctx, rawURL)
-			if err != nil {
-				return nil, fmt.Errorf("download %s %s: %w", item.service, family, err)
-			}
-			for _, rawCIDR := range strings.Fields(string(payload)) {
-				cidr, err := store.NormalizePrefix(rawCIDR)
-				if err != nil {
-					return nil, fmt.Errorf("parse %s %s prefix %q: %w",
-						item.service, family, rawCIDR, err)
-				}
-				entries = append(entries, Entry{
-					Category: item.category,
-					Service:  item.service,
-					CIDR:     cidr,
-				})
-			}
-		}
-	}
-	return deduplicate(entries), nil
 }
 
 func MetadataURL(rawURL string) string {

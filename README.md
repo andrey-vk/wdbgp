@@ -87,6 +87,36 @@ database, but excludes its services and prefixes from the catalog and BGP
 announcements. Re-enabling it restores that snapshot until the next sync.
 Changing a feed URL clears the old snapshot; deleting a feed removes it.
 
+Feed adapters are JavaScript programs stored in the database and editable from
+the admin UI. The distribution includes adapters for canonical JSON, OpenCCK,
+and IPRanges. A feed selects one adapter. An adapter must define:
+
+```javascript
+function sync(feed, api) {
+    const data = JSON.parse(api.httpGet(feed.url));
+    return data.entries;
+}
+```
+
+The function returns objects with `category`, `service`, and `cidrs` fields.
+The runtime exposes only `api.httpGet()`. Requests are limited by host, count,
+response size, total downloaded size, and execution timeout. The feed host is
+always allowed; adapters may declare additional hosts in the admin UI. The Go
+application validates and normalizes every returned CIDR before atomically
+replacing the previous snapshot. Invalid scripts and failed synchronizations
+leave the last successful snapshot in place.
+
+An existing adapter can be tested against one of its feeds from the admin UI.
+The test uses the source currently shown in the editor, including unsaved
+changes, and previews up to 100 normalized CIDRs without modifying the catalog,
+feed status, adapter revision, or BGP state.
+
+Each adapter has a separate editor page. Syntax and runtime failures are shown
+there with JavaScript source locations and stack traces while preserving the
+submitted source. Built-in adapters can also be reset to the distribution
+version; reset restores their original name, source, and allowed hosts and
+increments the revision.
+
 The admin UI also includes CIDR diagnostics. Enter an IP address or subnet to
 see full and partial service coverage, combined coverage across services, and
 coverage from each enabled user's selected categories and services before and
@@ -235,6 +265,5 @@ IPv6 address and `WDBGP_BGP_LOCAL_ADDRESS_V6` when using IPv6.
 
 ## Limitations
 
-- OpenCCK is the only built-in adapter for a non-canonical feed format.
 - Editing BGP peer settings restarts the embedded BGP server; changing a route
   selection is applied without a restart.
