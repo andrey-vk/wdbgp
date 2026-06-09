@@ -232,8 +232,43 @@ INSERT INTO catalog_modes(id, key, name, enabled) VALUES
 
 ALTER TABLE feeds ADD COLUMN mode_id INTEGER REFERENCES catalog_modes(id);
 UPDATE feeds SET mode_id = 1;
+INSERT OR IGNORE INTO catalog_entries(feed_id, category, service, cidr)
+SELECT keeper.id, ce.category, ce.service, ce.cidr
+FROM catalog_entries ce
+JOIN feeds duplicate ON duplicate.id = ce.feed_id
+JOIN feeds keeper ON keeper.id = (
+    SELECT MIN(candidate.id)
+    FROM feeds candidate
+    WHERE candidate.name = 'ipranges'
+       OR candidate.url = 'https://github.com/lord-alfred/ipranges'
+)
+WHERE (duplicate.name = 'ipranges'
+    OR duplicate.url = 'https://github.com/lord-alfred/ipranges')
+  AND duplicate.id != keeper.id;
+
+DELETE FROM feeds
+WHERE (name = 'ipranges' OR url = 'https://github.com/lord-alfred/ipranges')
+  AND id != (
+      SELECT MIN(candidate.id)
+      FROM feeds candidate
+      WHERE candidate.name = 'ipranges'
+         OR candidate.url = 'https://github.com/lord-alfred/ipranges'
+  );
+
 INSERT INTO feeds(name, url, enabled, mode_id)
-VALUES ('ipranges', 'https://github.com/lord-alfred/ipranges', 1, 2);
+SELECT 'ipranges', 'https://github.com/lord-alfred/ipranges', 1, 2
+WHERE NOT EXISTS (
+    SELECT 1 FROM feeds
+    WHERE name = 'ipranges'
+       OR url = 'https://github.com/lord-alfred/ipranges'
+);
+
+UPDATE feeds
+SET name = 'ipranges',
+    url = 'https://github.com/lord-alfred/ipranges',
+    mode_id = 2
+WHERE name = 'ipranges'
+   OR url = 'https://github.com/lord-alfred/ipranges';
 
 ALTER TABLE users ADD COLUMN catalog_mode_id INTEGER REFERENCES catalog_modes(id);
 ALTER TABLE users ADD COLUMN catalog_mode_editable INTEGER NOT NULL DEFAULT 0;

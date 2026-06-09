@@ -257,6 +257,64 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 	}
 }
 
+func TestLockedUserCanChangeEditableCatalogMode(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	modes, err := db.CatalogModes(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipranges := modes[1]
+	ipranges.Enabled = true
+	if err := db.UpdateCatalogMode(ctx, ipranges); err != nil {
+		t.Fatal(err)
+	}
+	userID, err := db.AddUser(ctx, store.User{
+		Name: "client", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		SelectionLocked: true, CatalogEditable: true, CatalogModeID: 1,
+		Networks: []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserModeSelection(
+			ctx, tx, userID, 1, []string{"Messengers"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bgp := &fakeBGP{}
+	handler := New(config.Config{}, db, feeds.NewSyncer(db), bgp).Handler()
+	form := url.Values{
+		"catalog_mode_id": {strconv.FormatInt(ipranges.ID, 10)},
+	}
+	request := httptest.NewRequest(
+		http.MethodPost, "/selection", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.RemoteAddr = "192.168.20.15:12345"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("mode change status=%d body=%s", response.Code, response.Body.String())
+	}
+	user, err := db.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	categories, _, err := db.UserModeSelection(ctx, userID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.CatalogModeID != ipranges.ID || !categories["Messengers"] ||
+		bgp.reconciles != 1 {
+		t.Fatalf("user=%#v categories=%#v reconciles=%d", user, categories, bgp.reconciles)
+	}
+}
+
 func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
 	if err != nil {

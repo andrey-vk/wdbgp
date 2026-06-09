@@ -59,7 +59,7 @@ const selectionBody = `{{$selection := .}}
 <span id=selected-service-count>{{.SelectedServiceCount}}</span>
 <span id=selected-service-label data-one="{{tr "selection.standalone_one"}}" data-few="{{tr "selection.standalone_few"}}" data-many="{{tr "selection.standalone_many"}}">{{plural .SelectedServiceCount "selection.standalone_one" "selection.standalone_few" "selection.standalone_many"}}</span>.
 {{tr "selection.apply_hint"}}</span></div>
-<button {{if not .Editable}}disabled{{end}}>{{tr "selection.save"}}</button></div>
+<button {{if and (not .Editable) (not .CanChangeMode)}}disabled{{end}}>{{tr "selection.save"}}</button></div>
 {{if .Categories}}<div class=catalog-grid>{{range .Categories}}
 <fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>{{tr "selection.whole_category"}}</span></label></legend>
 <div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}</label>{{end}}</div>
