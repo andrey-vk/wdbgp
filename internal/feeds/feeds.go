@@ -43,7 +43,7 @@ type Syncer struct {
 
 var errFeedChanged = errors.New("feed changed during synchronization")
 
-const ipRangesURL = "https://github.com/lord-alfred/ipranges"
+const ipRangesURL = "https://github.com/antonme/ipranges"
 
 var ipRangesServices = []struct {
 	slug     string
@@ -51,28 +51,62 @@ var ipRangesServices = []struct {
 	service  string
 	ipv6     bool
 }{
+	{"M247", "Infrastructure", "M247", true},
+	{"adobe", "Platforms", "Adobe", true},
+	{"akamai", "Infrastructure", "Akamai", true},
+	{"alibaba", "Platforms", "Alibaba", true},
 	{"amazon", "Cloud providers", "Amazon AWS", true},
+	{"apple", "Platforms", "Apple", false},
 	{"apple-proxy", "Privacy", "Apple Private Relay", true},
-	{"bing", "Bots", "BingBot", false},
+	{"avito", "Platforms", "Avito", true},
+	{"azure", "Cloud providers", "Microsoft Azure", true},
+	{"backblaze", "Cloud providers", "Backblaze", true},
+	{"beeline", "Networks", "Beeline", false},
+	{"bing", "Platforms", "Bing", false},
+	{"cachefly", "Infrastructure", "CacheFly", true},
 	{"cloudflare", "Infrastructure", "Cloudflare", true},
+	{"constant", "Infrastructure", "Constant", true},
+	{"corbina", "Networks", "Corbina", false},
 	{"digitalocean", "Cloud providers", "DigitalOcean", true},
-	{"duckassistbot", "Bots", "DuckAssistBot", false},
-	{"duckduckbot", "Bots", "DuckDuckBot", false},
+	{"edgecast", "Infrastructure", "EdgeCast", true},
+	{"expressvpn", "Privacy", "ExpressVPN", true},
 	{"facebook", "Platforms", "Facebook", true},
+	{"fastly", "Infrastructure", "Fastly", true},
 	{"github", "Platforms", "GitHub", true},
-	{"google", "Cloud providers", "Google Cloud", true},
-	{"googlebot", "Bots", "GoogleBot", true},
+	{"google", "Platforms", "Google", true},
+	{"googlecloud", "Cloud providers", "Google Cloud", true},
+	{"hetzner", "Cloud providers", "Hetzner", true},
+	{"hostinger", "Cloud providers", "Hostinger", true},
+	{"huggingface", "Platforms", "Hugging Face", false},
+	{"imperva", "Infrastructure", "Imperva", true},
+	{"kinopub", "Platforms", "Kinopub", true},
 	{"linode", "Cloud providers", "Linode", true},
-	{"microsoft", "Cloud providers", "Microsoft Azure", true},
-	{"openai", "Bots", "OpenAI bots", false},
+	{"microsoft", "Platforms", "Microsoft", true},
+	{"mts", "Networks", "MTS", true},
+	{"mtscloud", "Cloud providers", "MTS Cloud", false},
+	{"mullvad", "Privacy", "Mullvad", true},
+	{"nordvpn", "Privacy", "NordVPN", true},
 	{"oracle", "Cloud providers", "Oracle Cloud", false},
-	{"perplexity", "Bots", "PerplexityBot", false},
-	{"pingdom", "Monitoring", "Pingdom", true},
-	{"protonvpn", "Privacy", "ProtonVPN", false},
-	{"statuscake", "Monitoring", "StatusCake", false},
+	{"ovh", "Cloud providers", "OVHcloud", true},
+	{"ozonru", "Platforms", "Ozon", true},
+	{"pia", "Privacy", "Private Internet Access", false},
+	{"protonvpn", "Privacy", "ProtonVPN", true},
+	{"qrator", "Infrastructure", "Qrator", true},
+	{"rambler", "Platforms", "Rambler", true},
+	{"rostelecom", "Networks", "Rostelecom", true},
+	{"rugov", "Government", "Russian government sites", true},
+	{"sber", "Platforms", "Sber", true},
+	{"surfshark", "Privacy", "Surfshark", true},
 	{"telegram", "Platforms", "Telegram", true},
+	{"tiktok", "Platforms", "TikTok", true},
 	{"twitter", "Platforms", "Twitter / X", true},
-	{"vultr", "Cloud providers", "Vultr", true},
+	{"vercel", "Infrastructure", "Vercel", false},
+	{"vkontakte", "Platforms", "VKontakte", true},
+	{"vpnhosts", "Privacy", "Popular VPN hosts", true},
+	{"yahoo", "Platforms", "Yahoo", true},
+	{"yandex", "Platforms", "Yandex", true},
+	{"yandexcloud", "Cloud providers", "Yandex Cloud", true},
+	{"youtube", "Platforms", "YouTube", false},
 }
 
 func NewSyncer(s *store.Store) *Syncer {
@@ -238,7 +272,7 @@ func (s *Syncer) downloadIPRanges(ctx context.Context) ([]Entry, error) {
 		}
 		for _, family := range families {
 			rawURL := fmt.Sprintf(
-				"https://raw.githubusercontent.com/lord-alfred/ipranges/main/%s/%s_merged.txt",
+				"https://raw.githubusercontent.com/antonme/ipranges/main/%s/%s_merged.txt",
 				item.slug, family)
 			payload, err := s.download(ctx, rawURL)
 			if err != nil {

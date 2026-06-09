@@ -463,10 +463,12 @@ CREATE TABLE schema_migrations (
 	if _, err := db.Exec(`
 INSERT INTO feeds(id, name, url) VALUES
     (20, 'ipranges', 'https://example.test/old-ipranges'),
-    (21, 'lord-alfred', 'https://github.com/lord-alfred/ipranges');
+    (21, 'lord-alfred', 'https://github.com/lord-alfred/ipranges'),
+    (22, 'antonme', 'https://github.com/antonme/ipranges');
 INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
     (20, 'Platforms', 'Telegram', '149.154.160.0/20'),
-    (21, 'Platforms', 'Discord', '162.159.128.0/17');
+    (21, 'Platforms', 'Discord', '162.159.128.0/17'),
+    (22, 'Platforms', 'YouTube', '142.250.0.0/15');
 `); err != nil {
 		t.Fatal(err)
 	}
@@ -483,13 +485,15 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 	var name, feedURL string
 	if err := s.DB.QueryRow(`
 SELECT id, name, url, mode_id FROM feeds
-WHERE name = 'ipranges' OR url = 'https://github.com/lord-alfred/ipranges'
+WHERE name = 'ipranges' OR url = 'https://github.com/antonme/ipranges'
 `).Scan(&feedID, &name, &feedURL, &modeID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DB.QueryRow(`
 SELECT COUNT(*) FROM feeds
-WHERE name = 'ipranges' OR url = 'https://github.com/lord-alfred/ipranges'
+WHERE name = 'ipranges'
+   OR url = 'https://github.com/lord-alfred/ipranges'
+   OR url = 'https://github.com/antonme/ipranges'
 `).Scan(&feedCount); err != nil {
 		t.Fatal(err)
 	}
@@ -499,9 +503,9 @@ WHERE name = 'ipranges' OR url = 'https://github.com/lord-alfred/ipranges'
 		t.Fatal(err)
 	}
 	if feedID != 20 || name != "ipranges" ||
-		feedURL != "https://github.com/lord-alfred/ipranges" ||
+		feedURL != "https://github.com/antonme/ipranges" ||
 		modeID != IPRangesCatalogModeID ||
-		feedCount != 1 || entryCount != 2 {
+		feedCount != 1 || entryCount != 0 {
 		t.Fatalf("feed=%d name=%q url=%q mode=%d feeds=%d entries=%d",
 			feedID, name, feedURL, modeID, feedCount, entryCount)
 	}
