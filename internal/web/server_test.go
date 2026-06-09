@@ -183,6 +183,80 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	}
 }
 
+func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	modes, err := db.CatalogModes(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipranges := modes[1]
+	ipranges.Enabled = true
+	if err := db.UpdateCatalogMode(ctx, ipranges); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddFeedForMode(
+		ctx, "precise", "https://example.test/precise", ipranges.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	var feedID int64
+	if err := db.DB.QueryRow("SELECT id FROM feeds WHERE name = 'precise'").Scan(&feedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr)
+		VALUES (?, 'Precise', 'Resolver', '8.8.8.0/24')`, feedID); err != nil {
+		t.Fatal(err)
+	}
+	userID, err := db.AddUser(ctx, store.User{
+		Name: "client", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		CatalogModeID: 1, Networks: []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bgp := &fakeBGP{}
+	handler := New(config.Config{}, db, feeds.NewSyncer(db), bgp).Handler()
+	form := url.Values{
+		"catalog_mode_id": {strconv.FormatInt(ipranges.ID, 10)},
+		"service":         {serviceValue("Precise", "Resolver")},
+	}
+	save := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/selection", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		request.RemoteAddr = "192.168.20.15:12345"
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := save(); response.Code != http.StatusForbidden {
+		t.Fatalf("managed mode change status=%d body=%s", response.Code, response.Body.String())
+	}
+	if _, err := db.DB.Exec(
+		"UPDATE users SET catalog_mode_editable = 1 WHERE id = ?", userID); err != nil {
+		t.Fatal(err)
+	}
+	if response := save(); response.Code != http.StatusSeeOther {
+		t.Fatalf("editable mode change status=%d body=%s", response.Code, response.Body.String())
+	}
+	user, err := db.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, services, err := db.UserModeSelection(ctx, userID, ipranges.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.CatalogModeID != ipranges.ID ||
+		!services[store.ServiceKey{Category: "Precise", Service: "Resolver"}] ||
+		bgp.reconciles != 1 {
+		t.Fatalf("user=%#v services=%#v reconciles=%d", user, services, bgp.reconciles)
+	}
+}
+
 func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
 	if err != nil {

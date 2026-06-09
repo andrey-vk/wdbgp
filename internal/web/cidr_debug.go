@@ -35,12 +35,20 @@ type addressRange struct {
 	end   *big.Int
 }
 
-func (s *Server) debugCIDR(ctx context.Context, raw string) (cidrDebugResult, error) {
+func (s *Server) debugCIDR(
+	ctx context.Context,
+	raw string,
+	modeIDs ...int64,
+) (cidrDebugResult, error) {
+	modeID := store.DefaultCatalogModeID
+	if len(modeIDs) > 0 {
+		modeID = modeIDs[0]
+	}
 	target, err := parseDebugPrefix(raw)
 	if err != nil {
 		return cidrDebugResult{}, err
 	}
-	catalog, err := s.store.EnabledCatalogPrefixes(ctx)
+	catalog, err := s.store.EnabledCatalogPrefixes(ctx, modeID)
 	if err != nil {
 		return cidrDebugResult{}, err
 	}
@@ -98,7 +106,10 @@ func (s *Server) debugCIDR(ctx context.Context, raw string) (cidrDebugResult, er
 		return cidrDebugResult{}, err
 	}
 	for _, user := range users {
-		categories, services, err := s.store.UserSelection(ctx, user.ID)
+		if user.CatalogModeID != modeID {
+			continue
+		}
+		categories, services, err := s.store.UserModeSelection(ctx, user.ID, modeID)
 		if err != nil {
 			return cidrDebugResult{}, err
 		}

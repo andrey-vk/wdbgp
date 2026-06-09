@@ -123,6 +123,63 @@ func TestCIDRDebugCombinedCoverageFromMultipleServices(t *testing.T) {
 	}
 }
 
+func TestCIDRDebugUsesSelectedModeAndMatchingUsers(t *testing.T) {
+	db := debugTestStore(t)
+	ctx := context.Background()
+	modes, err := db.CatalogModes(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipranges := modes[1]
+	ipranges.Enabled = true
+	if err := db.UpdateCatalogMode(ctx, ipranges); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddFeedForMode(
+		ctx, "precise", "https://example.test/precise", ipranges.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	var preciseFeedID int64
+	if err := db.DB.QueryRow("SELECT id FROM feeds WHERE name = 'precise'").
+		Scan(&preciseFeedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr)
+		VALUES (?, 'Precise', 'Resolver', '8.8.8.0/24')`, preciseFeedID); err != nil {
+		t.Fatal(err)
+	}
+	openUserID := addDebugUser(t, db, "open-user", "192.168.20.0/24", nil, nil)
+	preciseUserID, err := db.AddUser(ctx, store.User{
+		Name: "precise-user", PeerIP: "192.168.21.0", PeerASN: 65001, Enabled: true,
+		CatalogModeID: ipranges.ID, Networks: []string{"192.168.21.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Transaction(ctx, func(tx *sql.Tx) error {
+		if err := store.SetUserModeSelection(
+			ctx, tx, openUserID, ipranges.ID, []string{"Precise"}, nil); err != nil {
+			return err
+		}
+		return store.SetUserModeSelection(
+			ctx, tx, preciseUserID, ipranges.ID, []string{"Precise"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := New(config.Config{}, db, feeds.NewSyncer(db), &fakeBGP{}).
+		debugCIDR(ctx, "8.8.8.8", ipranges.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.FullServices) != 1 || result.FullServices[0].Service != "Resolver" {
+		t.Fatalf("mode services = %#v", result.FullServices)
+	}
+	if len(result.Users) != 1 || result.Users[0].Name != "precise-user" {
+		t.Fatalf("mode users = %#v", result.Users)
+	}
+}
+
 func TestCIDRDebugEndpointRequiresAdminAndReturnsJSON(t *testing.T) {
 	db := debugTestStore(t)
 	feedID := addDebugFeed(t, db, "enabled", true)

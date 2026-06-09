@@ -21,6 +21,27 @@ storage, and GoBGP. Python and BIRD are no longer required. A unique prefix is
 installed in the in-memory GoBGP RIB once; per-peer export policies determine
 which clients receive it.
 
+## Catalog modes
+
+The built-in modes are `OpenCCK`, for broad service coverage based largely on
+ASN and shared infrastructure ranges, and `IPRanges`, for narrower provider,
+bot, monitoring, and privacy-service ranges from
+[lord-alfred/ipranges](https://github.com/lord-alfred/ipranges).
+
+Administrators can enable or disable modes and assign each feed to a mode. Each
+user has one active mode and independent category/service selections retained
+for every mode. BGP announcements use only the active mode. Existing databases
+are migrated to `OpenCCK` without changing their selections.
+
+Users cannot change modes unless the administrator explicitly grants that
+permission. Disabled modes retain downloaded data and selections but do not
+contribute routes. CIDR diagnostics inspect one selected mode and show only
+users whose active mode matches it.
+
+The built-in IPRanges adapter downloads the upstream merged IPv4/IPv6 lists and
+maps them into separate catalog services. The mode is initially disabled;
+enable it and run a feed sync before configuring users.
+
 ## Network model
 
 The container is an independent BGP speaker with its own `veth` address. It

@@ -216,6 +216,59 @@ WHERE NOT EXISTS (
 );
 `,
 	},
+	{
+		Version: 9,
+		Name:    "add catalog modes",
+		SQL: `
+CREATE TABLE catalog_modes (
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL UNIQUE,
+    enabled INTEGER NOT NULL DEFAULT 1
+);
+INSERT INTO catalog_modes(id, key, name, enabled) VALUES
+    (1, 'opencck', 'OpenCCK', 1),
+    (2, 'ipranges', 'IPRanges', 0);
+
+ALTER TABLE feeds ADD COLUMN mode_id INTEGER REFERENCES catalog_modes(id);
+UPDATE feeds SET mode_id = 1;
+INSERT INTO feeds(name, url, enabled, mode_id)
+VALUES ('ipranges', 'https://github.com/lord-alfred/ipranges', 1, 2);
+
+ALTER TABLE users ADD COLUMN catalog_mode_id INTEGER REFERENCES catalog_modes(id);
+ALTER TABLE users ADD COLUMN catalog_mode_editable INTEGER NOT NULL DEFAULT 0;
+UPDATE users SET catalog_mode_id = 1;
+
+ALTER TABLE selected_categories RENAME TO selected_categories_legacy;
+CREATE TABLE selected_categories (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    mode_id INTEGER NOT NULL REFERENCES catalog_modes(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    PRIMARY KEY (user_id, mode_id, category)
+);
+INSERT INTO selected_categories(user_id, mode_id, category)
+SELECT user_id, 1, category FROM selected_categories_legacy;
+DROP TABLE selected_categories_legacy;
+
+ALTER TABLE selected_services RENAME TO selected_services_legacy;
+CREATE TABLE selected_services (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    mode_id INTEGER NOT NULL REFERENCES catalog_modes(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    service TEXT NOT NULL,
+    PRIMARY KEY (user_id, mode_id, category, service)
+);
+INSERT INTO selected_services(user_id, mode_id, category, service)
+SELECT user_id, 1, category, service FROM selected_services_legacy;
+DROP TABLE selected_services_legacy;
+
+CREATE INDEX idx_selected_categories_user_mode
+    ON selected_categories(user_id, mode_id);
+CREATE INDEX idx_selected_services_user_mode
+    ON selected_services(user_id, mode_id);
+CREATE INDEX idx_feeds_mode ON feeds(mode_id);
+`,
+	},
 }
 
 type Store struct {
@@ -226,10 +279,23 @@ type Feed struct {
 	ID          int64
 	Name        string
 	URL         string
+	ModeID      int64
 	Enabled     bool
 	LastSuccess string
 	LastError   string
 }
+
+type CatalogMode struct {
+	ID      int64
+	Key     string
+	Name    string
+	Enabled bool
+}
+
+const (
+	DefaultCatalogModeID  int64 = 1
+	IPRangesCatalogModeID int64 = 2
+)
 
 type User struct {
 	ID              int64
@@ -243,6 +309,9 @@ type User struct {
 	FilterOverride  bool
 	FilterMode      string
 	FilterEditable  bool
+	CatalogModeID   int64
+	CatalogModeName string
+	CatalogEditable bool
 	Networks        []string
 }
 
@@ -369,7 +438,34 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 }
 
 func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
-	query := "SELECT id, name, url, enabled, COALESCE(last_success, ''), COALESCE(last_error, '') FROM feeds"
+	query := `SELECT f.id, f.name, f.url, f.mode_id, f.enabled,
+	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
+	          FROM feeds f JOIN catalog_modes m ON m.id = f.mode_id`
+	if enabledOnly {
+		query += " WHERE f.enabled = 1 AND m.enabled = 1"
+	}
+	query += " ORDER BY f.id"
+	rows, err := s.DB.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var feeds []Feed
+	for rows.Next() {
+		var feed Feed
+		if err := rows.Scan(
+			&feed.ID, &feed.Name, &feed.URL, &feed.ModeID,
+			&feed.Enabled, &feed.LastSuccess, &feed.LastError,
+		); err != nil {
+			return nil, err
+		}
+		feeds = append(feeds, feed)
+	}
+	return feeds, rows.Err()
+}
+
+func (s *Store) CatalogModes(ctx context.Context, enabledOnly bool) ([]CatalogMode, error) {
+	query := "SELECT id, key, name, enabled FROM catalog_modes"
 	if enabledOnly {
 		query += " WHERE enabled = 1"
 	}
@@ -379,21 +475,44 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var feeds []Feed
+	var modes []CatalogMode
 	for rows.Next() {
-		var feed Feed
-		if err := rows.Scan(&feed.ID, &feed.Name, &feed.URL, &feed.Enabled, &feed.LastSuccess, &feed.LastError); err != nil {
+		var mode CatalogMode
+		if err := rows.Scan(&mode.ID, &mode.Key, &mode.Name, &mode.Enabled); err != nil {
 			return nil, err
 		}
-		feeds = append(feeds, feed)
+		modes = append(modes, mode)
 	}
-	return feeds, rows.Err()
+	return modes, rows.Err()
+}
+
+func (s *Store) CatalogMode(ctx context.Context, id int64) (CatalogMode, error) {
+	var mode CatalogMode
+	err := s.DB.QueryRowContext(ctx,
+		"SELECT id, key, name, enabled FROM catalog_modes WHERE id = ?", id).
+		Scan(&mode.ID, &mode.Key, &mode.Name, &mode.Enabled)
+	return mode, err
+}
+
+func (s *Store) UpdateCatalogMode(ctx context.Context, mode CatalogMode) error {
+	result, err := s.DB.ExecContext(ctx,
+		"UPDATE catalog_modes SET name = ?, enabled = ? WHERE id = ?",
+		mode.Name, mode.Enabled, mode.ID)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 	query := `SELECT id, name, peer_ip, peer_asn, COALESCE(next_hop, ''),
 	                 COALESCE(bgp_password, ''), selection_locked, enabled,
-	                 filter_override_enabled, COALESCE(filter_mode, ''), filter_editable
+	                 filter_override_enabled, COALESCE(filter_mode, ''), filter_editable,
+	                 catalog_mode_id, catalog_mode_editable,
+	                 COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), '')
 	          FROM users`
 	if enabledOnly {
 		query += " WHERE enabled = 1"
@@ -411,6 +530,7 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 			&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
 			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
+			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName,
 		); err != nil {
 			return nil, err
 		}
@@ -436,10 +556,14 @@ func (s *Store) User(ctx context.Context, id int64) (User, error) {
 	var user User
 	err := s.DB.QueryRowContext(ctx, `SELECT id, name, peer_ip, peer_asn, COALESCE(next_hop, ''),
 		COALESCE(bgp_password, ''), selection_locked, enabled,
-		filter_override_enabled, COALESCE(filter_mode, ''), filter_editable FROM users WHERE id = ?`, id).
+		filter_override_enabled, COALESCE(filter_mode, ''), filter_editable,
+		catalog_mode_id, catalog_mode_editable,
+		COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), '')
+		FROM users WHERE id = ?`, id).
 		Scan(&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
-			&user.FilterOverride, &user.FilterMode, &user.FilterEditable)
+			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
+			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName)
 	if err != nil {
 		return User{}, err
 	}
@@ -504,12 +628,16 @@ func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 }
 
 func (s *Store) Catalog(ctx context.Context) (map[string][]string, error) {
+	return s.CatalogForMode(ctx, DefaultCatalogModeID)
+}
+
+func (s *Store) CatalogForMode(ctx context.Context, modeID int64) (map[string][]string, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE f.enabled = 1
-ORDER BY ce.category, ce.service`)
+WHERE f.enabled = 1 AND f.mode_id = ?
+ORDER BY ce.category, ce.service`, modeID)
 	if err != nil {
 		return nil, err
 	}
@@ -525,13 +653,14 @@ ORDER BY ce.category, ce.service`)
 	return catalog, rows.Err()
 }
 
-func (s *Store) EnabledCatalogPrefixes(ctx context.Context) ([]CatalogPrefix, error) {
+func (s *Store) EnabledCatalogPrefixes(ctx context.Context, modeID int64) ([]CatalogPrefix, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT DISTINCT ce.category, ce.service, ce.cidr
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE f.enabled = 1
-ORDER BY ce.category, ce.service, ce.cidr`)
+JOIN catalog_modes m ON m.id = f.mode_id
+WHERE f.enabled = 1 AND m.enabled = 1 AND f.mode_id = ?
+ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 	if err != nil {
 		return nil, err
 	}
@@ -547,10 +676,22 @@ ORDER BY ce.category, ce.service, ce.cidr`)
 	return prefixes, rows.Err()
 }
 
-func (s *Store) UserSelection(ctx context.Context, userID int64) (map[string]bool, map[ServiceKey]bool, error) {
+func (s *Store) UserSelection(
+	ctx context.Context,
+	userID int64,
+) (map[string]bool, map[ServiceKey]bool, error) {
+	return s.UserModeSelection(ctx, userID, DefaultCatalogModeID)
+}
+
+func (s *Store) UserModeSelection(
+	ctx context.Context,
+	userID int64,
+	modeID int64,
+) (map[string]bool, map[ServiceKey]bool, error) {
 	categories := map[string]bool{}
 	services := map[ServiceKey]bool{}
-	rows, err := s.DB.QueryContext(ctx, "SELECT category FROM selected_categories WHERE user_id = ?", userID)
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT category FROM selected_categories WHERE user_id = ? AND mode_id = ?", userID, modeID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -564,7 +705,7 @@ func (s *Store) UserSelection(ctx context.Context, userID int64) (map[string]boo
 	}
 	rows.Close()
 	rows, err = s.DB.QueryContext(ctx,
-		"SELECT category, service FROM selected_services WHERE user_id = ?", userID)
+		"SELECT category, service FROM selected_services WHERE user_id = ? AND mode_id = ?", userID, modeID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -579,17 +720,38 @@ func (s *Store) UserSelection(ctx context.Context, userID int64) (map[string]boo
 	return categories, services, rows.Err()
 }
 
-func SetUserSelection(ctx context.Context, tx *sql.Tx, userID int64, categories []string, services []ServiceKey) error {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM selected_categories WHERE user_id = ?", userID); err != nil {
+func SetUserSelection(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID int64,
+	categories []string,
+	services []ServiceKey,
+) error {
+	return SetUserModeSelection(
+		ctx, tx, userID, DefaultCatalogModeID, categories, services)
+}
+
+func SetUserModeSelection(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID int64,
+	modeID int64,
+	categories []string,
+	services []ServiceKey,
+) error {
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM selected_categories WHERE user_id = ? AND mode_id = ?", userID, modeID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM selected_services WHERE user_id = ?", userID); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM selected_services WHERE user_id = ? AND mode_id = ?", userID, modeID); err != nil {
 		return err
 	}
 	sort.Strings(categories)
 	for _, category := range categories {
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO selected_categories(user_id, category) VALUES (?, ?)", userID, category); err != nil {
+			"INSERT INTO selected_categories(user_id, mode_id, category) VALUES (?, ?, ?)",
+			userID, modeID, category); err != nil {
 			return err
 		}
 	}
@@ -601,8 +763,8 @@ func SetUserSelection(ctx context.Context, tx *sql.Tx, userID int64, categories 
 	})
 	for _, service := range services {
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO selected_services(user_id, category, service) VALUES (?, ?, ?)",
-			userID, service.Category, service.Service); err != nil {
+			"INSERT INTO selected_services(user_id, mode_id, category, service) VALUES (?, ?, ?, ?)",
+			userID, modeID, service.Category, service.Service); err != nil {
 			return err
 		}
 	}
@@ -616,22 +778,34 @@ func SetVisibleUserSelection(
 	categories []string,
 	services []ServiceKey,
 ) error {
+	return SetVisibleUserModeSelection(
+		ctx, tx, userID, DefaultCatalogModeID, categories, services)
+}
+
+func SetVisibleUserModeSelection(
+	ctx context.Context,
+	tx *sql.Tx,
+	userID int64,
+	modeID int64,
+	categories []string,
+	services []ServiceKey,
+) error {
 	rows, err := tx.QueryContext(ctx, `
 SELECT sc.category
 FROM selected_categories sc
-WHERE sc.user_id = ?
+WHERE sc.user_id = ? AND sc.mode_id = ?
   AND EXISTS (
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
-      WHERE ce.category = sc.category AND f.enabled = 0
+      WHERE ce.category = sc.category AND f.mode_id = sc.mode_id AND f.enabled = 0
   )
   AND NOT EXISTS (
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
-      WHERE ce.category = sc.category AND f.enabled = 1
-  )`, userID)
+      WHERE ce.category = sc.category AND f.mode_id = sc.mode_id AND f.enabled = 1
+  )`, userID, modeID)
 	if err != nil {
 		return err
 	}
@@ -650,13 +824,14 @@ WHERE sc.user_id = ?
 	rows, err = tx.QueryContext(ctx, `
 SELECT ss.category, ss.service
 FROM selected_services ss
-WHERE ss.user_id = ?
+WHERE ss.user_id = ? AND ss.mode_id = ?
   AND EXISTS (
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
       WHERE ce.category = ss.category
         AND ce.service = ss.service
+        AND f.mode_id = ss.mode_id
         AND f.enabled = 0
   )
   AND NOT EXISTS (
@@ -665,8 +840,9 @@ WHERE ss.user_id = ?
       JOIN feeds f ON f.id = ce.feed_id
       WHERE ce.category = ss.category
         AND ce.service = ss.service
+        AND f.mode_id = ss.mode_id
         AND f.enabled = 1
-  )`, userID)
+  )`, userID, modeID)
 	if err != nil {
 		return err
 	}
@@ -682,7 +858,8 @@ WHERE ss.user_id = ?
 		return err
 	}
 
-	return SetUserSelection(ctx, tx, userID, uniqueStrings(categories), uniqueServices(services))
+	return SetUserModeSelection(ctx, tx, userID, modeID,
+		uniqueStrings(categories), uniqueServices(services))
 }
 
 func uniqueStrings(values []string) []string {
@@ -714,16 +891,23 @@ func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, error)
 SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled
 FROM users u
 JOIN catalog_entries ce
-  ON ce.category IN (SELECT category FROM selected_categories WHERE user_id = u.id)
+  ON ce.category IN (
+      SELECT category FROM selected_categories
+      WHERE user_id = u.id AND mode_id = u.catalog_mode_id
+  )
   OR EXISTS (
       SELECT 1 FROM selected_services ss
       WHERE ss.user_id = u.id
+        AND ss.mode_id = u.catalog_mode_id
         AND ss.category = ce.category
         AND ss.service = ce.service
   )
 JOIN feeds f ON f.id = ce.feed_id
+JOIN catalog_modes m ON m.id = f.mode_id
 WHERE u.enabled = 1
   AND f.enabled = 1
+  AND m.enabled = 1
+  AND f.mode_id = u.catalog_mode_id
 ORDER BY ce.cidr, u.id`)
 	if err != nil {
 		return nil, err
@@ -1040,8 +1224,19 @@ func parseRouteFilters(filters RouteFilters) (prefixfilter.Lists, error) {
 }
 
 func (s *Store) AddFeed(ctx context.Context, name, url string, enabled bool) error {
+	return s.AddFeedForMode(ctx, name, url, DefaultCatalogModeID, enabled)
+}
+
+func (s *Store) AddFeedForMode(
+	ctx context.Context,
+	name string,
+	url string,
+	modeID int64,
+	enabled bool,
+) error {
 	_, err := s.DB.ExecContext(ctx,
-		"INSERT INTO feeds(name, url, enabled) VALUES (?, ?, ?)", name, url, enabled)
+		"INSERT INTO feeds(name, url, mode_id, enabled) VALUES (?, ?, ?, ?)",
+		name, url, modeID, enabled)
 	return err
 }
 
@@ -1053,8 +1248,8 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE feeds SET name = ?, url = ?, enabled = ? WHERE id = ?",
-			feed.Name, feed.URL, feed.Enabled, feed.ID); err != nil {
+			"UPDATE feeds SET name = ?, url = ?, mode_id = ?, enabled = ? WHERE id = ?",
+			feed.Name, feed.URL, feed.ModeID, feed.Enabled, feed.ID); err != nil {
 			return err
 		}
 		if oldURL == feed.URL {
@@ -1086,17 +1281,19 @@ func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
 		if _, err := tx.ExecContext(ctx, `
 DELETE FROM selected_categories
 WHERE NOT EXISTS (
-    SELECT 1 FROM catalog_entries ce
+    SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
     WHERE ce.category = selected_categories.category
+      AND f.mode_id = selected_categories.mode_id
 )`); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `
 DELETE FROM selected_services
 WHERE NOT EXISTS (
-    SELECT 1 FROM catalog_entries ce
+    SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
     WHERE ce.category = selected_services.category
       AND ce.service = selected_services.service
+      AND f.mode_id = selected_services.mode_id
 )`)
 		return err
 	})
@@ -1105,13 +1302,18 @@ WHERE NOT EXISTS (
 func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 	var id int64
 	filterMode := normalizeFilterMode(user.FilterMode, user.FilterOverride)
+	if user.CatalogModeID == 0 {
+		user.CatalogModeID = DefaultCatalogModeID
+	}
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `INSERT INTO users
 			(name, peer_ip, peer_asn, next_hop, bgp_password, selection_locked, enabled,
-			 filter_override_enabled, filter_mode, filter_editable)
-			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?)`,
+			 filter_override_enabled, filter_mode, filter_editable,
+			 catalog_mode_id, catalog_mode_editable)
+			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, user.BGPPassword,
-			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode, user.FilterEditable)
+			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
+			user.FilterEditable, user.CatalogModeID, user.CatalogEditable)
 		if err != nil {
 			return err
 		}
@@ -1126,6 +1328,9 @@ func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 
 func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) error {
 	filterMode := normalizeFilterMode(user.FilterMode, user.FilterOverride)
+	if user.CatalogModeID == 0 {
+		user.CatalogModeID = DefaultCatalogModeID
+	}
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		var password any = user.BGPPassword
 		if clearPassword {
@@ -1138,9 +1343,11 @@ func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) e
 		}
 		result, err := tx.ExecContext(ctx, `UPDATE users SET name=?, peer_ip=?, peer_asn=?,
 			next_hop=NULLIF(?, ''), bgp_password=?, selection_locked=?, enabled=?,
-			filter_override_enabled=?, filter_mode=?, filter_editable=? WHERE id=?`,
+			filter_override_enabled=?, filter_mode=?, filter_editable=?,
+			catalog_mode_id=?, catalog_mode_editable=? WHERE id=?`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, password,
-			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode, user.FilterEditable, user.ID)
+			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
+			user.FilterEditable, user.CatalogModeID, user.CatalogEditable, user.ID)
 		if err != nil {
 			return err
 		}
@@ -1148,6 +1355,61 @@ func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) e
 			return sql.ErrNoRows
 		}
 		return replaceNetworks(ctx, tx, user.ID, user.Networks)
+	})
+}
+
+func (s *Store) SetUserCatalogMode(
+	ctx context.Context,
+	userID int64,
+	modeID int64,
+	requireEditable bool,
+) error {
+	query := `UPDATE users
+SET catalog_mode_id = ?
+WHERE id = ?
+  AND EXISTS (SELECT 1 FROM catalog_modes WHERE id = ? AND enabled = 1)`
+	args := []any{modeID, userID, modeID}
+	if requireEditable {
+		query += " AND (catalog_mode_id = ? OR catalog_mode_editable = 1)"
+		args = append(args, modeID)
+	}
+	result, err := s.DB.ExecContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) SetUserCatalogModeSelection(
+	ctx context.Context,
+	userID int64,
+	modeID int64,
+	requireEditable bool,
+	categories []string,
+	services []ServiceKey,
+) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		query := `UPDATE users
+SET catalog_mode_id = ?
+WHERE id = ?
+  AND EXISTS (SELECT 1 FROM catalog_modes WHERE id = ? AND enabled = 1)`
+		args := []any{modeID, userID, modeID}
+		if requireEditable {
+			query += " AND (catalog_mode_id = ? OR catalog_mode_editable = 1)"
+			args = append(args, modeID)
+		}
+		result, err := tx.ExecContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		if count, _ := result.RowsAffected(); count == 0 {
+			return sql.ErrNoRows
+		}
+		return SetVisibleUserModeSelection(
+			ctx, tx, userID, modeID, categories, services)
 	})
 }
 
