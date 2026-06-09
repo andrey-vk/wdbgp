@@ -43,6 +43,38 @@ type Syncer struct {
 
 var errFeedChanged = errors.New("feed changed during synchronization")
 
+const ipRangesURL = "https://github.com/lord-alfred/ipranges"
+
+var ipRangesServices = []struct {
+	slug     string
+	category string
+	service  string
+	ipv6     bool
+}{
+	{"amazon", "Cloud providers", "Amazon AWS", true},
+	{"apple-proxy", "Privacy", "Apple Private Relay", true},
+	{"bing", "Bots", "BingBot", false},
+	{"cloudflare", "Infrastructure", "Cloudflare", true},
+	{"digitalocean", "Cloud providers", "DigitalOcean", true},
+	{"duckassistbot", "Bots", "DuckAssistBot", false},
+	{"duckduckbot", "Bots", "DuckDuckBot", false},
+	{"facebook", "Platforms", "Facebook", true},
+	{"github", "Platforms", "GitHub", true},
+	{"google", "Cloud providers", "Google Cloud", true},
+	{"googlebot", "Bots", "GoogleBot", true},
+	{"linode", "Cloud providers", "Linode", true},
+	{"microsoft", "Cloud providers", "Microsoft Azure", true},
+	{"openai", "Bots", "OpenAI bots", false},
+	{"oracle", "Cloud providers", "Oracle Cloud", false},
+	{"perplexity", "Bots", "PerplexityBot", false},
+	{"pingdom", "Monitoring", "Pingdom", true},
+	{"protonvpn", "Privacy", "ProtonVPN", false},
+	{"statuscake", "Monitoring", "StatusCake", false},
+	{"telegram", "Platforms", "Telegram", true},
+	{"twitter", "Platforms", "Twitter / X", true},
+	{"vultr", "Cloud providers", "Vultr", true},
+}
+
 func NewSyncer(s *store.Store) *Syncer {
 	return &Syncer{
 		Store:  s,
@@ -72,26 +104,32 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
 	if err != nil {
 		return err
 	}
-	payload, err := s.download(ctx, feed.URL)
-	if err != nil {
-		return err
+	var entries []Entry
+	if strings.TrimSuffix(feed.URL, "/") == ipRangesURL {
+		entries, err = s.downloadIPRanges(ctx)
+	} else {
+		var payload []byte
+		payload, err = s.download(ctx, feed.URL)
+		if err == nil {
+			entries, err = Parse(payload, lookup, feed.Name)
+		}
 	}
-	entries, err := Parse(payload, lookup, feed.Name)
 	if err != nil {
 		return err
 	}
 	err = s.Store.Transaction(ctx, func(tx *sql.Tx) error {
 		var currentURL string
+		var currentModeID int64
 		var enabled bool
 		if err := tx.QueryRowContext(ctx,
-			"SELECT url, enabled FROM feeds WHERE id = ?", feed.ID).
-			Scan(&currentURL, &enabled); err != nil {
+			"SELECT url, mode_id, enabled FROM feeds WHERE id = ?", feed.ID).
+			Scan(&currentURL, &currentModeID, &enabled); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errFeedChanged
 			}
 			return err
 		}
-		if currentURL != feed.URL || !enabled {
+		if currentURL != feed.URL || currentModeID != feed.ModeID || !enabled {
 			return errFeedChanged
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
@@ -126,7 +164,7 @@ func (s *Syncer) categoryLookup(ctx context.Context, feed store.Feed) (map[strin
 SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE ce.feed_id != ? AND f.enabled = 1`, feed.ID)
+WHERE ce.feed_id != ? AND f.enabled = 1 AND f.mode_id = ?`, feed.ID, feed.ModeID)
 	if err != nil {
 		return nil, err
 	}
@@ -189,6 +227,38 @@ func (s *Syncer) download(ctx context.Context, rawURL string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %s", response.Status)
 	}
 	return io.ReadAll(response.Body)
+}
+
+func (s *Syncer) downloadIPRanges(ctx context.Context) ([]Entry, error) {
+	var entries []Entry
+	for _, item := range ipRangesServices {
+		families := []string{"ipv4"}
+		if item.ipv6 {
+			families = append(families, "ipv6")
+		}
+		for _, family := range families {
+			rawURL := fmt.Sprintf(
+				"https://raw.githubusercontent.com/lord-alfred/ipranges/main/%s/%s_merged.txt",
+				item.slug, family)
+			payload, err := s.download(ctx, rawURL)
+			if err != nil {
+				return nil, fmt.Errorf("download %s %s: %w", item.service, family, err)
+			}
+			for _, rawCIDR := range strings.Fields(string(payload)) {
+				cidr, err := store.NormalizePrefix(rawCIDR)
+				if err != nil {
+					return nil, fmt.Errorf("parse %s %s prefix %q: %w",
+						item.service, family, rawCIDR, err)
+				}
+				entries = append(entries, Entry{
+					Category: item.category,
+					Service:  item.service,
+					CIDR:     cidr,
+				})
+			}
+		}
+	}
+	return deduplicate(entries), nil
 }
 
 func MetadataURL(rawURL string) string {

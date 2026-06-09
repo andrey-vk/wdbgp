@@ -55,6 +55,8 @@ type serviceView struct {
 
 type selectionView struct {
 	User                    store.User
+	Modes                   []store.CatalogMode
+	CanChangeMode           bool
 	Categories              []categoryView
 	Editable                bool
 	Admin                   bool
@@ -66,6 +68,7 @@ type selectionView struct {
 }
 
 type adminView struct {
+	Modes         []store.CatalogMode
 	Feeds         []store.Feed
 	Users         []store.User
 	PeerStates    map[string]string
@@ -103,6 +106,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/login", server.login)
 	mux.HandleFunc("GET /admin", server.requireAdmin(server.adminPage))
 	mux.HandleFunc("GET /admin/debug/cidr", server.requireAdmin(server.debugCIDRHandler))
+	mux.HandleFunc("POST /admin/mode/{id}", server.requireAdmin(server.updateCatalogMode))
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
 	mux.HandleFunc("POST /admin/feed/{id}", server.requireAdmin(server.updateFeed))
 	mux.HandleFunc("POST /admin/feed/{id}/delete", server.requireAdmin(server.deleteFeed))
@@ -131,6 +135,11 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	user, err = s.userWithRequestedMode(r.Context(), r, user, user.CatalogEditable, false)
+	if err != nil {
+		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
+		return
+	}
 	view, err := s.selection(r.Context(), user, !user.SelectionLocked, false)
 	if err != nil {
 		s.internalError(w, r, err)
@@ -150,15 +159,40 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	modeID, err := formModeID(r, user.CatalogModeID)
+	if err != nil {
+		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
+		return
+	}
 	if user.SelectionLocked {
-		s.httpError(w, r, "error.selection_locked", http.StatusForbidden)
+		if modeID == user.CatalogModeID {
+			s.httpError(w, r, "error.selection_locked", http.StatusForbidden)
+			return
+		}
+		if !user.CatalogEditable {
+			s.httpError(w, r, "error.catalog_managed", http.StatusForbidden)
+			return
+		}
+		err = s.store.SetUserCatalogMode(r.Context(), user.ID, modeID, true)
+		if err == nil {
+			err = s.bgp.Reconcile(r.Context())
+		}
+		if err != nil {
+			log.Printf("save catalog mode for user %d: %v", user.ID, err)
+			http.Redirect(w, r, "/?saved=0", http.StatusSeeOther)
+			return
+		}
+		http.Redirect(w, r, "/?saved=1", http.StatusSeeOther)
 		return
 	}
 	categories, services, err := parseSelection(r)
+	if err == nil && modeID != user.CatalogModeID && !user.CatalogEditable {
+		s.httpError(w, r, "error.catalog_managed", http.StatusForbidden)
+		return
+	}
 	if err == nil {
-		err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
-			return store.SetVisibleUserSelection(r.Context(), tx, user.ID, categories, services)
-		})
+		err = s.store.SetUserCatalogModeSelection(
+			r.Context(), user.ID, modeID, true, categories, services)
 	}
 	if err == nil {
 		err = s.bgp.Reconcile(r.Context())
@@ -246,6 +280,11 @@ func (s *Server) adminCookieSecure(r *http.Request) bool {
 }
 
 func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
+	modes, err := s.store.CatalogModes(r.Context(), false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	feedList, err := s.store.Feeds(r.Context(), false)
 	if err != nil {
 		s.internalError(w, r, err)
@@ -267,7 +306,7 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, r, http.StatusOK, "title.admin", "admin", adminView{
-		Feeds: feedList, Users: users, PeerStates: states,
+		Modes: modes, Feeds: feedList, Users: users, PeerStates: states,
 		GlobalFilters: filterView{
 			AllowText: strings.Join(globalFilters.Allow, "\n"),
 			DenyText:  strings.Join(globalFilters.Deny, "\n"),
@@ -278,7 +317,16 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) debugCIDRHandler(w http.ResponseWriter, r *http.Request) {
-	result, err := s.debugCIDR(r.Context(), r.URL.Query().Get("cidr"))
+	modeID := store.DefaultCatalogModeID
+	if rawMode := strings.TrimSpace(r.URL.Query().Get("mode")); rawMode != "" {
+		var err error
+		modeID, err = strconv.ParseInt(rawMode, 10, 64)
+		if err != nil || modeID <= 0 {
+			http.Error(w, "invalid catalog mode", http.StatusBadRequest)
+			return
+		}
+	}
+	result, err := s.debugCIDR(r.Context(), r.URL.Query().Get("cidr"), modeID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -289,13 +337,42 @@ func (s *Server) debugCIDRHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) updateCatalogMode(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		http.Error(w, "mode name is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateCatalogMode(r.Context(), store.CatalogMode{
+		ID: id, Name: name, Enabled: r.Form.Has("enabled"),
+	}); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
 func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 	feed, err := parseFeed(r, 0)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.store.AddFeed(r.Context(), feed.Name, feed.URL, feed.Enabled); err != nil {
+	if err := s.store.AddFeedForMode(
+		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.Enabled); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -374,8 +451,13 @@ func parseFeed(r *http.Request, id int64) (store.Feed, error) {
 		(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
 		return store.Feed{}, fmt.Errorf("feed URL must be an absolute HTTP or HTTPS URL")
 	}
+	modeID, err := formModeID(r, store.DefaultCatalogModeID)
+	if err != nil {
+		return store.Feed{}, err
+	}
 	return store.Feed{
-		ID: id, Name: name, URL: rawURL, Enabled: r.Form.Has("enabled"),
+		ID: id, Name: name, URL: rawURL, ModeID: modeID,
+		Enabled: r.Form.Has("enabled"),
 	}, nil
 }
 
@@ -430,6 +512,11 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	user, err = s.userWithRequestedMode(r.Context(), r, user, true, true)
+	if err != nil {
+		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
+		return
+	}
 	selection, err := s.selection(r.Context(), user, true, true)
 	if err != nil {
 		s.internalError(w, r, err)
@@ -477,9 +564,18 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, parseErr.Error(), http.StatusBadRequest)
 			return
 		}
-		err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
-			return store.SetVisibleUserSelection(r.Context(), tx, id, categories, services)
-		})
+		currentUser, userErr := s.store.User(r.Context(), id)
+		if userErr != nil {
+			s.internalError(w, r, userErr)
+			return
+		}
+		modeID, modeErr := formModeID(r, currentUser.CatalogModeID)
+		if modeErr != nil {
+			http.Error(w, modeErr.Error(), http.StatusBadRequest)
+			return
+		}
+		err = s.store.SetUserCatalogModeSelection(
+			r.Context(), id, modeID, false, categories, services)
 		if err == nil {
 			err = s.bgp.Reconcile(r.Context())
 		}
@@ -518,11 +614,23 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) selection(ctx context.Context, user store.User, editable, admin bool) (selectionView, error) {
-	catalog, err := s.store.Catalog(ctx)
+	modes, err := s.store.CatalogModes(ctx, !admin)
 	if err != nil {
 		return selectionView{}, err
 	}
-	selectedCategories, selectedServices, err := s.store.UserSelection(ctx, user.ID)
+	if admin {
+		// Administrators can inspect retained selections for disabled modes.
+	} else if !containsMode(modes, user.CatalogModeID) {
+		if current, currentErr := s.store.CatalogMode(ctx, user.CatalogModeID); currentErr == nil {
+			modes = append(modes, current)
+		}
+	}
+	catalog, err := s.store.CatalogForMode(ctx, user.CatalogModeID)
+	if err != nil {
+		return selectionView{}, err
+	}
+	selectedCategories, selectedServices, err := s.store.UserModeSelection(
+		ctx, user.ID, user.CatalogModeID)
 	if err != nil {
 		return selectionView{}, err
 	}
@@ -536,7 +644,8 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 		return selectionView{}, err
 	}
 	view := selectionView{
-		User: user, Editable: editable, Admin: admin,
+		User: user, Modes: modes, CanChangeMode: admin || user.CatalogEditable,
+		Editable: editable, Admin: admin,
 		Filters: filterView{
 			AllowText: strings.Join(userFilters.Allow, "\n"),
 			DenyText:  strings.Join(userFilters.Deny, "\n"),
@@ -567,6 +676,45 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 		view.Categories = append(view.Categories, item)
 	}
 	return view, nil
+}
+
+func (s *Server) userWithRequestedMode(
+	ctx context.Context,
+	r *http.Request,
+	user store.User,
+	canChange bool,
+	admin bool,
+) (store.User, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("mode"))
+	if raw == "" {
+		return user, nil
+	}
+	if !canChange {
+		return user, fmt.Errorf("catalog mode is managed by the administrator")
+	}
+	modeID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || modeID <= 0 {
+		return store.User{}, fmt.Errorf("invalid catalog mode")
+	}
+	mode, err := s.store.CatalogMode(ctx, modeID)
+	if err != nil {
+		return store.User{}, err
+	}
+	if !admin && !mode.Enabled {
+		return store.User{}, fmt.Errorf("catalog mode is disabled")
+	}
+	user.CatalogModeID = mode.ID
+	user.CatalogModeName = mode.Name
+	return user, nil
+}
+
+func containsMode(modes []store.CatalogMode, id int64) bool {
+	for _, mode := range modes {
+		if mode.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func parseSelection(r *http.Request) ([]string, []store.ServiceKey, error) {
@@ -660,14 +808,20 @@ func parseUserForm(r *http.Request, id int64) (store.User, bool, error) {
 	if name == "" {
 		return store.User{}, false, fmt.Errorf("user name is required")
 	}
+	modeID, err := formModeID(r, store.DefaultCatalogModeID)
+	if err != nil {
+		return store.User{}, false, err
+	}
 	return store.User{
 		ID: id, Name: name, PeerIP: peerIP.String(), PeerASN: uint32(peerASN),
 		NextHop: nextHop, BGPPassword: r.FormValue("bgp_password"),
 		SelectionLocked: r.Form.Has("locked"), Enabled: id == 0 || r.Form.Has("enabled"),
-		FilterOverride: r.FormValue("filter_override") == "on",
-		FilterMode:     r.FormValue("filter_mode"),
-		FilterEditable: r.Form.Has("filter_editable"),
-		Networks:       networks,
+		FilterOverride:  r.FormValue("filter_override") == "on",
+		FilterMode:      r.FormValue("filter_mode"),
+		FilterEditable:  r.Form.Has("filter_editable"),
+		CatalogModeID:   modeID,
+		CatalogEditable: r.Form.Has("catalog_mode_editable"),
+		Networks:        networks,
 	}, r.Form.Has("clear_bgp_password"), nil
 }
 
@@ -776,6 +930,18 @@ func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error
 
 func pathID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(r.PathValue("id"), 10, 64)
+}
+
+func formModeID(r *http.Request, fallback int64) (int64, error) {
+	raw := strings.TrimSpace(r.FormValue("catalog_mode_id"))
+	if raw == "" && fallback > 0 {
+		return fallback, nil
+	}
+	modeID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || modeID <= 0 {
+		return 0, fmt.Errorf("invalid catalog mode")
+	}
+	return modeID, nil
 }
 
 func sessionToken(secret string) string {
