@@ -23,8 +23,8 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(feeds) != 4 {
-		t.Fatalf("feed count = %d, want 4", len(feeds))
+	if len(feeds) != 5 {
+		t.Fatalf("feed count = %d, want 5", len(feeds))
 	}
 }
 
@@ -79,8 +79,8 @@ INSERT INTO feeds(name, url) VALUES
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(feeds) != 4 {
-		t.Fatalf("legacy feed count = %d, want 4", len(feeds))
+	if len(feeds) != 5 {
+		t.Fatalf("legacy feed count = %d, want 5", len(feeds))
 	}
 }
 
@@ -320,6 +320,14 @@ CREATE TABLE users (
     filter_override_enabled INTEGER NOT NULL DEFAULT 0,
     filter_editable INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE feeds (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    url TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_success TEXT,
+    last_error TEXT
+);
 CREATE TABLE catalog_entries (
     feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
     category TEXT NOT NULL,
@@ -365,6 +373,137 @@ INSERT INTO user_networks(user_id, cidr) VALUES (7, '192.168.20.0/24');
 	}
 	if user.FilterMode != FilterModeOverride || !user.FilterOverride {
 		t.Fatalf("legacy filter mode not preserved: %#v", user)
+	}
+}
+
+func TestCatalogModeMigrationPreservesExistingSelections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "version-8.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON;
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations[:8] {
+		if _, err := db.Exec(migration.SQL); err != nil {
+			t.Fatalf("apply migration %d: %v", migration.Version, err)
+		}
+		if _, err := db.Exec(
+			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, 'now')",
+			migration.Version, migration.Name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`
+INSERT INTO catalog_entries(feed_id, category, service, cidr)
+VALUES (1, 'Messengers', 'Telegram', '149.154.160.0/20');
+INSERT INTO users(id, name, peer_ip, peer_asn)
+VALUES (7, 'existing', '172.16.0.2', 65007);
+INSERT INTO user_networks(user_id, cidr) VALUES (7, '192.168.20.0/24');
+INSERT INTO selected_categories(user_id, category) VALUES (7, 'Messengers');
+INSERT INTO selected_services(user_id, category, service)
+VALUES (7, 'Messengers', 'Telegram');
+`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	user, err := s.User(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	categories, services, err := s.UserModeSelection(context.Background(), 7, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.CatalogModeID != 1 || user.CatalogEditable ||
+		!categories["Messengers"] ||
+		!services[ServiceKey{Category: "Messengers", Service: "Telegram"}] {
+		t.Fatalf("migrated user=%#v categories=%#v services=%#v", user, categories, services)
+	}
+}
+
+func TestCatalogModeMigrationReusesExistingIPRangesFeeds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "version-8-ipranges.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys = ON;
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations[:8] {
+		if _, err := db.Exec(migration.SQL); err != nil {
+			t.Fatalf("apply migration %d: %v", migration.Version, err)
+		}
+		if _, err := db.Exec(
+			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, 'now')",
+			migration.Version, migration.Name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`
+INSERT INTO feeds(id, name, url) VALUES
+    (20, 'ipranges', 'https://example.test/old-ipranges'),
+    (21, 'lord-alfred', 'https://github.com/lord-alfred/ipranges');
+INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+    (20, 'Platforms', 'Telegram', '149.154.160.0/20'),
+    (21, 'Platforms', 'Discord', '162.159.128.0/17');
+`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var feedID, modeID, feedCount, entryCount int64
+	var name, feedURL string
+	if err := s.DB.QueryRow(`
+SELECT id, name, url, mode_id FROM feeds
+WHERE name = 'ipranges' OR url = 'https://github.com/lord-alfred/ipranges'
+`).Scan(&feedID, &name, &feedURL, &modeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(`
+SELECT COUNT(*) FROM feeds
+WHERE name = 'ipranges' OR url = 'https://github.com/lord-alfred/ipranges'
+`).Scan(&feedCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feedID).
+		Scan(&entryCount); err != nil {
+		t.Fatal(err)
+	}
+	if feedID != 20 || name != "ipranges" ||
+		feedURL != "https://github.com/lord-alfred/ipranges" ||
+		modeID != IPRangesCatalogModeID ||
+		feedCount != 1 || entryCount != 2 {
+		t.Fatalf("feed=%d name=%q url=%q mode=%d feeds=%d entries=%d",
+			feedID, name, feedURL, modeID, feedCount, entryCount)
 	}
 }
 
@@ -427,6 +566,119 @@ func TestDesiredPrefixesEmptyWithoutSelection(t *testing.T) {
 	}
 	if len(prefixes) != 0 {
 		t.Fatalf("prefixes = %#v, want empty without user selection", prefixes)
+	}
+}
+
+func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	modes, err := s.CatalogModes(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modes) != 2 || modes[0].Key != "opencck" || modes[1].Key != "ipranges" {
+		t.Fatalf("catalog modes = %#v", modes)
+	}
+	ipranges := modes[1]
+	ipranges.Enabled = true
+	if err := s.UpdateCatalogMode(ctx, ipranges); err != nil {
+		t.Fatal(err)
+	}
+
+	var openCCKFeedID, ipRangesFeedID int64
+	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").
+		Scan(&openCCKFeedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = ?", ipranges.ID).
+		Scan(&ipRangesFeedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'Open', 'Wide', '8.8.0.0/16'),
+		(?, 'Precise', 'Narrow', '8.8.8.0/24')`,
+		openCCKFeedID, ipRangesFeedID); err != nil {
+		t.Fatal(err)
+	}
+	userID, err := s.AddUser(ctx, User{
+		Name: "client", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		CatalogModeID: 1, CatalogEditable: true,
+		Networks: []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		if err := SetUserModeSelection(ctx, tx, userID, 1, []string{"Open"}, nil); err != nil {
+			return err
+		}
+		return SetUserModeSelection(ctx, tx, userID, ipranges.ID, []string{"Precise"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	prefixes, err := s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) != 1 || len(prefixes["8.8.0.0/16"]) != 1 {
+		t.Fatalf("OpenCCK prefixes = %#v", prefixes)
+	}
+	if err := s.SetUserCatalogMode(ctx, userID, ipranges.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	prefixes, err = s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) != 1 || len(prefixes["8.8.8.0/24"]) != 1 {
+		t.Fatalf("IPRanges prefixes = %#v", prefixes)
+	}
+
+	ipranges.Enabled = false
+	if err := s.UpdateCatalogMode(ctx, ipranges); err != nil {
+		t.Fatal(err)
+	}
+	prefixes, err = s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) != 0 {
+		t.Fatalf("disabled mode prefixes = %#v", prefixes)
+	}
+	categories, _, err := s.UserModeSelection(ctx, userID, ipranges.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !categories["Precise"] {
+		t.Fatalf("disabled mode selection was lost: %#v", categories)
+	}
+}
+
+func TestUserCannotChangeCatalogModeWithoutPermission(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	modes, err := s.CatalogModes(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ipranges := modes[1]
+	ipranges.Enabled = true
+	if err := s.UpdateCatalogMode(ctx, ipranges); err != nil {
+		t.Fatal(err)
+	}
+	userID, err := s.AddUser(ctx, User{
+		Name: "managed", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		CatalogModeID: 1, Networks: []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserCatalogMode(ctx, userID, ipranges.ID, true); !IsNotFound(err) {
+		t.Fatalf("mode change error = %v, want not found", err)
+	}
+	if err := s.SetUserCatalogMode(ctx, userID, 1, true); err != nil {
+		t.Fatalf("saving current managed mode: %v", err)
 	}
 }
 
