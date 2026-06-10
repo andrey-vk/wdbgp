@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
-	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -23,6 +22,7 @@ import (
 
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/feeds"
+	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -157,7 +157,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	handler = csrfProtection(handler, cfg.SessionSecret)
 	// Apply admin rate limiting to admin endpoints
 	handler = adminRateLimitMiddleware(handler, server.adminLimiter)
-	handler = requestLogger(handler)
+	handler = logging.HTTPMiddleware(handler)
 	
 	server.handler = handler
 	return server
@@ -220,7 +220,8 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 			err = s.bgp.Reconcile(r.Context())
 		}
 		if err != nil {
-			log.Printf("save catalog mode for user %d: %v", user.ID, err)
+			logger := logging.FromContext(r.Context())
+			logger.Error("failed to save catalog mode", "user_id", user.ID, "error", err)
 			http.Redirect(w, r, "/?saved=0", http.StatusSeeOther)
 			return
 		}
@@ -240,7 +241,8 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 		err = s.bgp.Reconcile(r.Context())
 	}
 	if err != nil {
-		log.Printf("save selection for user %d: %v", user.ID, err)
+		logger := logging.FromContext(r.Context())
+		logger.Error("failed to save selection", "user_id", user.ID, "error", err)
 		http.Redirect(w, r, "/?saved=0", http.StatusSeeOther)
 		return
 	}
@@ -368,7 +370,8 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 	}
 	states, err := s.bgp.PeerStates(r.Context())
 	if err != nil {
-		log.Printf("read BGP peer states: %v", err)
+		logger := logging.FromContext(r.Context())
+		logger.Error("failed to read BGP peer states", "error", err)
 		states = map[string]string{}
 	}
 	globalFilters, err := s.store.GlobalRouteFilters(r.Context())
@@ -405,7 +408,8 @@ func (s *Server) debugCIDRHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if err := json.NewEncoder(w).Encode(result); err != nil {
-		log.Printf("encode CIDR debug response: %v", err)
+		logger := logging.FromContext(r.Context())
+		logger.Error("failed to encode CIDR debug response", "error", err)
 	}
 }
 
@@ -666,8 +670,9 @@ func (s *Server) deleteFeed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) syncFeeds(w http.ResponseWriter, r *http.Request) {
+	logger := logging.FromContext(r.Context())
 	for _, err := range s.syncer.SyncAll(r.Context()) {
-		log.Printf("feed sync: %v", err)
+		logger.Error("feed sync error", "error", err)
 	}
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
 		s.internalError(w, r, err)
@@ -1247,7 +1252,8 @@ func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int,
 		CSRFToken: csrfToken,
 		Data:       data,
 	}); err != nil {
-		log.Printf("render %s: %v", title, err)
+		logger := logging.FromContext(r.Context())
+		logger.Error("failed to render template", "template", title, "error", err)
 	}
 }
 
@@ -1261,7 +1267,8 @@ func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error
 		http.NotFound(w, r)
 		return
 	}
-	log.Printf("request failed: %v", err)
+	logger := logging.FromContext(r.Context())
+	logger.Error("request failed", "error", err, "path", r.URL.Path, "method", r.Method)
 	s.httpError(w, r, "error.internal", http.StatusInternalServerError)
 }
 
@@ -1269,7 +1276,15 @@ func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error
 func (s *Server) logAdminAction(r *http.Request, action, details string) {
 	clientIP := s.clientIP(r)
 	userAgent := r.Header.Get("User-Agent")
-	log.Printf("ADMIN ACTION: IP=%s Action=%s Details=%s User-Agent=%s", clientIP, action, details, userAgent)
+	logger := logging.FromContext(r.Context())
+	logger.Info("admin action",
+		"ip", clientIP,
+		"action", action,
+		"details", details,
+		"user_agent", userAgent,
+		"path", r.URL.Path,
+		"method", r.Method,
+	)
 }
 
 func pathID(r *http.Request) (int64, error) {
@@ -1406,7 +1421,8 @@ func panicRecovery(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				log.Printf("PANIC recovered: %v", err)
+				logger := logging.FromContext(r.Context())
+				logger.Error("panic recovered", "panic", err, "path", r.URL.Path, "method", r.Method)
 				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 			}
 		}()
@@ -1551,10 +1567,4 @@ func adminRateLimitMiddleware(next http.Handler, limiter *rateLimiter) http.Hand
 	})
 }
 
-// requestLogger logs HTTP requests
-func requestLogger(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
-		next.ServeHTTP(w, r)
-	})
-}
+

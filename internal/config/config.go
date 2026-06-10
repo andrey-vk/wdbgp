@@ -28,6 +28,8 @@ type Config struct {
 	RateLimitLogin    int
 	RateLimitAdmin    int
 	SessionMaxAge     int
+	LogLevel          string
+	LogFormat         string
 }
 
 func Load() (Config, error) {
@@ -81,6 +83,8 @@ func Load() (Config, error) {
 		RateLimitLogin:    rateLimitLogin,
 		RateLimitAdmin:    rateLimitAdmin,
 		SessionMaxAge:     sessionMaxAge,
+		LogLevel:          env("WDBGP_LOG_LEVEL", "INFO"),
+		LogFormat:         env("WDBGP_LOG_FORMAT", "text"),
 	}
 	return cfg, nil
 }

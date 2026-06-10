@@ -409,9 +409,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 	defer db.Close()
 
 	bgp := &fakeBGP{}
-	cfg := config.Config{
-		AdminPassword: "admin", SessionSecret: "secret", DefaultLanguage: "en",
-	}
+	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 
@@ -510,7 +508,7 @@ func TestAdminCanEditFeedAdapter(t *testing.T) {
 	}
 	defer db.Close()
 
-	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret"}
+	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 	adapter, err := db.FeedAdapter(context.Background(), 1)
@@ -616,7 +614,7 @@ func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})}
-	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret"}
+	cfg := testConfig()
 	handler := New(cfg, db, syncer, &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 	form := url.Values{
@@ -712,9 +710,7 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := config.Config{
-		AdminPassword: "admin", SessionSecret: "secret", DefaultLanguage: "en",
-	}
+	cfg := testConfig()
 	bgp := &fakeBGP{}
 	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
