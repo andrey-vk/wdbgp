@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/prefixfilter"
+	"github.com/andrey-vk/wdbgp/internal/retry"
 
 	_ "modernc.org/sqlite"
 )
@@ -566,15 +567,21 @@ func NormalizePrefix(value string) (string, error) {
 }
 
 func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if err := fn(tx); err != nil {
-		tx.Rollback()
-		return err
-	}
-	return tx.Commit()
+	// Use retry for database transactions (especially useful for SQLite busy errors)
+	return retry.Do(ctx, retry.DatabaseConfig,
+		func() error {
+			tx, err := s.DB.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			if err := fn(tx); err != nil {
+				tx.Rollback()
+				return err
+			}
+			return tx.Commit()
+		},
+		retry.TransientError,
+	)
 }
 
 func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
