@@ -17,6 +17,19 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
+func testConfig() config.Config {
+	return config.Config{
+		AdminPassword:     "admin",
+		SessionSecret:     "test-secret",
+		AdminCookieSecure: "true",
+		DefaultLanguage:   "ru",
+		RateLimitLogin:    0,  // Disable rate limiting in tests
+		RateLimitAdmin:    0,  // Disable rate limiting in tests
+		SessionMaxAge:     28800, // 8 hours
+		SecurityHeaders:   false, // Disable security headers in tests to avoid CSP issues
+	}
+}
+
 type fakeBGP struct {
 	reconciles int
 	reloads    int
@@ -72,10 +85,7 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	bgp := &fakeBGP{}
-	cfg := config.Config{
-		AdminPassword: "admin", SessionSecret: "secret",
-		AdminCookieSecure: "true", DefaultLanguage: "ru",
-	}
+	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -238,7 +248,7 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	bgp := &fakeBGP{}
-	handler := New(config.Config{}, db, feeds.NewSyncer(db), bgp).Handler()
+	handler := New(testConfig(), db, feeds.NewSyncer(db), bgp).Handler()
 	form := url.Values{
 		"catalog_mode_id": {strconv.FormatInt(ipranges.ID, 10)},
 		"service":         {serviceValue("Precise", "Resolver")},
@@ -307,7 +317,7 @@ func TestLockedUserCanChangeEditableCatalogMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	bgp := &fakeBGP{}
-	handler := New(config.Config{}, db, feeds.NewSyncer(db), bgp).Handler()
+	handler := New(testConfig(), db, feeds.NewSyncer(db), bgp).Handler()
 	form := url.Values{
 		"catalog_mode_id": {strconv.FormatInt(ipranges.ID, 10)},
 	}
@@ -363,7 +373,9 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.RemoteAddr = "192.168.20.15:12345"
 	response := httptest.NewRecorder()
-	New(config.Config{DefaultLanguage: "ru"}, db, feeds.NewSyncer(db), &fakeBGP{}).
+	cfg := testConfig()
+	cfg.DefaultLanguage = "ru"
+	New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).
 		Handler().ServeHTTP(response, request)
 	body := response.Body.String()
 	if response.Code != http.StatusOK {

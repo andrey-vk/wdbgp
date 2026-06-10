@@ -36,7 +36,9 @@ const pageEnd = `</body></html>`
 const accessDeniedTemplate = `<h1>{{tr "access_denied.heading"}}</h1><p>IP: <code>{{.Data}}</code></p>`
 
 const loginTemplate = `<h1>{{tr "admin.heading"}}</h1>{{if .Data}}<p class=error>{{.Data}}</p>{{end}}
-<form method=post><label>{{tr "login.password"}} <input type=password name=password autofocus required></label><button>{{tr "login.submit"}}</button></form>`
+<form method=post><label>{{tr "login.password"}} <input type=password name=password autofocus required></label>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<button>{{tr "login.submit"}}</button></form>`
 
 const adapterTestTemplate = `{{with .Data}}
 <header><h1>{{tr "adapters.test_result"}}</h1><a href="/admin/adapter/{{.Adapter.ID}}">{{tr "adapters.back_to_editor"}}</a></header>
@@ -56,17 +58,19 @@ const adapterEditTemplate = `{{with .Data}}
 <p><code>{{.Adapter.Key}}</code> · rev. {{.Adapter.Revision}}{{if .Adapter.BuiltIn}} · {{tr "adapters.built_in"}}{{end}}</p>
 {{if .Error}}<h2>{{tr "adapters.error"}}</h2><pre class=error-output>{{.Error}}</pre>{{end}}
 <form method=post action="/admin/adapter/{{.Adapter.ID}}">
-<label>{{tr "feeds.name"}} <input name=name value="{{.Adapter.Name}}" required></label>
-<label>{{tr "adapters.allowed_hosts"}} <input name=allowed_hosts value="{{.Adapter.AllowedHosts}}"></label>
-<label>{{tr "adapters.source"}} <textarea name=source rows=30 required>{{.Adapter.Source}}</textarea></label>
-<label>{{tr "adapters.test_feed"}} <select name=feed_id>
-<option value="">{{tr "adapters.select_feed"}}</option>
-{{range .Feeds}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-</select></label>
-<div class=row-actions><button>{{tr "common.save"}}</button>
-<button type=submit formaction="/admin/adapter/{{.Adapter.ID}}/test">{{tr "adapters.test"}}</button></div>
-</form>
+ <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+ <label>{{tr "feeds.name"}} <input name=name value="{{.Adapter.Name}}" required></label>
+ <label>{{tr "adapters.allowed_hosts"}} <input name=allowed_hosts value="{{.Adapter.AllowedHosts}}"></label>
+ <label>{{tr "adapters.source"}} <textarea name=source rows=30 required>{{.Adapter.Source}}</textarea></label>
+ <label>{{tr "adapters.test_feed"}} <select name=feed_id>
+ <option value="">{{tr "adapters.select_feed"}}</option>
+ {{range .Feeds}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+ </select></label>
+ <div class=row-actions><button>{{tr "common.save"}}</button>
+ <button type=submit formaction="/admin/adapter/{{.Adapter.ID}}/test">{{tr "adapters.test"}}</button></div>
+ </form>
 {{if .Adapter.BuiltIn}}<form method=post action="/admin/adapter/{{.Adapter.ID}}/reset" onsubmit="return confirm('{{tr "adapters.reset_confirm"}}');">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <button class=danger>{{tr "adapters.reset"}}</button></form>{{end}}
 </section>{{end}}`
 
@@ -83,6 +87,7 @@ const selectionBody = `{{$selection := .}}
 {{if not .Editable}}<p class=muted>{{tr "selection.locked"}}</p>{{end}}
 <form class=selection-form method=post action="{{if .Admin}}/admin/user/{{.User.ID}}{{else}}/selection{{end}}">
 {{if .Admin}}<input type=hidden name=action value=selection>{{end}}
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=catalog_mode_id value="{{.User.CatalogModeID}}">
 <div class=save-bar><div><strong>{{.User.Name}}</strong><br><span class=muted>{{tr "selection.selected"}}
 <span id=selected-category-count>{{.SelectedCategoryCount}}</span>
@@ -162,6 +167,7 @@ updateSelectionCounts();
 {{if .Editable}}<p class=muted>{{tr "filters.explanation"}}</p>
 <form method=post action="{{if .Admin}}/admin/user/{{$selection.User.ID}}{{else}}/filters{{end}}">
 {{if .Admin}}<input type=hidden name=action value=filters>{{end}}
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <label>{{tr "filters.mode"}} <select name=filter_mode>
 <option value="global" {{if eq .Mode "global"}}selected{{end}}>{{tr "filters.mode_global"}}</option>
 <option value="extend" {{if eq .Mode "extend"}}selected{{end}}>{{tr "filters.mode_extend"}}</option>
@@ -176,7 +182,15 @@ updateSelectionCounts();
 const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
 const adminTemplate = `{{with .Data}}
-<header><h1>{{tr "admin.heading"}}</h1><a href="/">{{tr "user_interface.link"}}</a></header>
+<header><h1>{{tr "admin.heading"}}</h1>
+<div style="display: flex; gap: 1rem; align-items: center;">
+<a href="/">{{tr "user_interface.link"}}</a>
+<form method=post action="/admin/logout" style="margin: 0;">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<button type=submit class="button danger" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;">{{tr "admin.logout"}}</button>
+</form>
+</div>
+</header>
 <section class=card><h2>{{tr "catalog.modes"}}</h2>
 <p class=muted>{{tr "catalog.modes_hint"}}</p>
 <table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "catalog.key"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.actions"}}</th></tr>
@@ -184,7 +198,7 @@ const adminTemplate = `{{with .Data}}
 <td><input form="mode-{{.ID}}" name=name value="{{.Name}}" required></td>
 <td><code>{{.Key}}</code></td>
 <td><input form="mode-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}}></td>
-<td><form id="mode-{{.ID}}" method=post action="/admin/mode/{{.ID}}"><button>{{tr "common.save"}}</button></form></td>
+<td><form id="mode-{{.ID}}" method=post action="/admin/mode/{{.ID}}"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button>{{tr "common.save"}}</button></form></td>
 </tr>{{end}}</table></section>
 <section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "adapters.adapter"}}</th><th>{{tr "catalog.mode"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th><th>{{tr "feeds.actions"}}</th></tr>
 {{range .Feeds}}{{$feed := .}}<tr>
@@ -195,14 +209,14 @@ const adminTemplate = `{{with .Data}}
 <td><input form="feed-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}} aria-label="{{tr "feeds.enabled"}}"></td>
 <td>{{.LastSuccess}}</td><td class=error>{{.LastError}}</td><td>
 <div class="row-actions feed-actions">
-<form id="feed-{{.ID}}" method=post action="/admin/feed/{{.ID}}"><button>{{tr "common.save"}}</button></form>
-<form method=post action="/admin/feed/{{.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}');"><button class=danger>{{tr "common.delete"}}</button></form>
+<form id="feed-{{.ID}}" method=post action="/admin/feed/{{.ID}}"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button>{{tr "common.save"}}</button></form>
+<form method=post action="/admin/feed/{{.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "common.delete"}}</button></form>
 </div></td></tr>{{end}}</table>
-<form method=post action=/admin/feed><h3>{{tr "feeds.add"}}</h3><label>{{tr "feeds.name"}} <input name=name required></label><label>URL <input type=url name=url required></label>
+<form method=post action=/admin/feed><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><h3>{{tr "feeds.add"}}</h3><label>{{tr "feeds.name"}} <input name=name required></label><label>URL <input type=url name=url required></label>
 <label>{{tr "adapters.adapter"}} <select name=adapter_id>{{range .Adapters}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></label>
 <label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Modes}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></label>
 <label><input type=checkbox name=enabled checked> {{tr "feeds.enabled"}}</label><button>{{tr "common.add"}}</button></form>
-<form method=post action=/admin/sync><button>{{tr "feeds.download_now"}}</button></form></section>
+<form method=post action=/admin/sync><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button>{{tr "feeds.download_now"}}</button></form></section>
 <section class=card><h2>{{tr "adapters.heading"}}</h2>
 <p class=muted>{{tr "adapters.hint"}}</p>
 <table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "catalog.key"}}</th><th>{{tr "adapters.revision"}}</th><th>{{tr "feeds.actions"}}</th></tr>
@@ -210,6 +224,7 @@ const adminTemplate = `{{with .Data}}
 <td><a class=button href="/admin/adapter/{{.ID}}">{{tr "adapters.edit"}}</a></td></tr>{{end}}</table>
 <details><summary><strong>{{tr "adapters.add"}}</strong></summary>
 <form method=post action=/admin/adapter>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <label>{{tr "catalog.key"}} <input name=key pattern="[a-z0-9._-]+" required></label>
 <label>{{tr "feeds.name"}} <input name=name required></label>
 <label>{{tr "adapters.allowed_hosts"}} <input name=allowed_hosts></label>
@@ -220,13 +235,13 @@ const adminTemplate = `{{with .Data}}
 <button>{{tr "common.add"}}</button></form></details></section>
 <section class=card><h2>{{tr "global_filters.heading"}}</h2>
 <p class=muted>{{tr "global_filters.explanation"}}</p>
-<form method=post action=/admin/filters><div class=grid>
+<form method=post action=/admin/filters><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><div class=grid>
 <label>{{tr "filters.allow"}} <textarea name=filter_allow placeholder="{{tr "filters.allow_placeholder"}}">{{.GlobalFilters.AllowText}}</textarea></label>
 <label>{{tr "filters.deny"}} <textarea name=filter_deny>{{.GlobalFilters.DenyText}}</textarea></label></div>
 <button>{{tr "global_filters.save"}}</button></form></section>
 <section class=card><h2>{{tr "users.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "users.cidr"}}</th><th>{{tr "catalog.mode"}}</th><th>{{tr "users.peer"}}</th><th>{{tr "users.asn"}}</th><th>{{tr "users.status"}}</th></tr>
 {{range .Users}}<tr><td><a href="/admin/user/{{.ID}}">{{.Name}}</a></td><td><code>{{join .Networks ", "}}</code></td><td>{{.CatalogModeName}}</td><td><code>{{.PeerIP}}</code></td><td>{{.PeerASN}}</td><td><span class=status>{{state $.Data.PeerStates .PeerIP}}</span></td></tr>{{end}}</table></section>
-<section class=card><form method=post action=/admin/user><h3>{{tr "users.add"}}</h3><div class=grid>
+<section class=card><form method=post action=/admin/user><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><h3>{{tr "users.add"}}</h3><div class=grid>
 <label>{{tr "feeds.name"}} <input name=name required></label><label>{{tr "users.networks"}} <input name=networks required></label>
 <label>{{tr "users.peer_ip"}} <input name=peer_ip required></label><label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn required></label>
 <label>{{tr "users.next_hop"}} <input name=next_hop></label><label>{{tr "users.bgp_password"}} <input type=password name=bgp_password></label>
@@ -323,6 +338,7 @@ const adminTemplate = `{{with .Data}}
 const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{with .Data}}
 <header><h1>{{printf (tr "title.user") .User.Name}}</h1><a href=/admin>{{tr "admin.link"}}</a></header>
 <section class=card><h2>{{tr "user.settings"}}</h2><form method=post action="/admin/user/{{.User.ID}}">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=action value=settings><div class=grid>
 <label>{{tr "feeds.name"}} <input name=name value="{{.User.Name}}" required></label><label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
 <label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" required></label><label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn value="{{.User.PeerASN}}" required></label>
@@ -335,5 +351,5 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <label><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
 <input type=hidden name=filter_mode value="{{.User.FilterMode}}">
 <button>{{tr "user.save"}}</button></form>
-<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><button class=danger>{{tr "user.delete"}}</button></form></section>
+<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form></section>
 {{template "selection" .Selection}}{{end}}`
