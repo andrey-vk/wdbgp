@@ -20,6 +20,9 @@ import (
 type fakeBGP struct {
 	reconciles int
 	reloads    int
+	adds       int
+	updates    int
+	deletes    int
 }
 
 func (f *fakeBGP) Reconcile(context.Context) error {
@@ -34,6 +37,21 @@ func (f *fakeBGP) ReloadPeers(context.Context) error {
 
 func (f *fakeBGP) PeerStates(context.Context) (map[string]string, error) {
 	return map[string]string{"172.16.0.2": "ESTABLISHED"}, nil
+}
+
+func (f *fakeBGP) AddPeer(context.Context, store.User) error {
+	f.adds++
+	return nil
+}
+
+func (f *fakeBGP) UpdatePeer(context.Context, store.User) error {
+	f.updates++
+	return nil
+}
+
+func (f *fakeBGP) DeletePeer(context.Context, string) error {
+	f.deletes++
+	return nil
 }
 
 func TestUserSelectionAndAdminPages(t *testing.T) {
