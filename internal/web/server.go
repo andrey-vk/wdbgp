@@ -28,6 +28,9 @@ type BGP interface {
 	Reconcile(context.Context) error
 	ReloadPeers(context.Context) error
 	PeerStates(context.Context) (map[string]string, error)
+	AddPeer(context.Context, store.User) error
+	UpdatePeer(context.Context, store.User) error
+	DeletePeer(context.Context, string) error
 }
 
 type Server struct {
@@ -708,11 +711,13 @@ func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if _, err := s.store.AddUser(r.Context(), user); err != nil {
+	userID, err := s.store.AddUser(r.Context(), user)
+	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	if err := s.bgp.ReloadPeers(r.Context()); err != nil {
+	user.ID = userID
+	if err := s.bgp.AddPeer(r.Context(), user); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
@@ -769,7 +774,7 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, r, err)
 			return
 		}
-		err = s.bgp.ReloadPeers(r.Context())
+		err = s.bgp.UpdatePeer(r.Context(), user)
 	} else if r.FormValue("action") == "filters" {
 		filters, parseErr := routeFiltersFromForm(r)
 		if parseErr != nil {
@@ -815,13 +820,22 @@ func (s *Server) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, r, "error.bad_user_id", http.StatusBadRequest)
 		return
 	}
+	// Get user first to know the peer IP
+	user, err := s.store.User(r.Context(), id)
+	if err != nil && !store.IsNotFound(err) {
+		s.internalError(w, r, err)
+		return
+	}
 	if err := s.store.DeleteUser(r.Context(), id); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	if err := s.bgp.ReloadPeers(r.Context()); err != nil {
-		s.internalError(w, r, err)
-		return
+	// Only delete peer if user exists (not already deleted)
+	if err == nil {
+		if err := s.bgp.DeletePeer(r.Context(), user.PeerIP); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
