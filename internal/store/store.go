@@ -142,12 +142,14 @@ CREATE TABLE global_route_filters (
     cidr TEXT NOT NULL,
     PRIMARY KEY (action, cidr)
 );
+CREATE INDEX idx_global_route_filters_action ON global_route_filters(action);
 CREATE TABLE user_route_filters (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     action TEXT NOT NULL CHECK (action IN ('allow', 'deny')),
     cidr TEXT NOT NULL,
     PRIMARY KEY (user_id, action, cidr)
 );
+CREATE INDEX idx_user_route_filters_user ON user_route_filters(user_id);
 
 INSERT INTO global_route_filters(action, cidr) VALUES
     ('deny', '0.0.0.0/8'),
@@ -372,6 +374,21 @@ END;
 CREATE INDEX idx_feeds_adapter ON feeds(adapter_id);
 `,
 	},
+	{
+		Version: 12,
+		Name:    "query optimization indexes",
+		SQL: `
+-- Optimize DesiredPrefixes query
+CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id);
+CREATE INDEX IF NOT EXISTS idx_catalog_entries_feed_category_service ON catalog_entries(feed_id, category, service);
+CREATE INDEX IF NOT EXISTS idx_feeds_enabled_mode ON feeds(enabled, mode_id, id);
+CREATE INDEX IF NOT EXISTS idx_catalog_modes_enabled ON catalog_modes(enabled);
+
+-- Additional indexes for common queries
+CREATE INDEX IF NOT EXISTS idx_selected_categories_user_mode_category ON selected_categories(user_id, mode_id, category);
+CREATE INDEX IF NOT EXISTS idx_selected_services_user_mode_category_service ON selected_services(user_id, mode_id, category, service);
+`,
+	},
 }
 
 type Store struct {
@@ -457,7 +474,14 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 30000"); err != nil {
+	if _, err := db.Exec(`
+		PRAGMA foreign_keys = ON;
+		PRAGMA journal_mode = WAL;
+		PRAGMA synchronous = NORMAL;
+		PRAGMA cache_size = -2000;
+		PRAGMA temp_store = MEMORY;
+		PRAGMA busy_timeout = 30000;
+	`); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -1058,27 +1082,38 @@ func uniqueServices(values []ServiceKey) []ServiceKey {
 
 func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, error) {
 	rows, err := s.DB.QueryContext(ctx, `
+-- Simpler UNION-based approach without CTEs
 SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled
 FROM users u
-JOIN catalog_entries ce
-  ON ce.category IN (
-      SELECT category FROM selected_categories
-      WHERE user_id = u.id AND mode_id = u.catalog_mode_id
+JOIN feeds f ON f.mode_id = u.catalog_mode_id
+JOIN catalog_modes m ON m.id = f.mode_id  
+JOIN catalog_entries ce ON ce.feed_id = f.id
+WHERE u.enabled = 1
+  AND f.enabled = 1
+  AND m.enabled = 1
+  AND EXISTS (
+      SELECT 1 FROM selected_categories sc
+      WHERE sc.user_id = u.id
+        AND sc.mode_id = u.catalog_mode_id
+        AND sc.category = ce.category
   )
-  OR EXISTS (
+UNION
+SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled
+FROM users u
+JOIN feeds f ON f.mode_id = u.catalog_mode_id
+JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_entries ce ON ce.feed_id = f.id
+WHERE u.enabled = 1
+  AND f.enabled = 1
+  AND m.enabled = 1
+  AND EXISTS (
       SELECT 1 FROM selected_services ss
       WHERE ss.user_id = u.id
         AND ss.mode_id = u.catalog_mode_id
         AND ss.category = ce.category
         AND ss.service = ce.service
   )
-JOIN feeds f ON f.id = ce.feed_id
-JOIN catalog_modes m ON m.id = f.mode_id
-WHERE u.enabled = 1
-  AND f.enabled = 1
-  AND m.enabled = 1
-  AND f.mode_id = u.catalog_mode_id
-ORDER BY ce.cidr, u.id`)
+ORDER BY 1, 2`)
 	if err != nil {
 		return nil, err
 	}
@@ -1118,17 +1153,40 @@ ORDER BY ce.cidr, u.id`)
 		return nil, err
 	}
 
+	// Fetch all user route filters at once to avoid N+1 queries
+	userFiltersMap, err := s.allUserRouteFilters(ctx)
+	if err != nil {
+		return nil, err
+	}
+	
 	globalFilters, err := s.GlobalRouteFilters(ctx)
 	if err != nil {
 		return nil, err
 	}
+	
 	result := map[string][]int64{}
 	for userID, selectedUser := range selected {
-		filtered, err := s.applyUserRouteFilters(
-			ctx, userID, selectedUser.filterMode, selectedUser.prefixes, globalFilters)
+		// Get user-specific filters if any
+		var userFilters RouteFilters
+		if filters, ok := userFiltersMap[userID]; ok {
+			userFilters = filters
+		}
+		
+		var effectiveFilters RouteFilters
+		switch selectedUser.filterMode {
+		case FilterModeOverride:
+			effectiveFilters = userFilters
+		case FilterModeExtend:
+			effectiveFilters = mergeRouteFilters(globalFilters, userFilters)
+		default: // FilterModeDefault or empty
+			effectiveFilters = globalFilters
+		}
+		
+		filtered, err := applyRouteFiltersToPrefixes(selectedUser.prefixes, effectiveFilters)
 		if err != nil {
 			return nil, fmt.Errorf("filter routes for user %d: %w", userID, err)
 		}
+		
 		for _, prefix := range filtered {
 			result[prefix.String()] = append(result[prefix.String()], userID)
 			if len(result) > prefixfilter.DefaultMaxPrefixes {
@@ -1189,6 +1247,45 @@ func (s *Store) GlobalRouteFilters(ctx context.Context) (RouteFilters, error) {
 func (s *Store) UserRouteFilters(ctx context.Context, userID int64) (RouteFilters, error) {
 	return readRouteFilters(ctx, s.DB,
 		"SELECT action, cidr FROM user_route_filters WHERE user_id = ? ORDER BY action, cidr", userID)
+}
+
+// allUserRouteFilters fetches all user route filters in a single query
+func (s *Store) allUserRouteFilters(ctx context.Context) (map[int64]RouteFilters, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT user_id, action, cidr FROM user_route_filters ORDER BY user_id, action, cidr")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	
+	filtersMap := make(map[int64]RouteFilters)
+	for rows.Next() {
+		var userID int64
+		var action, cidr string
+		if err := rows.Scan(&userID, &action, &cidr); err != nil {
+			return nil, err
+		}
+		filters := filtersMap[userID]
+		if action == "allow" {
+			filters.Allow = append(filters.Allow, cidr)
+		} else {
+			filters.Deny = append(filters.Deny, cidr)
+		}
+		filtersMap[userID] = filters
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return filtersMap, nil
+}
+
+// applyRouteFiltersToPrefixes applies route filters to prefixes without database queries
+func applyRouteFiltersToPrefixes(prefixes []netip.Prefix, filters RouteFilters) ([]netip.Prefix, error) {
+	lists, err := parseRouteFilters(filters)
+	if err != nil {
+		return nil, err
+	}
+	return prefixfilter.Apply(prefixes, lists, prefixfilter.DefaultMaxPrefixes)
 }
 
 func (s *Store) SetGlobalRouteFilters(ctx context.Context, filters RouteFilters) error {
