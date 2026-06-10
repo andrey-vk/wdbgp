@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/andrey-vk/wdbgp/internal/config"
+	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -46,21 +47,38 @@ func NewManager(cfg config.Config, s *store.Store) *Manager {
 }
 
 func (m *Manager) Start(ctx context.Context) error {
+	logger := logging.FromContext(ctx)
+	logger.Info("starting BGP manager", 
+		"asn", m.cfg.LocalASN,
+		"router_id", m.cfg.RouterID,
+		"bgp_port", m.cfg.BGPListenPort,
+	)
+	
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.startLocked(ctx)
 }
 
 func (m *Manager) Stop(ctx context.Context) error {
+	logger := logging.FromContext(ctx)
+	logger.Info("stopping BGP manager")
+	
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.server == nil {
+		logger.Debug("BGP server already stopped")
 		return nil
 	}
 	err := m.server.StopBgp(ctx, &api.StopBgpRequest{})
 	m.server = nil
 	m.installed = map[string]installedPath{}
 	m.peerConfigs = map[string]store.User{}
+	
+	if err != nil {
+		logger.Error("failed to stop BGP server", "error", err)
+	} else {
+		logger.Info("BGP server stopped successfully")
+	}
 	return err
 }
 
@@ -82,6 +100,8 @@ func (m *Manager) ReloadPeers(ctx context.Context) error {
 }
 
 func (m *Manager) startLocked(ctx context.Context) error {
+	logger := logging.FromContext(ctx)
+	
 	bgpServer := server.NewBgpServer()
 	go bgpServer.Serve()
 	if err := bgpServer.StartBgp(ctx, &api.StartBgpRequest{
@@ -91,11 +111,15 @@ func (m *Manager) startLocked(ctx context.Context) error {
 			ListenPort: m.cfg.BGPListenPort,
 		},
 	}); err != nil {
+		logger.Error("failed to start BGP server", "error", err)
 		return err
 	}
+	logger.Debug("BGP server started")
+	
 	started := false
 	defer func() {
 		if !started {
+			logger.Debug("cleaning up BGP server after failed initialization")
 			_ = bgpServer.StopBgp(context.Background(), &api.StopBgpRequest{})
 		}
 	}()
@@ -103,25 +127,35 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	users, err := m.store.Users(ctx, true)
 	if err != nil {
 		m.server = nil
+		logger.Error("failed to get users from store", "error", err)
 		return err
 	}
+	
+	logger.Info("configuring BGP peers", "peer_count", len(users))
 	// Store peer configs for later updates
 	m.peerConfigs = make(map[string]store.User, len(users))
 	for _, user := range users {
 		if err := m.addPeerLocked(ctx, user); err != nil {
 			m.server = nil
+			logger.Error("failed to add BGP peer", "peer_ip", user.PeerIP, "error", err)
 			return fmt.Errorf("add peer %s: %w", user.PeerIP, err)
 		}
 		m.peerConfigs[user.PeerIP] = user
+		logger.Debug("added BGP peer", "peer_ip", user.PeerIP, "peer_asn", user.PeerASN)
 	}
 	if err := m.configureGlobalPolicyLocked(ctx, users); err != nil {
 		m.server = nil
+		logger.Error("failed to configure global policy", "error", err)
 		return err
 	}
+	logger.Debug("global policy configured")
+	
 	if err := m.reconcileLocked(ctx); err != nil {
 		m.server = nil
+		logger.Error("failed to reconcile routes", "error", err)
 		return err
 	}
+	logger.Info("BGP manager started successfully", "peer_count", len(users))
 	started = true
 	return nil
 }
