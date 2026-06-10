@@ -24,6 +24,10 @@ type Config struct {
 	DefaultLanguage   string
 	TrustProxyHeader  bool
 	SyncInterval      time.Duration
+	SecurityHeaders   bool
+	RateLimitLogin    int
+	RateLimitAdmin    int
+	SessionMaxAge     int
 }
 
 func Load() (Config, error) {
@@ -46,6 +50,18 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	rateLimitLogin, err := integer("WDBGP_RATE_LIMIT_LOGIN", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	rateLimitAdmin, err := integer("WDBGP_RATE_LIMIT_ADMIN", 30)
+	if err != nil {
+		return Config{}, err
+	}
+	sessionMaxAge, err := integer("WDBGP_SESSION_MAX_AGE", 28800) // 8 hours in seconds
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		DBPath:            env("WDBGP_DB", "/data/wdbgp.sqlite3"),
 		Host:              env("WDBGP_HOST", "0.0.0.0"),
@@ -61,6 +77,10 @@ func Load() (Config, error) {
 		DefaultLanguage:   strings.ToLower(env("WDBGP_DEFAULT_LANGUAGE", "en")),
 		TrustProxyHeader:  boolean("WDBGP_TRUST_PROXY_HEADERS"),
 		SyncInterval:      time.Duration(syncSeconds) * time.Second,
+		SecurityHeaders:   boolean("WDBGP_SECURITY_HEADERS"),
+		RateLimitLogin:    rateLimitLogin,
+		RateLimitAdmin:    rateLimitAdmin,
+		SessionMaxAge:     sessionMaxAge,
 	}
 	return cfg, nil
 }

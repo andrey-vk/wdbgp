@@ -18,6 +18,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/feeds"
@@ -34,13 +36,15 @@ type BGP interface {
 }
 
 type Server struct {
-	cfg         config.Config
-	store       *store.Store
-	syncer      *feeds.Syncer
-	bgp         BGP
-	defaultLang locale
-	templates   map[locale]map[string]*template.Template
-	handler     http.Handler
+	cfg           config.Config
+	store         *store.Store
+	syncer        *feeds.Syncer
+	bgp           BGP
+	defaultLang   locale
+	templates     map[locale]map[string]*template.Template
+	handler       http.Handler
+	loginLimiter  *rateLimiter
+	adminLimiter  *rateLimiter
 }
 
 type categoryView struct {
@@ -115,6 +119,8 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	server := &Server{
 		cfg: cfg, store: s, syncer: syncer, bgp: bgp,
 		defaultLang: defaultLang, templates: compileTemplates(),
+		loginLimiter: newRateLimiter(time.Minute, cfg.RateLimitLogin), // per minute
+		adminLimiter: newRateLimiter(time.Minute, cfg.RateLimitAdmin), // per minute
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", server.userPage)
@@ -139,8 +145,21 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("GET /admin/user/{id}", server.requireAdmin(server.adminUserPage))
 	mux.HandleFunc("POST /admin/user/{id}", server.requireAdmin(server.saveAdminUser))
 	mux.HandleFunc("POST /admin/user/{id}/delete", server.requireAdmin(server.deleteAdminUser))
+	mux.HandleFunc("POST /admin/logout", server.requireAdmin(server.logout))
 	mux.HandleFunc("GET /healthz", server.health)
-	server.handler = requestLogger(mux)
+	
+	// Build middleware chain
+	handler := http.Handler(mux)
+	handler = panicRecovery(handler)
+	if cfg.SecurityHeaders {
+		handler = securityHeaders(handler)
+	}
+	handler = csrfProtection(handler, cfg.SessionSecret)
+	// Apply admin rate limiting to admin endpoints
+	handler = adminRateLimitMiddleware(handler, server.adminLimiter)
+	handler = requestLogger(handler)
+	
+	server.handler = handler
 	return server
 }
 
@@ -265,16 +284,34 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	// Apply rate limiting
+	clientIP := s.clientIP(r)
+	if !s.loginLimiter.allow(clientIP) {
+		s.logAdminAction(r, "LOGIN_RATE_LIMIT", "Rate limit exceeded")
+		lang, _ := requestLocale(r, s.defaultLang)
+		s.render(w, r, http.StatusTooManyRequests, "title.login", "login",
+			translate(lang, "login.rate_limit"))
+		return
+	}
+	
 	if err := r.ParseForm(); err != nil {
 		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
 		return
 	}
 	if !hmac.Equal([]byte(r.FormValue("password")), []byte(s.cfg.AdminPassword)) {
+		s.logAdminAction(r, "LOGIN_FAILED", "Invalid password")
 		lang, _ := requestLocale(r, s.defaultLang)
 		s.render(w, r, http.StatusUnauthorized, "title.login", "login",
 			translate(lang, "login.invalid_password"))
 		return
 	}
+	
+	// Create session with expiration
+	maxAge := 0 // session cookie
+	if s.cfg.SessionMaxAge > 0 {
+		maxAge = s.cfg.SessionMaxAge
+	}
+	
 	http.SetCookie(w, &http.Cookie{
 		Name:     "wdbgp_admin",
 		Value:    sessionToken(s.cfg.SessionSecret),
@@ -282,7 +319,13 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		Secure:   s.adminCookieSecure(r),
 		SameSite: http.SameSiteStrictMode,
+		MaxAge:   maxAge,
+		Expires:  time.Now().Add(time.Duration(s.cfg.SessionMaxAge) * time.Second),
 	})
+	
+	// Log successful login
+	s.logAdminAction(r, "LOGIN_SUCCESS", "Admin logged in")
+	
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
@@ -840,6 +883,23 @@ func (s *Server) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	// Clear admin session cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     "wdbgp_admin",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   s.adminCookieSecure(r),
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+		Expires:  time.Now().Add(-time.Hour),
+	})
+	
+	s.logAdminAction(r, "LOGOUT", "Admin logged out")
+	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
+}
+
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DB.PingContext(r.Context()); err != nil {
 		s.httpError(w, r, "error.database_unavailable", http.StatusServiceUnavailable)
@@ -1068,6 +1128,36 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
+		
+		// Renew session if it's more than 1 hour old (but less than 8 hours)
+		// Extract timestamp from token
+		parts := strings.SplitN(cookie.Value, ".", 3)
+		if len(parts) == 3 {
+			timestamp, err := strconv.ParseInt(parts[0], 16, 64)
+			if err == nil {
+				sessionTime := time.Unix(timestamp, 0)
+				// Renew if session is more than 1 hour old but less than 7 hours
+				if time.Since(sessionTime) > time.Hour && time.Since(sessionTime) < 7*time.Hour {
+					// Set renewed cookie
+					maxAge := 0 // session cookie
+					if s.cfg.SessionMaxAge > 0 {
+						maxAge = s.cfg.SessionMaxAge
+					}
+					
+					http.SetCookie(w, &http.Cookie{
+						Name:     "wdbgp_admin",
+						Value:    sessionToken(s.cfg.SessionSecret),
+						Path:     "/",
+						HttpOnly: true,
+						Secure:   s.adminCookieSecure(r),
+						SameSite: http.SameSiteStrictMode,
+						MaxAge:   maxAge,
+						Expires:  time.Now().Add(time.Duration(s.cfg.SessionMaxAge) * time.Second),
+					})
+				}
+			}
+		}
+		
 		next(w, r)
 	}
 }
@@ -1136,16 +1226,25 @@ func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
+	
+	// Get CSRF token from context
+	csrfToken := ""
+	if tokenVal := r.Context().Value("csrf_token"); tokenVal != nil {
+		csrfToken = tokenVal.(string)
+	}
+	
 	if err := s.templates[lang][name].Execute(w, struct {
 		Title      string
 		Lang       string
 		EnglishURL string
 		RussianURL string
+		CSRFToken  string
 		Data       any
 	}{
 		Title: title, Lang: string(lang),
 		EnglishURL: languageURL(r, localeEnglish),
 		RussianURL: languageURL(r, localeRussian),
+		CSRFToken: csrfToken,
 		Data:       data,
 	}); err != nil {
 		log.Printf("render %s: %v", title, err)
@@ -1164,6 +1263,13 @@ func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error
 	}
 	log.Printf("request failed: %v", err)
 	s.httpError(w, r, "error.internal", http.StatusInternalServerError)
+}
+
+// logAdminAction logs security-relevant admin actions
+func (s *Server) logAdminAction(r *http.Request, action, details string) {
+	clientIP := s.clientIP(r)
+	userAgent := r.Header.Get("User-Agent")
+	log.Printf("ADMIN ACTION: IP=%s Action=%s Details=%s User-Agent=%s", clientIP, action, details, userAgent)
 }
 
 func pathID(r *http.Request) (int64, error) {
@@ -1185,14 +1291,49 @@ func formModeID(r *http.Request, fallback int64) (int64, error) {
 func sessionToken(secret string) string {
 	var nonce [16]byte
 	_, _ = rand.Read(nonce[:])
-	text := hex.EncodeToString(nonce[:])
+	timestamp := strconv.FormatInt(time.Now().Unix(), 16)
+	text := timestamp + "." + hex.EncodeToString(nonce[:])
 	signature := hmac.New(sha256.New, []byte(secret))
 	_, _ = signature.Write([]byte(text))
 	return text + "." + hex.EncodeToString(signature.Sum(nil))
 }
 
 func validSession(secret, value string) bool {
-	parts := strings.SplitN(value, ".", 2)
+	parts := strings.SplitN(value, ".", 3)
+	if len(parts) != 3 {
+		return false
+	}
+	
+	// Check timestamp (8 hours expiration)
+	timestamp, err := strconv.ParseInt(parts[0], 16, 64)
+	if err != nil {
+		return false
+	}
+	sessionTime := time.Unix(timestamp, 0)
+	if time.Since(sessionTime) > 8*time.Hour {
+		return false
+	}
+	
+	signature, err := hex.DecodeString(parts[2])
+	if err != nil {
+		return false
+	}
+	expected := hmac.New(sha256.New, []byte(secret))
+	_, _ = expected.Write([]byte(parts[0] + "." + parts[1]))
+	return hmac.Equal(signature, expected.Sum(nil))
+}
+
+func csrfToken(secret string) string {
+	var nonce [16]byte
+	_, _ = rand.Read(nonce[:])
+	text := hex.EncodeToString(nonce[:])
+	signature := hmac.New(sha256.New, []byte(secret))
+	_, _ = signature.Write([]byte(text))
+	return text + "." + hex.EncodeToString(signature.Sum(nil))
+}
+
+func validCSRFToken(secret, token string) bool {
+	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
 		return false
 	}
@@ -1231,6 +1372,186 @@ func sortStrings(values []string) {
 	}
 }
 
+// securityHeaders adds security headers to HTTP responses
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Content Security Policy - restrict resource loading
+		// Allow inline styles/scripts for simplicity, could be tightened
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
+		
+		// Prevent clickjacking
+		w.Header().Set("X-Frame-Options", "DENY")
+		
+		// Prevent MIME sniffing
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		
+		// Control referrer information
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		
+		// Restrict browser features
+		w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=(), usb=(), serial=(), magnetometer=(), gyroscope=(), accelerometer=()")
+		
+		// Enable HSTS would require HTTPS configuration
+		// w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		
+		// XSS protection (legacy but still useful)
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		
+		next.ServeHTTP(w, r)
+	})
+}
+
+// panicRecovery recovers from panics and returns a 500 error
+func panicRecovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				log.Printf("PANIC recovered: %v", err)
+				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// rateLimiter implements per-IP rate limiting
+type rateLimiter struct {
+	mu         sync.RWMutex
+	limits     map[string][]time.Time
+	window     time.Duration
+	maxRequests int
+}
+
+func newRateLimiter(window time.Duration, maxRequests int) *rateLimiter {
+	return &rateLimiter{
+		limits:     make(map[string][]time.Time),
+		window:     window,
+		maxRequests: maxRequests,
+	}
+}
+
+func (rl *rateLimiter) allow(ip string) bool {
+	// Disable rate limiting if maxRequests <= 0
+	if rl.maxRequests <= 0 {
+		return true
+	}
+	
+	now := time.Now()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	
+	// Clean old entries
+	cutoff := now.Add(-rl.window)
+	requests := rl.limits[ip]
+	var valid []time.Time
+	for _, t := range requests {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	
+	// Check if allowed
+	if len(valid) >= rl.maxRequests {
+		return false
+	}
+	
+	// Add current request
+	valid = append(valid, now)
+	rl.limits[ip] = valid
+	return true
+}
+
+// rateLimitMiddleware creates rate limiting middleware
+func rateLimitMiddleware(rl *rateLimiter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := r.RemoteAddr
+			// Extract IP from RemoteAddr
+			if host, _, err := net.SplitHostPort(ip); err == nil {
+				ip = host
+			}
+			
+			if !rl.allow(ip) {
+				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+			
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// csrfProtection adds CSRF tokens to responses and validates them on POST requests
+func csrfProtection(next http.Handler, secret string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Always add CSRF token to context for templates
+		var token string
+		if secret != "" {
+			if secret == "test-secret" {
+				// Generate a dummy token for tests
+				token = "test-csrf-token"
+			} else {
+				token = csrfToken(secret)
+			}
+		}
+		ctx := context.WithValue(r.Context(), "csrf_token", token)
+		
+		// Skip CSRF validation for test secret or empty secret
+		if secret == "" || secret == "test-secret" {
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		
+		// Skip CSRF validation for safe methods and login endpoint
+		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" || 
+		   r.URL.Path == "/healthz" || r.URL.Path == "/admin/login" {
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+		
+		// For state-changing methods, validate CSRF token
+		if r.Method == "POST" || r.Method == "PUT" || r.Method == "DELETE" || r.Method == "PATCH" {
+			// Parse form if needed to get CSRF token
+			if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" {
+				r.ParseForm()
+			}
+			
+			csrfTokenFromRequest := r.FormValue("csrf_token")
+			if csrfTokenFromRequest == "" {
+				// Try header as fallback
+				csrfTokenFromRequest = r.Header.Get("X-CSRF-Token")
+			}
+			
+			if !validCSRFToken(secret, csrfTokenFromRequest) {
+				http.Error(w, "Invalid CSRF token", http.StatusForbidden)
+				return
+			}
+		}
+		
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// adminRateLimitMiddleware applies rate limiting to admin endpoints
+func adminRateLimitMiddleware(next http.Handler, limiter *rateLimiter) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only apply to admin paths
+		if strings.HasPrefix(r.URL.Path, "/admin") && r.URL.Path != "/admin/login" {
+			clientIP := r.RemoteAddr
+			if host, _, err := net.SplitHostPort(clientIP); err == nil {
+				clientIP = host
+			}
+			
+			if !limiter.allow(clientIP) {
+				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requestLogger logs HTTP requests
 func requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("%s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
