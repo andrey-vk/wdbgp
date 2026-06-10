@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
+	"github.com/andrey-vk/wdbgp/internal/retry"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -222,19 +223,42 @@ func isLegacyOpenCCKFeedCategory(category string) bool {
 }
 
 func (s *Syncer) download(ctx context.Context, rawURL string) ([]byte, error) {
+	// Use retry with exponential backoff for feed downloads
+	result, err := retry.DoWithResult(ctx, retry.HTTPConfig,
+		func() ([]byte, error) {
+			return s.doDownload(ctx, rawURL)
+		},
+		retry.HTTPTransientError,
+	)
+	
+	if err != nil {
+		// Check if it's a context error
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("feed download timeout for %s: %w", rawURL, err)
+		}
+		return nil, fmt.Errorf("feed download failed for %s: %w", rawURL, err)
+	}
+	
+	return result, nil
+}
+
+func (s *Syncer) doDownload(ctx context.Context, rawURL string) ([]byte, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	request.Header.Set("User-Agent", "wdbgp-go/1.0")
+	
 	response, err := s.Client.Do(request)
 	if err != nil {
 		return nil, err
 	}
 	defer response.Body.Close()
+	
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP %s", response.Status)
 	}
+	
 	return io.ReadAll(response.Body)
 }
 

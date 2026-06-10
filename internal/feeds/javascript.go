@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrey-vk/wdbgp/internal/retry"
 	"github.com/andrey-vk/wdbgp/internal/store"
 	"github.com/dop251/goja"
 )
@@ -195,6 +196,27 @@ func (a *adapterHTTP) get(rawURL string) (string, error) {
 	if err := a.validateURL(parsed); err != nil {
 		return "", err
 	}
+	
+	// Use retry with exponential backoff for HTTP requests
+	result, err := retry.DoWithResult(a.ctx, retry.HTTPConfig, 
+		func() (string, error) {
+			return a.doHTTPRequest(parsed)
+		},
+		retry.HTTPTransientError,
+	)
+	
+	if err != nil {
+		// Check if it's a context error
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", fmt.Errorf("adapter HTTP request timeout: %w", err)
+		}
+		return "", fmt.Errorf("adapter HTTP request failed: %w", err)
+	}
+	
+	return result, nil
+}
+
+func (a *adapterHTTP) doHTTPRequest(parsed *url.URL) (string, error) {
 	a.requests++
 
 	request, err := http.NewRequestWithContext(a.ctx, http.MethodGet, parsed.String(), nil)
@@ -202,6 +224,8 @@ func (a *adapterHTTP) get(rawURL string) (string, error) {
 		return "", err
 	}
 	request.Header.Set("User-Agent", "wdbgp-go/1.0")
+	
+	// Create a copy of the client with custom redirect handling
 	client := *a.client
 	previousRedirect := client.CheckRedirect
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
@@ -217,25 +241,31 @@ func (a *adapterHTTP) get(rawURL string) (string, error) {
 		}
 		return nil
 	}
+	
 	response, err := client.Do(request)
 	if err != nil {
 		return "", err
 	}
 	defer response.Body.Close()
+	
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return "", fmt.Errorf("HTTP %s", response.Status)
 	}
+	
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxAdapterResponseBytes+1))
 	if err != nil {
 		return "", err
 	}
+	
 	if len(body) > maxAdapterResponseBytes {
 		return "", fmt.Errorf("adapter HTTP response exceeds %d bytes", maxAdapterResponseBytes)
 	}
+	
 	a.totalBytes += int64(len(body))
 	if a.totalBytes > maxAdapterTotalBytes {
 		return "", fmt.Errorf("adapter HTTP responses exceed %d bytes", maxAdapterTotalBytes)
 	}
+	
 	return string(body), nil
 }
 

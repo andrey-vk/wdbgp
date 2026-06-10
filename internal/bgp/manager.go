@@ -15,6 +15,7 @@ import (
 
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/logging"
+	"github.com/andrey-vk/wdbgp/internal/retry"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -492,33 +493,52 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			delete(desired, rawPrefix)
 		}
 	}
+	
+	// Use retry for BGP operations
 	for prefix, installed := range m.installed {
 		users, exists := desired[prefix]
 		signature := signature(users)
 		if exists && signature == installed.Signature {
 			continue
 		}
-		if err := m.server.DeletePath(ctx, &api.DeletePathRequest{
-			TableType: api.TableType_GLOBAL,
-			Uuid:      installed.UUID,
-		}); err != nil {
+		
+		err := retry.Do(ctx, retry.BGPConfig,
+			func() error {
+				return m.server.DeletePath(ctx, &api.DeletePathRequest{
+					TableType: api.TableType_GLOBAL,
+					Uuid:      installed.UUID,
+				})
+			},
+			retry.TransientError,
+		)
+		
+		if err != nil {
 			return fmt.Errorf("withdraw %s: %w", prefix, err)
 		}
 		delete(m.installed, prefix)
 	}
+	
 	for prefix, users := range desired {
 		sig := signature(users)
 		if installed, ok := m.installed[prefix]; ok && installed.Signature == sig {
 			continue
 		}
+		
 		path, err := m.path(prefix, users)
 		if err != nil {
 			return err
 		}
-		response, err := m.server.AddPath(ctx, &api.AddPathRequest{
-			TableType: api.TableType_GLOBAL,
-			Path:      path,
-		})
+		
+		response, err := retry.DoWithResult(ctx, retry.BGPConfig,
+			func() (*api.AddPathResponse, error) {
+				return m.server.AddPath(ctx, &api.AddPathRequest{
+					TableType: api.TableType_GLOBAL,
+					Path:      path,
+				})
+			},
+			retry.TransientError,
+		)
+		
 		if err != nil {
 			return fmt.Errorf("announce %s: %w", prefix, err)
 		}
