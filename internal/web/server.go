@@ -45,6 +45,7 @@ type Server struct {
 	handler       http.Handler
 	loginLimiter  *rateLimiter
 	adminLimiter  *rateLimiter
+	startTime     time.Time
 }
 
 type categoryView struct {
@@ -121,6 +122,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 		defaultLang: defaultLang, templates: compileTemplates(),
 		loginLimiter: newRateLimiter(time.Minute, cfg.RateLimitLogin), // per minute
 		adminLimiter: newRateLimiter(time.Minute, cfg.RateLimitAdmin), // per minute
+		startTime: time.Now(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", server.userPage)
@@ -147,6 +149,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/user/{id}/delete", server.requireAdmin(server.deleteAdminUser))
 	mux.HandleFunc("POST /admin/logout", server.requireAdmin(server.logout))
 	mux.HandleFunc("GET /healthz", server.health)
+	mux.HandleFunc("GET /status", server.status)
 	
 	// Build middleware chain
 	handler := http.Handler(mux)
@@ -914,6 +917,118 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
+func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	
+	// Get database stats
+	categories, services, totalPrefixes, err := s.store.Stats(ctx)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	
+	// Get BGP peer status
+	peerStates, err := s.bgp.PeerStates(ctx)
+	if err != nil {
+		logger := logging.FromContext(ctx)
+		logger.Error("failed to read BGP peer states", "error", err)
+		peerStates = map[string]string{}
+	}
+	
+	// Count connected peers
+	connectedPeers := 0
+	for _, state := range peerStates {
+		if state == "ESTABLISHED" {
+			connectedPeers++
+		}
+	}
+	
+	// Get feed sync status
+	feeds, err := s.store.Feeds(ctx, false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	
+	var feedStatus []map[string]any
+	var successfulSyncs, failedSyncs int
+	var lastSyncTime *time.Time
+	
+	for _, feed := range feeds {
+		status := map[string]any{
+			"name": feed.Name,
+			"enabled": feed.Enabled,
+			"url": feed.URL,
+		}
+		
+		if feed.LastSuccess != "" {
+			if t, err := time.Parse(time.RFC3339, feed.LastSuccess); err == nil {
+				status["last_success"] = t
+				if lastSyncTime == nil || t.After(*lastSyncTime) {
+					lastSyncTime = &t
+				}
+				successfulSyncs++
+			}
+		}
+		
+		if feed.LastError != "" {
+			status["last_error"] = feed.LastError
+			failedSyncs++
+		}
+		
+		feedStatus = append(feedStatus, status)
+	}
+	
+	// Get version/build info (simple placeholder for now)
+	// In a real deployment, this could be set via ldflags
+	buildInfo := map[string]string{
+		"version": "dev",
+		"go_version": "1.26",
+	}
+	
+	// Get announced prefixes count (this would need to query BGP manager)
+	// For now, we'll return 0 and implement later if needed
+	announcedPrefixes := 0
+	
+	// Prepare response
+	response := map[string]any{
+		"uptime": time.Since(s.startTime).Seconds(),
+		"database": map[string]any{
+			"connected": true, // health check already passed
+			"categories": categories,
+			"services": services,
+			"total_prefixes": totalPrefixes,
+		},
+		"bgp": map[string]any{
+			"total_peers": len(peerStates),
+			"connected_peers": connectedPeers,
+			"peer_states": peerStates,
+			"announced_prefixes": announcedPrefixes,
+		},
+		"feeds": map[string]any{
+			"total": len(feeds),
+			"enabled": countEnabledFeeds(feeds),
+			"successful_syncs": successfulSyncs,
+			"failed_syncs": failedSyncs,
+			"last_sync": lastSyncTime,
+			"details": feedStatus,
+		},
+		"prefixes": map[string]any{
+			"total": totalPrefixes,
+			"announced": announcedPrefixes,
+			"filtered": totalPrefixes - announcedPrefixes, // estimate
+		},
+		"build": buildInfo,
+		"timestamp": time.Now().UTC(),
+	}
+	
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		logger := logging.FromContext(ctx)
+		logger.Error("failed to encode status response", "error", err)
+	}
+}
+
 func (s *Server) selection(ctx context.Context, user store.User, editable, admin bool) (selectionView, error) {
 	modes, err := s.store.CatalogModes(ctx, !admin)
 	if err != nil {
@@ -1565,6 +1680,16 @@ func adminRateLimitMiddleware(next http.Handler, limiter *rateLimiter) http.Hand
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func countEnabledFeeds(feeds []store.Feed) int {
+	count := 0
+	for _, feed := range feeds {
+		if feed.Enabled {
+			count++
+		}
+	}
+	return count
 }
 
 

@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1010,4 +1011,97 @@ type testRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn testRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return fn(request)
+}
+
+func TestStatusEndpoint(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "status.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create some test data
+	_, err = db.AddUser(context.Background(), store.User{
+		Name: "test-client", PeerIP: "172.16.0.3", PeerASN: 65002, Enabled: true,
+		Networks: []string{"192.168.30.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a feed
+	err = db.AddFeedForModeAdapter(
+		context.Background(),
+		"test-feed",
+		"http://example.com/feed.json",
+		1,
+		1,
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	syncer := feeds.NewSyncer(db)
+	bgp := &fakeBGP{}
+	server := New(cfg, db, syncer, bgp)
+
+	req := httptest.NewRequest("GET", "/status", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	// Check that it's valid JSON
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		t.Fatalf("failed to parse JSON response: %v\nbody: %s", err, body)
+	}
+
+	// Check basic structure
+	if _, ok := data["uptime"]; !ok {
+		t.Error("response missing uptime field")
+	}
+	if _, ok := data["database"]; !ok {
+		t.Error("response missing database field")
+	}
+	if _, ok := data["bgp"]; !ok {
+		t.Error("response missing bgp field")
+	}
+	if _, ok := data["feeds"]; !ok {
+		t.Error("response missing feeds field")
+	}
+	if _, ok := data["prefixes"]; !ok {
+		t.Error("response missing prefixes field")
+	}
+	if _, ok := data["build"]; !ok {
+		t.Error("response missing build field")
+	}
+
+	// Check BGP data
+	bgpData, ok := data["bgp"].(map[string]any)
+	if !ok {
+		t.Error("bgp field is not an object")
+	}
+	if total, ok := bgpData["total_peers"].(float64); !ok || total != 1 {
+		t.Errorf("expected total_peers=1, got %v", total)
+	}
+
+	// Check database data
+	dbData, ok := data["database"].(map[string]any)
+	if !ok {
+		t.Error("database field is not an object")
+	}
+	if connected, ok := dbData["connected"].(bool); !ok || !connected {
+		t.Error("database should show as connected")
+	}
 }
