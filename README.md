@@ -186,12 +186,33 @@ password check. Force `true` only when the admin UI is always served over HTTPS.
 | `WDBGP_SYNC_INTERVAL` | `3600` seconds |
 | `WDBGP_ADMIN_COOKIE_SECURE` | `auto` |
 | `WDBGP_DEFAULT_LANGUAGE` | `en` |
+| `WDBGP_SECURITY_HEADERS` | `false` |
+| `WDBGP_RATE_LIMIT_LOGIN` | `5` |
+| `WDBGP_RATE_LIMIT_ADMIN` | `30` |
+| `WDBGP_SESSION_MAX_AGE` | `28800` |
+| `WDBGP_LOG_LEVEL` | `INFO` |
+| `WDBGP_LOG_FORMAT` | `text` |
+| `WDBGP_TRUST_PROXY_HEADERS` | `false` |
 
 `WDBGP_ADMIN_PASSWORD` and `WDBGP_SESSION_SECRET` are required by `serve`.
 The old `WDBGP_BIRD_LOCAL_ADDRESS` and `WDBGP_BIRD_LOCAL_ADDRESS_V6` names are
 temporarily accepted as compatibility aliases.
 When `WDBGP_BGP_LOCAL_ADDRESS_V6` is empty, IPv6 selections remain stored but
 only IPv4 prefixes are announced.
+
+### Validation and constraints
+
+- `WDBGP_SECURITY_HEADERS`: boolean; enables HTTP security headers (Content-Security-Policy, X-Frame-Options, etc.)
+- `WDBGP_RATE_LIMIT_LOGIN`: integer 1-1000; login requests per minute (default 5)
+- `WDBGP_RATE_LIMIT_ADMIN`: integer 1-1000; admin API requests per minute (default 30) 
+- `WDBGP_SESSION_MAX_AGE`: integer 60-31536000; session cookie max-age in seconds (default 28800 = 8 hours)
+- `WDBGP_LOG_LEVEL`: DEBUG, INFO, WARN, ERROR, FATAL, PANIC (default INFO)
+- `WDBGP_LOG_FORMAT`: text or json (default text)
+- `WDBGP_TRUST_PROXY_HEADERS`: boolean; trust X-Forwarded-Proto header for cookie security detection
+
+All configuration values are validated on startup with helpful error messages.
+
+The application provides a `/status` endpoint for operational visibility, returning basic health and version information in JSON format.
 
 ## Database migrations
 

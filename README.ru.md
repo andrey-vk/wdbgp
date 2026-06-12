@@ -186,12 +186,33 @@ cookie и после правильного пароля снова переки
 | `WDBGP_SYNC_INTERVAL` | `3600` секунд |
 | `WDBGP_ADMIN_COOKIE_SECURE` | `auto` |
 | `WDBGP_DEFAULT_LANGUAGE` | `en` |
+| `WDBGP_SECURITY_HEADERS` | `false` |
+| `WDBGP_RATE_LIMIT_LOGIN` | `5` |
+| `WDBGP_RATE_LIMIT_ADMIN` | `30` |
+| `WDBGP_SESSION_MAX_AGE` | `28800` |
+| `WDBGP_LOG_LEVEL` | `INFO` |
+| `WDBGP_LOG_FORMAT` | `text` |
+| `WDBGP_TRUST_PROXY_HEADERS` | `false` |
 
 `WDBGP_ADMIN_PASSWORD` и `WDBGP_SESSION_SECRET` обязательны для `serve`.
 Старые имена `WDBGP_BIRD_LOCAL_ADDRESS` и
 `WDBGP_BIRD_LOCAL_ADDRESS_V6` пока принимаются как совместимые aliases.
 Если `WDBGP_BGP_LOCAL_ADDRESS_V6` не задан, IPv6-выбор сохраняется в базе, но
 анонсируются только IPv4-префиксы.
+
+### Проверка и ограничения
+
+- `WDBGP_SECURITY_HEADERS`: boolean; включает HTTP security headers (Content-Security-Policy, X-Frame-Options и др.)
+- `WDBGP_RATE_LIMIT_LOGIN`: целое число 1-1000; запросов входа в минуту (по умолчанию 5)
+- `WDBGP_RATE_LIMIT_ADMIN`: целое число 1-1000; запросов admin API в минуту (по умолчанию 30)
+- `WDBGP_SESSION_MAX_AGE`: целое число 60-31536000; срок действия session cookie в секундах (по умолчанию 28800 = 8 часов)
+- `WDBGP_LOG_LEVEL`: DEBUG, INFO, WARN, ERROR, FATAL, PANIC (по умолчанию INFO)
+- `WDBGP_LOG_FORMAT`: text или json (по умолчанию text)
+- `WDBGP_TRUST_PROXY_HEADERS`: boolean; доверять заголовку X-Forwarded-Proto для определения безопасности cookie
+
+Все значения конфигурации проверяются при запуске с понятными сообщениями об ошибках.
+
+Приложение предоставляет эндпоинт `/status` для мониторинга состояния, возвращающий базовую информацию о работоспособности и версии в формате JSON.
 
 ## Миграции
 
