@@ -1041,7 +1041,7 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 			modes = append(modes, current)
 		}
 	}
-	catalog, err := s.store.CatalogForMode(ctx, user.CatalogModeID)
+	catalog, err := s.store.CatalogForMode(ctx, user.CatalogModeID, admin)
 	if err != nil {
 		return selectionView{}, err
 	}
