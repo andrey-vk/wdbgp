@@ -829,16 +829,20 @@ func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 }
 
 func (s *Store) Catalog(ctx context.Context) (map[string][]string, error) {
-	return s.CatalogForMode(ctx, DefaultCatalogModeID)
+	return s.CatalogForMode(ctx, DefaultCatalogModeID, false)
 }
 
-func (s *Store) CatalogForMode(ctx context.Context, modeID int64) (map[string][]string, error) {
+func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisabled bool) (map[string][]string, error) {
+	includeDisabledInt := 0
+	if includeDisabled {
+		includeDisabledInt = 1
+	}
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE f.enabled = 1 AND f.mode_id = ?
-ORDER BY ce.category, ce.service`, modeID)
+WHERE (f.enabled = 1 OR ? = 1) AND f.mode_id = ?
+ORDER BY ce.category, ce.service`, includeDisabledInt, modeID)
 	if err != nil {
 		return nil, err
 	}
