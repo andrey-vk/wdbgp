@@ -49,18 +49,20 @@ type Server struct {
 }
 
 type categoryView struct {
-	Name        string
-	Selected    bool
-	Services    []serviceView
-	PrefixCount int // total prefixes in this category
+	Name          string
+	Selected      bool
+	Services      []serviceView
+	PrefixCountV4 int
+	PrefixCountV6 int
 }
 
 type serviceView struct {
-	Name        string
-	Value       string
-	Selected    bool
-	Disabled    bool
-	PrefixCount int // prefixes for this specific service
+	Name          string
+	Value         string
+	Selected      bool
+	Disabled      bool
+	PrefixCountV4 int
+	PrefixCountV6 int
 }
 
 type selectionView struct {
@@ -77,8 +79,10 @@ type selectionView struct {
 	SelectedServiceCount    int
 	CSRFToken               string
 	Communities             map[string]uint32
-	PrefixCounts            map[string]map[string]int // category -> service -> count
-	CategoryCounts          map[string]int            // category -> total unique prefixes
+	PrefixCountsV4          map[string]map[string]int // category -> service -> v4 count
+	PrefixCountsV6          map[string]map[string]int // category -> service -> v6 count
+	CategoryCountsV4        map[string]int            // category -> total unique v4 prefixes
+	CategoryCountsV6        map[string]int            // category -> total unique v6 prefixes
 	TotalPrefixesV4         int                       // total unique IPv4 prefixes for selection
 	TotalPrefixesV6         int                       // total unique IPv6 prefixes for selection
 }
@@ -1513,22 +1517,27 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 	}
 	comms, _ := s.store.GetCommunities(ctx, user.CatalogModeID)
 	view.Communities = comms
-	prefixCounts, err := s.store.PrefixCounts(ctx, user.CatalogModeID)
+	prefixCountsV4, prefixCountsV6, err := s.store.PrefixCounts(ctx, user.CatalogModeID)
 	if err != nil {
 		return selectionView{}, err
 	}
-	view.PrefixCounts = prefixCounts
+	view.PrefixCountsV4 = prefixCountsV4
+	view.PrefixCountsV6 = prefixCountsV6
 	view.TotalPrefixesV4, view.TotalPrefixesV6, err = s.store.CountSelectionPrefixes(ctx, user.ID, s.cfg.LocalAddressV6 == "")
 	if err != nil {
 		return selectionView{}, err
 	}
-	view.CategoryCounts, err = s.store.CategoryPrefixCounts(ctx, user.CatalogModeID)
+	categoryCountsV4, categoryCountsV6, err := s.store.CategoryPrefixCounts(ctx, user.CatalogModeID)
 	if err != nil {
-		view.CategoryCounts = map[string]int{}
+		view.CategoryCountsV4 = map[string]int{}
+		view.CategoryCountsV6 = map[string]int{}
+	} else {
+		view.CategoryCountsV4 = categoryCountsV4
+		view.CategoryCountsV6 = categoryCountsV6
 	}
 	for _, category := range names {
 		categorySelected := selectedCategories[category]
-		item := categoryView{Name: category, Selected: selectedCategories[category], PrefixCount: view.CategoryCounts[category]}
+		item := categoryView{Name: category, Selected: selectedCategories[category], PrefixCountV4: view.CategoryCountsV4[category], PrefixCountV6: view.CategoryCountsV6[category]}
 		if categorySelected {
 			view.SelectedCategoryCount++
 			view.SelectedCoveredServices += len(catalog[category])
@@ -1538,15 +1547,20 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 			if !categorySelected && selectedServices[key] {
 				view.SelectedServiceCount++
 			}
-			svcPrefixCount := 0
-			if svcCounts, ok := prefixCounts[category]; ok {
-				svcPrefixCount = svcCounts[service]
+			svcPrefixCountV4 := 0
+			svcPrefixCountV6 := 0
+			if svcCounts, ok := prefixCountsV4[category]; ok {
+				svcPrefixCountV4 = svcCounts[service]
+			}
+			if svcCounts, ok := prefixCountsV6[category]; ok {
+				svcPrefixCountV6 = svcCounts[service]
 			}
 			item.Services = append(item.Services, serviceView{
 				Name: service, Value: serviceValue(category, service),
 				Selected: !categorySelected && selectedServices[key],
 				Disabled: categorySelected,
-				PrefixCount: svcPrefixCount,
+				PrefixCountV4: svcPrefixCountV4,
+				PrefixCountV6: svcPrefixCountV6,
 			})
 		}
 		view.Categories = append(view.Categories, item)

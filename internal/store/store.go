@@ -930,58 +930,87 @@ ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 	return prefixes, rows.Err()
 }
 
-// CategoryPrefixCounts returns the total number of distinct CIDRs per category,
-// deduplicating prefixes that appear in multiple services (or feeds) within the same category.
-func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (map[string]int, error) {
+// CategoryPrefixCounts returns the number of distinct IPv4 and IPv6 CIDRs per category.
+func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (v4 map[string]int, v6 map[string]int, err error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT ce.category, COUNT(DISTINCT ce.cidr)
+SELECT ce.category, ce.cidr
 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
 WHERE f.mode_id = ? AND f.enabled = 1
-GROUP BY ce.category
+GROUP BY ce.category, ce.cidr
 ORDER BY ce.category`, modeID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
-	counts := map[string]int{}
+	v4 = map[string]int{}
+	v6 = map[string]int{}
+	seen := map[string]map[netip.Prefix]struct{}{}
 	for rows.Next() {
-		var category string
-		var count int
-		if err := rows.Scan(&category, &count); err != nil {
-			return nil, err
+		var category, rawCIDR string
+		if err := rows.Scan(&category, &rawCIDR); err != nil {
+			return nil, nil, err
 		}
-		counts[category] = count
+		prefix, err := netip.ParsePrefix(rawCIDR)
+		if err != nil {
+			continue
+		}
+		if seen[category] == nil {
+			seen[category] = map[netip.Prefix]struct{}{}
+		}
+		if _, ok := seen[category][prefix]; ok {
+			continue
+		}
+		seen[category][prefix] = struct{}{}
+		if prefix.Addr().Is6() {
+			v6[category]++
+		} else {
+			v4[category]++
+		}
 	}
-	return counts, rows.Err()
+	return v4, v6, rows.Err()
 }
 
-// PrefixCounts returns the number of distinct CIDR prefixes for each service in each category for a mode.
-// Returns map[category]map[service]count.
-func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (map[string]map[string]int, error) {
+// PrefixCounts returns the number of distinct IPv4 and IPv6 CIDR prefixes for each service in each category.
+func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (v4 map[string]map[string]int, v6 map[string]map[string]int, err error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT ce.category, ce.service, COUNT(DISTINCT ce.cidr)
+SELECT ce.category, ce.service, ce.cidr
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
 WHERE f.mode_id = ? AND f.enabled = 1
-GROUP BY ce.category, ce.service
+GROUP BY ce.category, ce.service, ce.cidr
 ORDER BY ce.category, ce.service`, modeID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
-	counts := map[string]map[string]int{}
+	v4 = map[string]map[string]int{}
+	v6 = map[string]map[string]int{}
+	ens := ensureCount
 	for rows.Next() {
-		var category, service string
-		var count int
-		if err := rows.Scan(&category, &service, &count); err != nil {
-			return nil, err
+		var category, service, rawCIDR string
+		if err := rows.Scan(&category, &service, &rawCIDR); err != nil {
+			return nil, nil, err
 		}
-		if counts[category] == nil {
-			counts[category] = map[string]int{}
+		prefix, err := netip.ParsePrefix(rawCIDR)
+		if err != nil {
+			continue
 		}
-		counts[category][service] = count
+		if prefix.Addr().Is6() {
+			ens(&v6, category, service)
+		} else {
+			ens(&v4, category, service)
+		}
 	}
-	return counts, rows.Err()
+	return v4, v6, rows.Err()
+}
+
+func ensureCount(m *map[string]map[string]int, category, service string) {
+	cat, ok := (*m)[category]
+	if !ok {
+		cat = map[string]int{}
+		(*m)[category] = cat
+	}
+	cat[service]++
 }
 
 func (s *Store) UserSelection(
