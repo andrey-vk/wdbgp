@@ -30,7 +30,7 @@ func TestJavaScriptAdapter_HTTPRetry(t *testing.T) {
 		}, nil
 	})}
 
-	entries, err := (adapterRunner{client: client, timeout: 5 * time.Second}).run(
+	entries, err := (adapterRunner{limits: testLimits(), client: client, timeout: 5 * time.Second}).run(
 		context.Background(),
 		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed"},
 		store.FeedAdapter{
