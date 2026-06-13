@@ -407,6 +407,21 @@ CREATE INDEX idx_catalog_communities_value ON catalog_communities(community);
 `,
 		Go: autoGenerateCommunities,
 	},
+	{
+		Version: 14,
+		Name:    "add web auth",
+		SQL: `
+ALTER TABLE users ADD COLUMN web_auth TEXT NOT NULL DEFAULT 'network';
+
+CREATE TABLE user_credentials (
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    login         TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    PRIMARY KEY (user_id, login)
+);
+CREATE INDEX idx_user_credentials_login ON user_credentials(login);
+`,
+	},
 }
 
 type Store struct {
@@ -463,7 +478,14 @@ type User struct {
 	CatalogModeID   int64
 	CatalogModeName string
 	CatalogEditable bool
+	WebAuth         string // "network", "login", "both"
 	Networks        []string
+}
+
+type UserCredential struct {
+	UserID       int64
+	Login        string
+	PasswordHash string
 }
 
 type ServiceKey struct {
@@ -733,7 +755,8 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 	                 COALESCE(bgp_password, ''), selection_locked, enabled,
 	                 filter_override_enabled, COALESCE(filter_mode, ''), filter_editable,
 	                 catalog_mode_id, catalog_mode_editable,
-	                 COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), '')
+	                 COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), ''),
+	                 web_auth
 	          FROM users`
 	if enabledOnly {
 		query += " WHERE enabled = 1"
@@ -752,6 +775,7 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
 			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
 			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName,
+			&user.WebAuth,
 		); err != nil {
 			return nil, err
 		}
@@ -779,12 +803,14 @@ func (s *Store) User(ctx context.Context, id int64) (User, error) {
 		COALESCE(bgp_password, ''), selection_locked, enabled,
 		filter_override_enabled, COALESCE(filter_mode, ''), filter_editable,
 		catalog_mode_id, catalog_mode_editable,
-		COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), '')
+		COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), ''),
+		web_auth
 		FROM users WHERE id = ?`, id).
 		Scan(&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
 			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
-			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName)
+			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName,
+			&user.WebAuth)
 	if err != nil {
 		return User{}, err
 	}

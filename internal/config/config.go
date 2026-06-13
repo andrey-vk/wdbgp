@@ -39,6 +39,7 @@ type Config struct {
 	JSMaxEntries       int
 	JSMaxRequests      int
 	JSMaxCallStack     int
+	DefaultWebAuth     string
 }
 
 func Load() (Config, error) {
@@ -134,6 +135,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	defaultWebAuth, err := validateWebAuthMode("WDBGP_DEFAULT_WEB_AUTH", "network")
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		DBPath:            dbPath,
 		Host:              host,
@@ -162,6 +167,7 @@ func Load() (Config, error) {
 		JSMaxEntries:       jsMaxEntries,
 		JSMaxRequests:      jsMaxRequests,
 		JSMaxCallStack:     jsMaxCallStack,
+		DefaultWebAuth:     defaultWebAuth,
 	}
 	return cfg, nil
 }
@@ -535,4 +541,17 @@ func validateDefaultLanguage(name string, fallback string) (string, error) {
 		return "", fmt.Errorf("%s must be one of: en, ru", name)
 	}
 	return lowerValue, nil
+}
+
+func validateWebAuthMode(name string, fallback string) (string, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	switch value {
+	case "network", "login", "both":
+		return value, nil
+	default:
+		return "", fmt.Errorf("%s must be network, login, or both", name)
+	}
 }
