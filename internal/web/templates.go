@@ -48,7 +48,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .empty{text-align:center;padding:2rem;color:var(--muted)}
 .pill{font-size:.75em;color:var(--muted);border:1px solid var(--border);padding:1px 6px;border-radius:8px;white-space:nowrap}
 .community-tag{font-size:.75em;color:var(--muted);margin-left:4px;font-family:ui-monospace,monospace}
-.prefix-count{font-size:.8em;color:var(--muted);margin-left:.3em}
+.prefix-count{font-size:.8em;color:var(--muted);margin-left:.3em;white-space:nowrap}
 
 .community-value{color:var(--accent);cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}
 .community-value:hover{opacity:.8}
@@ -67,8 +67,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 .selection-form{padding-bottom:5.5rem}
 .catalog-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-top:1rem}
-.category-card{border:1px solid var(--border);border-radius:8px;padding:.8rem;padding-top:0}
-.category-card legend{float:left;width:auto;padding:0 .5rem;font-size:1em;line-height:1;margin-top:-.6em}
+.category-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:1rem;padding-top:.5rem;position:relative;margin-top:1rem}
+.category-card legend{background:var(--card-bg);padding:0 .5rem;font-size:1em;font-weight:600;position:absolute;top:-.7em;left:.8rem;line-height:1.4}
 .category-title{font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;flex-wrap:wrap}
 .category-title input[type=checkbox]{margin:0}
 .service-list{display:flex;flex-direction:column;gap:4px;margin-top:6px;padding-left:1.5rem}
@@ -200,6 +200,8 @@ const selectionBody = `{{$selection := .}}
 <div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" data-prefixes="{{.PrefixCount}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}{{if index $selection.Communities (printf "%s|%s" $cat .Name)}} <span class=community-tag title="{{tr "communities.service_community"}}">{{index $selection.Communities (printf "%s|%s" $cat .Name)}}</span>{{end}} <span class=prefix-count title="{{tr "selection.prefix_count"}}">{{.PrefixCount}} pref.</span></label>{{end}}</div>
 </fieldset>{{end}}</div>{{else}}<p class=empty>{{tr "selection.empty"}}</p>{{end}}</form></section>
 <script>
+var serverV4 = {{.TotalPrefixesV4}};
+var serverV6 = {{.TotalPrefixesV6}};
 var catalogModeSelect = document.getElementById('catalog-mode-select');
 if (catalogModeSelect && !catalogModeSelect.disabled) {
   catalogModeSelect.addEventListener('change', function() {
@@ -244,6 +246,14 @@ function updateSelectionCounts() {
   updateSelectionLabel('selected-category-label', categoryCount);
   updateSelectionLabel('selected-covered-service-label', coveredServiceCount);
   updateSelectionLabel('selected-service-label', standaloneServiceCount);
+  var pTotal = 0;
+  document.querySelectorAll('fieldset.category-card').forEach(function(fs) {
+    var catCb = fs.querySelector('input[name="category"]');
+    if (catCb && catCb.checked) {
+      pTotal += parseInt(catCb.dataset.prefixes || '0');
+    }
+  });
+  document.getElementById('total-prefix-v4').textContent = pTotal;
 }
 document.querySelectorAll('input[name="category"]').forEach(function(categoryInput) {
   var fieldset = categoryInput.closest('fieldset');
