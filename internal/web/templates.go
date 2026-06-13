@@ -619,6 +619,7 @@ const adminShellTemplate = `<!DOCTYPE html>
 <style>
 :root,[data-theme=light]{--bg:#f0f2f5;--text:#1a1a2e;--sidebar-bg:#1a1a2e;--sidebar-text:#e0e0e0;--sidebar-active:#4da6ff;--card-bg:#fff;--border:#e0e0e0;--accent:#06c;--muted:#666;--danger:#c00;--ok:#0a0}
 [data-theme=dark]{--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950}
+@media(prefers-color-scheme:dark){:root:not([data-theme]){--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950}}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh}
 .sidebar{width:200px;background:var(--sidebar-bg);color:var(--sidebar-text);padding:1rem 0;flex-shrink:0;display:flex;flex-direction:column}
@@ -672,9 +673,9 @@ input,select{padding:4px 8px;border:1px solid var(--border);border-radius:4px;ba
 </main>
 </div>
 <script>
-function cycleTheme(){var t=document.documentElement;var c=t.getAttribute('data-theme')||'auto';var n={'auto':'light','light':'dark','dark':'auto'}[c];if(n==='auto'){t.removeAttribute('data-theme')}else{t.setAttribute('data-theme',n)}localStorage.setItem('wdbgp-theme',n);updateThemeIcon()}
-function updateThemeIcon(){var t=document.documentElement.getAttribute('data-theme')||'auto';var m=document.querySelector('#topbar button');var i={'auto':'🌓','light':'☀️','dark':'🌙'};if(m)m.textContent=i[t]||'🌙'}
-(function(){var s=localStorage.getItem('wdbgp-theme');if(s){if(s==='auto')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',s)}updateThemeIcon()})();
+function cycleTheme(){var t=document.documentElement;var c=t.getAttribute('data-theme');if(!c){c=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}var n=c==='dark'?'light':'dark';t.setAttribute('data-theme',n);localStorage.setItem('wdbgp-theme',n);updateThemeIcon()}
+function updateThemeIcon(){var t=document.documentElement.getAttribute('data-theme')||(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');var m=document.querySelector('#topbar button');var i={'light':'☀️','dark':'🌙'};if(m)m.textContent=i[t]||'🌙'}
+(function(){var s=localStorage.getItem('wdbgp-theme');if(!s){s=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}if(s==='auto')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',s);updateThemeIcon()})();
 // Active nav link
 document.querySelectorAll('.sidebar a').forEach(function(a){a.addEventListener('click',function(){document.querySelectorAll('.sidebar a').forEach(function(x){x.classList.remove('active')});this.classList.add('active')})});
 // htmx after-swap: update active nav
