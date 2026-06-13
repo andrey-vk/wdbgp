@@ -158,6 +158,8 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/communities/reset", server.requireAdmin(server.resetCommunities))
 	mux.HandleFunc("GET /admin/debug/cidr", server.requireAdmin(server.debugCIDRHandler))
 	mux.HandleFunc("POST /admin/mode/{id}", server.requireAdmin(server.updateCatalogMode))
+	mux.HandleFunc("GET /admin/feed", server.requireAdmin(server.feedEditPage))
+	mux.HandleFunc("GET /admin/feed/{id}", server.requireAdmin(server.feedEditPage))
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
 	mux.HandleFunc("POST /admin/feed/{id}", server.requireAdmin(server.updateFeed))
 	mux.HandleFunc("POST /admin/feed/{id}/delete", server.requireAdmin(server.deleteFeed))
@@ -724,6 +726,43 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
+func (s *Server) feedEditPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var feed store.Feed
+	isNew := true
+
+	if rawID := r.PathValue("id"); rawID != "" {
+		id, err := strconv.ParseInt(rawID, 10, 64)
+		if err != nil {
+			s.httpError(w, r, "error.bad_feed_id", http.StatusBadRequest)
+			return
+		}
+		feed, err = s.store.Feed(ctx, id)
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		isNew = false
+	}
+
+	modes, _ := s.store.CatalogModes(ctx, false)
+	adapters, _ := s.store.FeedAdapters(ctx)
+
+	lang, _ := requestLocale(r, s.defaultLang)
+	title := translate(lang, "feeds.add")
+	if !isNew {
+		title = translate(lang, "feeds.edit")
+	}
+
+	s.renderAdmin(w, r, http.StatusOK, title, "feed-edit", map[string]any{
+		"Feed": feed, "IsNew": isNew, "Modes": modes, "Adapters": adapters,
+	})
+}
+
 func (s *Server) addFeedAdapter(w http.ResponseWriter, r *http.Request) {
 	adapter, err := parseFeedAdapter(r, 0, maxSource(s.cfg.JSMaxSourceBytes))
 	if err != nil {
@@ -979,7 +1018,8 @@ func parseFeed(r *http.Request, id int64) (store.Feed, error) {
 	}
 	return store.Feed{
 		ID: id, Name: name, URL: rawURL, ModeID: modeID, AdapterID: adapterID,
-		Enabled: r.Form.Has("enabled"),
+		Enabled:      r.Form.Has("enabled"),
+		SyncInterval: formInt(r, "sync_interval"),
 	}, nil
 }
 
@@ -1643,6 +1683,7 @@ func compileTemplates() map[locale]map[string]*template.Template {
 		"user-edit":     userEditTemplate,
 		"users-list":    usersListTemplate,
 		"feeds-list":    feedsListTemplate,
+		"feed-edit":     feedEditTemplate,
 		"adapters-list": adaptersListTemplate,
 	}
 	result := make(map[locale]map[string]*template.Template, len(translations))
@@ -1925,6 +1966,18 @@ func formModeID(r *http.Request, fallback int64) (int64, error) {
 		return 0, fmt.Errorf("invalid catalog mode")
 	}
 	return modeID, nil
+}
+
+func formInt(r *http.Request, key string) int {
+	raw := strings.TrimSpace(r.FormValue(key))
+	if raw == "" {
+		return 0
+	}
+	val, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return val
 }
 
 func sessionToken(secret string) string {

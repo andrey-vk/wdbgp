@@ -431,14 +431,15 @@ type Store struct {
 }
 
 type Feed struct {
-	ID          int64
-	Name        string
-	URL         string
-	ModeID      int64
-	AdapterID   int64
-	Enabled     bool
-	LastSuccess string
-	LastError   string
+	ID           int64
+	Name         string
+	URL          string
+	ModeID       int64
+	AdapterID    int64
+	Enabled      bool
+	SyncInterval int
+	LastSuccess  string
+	LastError    string
 }
 
 type FeedAdapter struct {

@@ -82,6 +82,9 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 textarea.large{width:100%;min-height:6em;font-family:ui-monospace,monospace;font-size:.85em;padding:8px;resize:vertical}
 
+.back-link{display:inline-block;color:var(--muted);text-decoration:none;margin-bottom:.75rem;font-size:.9em}
+.back-link:hover{color:var(--accent)}
+
 button.secondary{background:var(--muted);color:#fff;border-color:var(--muted)}
 
 form{margin:1rem 0}
@@ -275,6 +278,7 @@ const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
 const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{with .Data}}
 <header><h1>{{printf (tr "title.user") .User.Name}}</h1></header>
+<a href="/admin/users" class=back-link>← {{tr "nav.users"}}</a>
 <div class=tab-bar>
   <button class="tab active" data-tab=settings>{{tr "user.settings"}}</button>
   <button class=tab data-tab=selection>{{tr "selection.heading"}}</button>
@@ -664,15 +668,44 @@ const feedsListTemplate = `{{with .Data}}
 <h1>{{tr "nav.feeds"}}</h1>
 <div class=card>
 <table>
-<tr><th>{{tr "feeds.name"}}</th><th>{{tr "catalog.mode"}}</th><th>{{tr "feeds.status"}}</th><th>{{tr "feeds.last_sync"}}</th></tr>
+<tr><th>{{tr "feeds.name"}}</th><th>{{tr "catalog.mode"}}</th><th>{{tr "feeds.status"}}</th><th>{{tr "feeds.last_sync"}}</th><th></th></tr>
 {{range .Feeds}}
 <tr>
 <td>{{.Feed.Name}}</td>
 <td>{{.ModeName}}</td>
 <td>{{if .Feed.Enabled}}<span class=ok>enabled</span>{{else}}<span class=error>disabled</span>{{end}}</td>
 <td>{{if .LastSync}}{{.LastSync}}{{else}}—{{end}}</td>
+<td><a href="/admin/feed/{{.Feed.ID}}" class=button>{{tr "common.edit"}}</a></td>
 </tr>{{end}}
 </table>
+</div>
+<p><a href="/admin/feed" class="button primary">{{tr "feeds.add"}}</a></p>
+{{end}}`
+
+const feedEditTemplate = `{{with .Data}}
+<a href="/admin/feeds" class=back-link>← {{tr "nav.feeds"}}</a>
+<h1>{{if .IsNew}}{{tr "feeds.add"}}{{else}}{{tr "feeds.edit"}}{{end}}</h1>
+<div class=card>
+<form method=post action="{{if .IsNew}}/admin/feed{{else}}/admin/feed/{{.Feed.ID}}{{end}}">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<label>{{tr "feeds.name"}} <input name=name value="{{.Feed.Name}}" required></label>
+<label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
+<div class=form-grid>
+<label>{{tr "catalog.mode"}}
+<select name=catalog_mode_id>
+{{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.Feed.ModeID}}selected{{end}}>{{.Name}}</option>{{end}}
+</select></label>
+<label>{{tr "feeds.adapter"}}
+<select name=adapter_id>
+{{range .Adapters}}<option value="{{.ID}}" {{if eq .ID $.Data.Feed.AdapterID}}selected{{end}}>{{.Name}}</option>{{end}}
+</select></label>
+</div>
+<label>{{tr "feeds.sync_interval"}} <input type=number name=sync_interval value="{{.Feed.SyncInterval}}" placeholder="{{tr "feeds.default_interval"}}"></label>
+<div class=checkbox-row><label><input type=checkbox name=enabled {{if .Feed.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label></div>
+<button type=submit class=primary>{{tr "common.save"}}</button>
+</form>
+{{if not .IsNew}}<form method=post action="/admin/feed/{{.Feed.ID}}/delete" style="margin-top:1rem" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}')">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button type=submit class=danger>{{tr "common.delete"}}</button></form>{{end}}
 </div>
 {{end}}`
 
