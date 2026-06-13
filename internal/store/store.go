@@ -1715,15 +1715,18 @@ func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 	if user.CatalogModeID == 0 {
 		user.CatalogModeID = DefaultCatalogModeID
 	}
+	if user.WebAuth == "" {
+		user.WebAuth = "network"
+	}
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `INSERT INTO users
 			(name, peer_ip, peer_asn, next_hop, bgp_password, selection_locked, enabled,
 			 filter_override_enabled, filter_mode, filter_editable,
-			 catalog_mode_id, catalog_mode_editable)
-			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)`,
+			 catalog_mode_id, catalog_mode_editable, web_auth)
+			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?)`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, user.BGPPassword,
 			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
-			user.FilterEditable, user.CatalogModeID, user.CatalogEditable)
+			user.FilterEditable, user.CatalogModeID, user.CatalogEditable, user.WebAuth)
 		if err != nil {
 			return err
 		}
@@ -1751,13 +1754,16 @@ func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) e
 				return err
 			}
 		}
+		if user.WebAuth == "" {
+			user.WebAuth = "network"
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE users SET name=?, peer_ip=?, peer_asn=?,
 			next_hop=NULLIF(?, ''), bgp_password=?, selection_locked=?, enabled=?,
 			filter_override_enabled=?, filter_mode=?, filter_editable=?,
-			catalog_mode_id=?, catalog_mode_editable=? WHERE id=?`,
+			catalog_mode_id=?, catalog_mode_editable=?, web_auth=? WHERE id=?`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, password,
 			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
-			user.FilterEditable, user.CatalogModeID, user.CatalogEditable, user.ID)
+			user.FilterEditable, user.CatalogModeID, user.CatalogEditable, user.WebAuth, user.ID)
 		if err != nil {
 			return err
 		}

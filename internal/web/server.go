@@ -1091,6 +1091,12 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		switch user.WebAuth {
+		case "network", "login", "both":
+		default:
+			http.Error(w, `web_auth must be "network", "login", or "both"`, http.StatusBadRequest)
+			return
+		}
 		if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {
 			s.internalError(w, r, err)
 			return
@@ -1522,6 +1528,7 @@ func parseUserForm(r *http.Request, id int64) (store.User, bool, error) {
 		FilterEditable:  r.Form.Has("filter_editable"),
 		CatalogModeID:   modeID,
 		CatalogEditable: r.Form.Has("catalog_mode_editable"),
+		WebAuth:         r.FormValue("web_auth"),
 		Networks:        networks,
 	}, r.Form.Has("clear_bgp_password"), nil
 }
