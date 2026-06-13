@@ -1111,10 +1111,28 @@ func uniqueServices(values []ServiceKey) []ServiceKey {
 	return result
 }
 
-func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, error) {
+// PrefixRouteInfo carries category, service, and mode for a prefix
+// that made it through the DesiredPrefixes pipeline.
+type PrefixRouteInfo struct {
+	ModeID   int64
+	Category string
+	Service  string
+}
+
+// userRoute is a single route from the DesiredPrefixes query, carrying
+// its original mode/category/service metadata before any filters split it.
+type userRoute struct {
+	prefix   netip.Prefix
+	modeID   int64
+	category string
+	service  string
+}
+
+func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, map[string]PrefixRouteInfo, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 -- Simpler UNION-based approach without CTEs
-SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled
+SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
+       ce.category, ce.service, f.mode_id
 FROM users u
 JOIN feeds f ON f.mode_id = u.catalog_mode_id
 JOIN catalog_modes m ON m.id = f.mode_id  
@@ -1129,7 +1147,8 @@ WHERE u.enabled = 1
         AND sc.category = ce.category
   )
 UNION
-SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled
+SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
+       ce.category, ce.service, f.mode_id
 FROM users u
 JOIN feeds f ON f.mode_id = u.catalog_mode_id
 JOIN catalog_modes m ON m.id = f.mode_id
@@ -1146,12 +1165,12 @@ WHERE u.enabled = 1
   )
 ORDER BY 1, 2`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	type selectedUser struct {
 		filterMode string
-		prefixes   []netip.Prefix
+		routes     []userRoute
 	}
 	selected := map[int64]*selectedUser{}
 	for rows.Next() {
@@ -1159,12 +1178,14 @@ ORDER BY 1, 2`)
 		var userID int64
 		var filterMode string
 		var override bool
-		if err := rows.Scan(&rawPrefix, &userID, &filterMode, &override); err != nil {
-			return nil, err
+		var category, service string
+		var modeID int64
+		if err := rows.Scan(&rawPrefix, &userID, &filterMode, &override, &category, &service, &modeID); err != nil {
+			return nil, nil, err
 		}
 		prefix, err := netip.ParsePrefix(rawPrefix)
 		if err != nil {
-			return nil, fmt.Errorf("parse selected prefix %q: %w", rawPrefix, err)
+			return nil, nil, fmt.Errorf("parse selected prefix %q: %w", rawPrefix, err)
 		}
 		// A feed-provided default route is never a useful service route.
 		if prefix.Bits() == 0 {
@@ -1175,28 +1196,34 @@ ORDER BY 1, 2`)
 			user = &selectedUser{filterMode: normalizeFilterMode(filterMode, override)}
 			selected[userID] = user
 		}
-		user.prefixes = append(user.prefixes, prefix.Masked())
+		user.routes = append(user.routes, userRoute{
+			prefix:   prefix.Masked(),
+			modeID:   modeID,
+			category: category,
+			service:  service,
+		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := rows.Close(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Fetch all user route filters at once to avoid N+1 queries
 	userFiltersMap, err := s.allUserRouteFilters(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	
 	globalFilters, err := s.GlobalRouteFilters(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	
 	result := map[string][]int64{}
-	for userID, selectedUser := range selected {
+	prefixMeta := map[string]PrefixRouteInfo{}
+	for userID, selUser := range selected {
 		// Get user-specific filters if any
 		var userFilters RouteFilters
 		if filters, ok := userFiltersMap[userID]; ok {
@@ -1204,7 +1231,7 @@ ORDER BY 1, 2`)
 		}
 		
 		var effectiveFilters RouteFilters
-		switch selectedUser.filterMode {
+		switch selUser.filterMode {
 		case FilterModeOverride:
 			effectiveFilters = userFilters
 		case FilterModeExtend:
@@ -1213,20 +1240,64 @@ ORDER BY 1, 2`)
 			effectiveFilters = globalFilters
 		}
 		
-		filtered, err := applyRouteFiltersToPrefixes(selectedUser.prefixes, effectiveFilters)
+		// Build a flat list of original prefixes for filtering
+		origPrefixes := make([]netip.Prefix, len(selUser.routes))
+		for i, r := range selUser.routes {
+			origPrefixes[i] = r.prefix
+		}
+		
+		filtered, err := applyRouteFiltersToPrefixes(origPrefixes, effectiveFilters)
 		if err != nil {
-			return nil, fmt.Errorf("filter routes for user %d: %w", userID, err)
+			return nil, nil, fmt.Errorf("filter routes for user %d: %w", userID, err)
 		}
 		
 		for _, prefix := range filtered {
-			result[prefix.String()] = append(result[prefix.String()], userID)
+			key := prefix.String()
+			result[key] = append(result[key], userID)
 			if len(result) > prefixfilter.DefaultMaxPrefixes {
-				return nil, fmt.Errorf("route filters produced more than %d unique routes",
+				return nil, nil, fmt.Errorf("route filters produced more than %d unique routes",
 					prefixfilter.DefaultMaxPrefixes)
+			}
+			// Carry mode/category/service through the filter — find the best matching
+			// original route so that communities can be loaded from the correct mode.
+			if _, exists := prefixMeta[key]; !exists {
+				if modeID, cat, svc, ok := findBestMatch(prefix, selUser.routes); ok {
+					prefixMeta[key] = PrefixRouteInfo{ModeID: modeID, Category: cat, Service: svc}
+				}
 			}
 		}
 	}
-	return result, nil
+	return result, prefixMeta, nil
+}
+
+// findBestMatch returns the (modeID, category, service) for the original route
+// that best contains the filtered prefix.  This handles the case where route
+// filters split a prefix (e.g. /8 → /16) — the longer match wins.
+func findBestMatch(needle netip.Prefix, routes []userRoute) (int64, string, string, bool) {
+	var best *struct {
+		modeID   int64
+		category string
+		service  string
+		bits     int
+	}
+	for i := range routes {
+		r := &routes[i]
+		if !r.prefix.Contains(needle.Addr()) || needle.Bits() < r.prefix.Bits() {
+			continue
+		}
+		if best == nil || r.prefix.Bits() > best.bits {
+			best = &struct {
+				modeID   int64
+				category string
+				service  string
+				bits     int
+			}{r.modeID, r.category, r.service, r.prefix.Bits()}
+		}
+	}
+	if best == nil {
+		return 0, "", "", false
+	}
+	return best.modeID, best.category, best.service, true
 }
 
 func (s *Store) ApplyUserRouteFilters(
@@ -1972,14 +2043,3 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, err
 	return count, err
 }
 
-// PrefixCategoryService returns the category and service for a given prefix.
-func (s *Store) PrefixCategoryService(ctx context.Context, prefix string) (category, service string, err error) {
-	err = s.DB.QueryRowContext(ctx,
-		`SELECT DISTINCT ce.category, ce.service
-FROM catalog_entries ce
-WHERE ce.cidr = ? LIMIT 1`, prefix).Scan(&category, &service)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", nil
-	}
-	return
-}

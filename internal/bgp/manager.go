@@ -488,7 +488,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	if m.server == nil {
 		return fmt.Errorf("BGP server is not running")
 	}
-	desired, err := m.store.DesiredPrefixes(ctx)
+	desired, prefixMeta, err := m.store.DesiredPrefixes(ctx)
 	if err != nil {
 		return err
 	}
@@ -502,8 +502,14 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		}
 	}
 
-	// Load communities for the default mode to attach category/service tags.
-	comms, _ := m.store.GetCommunities(ctx, store.DefaultCatalogModeID)
+	// Load communities for every mode seen across prefixes.
+	modeCommunities := make(map[int64]map[string]int)
+	for _, info := range prefixMeta {
+		if _, ok := modeCommunities[info.ModeID]; !ok {
+			comms, _ := m.store.GetCommunities(ctx, info.ModeID)
+			modeCommunities[info.ModeID] = comms
+		}
+	}
 
 	// Use retry for BGP operations
 	for prefix, installed := range m.installed {
@@ -535,8 +541,12 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			continue
 		}
 
-		category, service, _ := m.store.PrefixCategoryService(ctx, prefix)
-		path, err := m.path(prefix, users, category, service, comms)
+		meta, hasMeta := prefixMeta[prefix]
+		comms := map[string]int{}
+		if hasMeta {
+			comms = modeCommunities[meta.ModeID]
+		}
+		path, err := m.path(prefix, users, meta.Category, meta.Service, comms)
 		if err != nil {
 			return err
 		}

@@ -208,7 +208,7 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 	if selectedCount != 0 {
 		t.Fatalf("legacy OpenCCK feed category selections = %d, want 0", selectedCount)
 	}
-	prefixes, err := s.DesiredPrefixes(context.Background())
+	prefixes, _, err := s.DesiredPrefixes(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 			t.Fatalf("%s count = %d, want 0", table, count)
 		}
 	}
-	prefixes, err := s.DesiredPrefixes(context.Background())
+	prefixes, _, err := s.DesiredPrefixes(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,7 @@ func TestDesiredPrefixesForCategoryAndService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prefixes, err := s.DesiredPrefixes(ctx)
+	prefixes, _, err := s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +627,7 @@ func TestDesiredPrefixesEmptyWithoutSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prefixes, err := s.DesiredPrefixes(ctx)
+	prefixes, _, err := s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -684,7 +684,7 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prefixes, err := s.DesiredPrefixes(ctx)
+	prefixes, _, err := s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +694,7 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	if err := s.SetUserCatalogMode(ctx, userID, ipranges.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	prefixes, err = s.DesiredPrefixes(ctx)
+	prefixes, _, err = s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +706,7 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	if err := s.UpdateCatalogMode(ctx, ipranges); err != nil {
 		t.Fatal(err)
 	}
-	prefixes, err = s.DesiredPrefixes(ctx)
+	prefixes, _, err = s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -784,7 +784,7 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	if len(catalog["Custom"]) != 1 {
 		t.Fatalf("enabled feed missing from catalog: %#v", catalog)
 	}
-	prefixes, err := s.DesiredPrefixes(ctx)
+	prefixes, _, err := s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -803,7 +803,7 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	if _, ok := catalog["Custom"]; ok {
 		t.Fatalf("disabled feed remains in catalog: %#v", catalog)
 	}
-	prefixes, err = s.DesiredPrefixes(ctx)
+	prefixes, _, err = s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -823,7 +823,7 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	if err := s.UpdateFeed(ctx, feed); err != nil {
 		t.Fatal(err)
 	}
-	prefixes, err = s.DesiredPrefixes(ctx)
+	prefixes, _, err = s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1001,7 +1001,7 @@ func TestDesiredPrefixesSubtractsGlobalDeny(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prefixes, err := s.DesiredPrefixes(ctx)
+	prefixes, _, err := s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1030,7 +1030,7 @@ func TestDesiredPrefixesUsesUserOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prefixes, err := s.DesiredPrefixes(ctx)
+	prefixes, _, err := s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1057,7 +1057,7 @@ func TestDesiredPrefixesExtendsGlobalFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prefixes, err := s.DesiredPrefixes(ctx)
+	prefixes, _, err := s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1102,7 +1102,7 @@ func TestDesiredPrefixesDropsFeedDefaultRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prefixes, err := s.DesiredPrefixes(ctx)
+	prefixes, _, err := s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
