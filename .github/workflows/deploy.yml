@@ -55,3 +55,14 @@ jobs:
           sbom: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/wdbgp
+          readme-filepath: ./dockerhub-description.md
+          short-description: |
+            Downloads categorized IPv4/IPv6 CIDR feeds, builds a service catalog,
+            and announces prefixes to routers over BGP. Single Go binary.
