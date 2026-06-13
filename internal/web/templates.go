@@ -34,7 +34,6 @@ dialog{width:min(52rem,calc(100% - 2rem));max-height:calc(100% - 2rem);border:0;
 .apply-btn{color:#0a0;background:0 0;border:1px solid #0a0;cursor:pointer;padding:1px 5px;margin-left:2px;border-radius:2px}
 .cancel-btn{color:#c00;background:0 0;border:1px solid #c00;cursor:pointer;padding:1px 5px;margin-left:1px;border-radius:2px}
 .revert-btn{color:#c90;background:0 0;border:none;cursor:pointer;font-size:1.1em;margin-left:4px;padding:0 2px}
-.communities-bar{margin-top:1rem;display:flex;align-items:center;gap:1rem}
 .communities-table th:last-child,.communities-table td:last-child{min-width:180px}
 </style></head><body><nav class=language-switcher aria-label="{{tr "language.label"}}">
 <a href="{{.EnglishURL}}" title="{{tr "language.english"}}" aria-current="{{if eq .Lang "en"}}page{{else}}false{{end}}">EN</a>
@@ -376,6 +375,11 @@ const communitiesBody = `{{with .Data}}
 <form method=post action="/admin/communities" id=communities-form>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=mode value="{{.Mode.ID}}">
+<div class=save-bar>
+  <div><strong>{{tr "communities.title"}}</strong><br>
+  <span class=muted id=change-summary>{{tr "communities.no_changes"}}</span></div>
+  <button type=submit class=primary id=save-btn disabled>{{tr "communities.apply"}}</button>
+</div>
 <table class=communities-table><tr><th>{{tr "catalog.category"}}</th><th>{{tr "catalog.service"}}</th><th>{{tr "communities.group_community"}}</th></tr>
 {{range .Groups}}{{$group := .}}
 <tr class=group-row>
@@ -396,10 +400,7 @@ const communitiesBody = `{{with .Data}}
 </span></td>
 </tr>{{end}}
 {{end}}</table>
-<div class="communities-bar">
-<button type=submit class=primary id=save-btn>{{tr "communities.apply"}}</button>
-<span id=change-count class=muted></span>
-<span style="flex:1"></span>
+<div style="margin-top:1rem;display:flex;gap:1rem">
 <form method=post action="/admin/communities/generate" style="display:inline" onsubmit="return confirm('Generate community numbers for all categories and services that do not have one yet?')">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=mode value="{{.Mode.ID}}">
@@ -418,14 +419,55 @@ const communitiesBody = `{{with .Data}}
 var modeSelect=document.getElementById('mode-select');
 modeSelect.addEventListener('change',function(){window.location.href='/admin/communities?mode='+this.value});
 
+var activeEdit = null;
+
+function closeEdit(cell, forceApply) {
+  var inp = cell.querySelector('.community-input');
+  if (inp && inp.dataset.changed === '0' && inp.value !== inp.dataset.original) {
+    if (forceApply === undefined) {
+      if (!confirm('Apply changes to this community number?')) {
+        cell.querySelector('.cancel-btn').click();
+        return;
+      }
+    }
+    if (forceApply !== false) {
+      cell.querySelector('.apply-btn').click();
+      return;
+    }
+  }
+  cell.querySelector('.community-value').style.display = '';
+  var revert = cell.querySelector('.revert-btn');
+  if (revert) {
+    var val = cell.querySelector('.community-value').textContent;
+    var auto = cell.dataset.auto;
+    revert.style.display = val != auto ? '' : 'none';
+  }
+  cell.querySelector('.edit-actions').style.display = 'none';
+}
+
 function findDuplicate(name,value){var cells=document.querySelectorAll('.community-cell');for(var i=0;i<cells.length;i++){if(cells[i].dataset.name===name)continue;var cellVal=cells[i].querySelector('.community-value').textContent;var inp=cells[i].querySelector('.community-input');if(inp&&inp.dataset.changed==='1')cellVal=inp.value;if(cellVal===value)return true}var hiddens=document.querySelectorAll('.revert-hidden');for(var j=0;j<hiddens.length;j++){if(hiddens[j].value===value)return true}return false}
-function countChanges(){return document.querySelectorAll('.community-input[data-changed="1"]').length+document.querySelectorAll('.community-cell.reverted').length}
-function updateUI(){var c=countChanges();var el=document.getElementById('change-count');el.textContent=c>0?c+' changed':'no changes';document.getElementById('save-btn').disabled=c===0}
+function countChanged(){return document.querySelectorAll('.community-input[data-changed="1"]').length}
+function countReverted(){return document.querySelectorAll('.community-cell.reverted').length}
+function updateUI(){
+  var edited = countChanged();
+  var reverted = countReverted();
+  var total = edited + reverted;
+  var el = document.getElementById('change-summary');
+  var parts = [];
+  if (edited > 0) parts.push(edited + ' community number' + (edited > 1 ? 's' : '') + ' changed');
+  if (reverted > 0) parts.push(reverted + ' reverted to auto');
+  el.textContent = parts.length > 0 ? parts.join(', ') : {{printf "%q" (tr "communities.no_changes")}};
+  document.getElementById('save-btn').disabled = total === 0;
+}
 
 // Click number → edit mode
 document.querySelectorAll('.community-value').forEach(function(v){
 v.addEventListener('click',function(){
 var cell=this.parentElement;
+if (activeEdit && activeEdit !== cell) {
+  closeEdit(activeEdit);
+}
+activeEdit = cell;
 cell.querySelector('.community-value').style.display='none';
 cell.querySelector('.revert-btn')&&(cell.querySelector('.revert-btn').style.display='none');
 cell.querySelector('.edit-actions').style.display='inline-flex';
@@ -454,7 +496,8 @@ var revert=cell.querySelector('.revert-btn');
 if(newVal!=auto){if(!revert){revert=document.createElement('button');revert.type='button';revert.className='revert-btn';revert.textContent='↺';revert.title='Revert to auto';cell.insertBefore(revert,cell.querySelector('.edit-actions'));setupRevert(revert)}}else{if(revert)revert.style.display='none'}
 revert&&(revert.style.display=newVal!=auto?'':'none');
 cell.querySelector('.edit-actions').style.display='none';
-updateUI()
+updateUI();
+activeEdit = null;
 })
 });
 
@@ -468,7 +511,8 @@ var auto=cell.dataset.auto;
 var val=cell.querySelector('.community-value').textContent;
 revert&&(revert.style.display=val!=auto?'':'none');
 cell.querySelector('.edit-actions').style.display='none';
-updateUI()
+updateUI();
+activeEdit = null;
 })
 });
 
@@ -498,7 +542,7 @@ inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault(
 
 // Form submit confirm
 document.getElementById('communities-form').addEventListener('submit',function(e){
-var c=countChanges();
+var c=countChanged()+countReverted();
 if(c>0&&!confirm('Confirm: N communities will be updated. Continue?'.replace('N',c))){e.preventDefault()}
 });
 
