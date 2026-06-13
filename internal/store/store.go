@@ -15,6 +15,8 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/prefixfilter"
 	"github.com/andrey-vk/wdbgp/internal/retry"
 
+	"golang.org/x/crypto/bcrypt"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -1863,6 +1865,27 @@ func (s *Store) Stats(ctx context.Context) (int, int, int, error) {
 
 func IsNotFound(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
+}
+
+// AuthenticateUser looks up a user by login credential (login + password).
+// It joins user_credentials with users and compares the bcrypt hash.
+// Returns the User on success, or an error (sql.ErrNoRows if not found,
+// bcrypt.ErrMismatchedHashAndPassword if password is wrong).
+func (s *Store) AuthenticateUser(ctx context.Context, login, password string) (User, error) {
+	var userID int64
+	var passwordHash string
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT uc.user_id, uc.password_hash
+		FROM user_credentials uc
+		JOIN users u ON u.id = uc.user_id
+		WHERE uc.login = ? AND u.enabled = 1`, login).Scan(&userID, &passwordHash)
+	if err != nil {
+		return User{}, err
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+		return User{}, err
+	}
+	return s.User(ctx, userID)
 }
 
 // Community represents a catalog community assignment.

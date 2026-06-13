@@ -47,10 +47,10 @@ const accessDeniedTemplate = `<h1>{{tr "access_denied.heading"}}</h1><p>IP: <cod
 const userLoginTemplate = `{{with .Data}}
 <header><h1>{{tr "title.login"}}</h1></header>
 <section class=card>
-<p>{{tr "login.not_implemented"}}</p>
+{{if .Error}}<p class=error>{{.Error}}</p>{{end}}
 <form method=post action=/login>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
-<label>{{tr "user.login"}} <input name=login required></label>
+<label>{{tr "user.login"}} <input name=login required autofocus></label>
 <label>{{tr "user.password"}} <input type=password name=password required></label>
 <button>{{tr "title.login"}}</button>
 </form>

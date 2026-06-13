@@ -266,7 +266,7 @@ func (s *Server) userLoginPage(w http.ResponseWriter, r *http.Request) {
 		// Check if the cookie is valid for any user
 		parts := strings.SplitN(cookie.Value, ".", 4)
 		if len(parts) == 4 {
-			userID, err := strconv.ParseInt(parts[2], 10, 64)
+			userID, err := strconv.ParseInt(parts[2], 16, 64)
 			if err == nil {
 				user, err := s.store.User(r.Context(), userID)
 				if err == nil && user.Enabled && validUserSession(r, user.ID, s.cfg.SessionSecret) {
@@ -276,13 +276,56 @@ func (s *Server) userLoginPage(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	// Show login form
+	// Show login form with optional error message
 	lang, _ := requestLocale(r, s.defaultLang)
-	s.renderTitle(w, r, http.StatusOK, translate(lang, "title.login"), "user-login", struct{}{})
+	errorMsg := r.URL.Query().Get("error")
+	s.renderTitle(w, r, http.StatusOK, translate(lang, "title.login"), "user-login", map[string]string{
+		"Error": errorMsg,
+	})
 }
 
 func (s *Server) userLogin(w http.ResponseWriter, r *http.Request) {
-	// Minimal for now — just redirect to /
+	lang, _ := requestLocale(r, s.defaultLang)
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/login?error=bad_request", http.StatusSeeOther)
+		return
+	}
+
+	login := strings.TrimSpace(r.FormValue("login"))
+	password := r.FormValue("password")
+
+	if login == "" || password == "" {
+		http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.error_empty")), http.StatusSeeOther)
+		return
+	}
+
+	user, err := s.store.AuthenticateUser(r.Context(), login, password)
+	if err != nil {
+		s.logAdminAction(r, "USER_LOGIN_FAILED", fmt.Sprintf("login=%s", login))
+		http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.error_invalid")), http.StatusSeeOther)
+		return
+	}
+
+	// For web_auth=both, also verify IP match
+	if strings.ToLower(user.WebAuth) == "both" {
+		clientIP := s.clientIP(r)
+		ipUser, err := s.store.UserByIP(r.Context(), clientIP)
+		if err != nil || ipUser.ID != user.ID {
+			s.logAdminAction(r, "USER_LOGIN_IP_MISMATCH", fmt.Sprintf("user=%d login=%s ip=%s", user.ID, login, clientIP))
+			http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.error_ip")), http.StatusSeeOther)
+			return
+		}
+	}
+
+	// Set session cookie
+	maxAge := 0 // session cookie
+	if s.cfg.SessionMaxAge > 0 {
+		maxAge = s.cfg.SessionMaxAge
+	}
+	setUserSessionCookie(w, user.ID, s.cfg.SessionSecret, maxAge, s.userCookieSecure(r))
+
+	s.logAdminAction(r, "USER_LOGIN_SUCCESS", fmt.Sprintf("user=%d login=%s", user.ID, login))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -440,6 +483,10 @@ func (s *Server) adminCookieSecure(r *http.Request) bool {
 		return true
 	}
 	return false
+}
+
+func (s *Server) userCookieSecure(r *http.Request) bool {
+	return s.adminCookieSecure(r)
 }
 
 func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
