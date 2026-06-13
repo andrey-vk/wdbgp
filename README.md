@@ -207,17 +207,40 @@ temporarily accepted as compatibility aliases.
 When `WDBGP_BGP_LOCAL_ADDRESS_V6` is empty, IPv6 selections remain stored but
 only IPv4 prefixes are announced.
 
+### BGP Communities
+
+Each category and service is assigned a BGP Large Community (`ASN:0:Number`).
+Communities are auto-generated with a human-readable scheme (groups: 10000, 20000, 30000…;
+services: group+1, group+2…) and can be edited by the administrator at `/admin/communities`.
+These communities are attached to every announced BGP prefix, allowing per-category
+and per-service traffic engineering on the router side.
+
 ### Validation and constraints
 
-- `WDBGP_SECURITY_HEADERS`: boolean; enables HTTP security headers (Content-Security-Policy, X-Frame-Options, etc.)
-- `WDBGP_RATE_LIMIT_LOGIN`: integer 1-1000; login requests per minute (default 5)
-- `WDBGP_RATE_LIMIT_ADMIN`: integer 1-1000; admin API requests per minute (default 30) 
-- `WDBGP_SESSION_MAX_AGE`: integer 60-31536000; session cookie max-age in seconds (default 28800 = 8 hours)
-- `WDBGP_LOG_LEVEL`: DEBUG, INFO, WARN, ERROR, FATAL, PANIC (default INFO)
-- `WDBGP_LOG_FORMAT`: text or json (default text)
-- `WDBGP_TRUST_PROXY_HEADERS`: boolean; trust X-Forwarded-Proto header for cookie security detection
+All values are validated on startup with helpful error messages. If not specified, defaults apply.
 
-All configuration values are validated on startup with helpful error messages.
+| Variable | Constraints |
+| --- | --- |
+| `WDBGP_PORT` / `WDBGP_BGP_PORT` | Integer 1–65535 |
+| `WDBGP_LOCAL_ASN` | Integer 1–4294967295 |
+| `WDBGP_SYNC_INTERVAL` | Integer ≥1 (seconds) |
+| `WDBGP_ROUTER_ID` | Valid IPv4 address |
+| `WDBGP_BGP_LOCAL_ADDRESS` | Valid IPv4 address |
+| `WDBGP_BGP_LOCAL_ADDRESS_V6` | Valid IPv6 address (or empty to disable IPv6 announcements) |
+| `WDBGP_SECURITY_HEADERS` | Boolean; enables HTTP security headers (CSP, HSTS, X-Frame-Options, etc.) |
+| `WDBGP_RATE_LIMIT_LOGIN` | Integer 1–1000; login requests per minute (default 5) |
+| `WDBGP_RATE_LIMIT_ADMIN` | Integer 1–1000; admin API requests per minute (default 30) |
+| `WDBGP_SESSION_MAX_AGE` | Integer 60–31536000; session cookie max-age in seconds (default 28800 = 8 hours) |
+| `WDBGP_LOG_LEVEL` | DEBUG, INFO, WARN, ERROR, FATAL, PANIC (default INFO) |
+| `WDBGP_LOG_FORMAT` | text or json (default text) |
+| `WDBGP_TRUST_PROXY_HEADERS` | Boolean; trust X-Forwarded-Proto header for cookie security detection |
+| `WDBGP_JS_TIMEOUT` | Integer ≥1; adapter execution timeout in seconds (default 120) |
+| `WDBGP_JS_MAX_SOURCE` | Integer ≥1; max adapter source code size in bytes (default 1 MiB) |
+| `WDBGP_JS_MAX_RESPONSE` | Integer ≥1; max HTTP response bytes per request (default 16 MiB) |
+| `WDBGP_JS_MAX_TOTAL` | Integer ≥1; max total HTTP response bytes per adapter run (default 64 MiB) |
+| `WDBGP_JS_MAX_ENTRIES` | Integer ≥1; max CIDR entries an adapter can produce (default 1 000 000) |
+| `WDBGP_JS_MAX_REQUESTS` | Integer ≥1; max HTTP requests per adapter run (default 200) |
+| `WDBGP_JS_MAX_CALL_STACK` | Integer ≥1; max JavaScript call stack depth (default 1000) |
 
 The application provides a `/status` endpoint for operational visibility, returning basic health and version information in JSON format.
 

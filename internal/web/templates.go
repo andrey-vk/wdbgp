@@ -9,7 +9,7 @@ form{margin:1rem 0} label{display:block;margin:.55rem 0;font-weight:600}
 input:not([type]),input[type=text],input[type=password],input[type=number],input[type=url],textarea{width:100%;max-width:42rem;padding:.6rem .7rem;border:1px solid #c8d2df;border-radius:.55rem;background:white}
 textarea{min-height:10rem;font:14px/1.4 ui-monospace,monospace;resize:vertical}
 button,.button{display:inline-block;padding:.65rem 1rem;border:0;border-radius:.6rem;background:#2457a6;color:white;font-weight:700;text-decoration:none;cursor:pointer}
-button.danger{background:#b42318} table{border-collapse:separate;border-spacing:0;width:100%;background:white;border:1px solid #dfe5ee;border-radius:.8rem;overflow:hidden}
+button.danger{background:#b42318} button.secondary{background:#667} table{border-collapse:separate;border-spacing:0;width:100%;background:white;border:1px solid #dfe5ee;border-radius:.8rem;overflow:hidden}
 td,th{border-bottom:1px solid #e8edf4;padding:.65rem;text-align:left;vertical-align:top} tr:last-child td{border-bottom:0}
 .card{background:white;border:1px solid #dfe5ee;border-radius:1rem;padding:1rem;margin:1rem 0;box-shadow:0 8px 24px #16233a0d}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1rem}.row-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
@@ -26,6 +26,15 @@ td,th{border-bottom:1px solid #e8edf4;padding:.65rem;text-align:left;vertical-al
 dialog{width:min(52rem,calc(100% - 2rem));max-height:calc(100% - 2rem);border:0;border-radius:1rem;padding:0;box-shadow:0 24px 80px #10294f66}dialog::backdrop{background:#10294f99}
 .dialog-body{padding:1.25rem}.dialog-header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.dialog-header button{background:#667;padding:.45rem .7rem}
 .debug-list{margin:.5rem 0 1rem;padding-left:1.25rem}.debug-list li{margin:.3rem 0}
+.community-tag{font-size:.8em;color:#667;font-family:ui-monospace,monospace;margin-left:.3em}
+.community-value{color:#06c;cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}.community-value:hover{color:#049}
+.community-cell{white-space:nowrap;display:inline-flex;align-items:center;gap:2px}
+.community-input{width:7ch;padding:1px 3px;border:1px solid #aaa;border-radius:2px}
+.edit-actions{display:none;align-items:center;gap:2px}
+.apply-btn{color:#0a0;background:0 0;border:1px solid #0a0;cursor:pointer;padding:1px 5px;margin-left:2px;border-radius:2px}
+.cancel-btn{color:#c00;background:0 0;border:1px solid #c00;cursor:pointer;padding:1px 5px;margin-left:1px;border-radius:2px}
+.revert-btn{color:#c90;background:0 0;border:none;cursor:pointer;font-size:1.1em;margin-left:4px;padding:0 2px}
+.communities-table th:last-child,.communities-table td:last-child{min-width:180px}
 </style></head><body><nav class=language-switcher aria-label="{{tr "language.label"}}">
 <a href="{{.EnglishURL}}" title="{{tr "language.english"}}" aria-current="{{if eq .Lang "en"}}page{{else}}false{{end}}">EN</a>
 <a href="{{.RussianURL}}" title="{{tr "language.russian"}}" aria-current="{{if eq .Lang "ru"}}page{{else}}false{{end}}">RU</a>
@@ -98,9 +107,9 @@ const selectionBody = `{{$selection := .}}
 <span id=selected-service-label data-one="{{tr "selection.standalone_one"}}" data-few="{{tr "selection.standalone_few"}}" data-many="{{tr "selection.standalone_many"}}">{{plural .SelectedServiceCount "selection.standalone_one" "selection.standalone_few" "selection.standalone_many"}}</span>.
 {{tr "selection.apply_hint"}}</span></div>
 <button {{if and (not .Editable) (not .CanChangeMode)}}disabled{{end}}>{{tr "selection.save"}}</button></div>
-{{if .Categories}}<div class=catalog-grid>{{range .Categories}}
-<fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>{{tr "selection.whole_category"}}</span></label></legend>
-<div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}</label>{{end}}</div>
+{{if .Categories}}<div class=catalog-grid>{{range .Categories}}{{$cat := .Name}}
+<fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>{{tr "selection.whole_category"}}</span>{{if index $selection.Communities .Name}} <span class=community-tag>{{index $selection.Communities .Name}}</span>{{end}}</label></legend>
+<div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}{{if index $selection.Communities (printf "%s|%s" $cat .Name)}} <span class=community-tag>{{index $selection.Communities (printf "%s|%s" $cat .Name)}}</span>{{end}}</label>{{end}}</div>
 </fieldset>{{end}}</div>{{else}}<p class=empty>{{tr "selection.empty"}}</p>{{end}}</form></section>
 <script>
 var catalogModeSelect = document.getElementById('catalog-mode-select');
@@ -185,6 +194,7 @@ const adminTemplate = `{{with .Data}}
 <header><h1>{{tr "admin.heading"}}</h1>
 <div style="display: flex; gap: 1rem; align-items: center;">
 <a href="/">{{tr "user_interface.link"}}</a>
+<a href="/admin/communities">{{tr "communities.link"}}</a>
 <form method=post action="/admin/logout" style="margin: 0;">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <button type=submit class="button danger" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;">{{tr "admin.logout"}}</button>
@@ -353,3 +363,192 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <button>{{tr "user.save"}}</button></form>
 <form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form></section>
 {{template "selection" .Selection}}{{end}}`
+
+const communitiesBody = `{{with .Data}}
+<header><h1>{{tr "communities.title"}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>
+{{if .Saved}}<p class=ok>{{if eq .Saved "reset"}}All communities reset to auto-generated values.{{else if eq .Saved "generated"}}Missing communities auto-generated.{{else}}{{tr "communities.saved"}}{{end}}</p>{{end}}
+{{if .Error}}<p class=error>{{.Error}}</p>{{end}}
+<section class=card>
+<label>{{tr "catalog.mode"}} <select id=mode-select>
+{{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.Mode.ID}}selected{{end}}>{{.Name}}</option>{{end}}
+</select></label>
+<form method=post action="/admin/communities" id=communities-form>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<input type=hidden name=mode value="{{.Mode.ID}}">
+<div class=save-bar>
+  <div><strong>{{tr "communities.title"}}</strong><br>
+  <span class=muted id=change-summary>{{tr "communities.no_changes"}}</span></div>
+  <button type=submit class=primary id=save-btn disabled>{{tr "communities.apply"}}</button>
+</div>
+<table class=communities-table><tr><th>{{tr "catalog.category"}}</th><th>{{tr "catalog.service"}}</th><th>{{tr "communities.group_community"}}</th></tr>
+{{range .Groups}}{{$group := .}}
+<tr class=group-row>
+<td><strong>{{.Category}}</strong></td><td></td>
+<td><span class=community-cell data-name="cat_{{.Category}}" data-value="{{.Community}}" data-auto="{{.AutoGroup}}">
+<span class=community-value>{{.Community}}</span>
+{{if ne .Community .AutoGroup}}<button type=button class=revert-btn title="{{tr "communities.revert"}}">↺</button>{{end}}
+<span class=edit-actions><input type=number class=community-input name="cat_{{.Category}}" min=1 max=4294967295 value="{{.Community}}"><button type=button class=apply-btn title="{{tr "communities.apply"}}">✓</button><button type=button class=cancel-btn title="{{tr "communities.cancel"}}">✗</button></span>
+</span></td>
+</tr>
+{{range .Services}}
+<tr>
+<td></td><td>{{.Name}}</td>
+<td><span class=community-cell data-name="svc_{{$group.Category}}|{{.Name}}" data-value="{{.Community}}" data-auto="{{.AutoSvc}}">
+<span class=community-value>{{.Community}}</span>
+{{if ne .Community .AutoSvc}}<button type=button class=revert-btn title="{{tr "communities.revert"}}">↺</button>{{end}}
+<span class=edit-actions><input type=number class=community-input name="svc_{{$group.Category}}|{{.Name}}" min=1 max=4294967295 value="{{.Community}}"><button type=button class=apply-btn title="{{tr "communities.apply"}}">✓</button><button type=button class=cancel-btn title="{{tr "communities.cancel"}}">✗</button></span>
+</span></td>
+</tr>{{end}}
+{{end}}</table>
+<div style="margin-top:1rem;display:flex;gap:1rem">
+<form method=post action="/admin/communities/generate" style="display:inline" onsubmit="return confirm('Generate community numbers for all categories and services that do not have one yet?')">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<input type=hidden name=mode value="{{.Mode.ID}}">
+<button type=submit class=secondary>{{tr "communities.auto_generate"}}</button>
+</form>
+<form method=post action="/admin/communities/reset" style="display:inline" onsubmit="return confirm('This will reset ALL community numbers to auto-generated values. Any manual changes will be lost. Continue?')">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<input type=hidden name=mode value="{{.Mode.ID}}">
+<button type=submit class=danger>{{tr "communities.reset_all"}}</button>
+</form>
+</div>
+</form>
+</section>
+<script>
+(function(){
+var modeSelect=document.getElementById('mode-select');
+modeSelect.addEventListener('change',function(){window.location.href='/admin/communities?mode='+this.value});
+
+var activeEdit = null;
+
+function closeEdit(cell, forceApply) {
+  var inp = cell.querySelector('.community-input');
+  if (inp && inp.dataset.changed === '0' && inp.value !== inp.dataset.original) {
+    if (forceApply === undefined) {
+      if (!confirm('Apply changes to this community number?')) {
+        cell.querySelector('.cancel-btn').click();
+        return;
+      }
+    }
+    if (forceApply !== false) {
+      cell.querySelector('.apply-btn').click();
+      return;
+    }
+  }
+  cell.querySelector('.community-value').style.display = '';
+  var revert = cell.querySelector('.revert-btn');
+  if (revert) {
+    var val = cell.querySelector('.community-value').textContent;
+    var auto = cell.dataset.auto;
+    revert.style.display = val != auto ? '' : 'none';
+  }
+  cell.querySelector('.edit-actions').style.display = 'none';
+}
+
+function findDuplicate(name,value){var cells=document.querySelectorAll('.community-cell');for(var i=0;i<cells.length;i++){if(cells[i].dataset.name===name)continue;var cellVal=cells[i].querySelector('.community-value').textContent;var inp=cells[i].querySelector('.community-input');if(inp&&inp.dataset.changed==='1')cellVal=inp.value;if(cellVal===value)return true}var hiddens=document.querySelectorAll('.revert-hidden');for(var j=0;j<hiddens.length;j++){if(hiddens[j].value===value)return true}return false}
+function countChanged(){return document.querySelectorAll('.community-input[data-changed="1"]').length}
+function countReverted(){return document.querySelectorAll('.community-cell.reverted').length}
+function updateUI(){
+  var edited = countChanged();
+  var reverted = countReverted();
+  var total = edited + reverted;
+  var el = document.getElementById('change-summary');
+  var parts = [];
+  if (edited > 0) parts.push(edited + ' community number' + (edited > 1 ? 's' : '') + ' changed');
+  if (reverted > 0) parts.push(reverted + ' reverted to auto');
+  el.textContent = parts.length > 0 ? parts.join(', ') : {{printf "%q" (tr "communities.no_changes")}};
+  document.getElementById('save-btn').disabled = total === 0;
+}
+
+// Click number → edit mode
+document.querySelectorAll('.community-value').forEach(function(v){
+v.addEventListener('click',function(){
+var cell=this.parentElement;
+if (activeEdit && activeEdit !== cell) {
+  closeEdit(activeEdit);
+}
+activeEdit = cell;
+cell.querySelector('.community-value').style.display='none';
+cell.querySelector('.revert-btn')&&(cell.querySelector('.revert-btn').style.display='none');
+cell.querySelector('.edit-actions').style.display='inline-flex';
+var inp=cell.querySelector('.community-input');
+inp.dataset.original=inp.value;
+inp.dataset.changed='0';
+inp.focus();inp.select();
+});
+});
+
+// ✓ Apply
+document.querySelectorAll('.apply-btn').forEach(function(b){
+b.addEventListener('click',function(){
+var cell=this.closest('.community-cell');
+var inp=cell.querySelector('.community-input');
+var newVal=inp.value;
+if(findDuplicate(cell.dataset.name,newVal)){alert('This community number is already used. Please choose a different number.');return}
+inp.value=newVal;
+if (newVal!=inp.dataset.original||cell.classList.contains('reverted')){
+inp.dataset.changed='1';cell.classList.remove('reverted')
+}
+cell.querySelector('.community-value').textContent=newVal;
+cell.querySelector('.community-value').style.display='';
+var auto=cell.dataset.auto;
+var revert=cell.querySelector('.revert-btn');
+if(newVal!=auto){if(!revert){revert=document.createElement('button');revert.type='button';revert.className='revert-btn';revert.textContent='↺';revert.title='Revert to auto';cell.insertBefore(revert,cell.querySelector('.edit-actions'));setupRevert(revert)}}else{if(revert)revert.style.display='none'}
+revert&&(revert.style.display=newVal!=auto?'':'none');
+cell.querySelector('.edit-actions').style.display='none';
+updateUI();
+activeEdit = null;
+})
+});
+
+// ✗ Cancel
+document.querySelectorAll('.cancel-btn').forEach(function(b){
+b.addEventListener('click',function(){
+var cell=this.closest('.community-cell');
+cell.querySelector('.community-value').style.display='';
+var revert=cell.querySelector('.revert-btn');
+var auto=cell.dataset.auto;
+var val=cell.querySelector('.community-value').textContent;
+revert&&(revert.style.display=val!=auto?'':'none');
+cell.querySelector('.edit-actions').style.display='none';
+updateUI();
+activeEdit = null;
+})
+});
+
+// ↺ Revert to auto
+function setupRevert(btn){
+btn.addEventListener('click',function(){
+var cell=this.closest('.community-cell');
+var auto=cell.dataset.auto;
+cell.querySelector('.community-value').textContent=auto;
+cell.classList.add('reverted');
+var hidden=document.createElement('input');
+hidden.type='hidden';hidden.name=cell.dataset.name;hidden.value=auto;hidden.className='revert-hidden';
+var oldHidden=cell.querySelector('.revert-hidden');
+oldHidden&&oldHidden.remove();
+cell.appendChild(hidden);
+this.style.display='none';
+cell.querySelector('.edit-actions').style.display='none';
+cell.querySelector('.community-value').style.display='';
+updateUI()
+})}
+document.querySelectorAll('.revert-btn').forEach(setupRevert);
+
+// Enter submits apply
+document.querySelectorAll('.community-input').forEach(function(inp){
+inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();this.parentElement.querySelector('.apply-btn').click()}})
+});
+
+// Form submit confirm
+document.getElementById('communities-form').addEventListener('submit',function(e){
+var c=countChanged()+countReverted();
+if(c>0&&!confirm('Confirm: N communities will be updated. Continue?'.replace('N',c))){e.preventDefault()}
+});
+
+updateUI()
+})();
+</script>
+{{end}}`
+
+const communitiesTemplate = communitiesBody

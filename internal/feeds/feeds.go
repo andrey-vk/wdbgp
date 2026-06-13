@@ -195,7 +195,14 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
 	if errors.Is(err, errFeedChanged) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// Generate communities for newly added categories/services.
+	if _, genErr := s.Store.GenerateCommunities(ctx, feed.ModeID); genErr != nil {
+		logger.Warn("failed to generate communities after sync", "mode_id", feed.ModeID, "error", genErr)
+	}
+	return nil
 }
 
 func (s *Syncer) categoryLookup(ctx context.Context, feed store.Feed) (map[string][]string, error) {

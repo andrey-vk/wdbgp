@@ -22,6 +22,7 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
+	Go      func(*sql.Tx) error // optional post-SQL migration function
 }
 
 var migrations = []Migration{
@@ -390,6 +391,22 @@ CREATE INDEX IF NOT EXISTS idx_selected_categories_user_mode_category ON selecte
 CREATE INDEX IF NOT EXISTS idx_selected_services_user_mode_category_service ON selected_services(user_id, mode_id, category, service);
 `,
 	},
+	{
+		Version: 13,
+		Name:    "add catalog communities",
+		SQL: `
+CREATE TABLE catalog_communities (
+    mode_id   INTEGER NOT NULL REFERENCES catalog_modes(id) ON DELETE CASCADE,
+    category  TEXT NOT NULL,
+    service   TEXT NOT NULL DEFAULT '',
+    community INTEGER NOT NULL CHECK(community > 0 AND community <= 4294967295),
+    PRIMARY KEY (mode_id, category, service)
+);
+CREATE INDEX idx_catalog_communities_mode ON catalog_communities(mode_id);
+CREATE INDEX idx_catalog_communities_value ON catalog_communities(community);
+`,
+		Go: autoGenerateCommunities,
+	},
 }
 
 type Store struct {
@@ -541,7 +558,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, migration.SQL); err == nil {
+		if _, err = tx.ExecContext(ctx, migration.SQL); err == nil && migration.Go != nil {
+			err = migration.Go(tx)
+		}
+		if err == nil {
 			_, err = tx.ExecContext(ctx,
 				"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
 				migration.Version, migration.Name, time.Now().UTC().Format(time.RFC3339Nano),
@@ -1091,10 +1111,28 @@ func uniqueServices(values []ServiceKey) []ServiceKey {
 	return result
 }
 
-func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, error) {
+// PrefixRouteInfo carries category, service, and mode for a prefix
+// that made it through the DesiredPrefixes pipeline.
+type PrefixRouteInfo struct {
+	ModeID   int64
+	Category string
+	Service  string
+}
+
+// userRoute is a single route from the DesiredPrefixes query, carrying
+// its original mode/category/service metadata before any filters split it.
+type userRoute struct {
+	prefix   netip.Prefix
+	modeID   int64
+	category string
+	service  string
+}
+
+func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, map[string]PrefixRouteInfo, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 -- Simpler UNION-based approach without CTEs
-SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled
+SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
+       ce.category, ce.service, f.mode_id
 FROM users u
 JOIN feeds f ON f.mode_id = u.catalog_mode_id
 JOIN catalog_modes m ON m.id = f.mode_id  
@@ -1109,7 +1147,8 @@ WHERE u.enabled = 1
         AND sc.category = ce.category
   )
 UNION
-SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled
+SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
+       ce.category, ce.service, f.mode_id
 FROM users u
 JOIN feeds f ON f.mode_id = u.catalog_mode_id
 JOIN catalog_modes m ON m.id = f.mode_id
@@ -1126,12 +1165,12 @@ WHERE u.enabled = 1
   )
 ORDER BY 1, 2`)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 	type selectedUser struct {
 		filterMode string
-		prefixes   []netip.Prefix
+		routes     []userRoute
 	}
 	selected := map[int64]*selectedUser{}
 	for rows.Next() {
@@ -1139,12 +1178,14 @@ ORDER BY 1, 2`)
 		var userID int64
 		var filterMode string
 		var override bool
-		if err := rows.Scan(&rawPrefix, &userID, &filterMode, &override); err != nil {
-			return nil, err
+		var category, service string
+		var modeID int64
+		if err := rows.Scan(&rawPrefix, &userID, &filterMode, &override, &category, &service, &modeID); err != nil {
+			return nil, nil, err
 		}
 		prefix, err := netip.ParsePrefix(rawPrefix)
 		if err != nil {
-			return nil, fmt.Errorf("parse selected prefix %q: %w", rawPrefix, err)
+			return nil, nil, fmt.Errorf("parse selected prefix %q: %w", rawPrefix, err)
 		}
 		// A feed-provided default route is never a useful service route.
 		if prefix.Bits() == 0 {
@@ -1155,28 +1196,34 @@ ORDER BY 1, 2`)
 			user = &selectedUser{filterMode: normalizeFilterMode(filterMode, override)}
 			selected[userID] = user
 		}
-		user.prefixes = append(user.prefixes, prefix.Masked())
+		user.routes = append(user.routes, userRoute{
+			prefix:   prefix.Masked(),
+			modeID:   modeID,
+			category: category,
+			service:  service,
+		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := rows.Close(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Fetch all user route filters at once to avoid N+1 queries
 	userFiltersMap, err := s.allUserRouteFilters(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	
 	globalFilters, err := s.GlobalRouteFilters(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	
 	result := map[string][]int64{}
-	for userID, selectedUser := range selected {
+	prefixMeta := map[string]PrefixRouteInfo{}
+	for userID, selUser := range selected {
 		// Get user-specific filters if any
 		var userFilters RouteFilters
 		if filters, ok := userFiltersMap[userID]; ok {
@@ -1184,7 +1231,7 @@ ORDER BY 1, 2`)
 		}
 		
 		var effectiveFilters RouteFilters
-		switch selectedUser.filterMode {
+		switch selUser.filterMode {
 		case FilterModeOverride:
 			effectiveFilters = userFilters
 		case FilterModeExtend:
@@ -1193,20 +1240,64 @@ ORDER BY 1, 2`)
 			effectiveFilters = globalFilters
 		}
 		
-		filtered, err := applyRouteFiltersToPrefixes(selectedUser.prefixes, effectiveFilters)
+		// Build a flat list of original prefixes for filtering
+		origPrefixes := make([]netip.Prefix, len(selUser.routes))
+		for i, r := range selUser.routes {
+			origPrefixes[i] = r.prefix
+		}
+		
+		filtered, err := applyRouteFiltersToPrefixes(origPrefixes, effectiveFilters)
 		if err != nil {
-			return nil, fmt.Errorf("filter routes for user %d: %w", userID, err)
+			return nil, nil, fmt.Errorf("filter routes for user %d: %w", userID, err)
 		}
 		
 		for _, prefix := range filtered {
-			result[prefix.String()] = append(result[prefix.String()], userID)
+			key := prefix.String()
+			result[key] = append(result[key], userID)
 			if len(result) > prefixfilter.DefaultMaxPrefixes {
-				return nil, fmt.Errorf("route filters produced more than %d unique routes",
+				return nil, nil, fmt.Errorf("route filters produced more than %d unique routes",
 					prefixfilter.DefaultMaxPrefixes)
+			}
+			// Carry mode/category/service through the filter — find the best matching
+			// original route so that communities can be loaded from the correct mode.
+			if _, exists := prefixMeta[key]; !exists {
+				if modeID, cat, svc, ok := findBestMatch(prefix, selUser.routes); ok {
+					prefixMeta[key] = PrefixRouteInfo{ModeID: modeID, Category: cat, Service: svc}
+				}
 			}
 		}
 	}
-	return result, nil
+	return result, prefixMeta, nil
+}
+
+// findBestMatch returns the (modeID, category, service) for the original route
+// that best contains the filtered prefix.  This handles the case where route
+// filters split a prefix (e.g. /8 → /16) — the longer match wins.
+func findBestMatch(needle netip.Prefix, routes []userRoute) (int64, string, string, bool) {
+	var best *struct {
+		modeID   int64
+		category string
+		service  string
+		bits     int
+	}
+	for i := range routes {
+		r := &routes[i]
+		if !r.prefix.Contains(needle.Addr()) || needle.Bits() < r.prefix.Bits() {
+			continue
+		}
+		if best == nil || r.prefix.Bits() > best.bits {
+			best = &struct {
+				modeID   int64
+				category string
+				service  string
+				bits     int
+			}{r.modeID, r.category, r.service, r.prefix.Bits()}
+		}
+	}
+	if best == nil {
+		return 0, "", "", false
+	}
+	return best.modeID, best.category, best.service, true
 }
 
 func (s *Store) ApplyUserRouteFilters(
@@ -1741,3 +1832,270 @@ func (s *Store) Stats(ctx context.Context) (int, int, int, error) {
 func IsNotFound(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
 }
+
+// Community represents a catalog community assignment.
+type Community struct {
+	ModeID    int64
+	Category  string
+	Service   string // empty = group-level
+	Community int
+}
+
+// findFirstFree returns the first integer >= start that is not in used.
+func findFirstFree(start int, used map[int]bool) int {
+	for used[start] {
+		start++
+	}
+	return start
+}
+
+// AutoCommunity returns the auto-generated community number for a given position.
+// This is a positional estimate used for UI display; actual assignment uses findFirstFree.
+func AutoCommunity(groupIndex int, serviceIndex int) int {
+	for serviceIndex >= 9999 {
+		groupIndex++
+		serviceIndex -= 9999
+	}
+	groupCommunity := (groupIndex + 1) * 10000
+	return groupCommunity + serviceIndex + 1
+}
+
+// autoGenerateCommunities is the migration 13 post-SQL function that fills
+// communities for all existing catalog data.
+func autoGenerateCommunities(tx *sql.Tx) error {
+	_, err := genCommunities(tx, nil, 0)
+	return err
+}
+
+// genCommunities generates communities for categories and services that don't have one yet.
+// If existing is non-nil, it's used as the set of already-assigned keys to skip.
+// If modeID is 0, generates for all modes; otherwise only for the specified mode.
+func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, error) {
+	var modeIDs []int64
+	if modeID > 0 {
+		modeIDs = []int64{modeID}
+	} else {
+		modes, err := tx.Query("SELECT DISTINCT id FROM catalog_modes ORDER BY id")
+		if err != nil {
+			return 0, err
+		}
+		defer modes.Close()
+
+		for modes.Next() {
+			var id int64
+			if err := modes.Scan(&id); err != nil {
+				return 0, err
+			}
+			modeIDs = append(modeIDs, id)
+		}
+		if err := modes.Err(); err != nil {
+			return 0, err
+		}
+	}
+
+	generated := 0
+	for _, mid := range modeIDs {
+		// Load all currently-assigned communities for this mode.
+		commRows, err := tx.Query(
+			"SELECT category, service, community FROM catalog_communities WHERE mode_id = ? ORDER BY community",
+			mid)
+		if err != nil {
+			return 0, err
+		}
+		used := make(map[int]bool)
+		keyComm := make(map[string]int)
+		for commRows.Next() {
+			var category, service string
+			var community int
+			if err := commRows.Scan(&category, &service, &community); err != nil {
+				commRows.Close()
+				return 0, err
+			}
+			used[community] = true
+			if service == "" {
+				keyComm["grp:"+category] = community
+			} else {
+				keyComm["svc:"+category+"|"+service] = community
+			}
+		}
+		commRows.Close()
+
+		// Get categories in alphabetical order.
+		catRows, err := tx.Query(`
+SELECT DISTINCT ce.category
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+WHERE f.mode_id = ?
+ORDER BY ce.category`, mid)
+		if err != nil {
+			return 0, err
+		}
+
+		var categories []string
+		for catRows.Next() {
+			var cat string
+			if err := catRows.Scan(&cat); err != nil {
+				catRows.Close()
+				return 0, err
+			}
+			categories = append(categories, cat)
+		}
+		catRows.Close()
+
+		groupIndex := 0
+		for _, category := range categories {
+			groupKey := "grp:" + category
+
+			// Determine group community: use existing assignment or find a free one.
+			var groupCommunity int
+			if existing != nil && existing[groupKey] {
+				var ok bool
+				groupCommunity, ok = keyComm[groupKey]
+				if !ok {
+					// Existing group expected to have a community; skip if missing.
+					groupIndex++
+					continue
+				}
+			} else {
+				groupCommunity = findFirstFree((groupIndex+1)*10000, used)
+				if _, err := tx.Exec(
+					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, '', ?)",
+					mid, category, groupCommunity); err != nil {
+					return generated, err
+				}
+				used[groupCommunity] = true
+				generated++
+			}
+
+			// Get services in alphabetical order.
+			svcRows, err := tx.Query(`
+SELECT DISTINCT ce.service
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+WHERE f.mode_id = ? AND ce.category = ?
+ORDER BY ce.service`, mid, category)
+			if err != nil {
+				return generated, err
+			}
+
+			var services []string
+			for svcRows.Next() {
+				var svc string
+				if err := svcRows.Scan(&svc); err != nil {
+					svcRows.Close()
+					return generated, err
+				}
+				services = append(services, svc)
+			}
+			svcRows.Close()
+
+			for _, service := range services {
+				svcKey := "svc:" + category + "|" + service
+				if existing != nil && existing[svcKey] {
+					continue
+				}
+				// Find first free community starting from group_community+1.
+				// Each insertion adds to used, so subsequent services naturally
+				// get the next free number.  Overflow past 9999 services spills
+				// into the next block — findFirstFree skips any used numbers.
+				svcCommunity := findFirstFree(groupCommunity+1, used)
+
+				if _, err := tx.Exec(
+					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)",
+					mid, category, service, svcCommunity); err != nil {
+					return generated, err
+				}
+				used[svcCommunity] = true
+				generated++
+			}
+			groupIndex++
+		}
+	}
+	return generated, nil
+}
+
+// GetCommunities returns all communities for a mode.
+// Map key: category for groups, "category|service" for services.
+func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]int, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT category, service, community FROM catalog_communities WHERE mode_id = ? ORDER BY category, service",
+		modeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]int)
+	for rows.Next() {
+		var category, service string
+		var community int
+		if err := rows.Scan(&category, &service, &community); err != nil {
+			return nil, err
+		}
+		if service == "" {
+			result[category] = community
+		} else {
+			result[category+"|"+service] = community
+		}
+	}
+	return result, rows.Err()
+}
+
+// SetCommunity upserts a community. service="" means group-level.
+func (s *Store) SetCommunity(ctx context.Context, modeID int64, category, service string, community int) error {
+	// Check for duplicate community value
+	var existing int
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM catalog_communities
+		WHERE mode_id = ? AND community = ? AND NOT (category = ? AND service = ?)`,
+		modeID, community, category, service).Scan(&existing)
+	if err != nil {
+		return err
+	}
+	if existing > 0 {
+		return fmt.Errorf("community %d is already used by another category or service in this mode", community)
+	}
+	// Upsert
+	_, err = s.DB.ExecContext(ctx,
+		`INSERT INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)
+ON CONFLICT(mode_id, category, service) DO UPDATE SET community = excluded.community`,
+		modeID, category, service, community)
+	return err
+}
+
+// GenerateCommunities fills missing communities for all categories/services in a mode.
+// Uses the 10000*gap scheme. Skips categories/services that already have a community.
+// Returns count of newly generated communities.
+func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, error) {
+	var count int
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		// Load existing community keys
+		rows, err := tx.QueryContext(ctx,
+			"SELECT category, service FROM catalog_communities WHERE mode_id = ?", modeID)
+		if err != nil {
+			return err
+		}
+
+		existing := make(map[string]bool)
+		for rows.Next() {
+			var category, service string
+			if err := rows.Scan(&category, &service); err != nil {
+				rows.Close()
+				return err
+			}
+			if service == "" {
+				existing["grp:"+category] = true
+			} else {
+				existing["svc:"+category+"|"+service] = true
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+
+		var err2 error
+		count, err2 = genCommunities(tx, existing, modeID)
+		return err2
+	})
+	return count, err
+}
+
