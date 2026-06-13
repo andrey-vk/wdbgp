@@ -214,6 +214,9 @@ func (a *adapterHTTP) get(rawURL string) (string, error) {
 }
 
 func (a *adapterHTTP) doHTTPRequest(parsed *url.URL) (string, error) {
+	if a.requests >= a.limits.MaxRequests {
+		return "", fmt.Errorf("adapter exceeded %d HTTP requests", a.limits.MaxRequests)
+	}
 	a.requests++
 
 	request, err := http.NewRequestWithContext(a.ctx, http.MethodGet, parsed.String(), nil)

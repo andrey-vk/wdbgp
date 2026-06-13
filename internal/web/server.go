@@ -466,7 +466,7 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) addFeedAdapter(w http.ResponseWriter, r *http.Request) {
-	adapter, err := parseFeedAdapter(r, 0)
+	adapter, err := parseFeedAdapter(r, 0, maxSource(s.cfg.JSMaxSourceBytes))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -503,7 +503,7 @@ func (s *Server) updateFeedAdapter(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad adapter id", http.StatusBadRequest)
 		return
 	}
-	adapter, err := parseFeedAdapter(r, id)
+	adapter, err := parseFeedAdapter(r, id, maxSource(s.cfg.JSMaxSourceBytes))
 	if err != nil {
 		s.renderFeedAdapterEditor(w, r, http.StatusBadRequest,
 			adapter, feeds.FormatAdapterError(err))
@@ -526,7 +526,7 @@ func (s *Server) testFeedAdapter(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad adapter id", http.StatusBadRequest)
 		return
 	}
-	adapter, err := parseFeedAdapter(r, id)
+	adapter, err := parseFeedAdapter(r, id, maxSource(s.cfg.JSMaxSourceBytes))
 	if err != nil {
 		s.renderFeedAdapterEditor(w, r, http.StatusBadRequest,
 			adapter, feeds.FormatAdapterError(err))
@@ -722,7 +722,14 @@ func parseFeed(r *http.Request, id int64) (store.Feed, error) {
 	}, nil
 }
 
-func parseFeedAdapter(r *http.Request, id int64) (store.FeedAdapter, error) {
+func maxSource(configured int) int {
+	if configured <= 0 {
+		return 1 << 20 // default 1MB
+	}
+	return configured
+}
+
+func parseFeedAdapter(r *http.Request, id int64, maxSourceBytes int) (store.FeedAdapter, error) {
 	if err := r.ParseForm(); err != nil {
 		return store.FeedAdapter{ID: id}, err
 	}
@@ -738,7 +745,7 @@ func parseFeedAdapter(r *http.Request, id int64) (store.FeedAdapter, error) {
 	if err := store.ValidateFeedAdapter(adapter); err != nil {
 		return adapter, err
 	}
-	if err := feeds.ValidateAdapterSource(adapter.Source, 1<<20); err != nil {
+	if err := feeds.ValidateAdapterSource(adapter.Source, maxSourceBytes); err != nil {
 		return adapter, err
 	}
 	return adapter, nil
