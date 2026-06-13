@@ -122,8 +122,9 @@ type communityServiceView struct {
 }
 
 type userEditView struct {
-	User      store.User
-	Selection selectionView
+	User        store.User
+	Selection   selectionView
+	Credentials []store.UserCredential
 }
 
 type filterView struct {
@@ -1128,9 +1129,10 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	}
 	selection.CSRFToken = csrfToken
 	
+	credentials, _ := s.store.GetUserCredentials(r.Context(), id)
 	lang, _ := requestLocale(r, s.defaultLang)
 	s.renderTitle(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
-		userEditView{User: user, Selection: selection})
+		userEditView{User: user, Selection: selection, Credentials: credentials})
 }
 
 func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
@@ -1159,6 +1161,32 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, r, err)
 			return
 		}
+
+		// Process existing credentials
+		for i := 0; ; i++ {
+			loginKey := fmt.Sprintf("cred_login_%d", i)
+			deleteKey := fmt.Sprintf("cred_delete_%d", i)
+			passwordKey := fmt.Sprintf("cred_password_%d", i)
+
+			login := r.FormValue(loginKey)
+			if login == "" {
+				break
+			}
+
+			if r.FormValue(deleteKey) == "on" {
+				s.store.SetUserCredential(r.Context(), id, login, "")
+			} else if pw := r.FormValue(passwordKey); pw != "" {
+				s.store.SetUserCredential(r.Context(), id, login, pw)
+			}
+		}
+
+		// Process new credential
+		if newLogin := r.FormValue("cred_login_new"); newLogin != "" {
+			if newPassword := r.FormValue("cred_password_new"); newPassword != "" {
+				s.store.SetUserCredential(r.Context(), id, newLogin, newPassword)
+			}
+		}
+
 		if !user.Enabled {
 			err = s.bgp.DeletePeer(r.Context(), user.PeerIP)
 		} else {

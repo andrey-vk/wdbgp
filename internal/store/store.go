@@ -1888,6 +1888,44 @@ func (s *Store) AuthenticateUser(ctx context.Context, login, password string) (U
 	return s.User(ctx, userID)
 }
 
+// GetUserCredentials returns all login credentials for a user.
+func (s *Store) GetUserCredentials(ctx context.Context, userID int64) ([]UserCredential, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT login FROM user_credentials WHERE user_id = ? ORDER BY login", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var credentials []UserCredential
+	for rows.Next() {
+		var cred UserCredential
+		if err := rows.Scan(&cred.Login); err != nil {
+			return nil, err
+		}
+		cred.UserID = userID
+		credentials = append(credentials, cred)
+	}
+	return credentials, rows.Err()
+}
+
+// SetUserCredential creates or updates a credential for a user.
+// If password is empty, deletes the credential. Passwords are bcrypt-hashed.
+func (s *Store) SetUserCredential(ctx context.Context, userID int64, login, password string) error {
+	if password == "" {
+		_, err := s.DB.ExecContext(ctx,
+			"DELETE FROM user_credentials WHERE user_id = ? AND login = ?", userID, login)
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx,
+		`INSERT OR REPLACE INTO user_credentials(user_id, login, password_hash) VALUES (?, ?, ?)`,
+		userID, login, string(hash))
+	return err
+}
+
 // Community represents a catalog community assignment.
 type Community struct {
 	ModeID    int64

@@ -375,13 +375,42 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <option value=both {{if eq .User.WebAuth "both"}}selected{{end}}>{{tr "users.web_auth_both"}}</option>
 </select></label>
 <p class=muted>{{tr "users.web_auth_hint"}}</p>
+<section class=card id=credentials-section>
+<h2>{{tr "users.credentials"}}</h2>
+{{range $i, $cred := .Credentials}}
+<div class=cred-row>
+<label>{{tr "user.login"}} <input name="cred_login_{{$i}}" value="{{$cred.Login}}"></label>
+<label>{{tr "user.password"}} <input type=password name="cred_password_{{$i}}" placeholder="{{tr "user.password_not_set"}}"></label>
+<label><input type=checkbox name="cred_delete_{{$i}}"> {{tr "common.delete"}}</label>
+</div>
+{{end}}
+<div class=cred-row>
+<label>{{tr "user.login"}} <input name=cred_login_new placeholder="{{tr "users.new_credential"}}"></label>
+<label>{{tr "user.password"}} <input type=password name=cred_password_new></label>
+</div>
+</section>
 <label><input type=checkbox name=locked {{if .User.SelectionLocked}}checked{{end}}> {{tr "user.lock_selection"}}</label>
 <label><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> {{tr "users.allow_filter_editing"}}</label>
 <label><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
 <input type=hidden name=filter_mode value="{{.User.FilterMode}}">
 <button>{{tr "user.save"}}</button></form>
 <form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form></section>
-{{template "selection" .Selection}}{{end}}`
+{{template "selection" .Selection}}
+<script>
+(function(){
+  var authSelect = document.querySelector('select[name=web_auth]');
+  var credSection = document.getElementById('credentials-section');
+  function toggleCredentials() {
+    var v = authSelect.value;
+    credSection.style.display = (v === 'login' || v === 'both') ? '' : 'none';
+  }
+  if (authSelect) {
+    authSelect.addEventListener('change', toggleCredentials);
+    toggleCredentials();
+  }
+})();
+</script>
+{{end}}`
 
 const communitiesBody = `{{with .Data}}
 <header><h1>{{tr "communities.title"}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>
