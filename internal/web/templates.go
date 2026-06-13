@@ -46,7 +46,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem}
 .empty{text-align:center;padding:2rem;color:var(--muted)}
-.pill{font-size:.75em;background:var(--accent);color:#fff;padding:1px 6px;border-radius:8px}
+.pill{font-size:.75em;color:var(--muted);border:1px solid var(--border);padding:1px 6px;border-radius:8px;white-space:nowrap}
 .community-tag{font-size:.75em;color:var(--muted);margin-left:4px;font-family:ui-monospace,monospace}
 .prefix-count{font-size:.8em;color:var(--muted);margin-left:.3em}
 
@@ -68,7 +68,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .selection-form{padding-bottom:5.5rem}
 .catalog-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-top:1rem}
 .category-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:.8rem}
-.category-title{font-weight:600;display:flex;align-items:center;gap:.3rem;cursor:pointer}
+.category-card legend{padding:0 .5rem;margin-left:-.5rem}
+.category-title{font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;flex-wrap:wrap}
 .category-title input[type=checkbox]{margin:0}
 .service-list{display:flex;flex-direction:column;gap:4px;margin-top:6px;padding-left:1.5rem}
 .service-list label{display:flex;align-items:center;gap:4px;font-size:.9em;margin-bottom:0}
