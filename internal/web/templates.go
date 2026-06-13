@@ -59,7 +59,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .revert-btn{color:#c90;background:0 0;border:none;cursor:pointer;font-size:1.1em;margin-left:4px;padding:0 2px}
 .group-row td{background:var(--group-row-bg);font-weight:600}
 .communities-table th:last-child,.communities-table td:last-child{min-width:180px}
-.save-bar{position:sticky;top:0;z-index:10;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:var(--save-bar-bg);border-radius:1rem;padding:.8rem 1.25rem;box-shadow:0 4px 16px #00000018;margin-bottom:1rem}
+.save-bar{position:sticky;top:0;z-index:10;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:var(--save-bar-bg);padding:.8rem 1.25rem;box-shadow:0 4px 16px #00000018;margin-bottom:1rem}
 .save-bar .muted{color:var(--text);opacity:.7}.save-bar button{background:var(--accent);color:#fff}.save-bar button:disabled{background:var(--muted);cursor:not-allowed}
 
 .selection-form{padding-bottom:5.5rem}
@@ -571,7 +571,7 @@ const adminShellTemplate = `<!DOCTYPE html>
 <head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>{{.Title}} - wdbgp</title>
 <style>` + sharedCSS + `
-body{display:flex}
+body{display:flex;height:100vh;overflow:hidden}
 .sidebar{width:220px;background:var(--sidebar-bg);color:var(--sidebar-text);padding:1.25rem 0;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid var(--border)}
 .sidebar h2{padding:0 1.25rem .75rem;font-size:1.1em;border-bottom:1px solid var(--border);margin-bottom:.5rem;font-weight:700}
 .sidebar a{color:var(--sidebar-text);text-decoration:none;padding:.6rem 1.25rem;display:block;font-size:.95em;transition:background .15s}
