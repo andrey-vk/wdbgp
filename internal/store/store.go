@@ -1838,11 +1838,11 @@ type Community struct {
 	ModeID    int64
 	Category  string
 	Service   string // empty = group-level
-	Community int
+	Community int64
 }
 
 // findFirstFree returns the first integer >= start that is not in used.
-func findFirstFree(start int, used map[int]bool) int {
+func findFirstFree(start int64, used map[int64]bool) int64 {
 	for used[start] {
 		start++
 	}
@@ -1851,13 +1851,13 @@ func findFirstFree(start int, used map[int]bool) int {
 
 // AutoCommunity returns the auto-generated community number for a given position.
 // This is a positional estimate used for UI display; actual assignment uses findFirstFree.
-func AutoCommunity(groupIndex int, serviceIndex int) int {
+func AutoCommunity(groupIndex int, serviceIndex int) int64 {
 	for serviceIndex >= 9999 {
 		groupIndex++
 		serviceIndex -= 9999
 	}
 	groupCommunity := (groupIndex + 1) * 10000
-	return groupCommunity + serviceIndex + 1
+	return int64(groupCommunity + serviceIndex + 1)
 }
 
 // autoGenerateCommunities is the migration 13 post-SQL function that fills
@@ -1902,11 +1902,11 @@ func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, er
 		if err != nil {
 			return 0, err
 		}
-		used := make(map[int]bool)
-		keyComm := make(map[string]int)
+		used := make(map[int64]bool)
+		keyComm := make(map[string]int64)
 		for commRows.Next() {
 			var category, service string
-			var community int
+			var community int64
 			if err := commRows.Scan(&category, &service, &community); err != nil {
 				commRows.Close()
 				return 0, err
@@ -1947,7 +1947,7 @@ ORDER BY ce.category`, mid)
 			groupKey := "grp:" + category
 
 			// Determine group community: use existing assignment or find a free one.
-			var groupCommunity int
+			var groupCommunity int64
 			if existing != nil && existing[groupKey] {
 				var ok bool
 				groupCommunity, ok = keyComm[groupKey]
@@ -1957,7 +1957,7 @@ ORDER BY ce.category`, mid)
 					continue
 				}
 			} else {
-				groupCommunity = findFirstFree((groupIndex+1)*10000, used)
+				groupCommunity = findFirstFree(int64((groupIndex+1)*10000), used)
 				if _, err := tx.Exec(
 					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, '', ?)",
 					mid, category, groupCommunity); err != nil {
@@ -2016,7 +2016,7 @@ ORDER BY ce.service`, mid, category)
 
 // GetCommunities returns all communities for a mode.
 // Map key: category for groups, "category|service" for services.
-func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]int, error) {
+func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]int64, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		"SELECT category, service, community FROM catalog_communities WHERE mode_id = ? ORDER BY category, service",
 		modeID)
@@ -2024,10 +2024,10 @@ func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]in
 		return nil, err
 	}
 	defer rows.Close()
-	result := make(map[string]int)
+	result := make(map[string]int64)
 	for rows.Next() {
 		var category, service string
-		var community int
+		var community int64
 		if err := rows.Scan(&category, &service, &community); err != nil {
 			return nil, err
 		}
@@ -2041,7 +2041,7 @@ func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]in
 }
 
 // SetCommunity upserts a community. service="" means group-level.
-func (s *Store) SetCommunity(ctx context.Context, modeID int64, category, service string, community int) error {
+func (s *Store) SetCommunity(ctx context.Context, modeID int64, category, service string, community int64) error {
 	// Check for duplicate community value
 	var existing int
 	err := s.DB.QueryRowContext(ctx,

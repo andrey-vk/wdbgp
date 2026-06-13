@@ -503,7 +503,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	}
 
 	// Load communities for every mode seen across prefixes.
-	modeCommunities := make(map[int64]map[string]int)
+	modeCommunities := make(map[int64]map[string]int64)
 	for _, info := range prefixMeta {
 		if _, ok := modeCommunities[info.ModeID]; !ok {
 			comms, _ := m.store.GetCommunities(ctx, info.ModeID)
@@ -542,7 +542,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		}
 
 		meta, hasMeta := prefixMeta[prefix]
-		comms := map[string]int{}
+		comms := map[string]int64{}
 		if hasMeta {
 			comms = modeCommunities[meta.ModeID]
 		}
@@ -569,7 +569,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) path(rawPrefix string, userIDs []int64, category, service string, communities map[string]int) (*api.Path, error) {
+func (m *Manager) path(rawPrefix string, userIDs []int64, category, service string, communities map[string]int64) (*api.Path, error) {
 	prefix, err := netip.ParsePrefix(rawPrefix)
 	if err != nil {
 		return nil, err

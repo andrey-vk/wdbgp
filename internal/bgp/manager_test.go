@@ -20,7 +20,7 @@ func TestPathCarriesUserCommunities(t *testing.T) {
 	manager := NewManager(config.Config{
 		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
 	}, nil)
-	comms := map[string]int{"testcat": 10000, "testcat|testsvc": 10001}
+	comms := map[string]int64{"testcat": 10000, "testcat|testsvc": 10001}
 	path, err := manager.path("149.154.160.0/20", []int64{2, 7}, "testcat", "testsvc", comms)
 	if err != nil {
 		t.Fatal(err)
