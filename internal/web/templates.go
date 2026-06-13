@@ -28,12 +28,14 @@ dialog{width:min(52rem,calc(100% - 2rem));max-height:calc(100% - 2rem);border:0;
 .debug-list{margin:.5rem 0 1rem;padding-left:1.25rem}.debug-list li{margin:.3rem 0}
 .community-tag{font-size:.8em;color:#667;font-family:ui-monospace,monospace;margin-left:.3em}
 .community-value{color:#06c;cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}.community-value:hover{color:#049}
-.community-cell{white-space:nowrap}
+.community-cell{white-space:nowrap;display:inline-flex;align-items:center;gap:2px}
 .community-input{width:7ch;padding:1px 3px;border:1px solid #aaa;border-radius:2px}
+.edit-actions{display:none;align-items:center;gap:2px}
 .apply-btn{color:#0a0;background:0 0;border:1px solid #0a0;cursor:pointer;padding:1px 5px;margin-left:2px;border-radius:2px}
 .cancel-btn{color:#c00;background:0 0;border:1px solid #c00;cursor:pointer;padding:1px 5px;margin-left:1px;border-radius:2px}
 .revert-btn{color:#c90;background:0 0;border:none;cursor:pointer;font-size:1.1em;margin-left:4px;padding:0 2px}
 .communities-bar{margin-top:1rem;display:flex;align-items:center;gap:1rem}
+.communities-table th:last-child,.communities-table td:last-child{min-width:180px}
 </style></head><body><nav class=language-switcher aria-label="{{tr "language.label"}}">
 <a href="{{.EnglishURL}}" title="{{tr "language.english"}}" aria-current="{{if eq .Lang "en"}}page{{else}}false{{end}}">EN</a>
 <a href="{{.RussianURL}}" title="{{tr "language.russian"}}" aria-current="{{if eq .Lang "ru"}}page{{else}}false{{end}}">RU</a>
@@ -381,7 +383,7 @@ const communitiesBody = `{{with .Data}}
 <td><span class=community-cell data-name="cat_{{.Category}}" data-value="{{.Community}}" data-auto="{{.AutoGroup}}">
 <span class=community-value>{{.Community}}</span>
 {{if ne .Community .AutoGroup}}<button type=button class=revert-btn title="{{tr "communities.revert"}}">↺</button>{{end}}
-<span class=edit-actions style="display:none"><input type=number class=community-input name="cat_{{.Category}}" min=1 max=4294967295 value="{{.Community}}"><button type=button class=apply-btn title="{{tr "communities.apply"}}">✓</button><button type=button class=cancel-btn title="{{tr "communities.cancel"}}">✗</button></span>
+<span class=edit-actions><input type=number class=community-input name="cat_{{.Category}}" min=1 max=4294967295 value="{{.Community}}"><button type=button class=apply-btn title="{{tr "communities.apply"}}">✓</button><button type=button class=cancel-btn title="{{tr "communities.cancel"}}">✗</button></span>
 </span></td>
 </tr>
 {{range .Services}}
@@ -390,7 +392,7 @@ const communitiesBody = `{{with .Data}}
 <td><span class=community-cell data-name="svc_{{$group.Category}}|{{.Name}}" data-value="{{.Community}}" data-auto="{{.AutoSvc}}">
 <span class=community-value>{{.Community}}</span>
 {{if ne .Community .AutoSvc}}<button type=button class=revert-btn title="{{tr "communities.revert"}}">↺</button>{{end}}
-<span class=edit-actions style="display:none"><input type=number class=community-input name="svc_{{$group.Category}}|{{.Name}}" min=1 max=4294967295 value="{{.Community}}"><button type=button class=apply-btn title="{{tr "communities.apply"}}">✓</button><button type=button class=cancel-btn title="{{tr "communities.cancel"}}">✗</button></span>
+<span class=edit-actions><input type=number class=community-input name="svc_{{$group.Category}}|{{.Name}}" min=1 max=4294967295 value="{{.Community}}"><button type=button class=apply-btn title="{{tr "communities.apply"}}">✓</button><button type=button class=cancel-btn title="{{tr "communities.cancel"}}">✗</button></span>
 </span></td>
 </tr>{{end}}
 {{end}}</table>
@@ -426,7 +428,7 @@ v.addEventListener('click',function(){
 var cell=this.parentElement;
 cell.querySelector('.community-value').style.display='none';
 cell.querySelector('.revert-btn')&&(cell.querySelector('.revert-btn').style.display='none');
-cell.querySelector('.edit-actions').style.display='inline';
+cell.querySelector('.edit-actions').style.display='inline-flex';
 var inp=cell.querySelector('.community-input');
 inp.dataset.original=inp.value;
 inp.dataset.changed='0';
