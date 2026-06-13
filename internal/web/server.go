@@ -77,15 +77,6 @@ type selectionView struct {
 	Communities             map[string]uint32
 }
 
-type adminView struct {
-	Modes         []store.CatalogMode
-	Feeds         []store.Feed
-	Adapters      []store.FeedAdapter
-	Users         []store.User
-	PeerStates    map[string]string
-	GlobalFilters filterView
-}
-
 type adapterTestView struct {
 	Adapter      store.FeedAdapter
 	Feed         store.Feed
@@ -186,7 +177,10 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /login", server.userLogin)
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /status", server.status)
-	
+	mux.HandleFunc("GET /admin/users", server.requireAdmin(server.usersList))
+	mux.HandleFunc("GET /admin/feeds", server.requireAdmin(server.feedsList))
+	mux.HandleFunc("GET /admin/adapters", server.requireAdmin(server.adaptersList))
+
 	// Build middleware chain
 	handler := http.Handler(mux)
 	handler = panicRecovery(handler)
@@ -490,50 +484,6 @@ func (s *Server) userCookieSecure(r *http.Request) bool {
 	return s.adminCookieSecure(r)
 }
 
-func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
-	modes, err := s.store.CatalogModes(r.Context(), false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	feedList, err := s.store.Feeds(r.Context(), false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	adapters, err := s.store.FeedAdapters(r.Context())
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	users, err := s.store.Users(r.Context(), false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	states, err := s.bgp.PeerStates(r.Context())
-	if err != nil {
-		logger := logging.FromContext(r.Context())
-		logger.Error("failed to read BGP peer states", "error", err)
-		states = map[string]string{}
-	}
-	globalFilters, err := s.store.GlobalRouteFilters(r.Context())
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	s.render(w, r, http.StatusOK, "title.admin", "admin", adminView{
-		Modes: modes, Feeds: feedList, Adapters: adapters,
-		Users: users, PeerStates: states,
-		GlobalFilters: filterView{
-			AllowText: strings.Join(globalFilters.Allow, "\n"),
-			DenyText:  strings.Join(globalFilters.Deny, "\n"),
-			Editable:  true,
-			Admin:     true,
-		},
-	})
-}
-
 func (s *Server) communitiesPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	modes, err := s.store.CatalogModes(ctx, false)
@@ -607,7 +557,8 @@ func (s *Server) communitiesPage(w http.ResponseWriter, r *http.Request) {
 		groupIndex = curGroup + 1
 		view.Groups = append(view.Groups, group)
 	}
-	s.render(w, r, http.StatusOK, "communities.title", "communities", view)
+	lang, _ := requestLocale(r, s.defaultLang)
+	s.renderAdmin(w, r, http.StatusOK, translate(lang, "communities.title"), "communities", view)
 }
 
 func (s *Server) saveCommunities(w http.ResponseWriter, r *http.Request) {
@@ -883,7 +834,8 @@ func (s *Server) testFeedAdapter(w http.ResponseWriter, r *http.Request) {
 		view.Entries = view.Entries[:previewLimit]
 		view.Truncated = true
 	}
-	s.render(w, r, http.StatusOK, "title.adapter_test", "adapter-test", view)
+	lang, _ := requestLocale(r, s.defaultLang)
+	s.renderAdmin(w, r, http.StatusOK, translate(lang, "title.adapter_test"), "adapter-test", view)
 }
 
 func (s *Server) resetFeedAdapter(w http.ResponseWriter, r *http.Request) {
@@ -935,7 +887,8 @@ func (s *Server) renderFeedAdapterEditor(
 			adapterFeeds = append(adapterFeeds, feed)
 		}
 	}
-	s.render(w, r, status, "title.adapter_edit", "adapter-edit", adapterEditView{
+	lang, _ := requestLocale(r, s.defaultLang)
+	s.renderAdmin(w, r, status, translate(lang, "title.adapter_edit"), "adapter-edit", adapterEditView{
 		Adapter: adapter, Feeds: adapterFeeds, Error: errorMessage,
 	})
 }
@@ -1131,7 +1084,7 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	
 	credentials, _ := s.store.GetUserCredentials(r.Context(), id)
 	lang, _ := requestLocale(r, s.defaultLang)
-	s.renderTitle(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
+	s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
 		userEditView{User: user, Selection: selection, Credentials: credentials})
 }
 
@@ -1677,18 +1630,20 @@ func (s *Server) clientIP(r *http.Request) string {
 func compileTemplates() map[locale]map[string]*template.Template {
 	bodies := map[string]string{
 		"access-denied": accessDeniedTemplate,
-		"adapter-edit":  adapterEditTemplate,
-		"adapter-test":  adapterTestTemplate,
-		"communities":   communitiesTemplate,
 		"login":         loginTemplate,
 		"selection":     selectionTemplate,
-		"admin":         adminTemplate,
 		"user-login":    userLoginTemplate,
-		"user-edit":     userEditTemplate,
 	}
 	// Fragment templates (body only, no pageStart/pageEnd) for htmx and shell embedding
 	fragments := map[string]string{
-		"dashboard": dashboardTemplate,
+		"dashboard":    dashboardTemplate,
+		"communities":  communitiesTemplate,
+		"adapter-edit": adapterEditTemplate,
+		"adapter-test": adapterTestTemplate,
+		"user-edit":     userEditTemplate,
+		"users-list":    usersListTemplate,
+		"feeds-list":    feedsListTemplate,
+		"adapters-list": adaptersListTemplate,
 	}
 	result := make(map[locale]map[string]*template.Template, len(translations))
 	for lang := range translations {
@@ -1839,6 +1794,91 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.renderAdmin(w, r, http.StatusOK, "Dashboard", "dashboard", data)
+}
+
+func (s *Server) usersList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	users, err := s.store.Users(ctx, false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+
+	// Get peer states for status
+	peerStates, _ := s.bgp.PeerStates(ctx)
+
+	type userRow struct {
+		User      store.User
+		PeerState string
+		Networks  string
+	}
+
+	rows := make([]userRow, 0, len(users))
+	for _, u := range users {
+		state := peerStates[u.PeerIP]
+		if state == "" {
+			state = "—"
+		}
+		rows = append(rows, userRow{
+			User:       u,
+			PeerState:  state,
+			Networks:   strings.Join(u.Networks, ", "),
+		})
+	}
+
+	s.renderAdmin(w, r, http.StatusOK, "Users", "users-list", map[string]any{
+		"Users": rows,
+	})
+}
+
+func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	feeds, err := s.store.Feeds(ctx, false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	modes, err := s.store.CatalogModes(ctx, false)
+	if err != nil {
+		modes = nil
+	}
+
+	type feedRow struct {
+		Feed     store.Feed
+		ModeName string
+		LastSync string
+	}
+
+	modeMap := make(map[int64]string)
+	for _, m := range modes {
+		modeMap[m.ID] = m.Name
+	}
+
+	rows := make([]feedRow, 0, len(feeds))
+	for _, f := range feeds {
+		rows = append(rows, feedRow{
+			Feed:     f,
+			ModeName: modeMap[f.ModeID],
+			LastSync: f.LastSuccess,
+		})
+	}
+
+	s.renderAdmin(w, r, http.StatusOK, "Feeds", "feeds-list", map[string]any{
+		"Feeds": rows,
+		"Modes": modes,
+	})
+}
+
+func (s *Server) adaptersList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	adapters, err := s.store.FeedAdapters(ctx)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.renderAdmin(w, r, http.StatusOK, "Adapters", "adapters-list", map[string]any{
+		"Adapters": adapters,
+	})
 }
 
 func (s *Server) httpError(w http.ResponseWriter, r *http.Request, key string, status int) {

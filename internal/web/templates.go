@@ -203,161 +203,6 @@ updateSelectionCounts();
 
 const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
-const adminTemplate = `{{with .Data}}
-<header><h1>{{tr "admin.heading"}}</h1>
-<div style="display: flex; gap: 1rem; align-items: center;">
-<a href="/">{{tr "user_interface.link"}}</a>
-<a href="/admin/communities">{{tr "communities.link"}}</a>
-<form method=post action="/admin/logout" style="margin: 0;">
-<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
-<button type=submit class="button danger" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;">{{tr "admin.logout"}}</button>
-</form>
-</div>
-</header>
-<section class=card><h2>{{tr "catalog.modes"}}</h2>
-<p class=muted>{{tr "catalog.modes_hint"}}</p>
-<table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "catalog.key"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.actions"}}</th></tr>
-{{range .Modes}}<tr>
-<td><input form="mode-{{.ID}}" name=name value="{{.Name}}" required></td>
-<td><code>{{.Key}}</code></td>
-<td><input form="mode-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}}></td>
-<td><form id="mode-{{.ID}}" method=post action="/admin/mode/{{.ID}}"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button>{{tr "common.save"}}</button></form></td>
-</tr>{{end}}</table></section>
-<section class=card><h2>{{tr "feeds.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "adapters.adapter"}}</th><th>{{tr "catalog.mode"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.last_download"}}</th><th>{{tr "feeds.error"}}</th><th>{{tr "feeds.actions"}}</th></tr>
-{{range .Feeds}}{{$feed := .}}<tr>
-<td><input form="feed-{{.ID}}" name=name value="{{.Name}}" required></td>
-<td><input form="feed-{{.ID}}" type=url name=url value="{{.URL}}" required></td>
-<td><select form="feed-{{$feed.ID}}" name=adapter_id>{{range $.Data.Adapters}}<option value="{{.ID}}" {{if eq .ID $feed.AdapterID}}selected{{end}}>{{.Name}}</option>{{end}}</select></td>
-<td><select form="feed-{{$feed.ID}}" name=catalog_mode_id>{{range $.Data.Modes}}<option value="{{.ID}}" {{if eq .ID $feed.ModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></td>
-<td><input form="feed-{{.ID}}" type=checkbox name=enabled {{if .Enabled}}checked{{end}} aria-label="{{tr "feeds.enabled"}}"></td>
-<td>{{.LastSuccess}}</td><td class=error>{{.LastError}}</td><td>
-<div class="row-actions feed-actions">
-<form id="feed-{{.ID}}" method=post action="/admin/feed/{{.ID}}"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button>{{tr "common.save"}}</button></form>
-<form method=post action="/admin/feed/{{.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "common.delete"}}</button></form>
-</div></td></tr>{{end}}</table>
-<form method=post action=/admin/feed><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><h3>{{tr "feeds.add"}}</h3><label>{{tr "feeds.name"}} <input name=name required></label><label>URL <input type=url name=url required></label>
-<label>{{tr "adapters.adapter"}} <select name=adapter_id>{{range .Adapters}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></label>
-<label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Modes}}<option value="{{.ID}}">{{.Name}}</option>{{end}}</select></label>
-<label><input type=checkbox name=enabled checked> {{tr "feeds.enabled"}}</label><button>{{tr "common.add"}}</button></form>
-<form method=post action=/admin/sync><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button>{{tr "feeds.download_now"}}</button></form></section>
-<section class=card><h2>{{tr "adapters.heading"}}</h2>
-<p class=muted>{{tr "adapters.hint"}}</p>
-<table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "catalog.key"}}</th><th>{{tr "adapters.revision"}}</th><th>{{tr "feeds.actions"}}</th></tr>
-{{range .Adapters}}<tr><td>{{.Name}}</td><td><code>{{.Key}}</code></td><td>{{.Revision}}</td>
-<td><a class=button href="/admin/adapter/{{.ID}}">{{tr "adapters.edit"}}</a></td></tr>{{end}}</table>
-<details><summary><strong>{{tr "adapters.add"}}</strong></summary>
-<form method=post action=/admin/adapter>
-<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
-<label>{{tr "catalog.key"}} <input name=key pattern="[a-z0-9._-]+" required></label>
-<label>{{tr "feeds.name"}} <input name=name required></label>
-<label>{{tr "adapters.allowed_hosts"}} <input name=allowed_hosts></label>
-<label>{{tr "adapters.source"}} <textarea name=source rows=20 required>function sync(feed, api) {
-    return [];
-}
-</textarea></label>
-<button>{{tr "common.add"}}</button></form></details></section>
-<section class=card><h2>{{tr "global_filters.heading"}}</h2>
-<p class=muted>{{tr "global_filters.explanation"}}</p>
-<form method=post action=/admin/filters><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><div class=grid>
-<label>{{tr "filters.allow"}} <textarea name=filter_allow placeholder="{{tr "filters.allow_placeholder"}}">{{.GlobalFilters.AllowText}}</textarea></label>
-<label>{{tr "filters.deny"}} <textarea name=filter_deny>{{.GlobalFilters.DenyText}}</textarea></label></div>
-<button>{{tr "global_filters.save"}}</button></form></section>
-<section class=card><h2>{{tr "users.heading"}}</h2><table><tr><th>{{tr "feeds.name"}}</th><th>{{tr "users.cidr"}}</th><th>{{tr "catalog.mode"}}</th><th>{{tr "users.peer"}}</th><th>{{tr "users.asn"}}</th><th>{{tr "users.status"}}</th></tr>
-{{range .Users}}<tr><td><a href="/admin/user/{{.ID}}">{{.Name}}</a></td><td><code>{{join .Networks ", "}}</code></td><td>{{.CatalogModeName}}</td><td><code>{{.PeerIP}}</code></td><td>{{.PeerASN}}</td><td><span class=status>{{state $.Data.PeerStates .PeerIP}}</span></td></tr>{{end}}</table></section>
-<section class=card><form method=post action=/admin/user><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><h3>{{tr "users.add"}}</h3><div class=grid>
-<label>{{tr "feeds.name"}} <input name=name required></label><label>{{tr "users.networks"}} <input name=networks required></label>
-<label>{{tr "users.peer_ip"}} <input name=peer_ip required></label><label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn required></label>
-<label>{{tr "users.next_hop"}} <input name=next_hop></label><label>{{tr "users.bgp_password"}} <input type=password name=bgp_password></label>
-<label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Modes}}{{if .Enabled}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}</select></label></div>
-<label><input type=checkbox name=filter_editable> {{tr "users.allow_filter_editing"}}</label>
-<label><input type=checkbox name=catalog_mode_editable> {{tr "users.allow_mode_editing"}}</label>
-<button>{{tr "common.add"}}</button></form></section>
-<section class=card><h2>{{tr "debug.heading"}}</h2><p class=muted>{{tr "debug.description"}}</p>
-<form id=cidr-debug-form><label>{{tr "catalog.mode"}} <select name=mode required>{{range .Modes}}{{if .Enabled}}<option value="{{.ID}}">{{.Name}}</option>{{end}}{{end}}</select></label>
-<label>{{tr "debug.input"}} <input name=cidr placeholder="8.8.8.8 or 8.8.8.0/24" required></label><button>{{tr "debug.submit"}}</button></form></section>
-<dialog id=cidr-debug-dialog><div class=dialog-body>
-<div class=dialog-header><h2>{{tr "debug.results"}}</h2><button type=button id=cidr-debug-close aria-label="{{tr "debug.close"}}">×</button></div>
-<p><code id=cidr-debug-query></code></p><p class=error id=cidr-debug-error hidden></p>
-<div id=cidr-debug-content>
-<h3>{{tr "debug.full_services"}}</h3><ul class=debug-list id=cidr-debug-full></ul>
-<h3>{{tr "debug.partial_services"}}</h3><ul class=debug-list id=cidr-debug-partial></ul>
-<h3>{{tr "debug.combined"}}</h3><p id=cidr-debug-combined></p>
-<h3>{{tr "debug.users"}}</h3><ul class=debug-list id=cidr-debug-users></ul>
-<p id=cidr-debug-empty hidden>{{tr "debug.no_matches"}}</p></div>
-</div></dialog>
-<script>
-(function() {
-  var form = document.getElementById('cidr-debug-form');
-  var dialog = document.getElementById('cidr-debug-dialog');
-  var error = document.getElementById('cidr-debug-error');
-  var content = document.getElementById('cidr-debug-content');
-  var empty = document.getElementById('cidr-debug-empty');
-  var noItems = {{printf "%q" (tr "debug.no_items")}};
-  var coverageLabel = {{printf "%q" (tr "debug.coverage")}};
-  var beforeFiltersLabel = {{printf "%q" (tr "debug.before_filters")}};
-  var afterFiltersLabel = {{printf "%q" (tr "debug.after_filters")}};
-  var requestFailed = {{printf "%q" (tr "debug.request_failed")}};
-  function percentage(value) {
-    return new Intl.NumberFormat(document.documentElement.lang, {maximumFractionDigits: 2}).format(value) + '%';
-  }
-  function fillList(id, items, userList) {
-    var list = document.getElementById(id);
-    list.replaceChildren();
-    if (!items.length) {
-      var none = document.createElement('li');
-      none.textContent = noItems;
-      list.appendChild(none);
-      return;
-    }
-    items.forEach(function(item) {
-      var row = document.createElement('li');
-      if (userList) {
-        row.textContent = item.name + ' — ' + beforeFiltersLabel + ': ' +
-          percentage(item.before_percentage) + '; ' + afterFiltersLabel + ': ' +
-          percentage(item.after_percentage);
-        if (item.matches && item.matches.length) row.textContent += ': ' + item.matches.join(', ');
-      } else {
-        row.textContent = item.category + ' / ' + item.service + ' — ' +
-          percentage(item.percentage) + ' ' + coverageLabel;
-      }
-      list.appendChild(row);
-    });
-  }
-  form.addEventListener('submit', async function(event) {
-    event.preventDefault();
-    error.hidden = true;
-    content.hidden = false;
-    var cidr = new FormData(form).get('cidr');
-    var mode = new FormData(form).get('mode');
-    try {
-      var response = await fetch('/admin/debug/cidr?mode=' + encodeURIComponent(mode) + '&cidr=' + encodeURIComponent(cidr));
-      if (!response.ok) throw new Error((await response.text()).trim() || requestFailed);
-      var result = await response.json();
-      document.getElementById('cidr-debug-query').textContent = result.query;
-      fillList('cidr-debug-full', result.full_services || [], false);
-      fillList('cidr-debug-partial', result.partial_services || [], false);
-      fillList('cidr-debug-users', result.users || [], true);
-      var combined = document.getElementById('cidr-debug-combined');
-      var combinedNames = (result.combined_services || []).map(function(item) {
-        return item.category + ' / ' + item.service;
-      });
-      combined.textContent = combinedNames.length
-        ? percentage(result.combined_percentage) + ' ' + coverageLabel + ': ' + combinedNames.join(', ')
-        : noItems;
-      empty.hidden = Boolean((result.full_services || []).length || (result.partial_services || []).length || (result.users || []).length);
-    } catch (failure) {
-      document.getElementById('cidr-debug-query').textContent = cidr;
-      content.hidden = true;
-      error.textContent = failure.message || requestFailed;
-      error.hidden = false;
-    }
-    dialog.showModal();
-  });
-  document.getElementById('cidr-debug-close').addEventListener('click', function() { dialog.close(); });
-  dialog.addEventListener('click', function(event) { if (event.target === dialog) dialog.close(); });
-})();
-</script>{{end}}`
-
 const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{with .Data}}
 <header><h1>{{printf (tr "title.user") .User.Name}}</h1><a href=/admin>{{tr "admin.link"}}</a></header>
 <section class=card><h2>{{tr "user.settings"}}</h2><form method=post action="/admin/user/{{.User.ID}}">
@@ -684,6 +529,19 @@ input,select{padding:4px 8px;border:1px solid var(--border);border-radius:4px;ba
 .stat-card .label{font-size:.85em;color:var(--muted);margin-top:.3rem}
 .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
 .status-dot.up{background:var(--ok)}.status-dot.down{background:var(--danger)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1rem}
+.row-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.error-output{white-space:pre-wrap;overflow:auto;padding:1rem;border-radius:.6rem;background:#fff1f0;color:#8a1c13;border:1px solid #f2b8b5}
+.selection-form{padding-bottom:5.5rem}
+.catalog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem;margin-top:1rem}
+fieldset.category-card{border:1px solid var(--border);border-radius:1rem;background:var(--card-bg);margin:0;padding:0;overflow:hidden}
+.category-card legend{float:left;width:100%;padding:.85rem 1rem;background:var(--group-row-bg);border-bottom:1px solid var(--border)}
+.category-card legend+*{clear:both}
+.category-title{display:flex;gap:.55rem;align-items:center;margin:0;font-size:1.05rem}
+.service-list{padding:.75rem 1rem 1rem}.service-list label{font-weight:500;margin:.4rem 0}
+.pill{display:inline-block;padding:.15rem .5rem;border-radius:999px;background:var(--group-row-bg);color:var(--text)}
+.community-tag{font-size:.8em;color:var(--muted);font-family:ui-monospace,monospace;margin-left:.3em}
+.empty{background:var(--card-bg);border:1px dashed var(--border);border-radius:1rem;padding:1rem}
 </style>
 <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
 <script src="https://unpkg.com/alpinejs@3.14.9" defer></script>
@@ -730,5 +588,57 @@ const dashboardTemplate = `{{with .Data}}
 <div class=stat-card><div class=value>{{.EnabledFeeds}}/{{.TotalFeeds}}</div><div class=label>{{tr "stats.feeds"}}</div></div>
 <div class=stat-card><div class=value>{{.Categories}}</div><div class=label>{{tr "stats.categories"}}</div></div>
 <div class=stat-card><div class=value>{{.Services}}</div><div class=label>{{tr "stats.services"}}</div></div>
+</div>
+{{end}}`
+
+const usersListTemplate = `{{with .Data}}
+<h1>{{tr "nav.users"}}</h1>
+<div class=card>
+<table>
+<tr><th>{{tr "feeds.name"}}</th><th>{{tr "users.networks"}}</th><th>{{tr "catalog.mode"}}</th><th>BGP</th><th>{{tr "users.peer_asn"}}</th><th>{{tr "users.web_auth"}}</th><th></th></tr>
+{{range .Users}}
+<tr>
+<td><a href="/admin/user/{{.User.ID}}">{{.User.Name}}</a></td>
+<td><code>{{.Networks}}</code></td>
+<td>{{.User.CatalogModeName}}</td>
+<td><code>{{.User.PeerIP}}</code> <span class="status-dot {{if eq .PeerState "ESTABLISHED"}}up{{else}}down{{end}}"></span></td>
+<td>{{.User.PeerASN}}</td>
+<td>{{.User.WebAuth}}</td>
+<td>{{if .User.Enabled}}<span class=ok>enabled</span>{{else}}<span class=error>disabled</span>{{end}}</td>
+</tr>{{end}}
+</table>
+</div>
+<p><a href="/admin/user/0" class=button>{{tr "common.add"}}</a></p>
+{{end}}`
+
+const feedsListTemplate = `{{with .Data}}
+<h1>{{tr "nav.feeds"}}</h1>
+<div class=card>
+<table>
+<tr><th>{{tr "feeds.name"}}</th><th>{{tr "catalog.mode"}}</th><th>{{tr "feeds.status"}}</th><th>{{tr "feeds.last_sync"}}</th></tr>
+{{range .Feeds}}
+<tr>
+<td>{{.Feed.Name}}</td>
+<td>{{.ModeName}}</td>
+<td>{{if .Feed.Enabled}}<span class=ok>enabled</span>{{else}}<span class=error>disabled</span>{{end}}</td>
+<td>{{if .LastSync}}{{.LastSync}}{{else}}—{{end}}</td>
+</tr>{{end}}
+</table>
+</div>
+{{end}}`
+
+const adaptersListTemplate = `{{with .Data}}
+<h1>{{tr "nav.adapters"}}</h1>
+<div class=card>
+<table>
+<tr><th>{{tr "adapters.key"}}</th><th>{{tr "feeds.name"}}</th><th>{{tr "adapters.revision"}}</th><th></th></tr>
+{{range .Adapters}}
+<tr>
+<td><code>{{.Key}}</code></td>
+<td>{{.Name}}</td>
+<td>{{.Revision}}</td>
+<td><a href="/admin/adapter/{{.ID}}" class=button>Edit</a></td>
+</tr>{{end}}
+</table>
 </div>
 {{end}}`
