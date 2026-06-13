@@ -53,6 +53,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .community-value:hover{opacity:.8}
 .community-cell{white-space:nowrap;display:inline-flex;align-items:center;gap:2px}
 .community-input{width:7ch;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--card-bg);color:var(--text);font-family:ui-monospace,monospace;font-size:.9em}
+.community-input::-webkit-inner-spin-button,.community-input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.community-input{-moz-appearance:textfield}
 .edit-actions{display:none;align-items:center;gap:2px}
 .apply-btn{color:var(--ok);background:0 0;border:1px solid var(--ok);cursor:pointer;padding:2px 6px;margin-left:4px;border-radius:3px;font-size:.85em}
 .cancel-btn{color:var(--danger);background:0 0;border:1px solid var(--danger);cursor:pointer;padding:2px 6px;margin-left:2px;border-radius:3px;font-size:.85em}
