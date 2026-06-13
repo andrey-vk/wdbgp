@@ -52,7 +52,7 @@ func TestCIDRDebugCoverageByServiceAndUser(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := New(config.Config{}, db, feeds.NewSyncer(db), &fakeBGP{})
+	server := New(config.Config{}, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
 	result, err := server.debugCIDR(ctx, "10.0.0.0/24")
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestCIDRDebugCombinedCoverageFromMultipleServices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := New(config.Config{}, db, feeds.NewSyncer(db), &fakeBGP{}).
+	result, err := New(config.Config{}, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).
 		debugCIDR(context.Background(), "10.0.0.0/24")
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +167,7 @@ func TestCIDRDebugUsesSelectedModeAndMatchingUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := New(config.Config{}, db, feeds.NewSyncer(db), &fakeBGP{}).
+	result, err := New(config.Config{}, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).
 		debugCIDR(ctx, "8.8.8.8", ipranges.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +188,7 @@ func TestCIDRDebugEndpointRequiresAdminAndReturnsJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{SessionSecret: "secret"}
-	handler := New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
 
 	request := httptest.NewRequest(http.MethodGet, "/admin/debug/cidr?cidr=8.8.8.8", nil)
 	response := httptest.NewRecorder()

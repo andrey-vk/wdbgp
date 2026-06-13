@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/retry"
 	"github.com/andrey-vk/wdbgp/internal/store"
@@ -38,22 +39,51 @@ type openCCKEntry struct {
 	CIDR6 []string `json:"cidr6"`
 }
 
+type AdapterLimits struct {
+	MaxSourceBytes   int
+	MaxResponseBytes int
+	MaxTotalBytes    int
+	MaxEntries       int
+	MaxRequests      int
+	MaxCallStack     int
+}
+
 type Syncer struct {
 	Store         *store.Store
 	Client        *http.Client
 	ScriptTimeout time.Duration
+	Limits        AdapterLimits
 }
 
 var errFeedChanged = errors.New("feed changed during synchronization")
 
 const ipRangesURL = "https://github.com/antonme/ipranges"
 
-func NewSyncer(s *store.Store) *Syncer {
+func NewSyncer(s *store.Store, cfg config.Config) *Syncer {
+	timeout := cfg.JSTimeout
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
 	return &Syncer{
 		Store:         s,
-		Client:        newHTTPClient(120 * time.Second),
-		ScriptTimeout: 120 * time.Second,
+		Client:        newHTTPClient(timeout),
+		ScriptTimeout: timeout,
+		Limits: AdapterLimits{
+			MaxSourceBytes:   ifZero(cfg.JSMaxSourceBytes, 1<<20),
+			MaxResponseBytes: ifZero(cfg.JSMaxResponseBytes, 16<<20),
+			MaxTotalBytes:    ifZero(cfg.JSMaxTotalBytes, 64<<20),
+			MaxEntries:       ifZero(cfg.JSMaxEntries, 1_000_000),
+			MaxRequests:      ifZero(cfg.JSMaxRequests, 200),
+			MaxCallStack:     ifZero(cfg.JSMaxCallStack, 1_000),
+		},
 	}
+}
+
+func ifZero(val, def int) int {
+	if val <= 0 {
+		return def
+	}
+	return val
 }
 
 func (s *Syncer) SyncAll(ctx context.Context) []error {
@@ -95,7 +125,7 @@ func (s *Syncer) TestAdapter(
 	adapter store.FeedAdapter,
 ) ([]Entry, error) {
 	return (adapterRunner{
-		client: s.Client, timeout: s.ScriptTimeout,
+		client: s.Client, timeout: s.ScriptTimeout, limits: s.Limits,
 	}).run(ctx, feed, adapter)
 }
 

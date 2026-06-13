@@ -87,7 +87,7 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	}
 	bgp := &fakeBGP{}
 	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.RemoteAddr = "192.168.20.15:12345"
@@ -249,7 +249,7 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	bgp := &fakeBGP{}
-	handler := New(testConfig(), db, feeds.NewSyncer(db), bgp).Handler()
+	handler := New(testConfig(), db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
 	form := url.Values{
 		"catalog_mode_id": {strconv.FormatInt(ipranges.ID, 10)},
 		"service":         {serviceValue("Precise", "Resolver")},
@@ -318,7 +318,7 @@ func TestLockedUserCanChangeEditableCatalogMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	bgp := &fakeBGP{}
-	handler := New(testConfig(), db, feeds.NewSyncer(db), bgp).Handler()
+	handler := New(testConfig(), db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
 	form := url.Values{
 		"catalog_mode_id": {strconv.FormatInt(ipranges.ID, 10)},
 	}
@@ -376,7 +376,7 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	response := httptest.NewRecorder()
 	cfg := testConfig()
 	cfg.DefaultLanguage = "ru"
-	New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).
+	New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).
 		Handler().ServeHTTP(response, request)
 	body := response.Body.String()
 	if response.Code != http.StatusOK {
@@ -411,7 +411,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 
 	bgp := &fakeBGP{}
 	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 
 	addForm := url.Values{
@@ -510,7 +510,7 @@ func TestAdminCanEditFeedAdapter(t *testing.T) {
 	defer db.Close()
 
 	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 	adapter, err := db.FeedAdapter(context.Background(), 1)
 	if err != nil {
@@ -604,7 +604,7 @@ func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	syncer := feeds.NewSyncer(db)
+	syncer := feeds.NewSyncer(db, config.Config{})
 	syncer.Client = &http.Client{Transport: testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != feed.URL {
 			t.Fatalf("request URL = %q, want %q", request.URL, feed.URL)
@@ -713,7 +713,7 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 
 	cfg := testConfig()
 	bgp := &fakeBGP{}
-	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 
 	tests := []struct {
@@ -850,7 +850,7 @@ func TestLocalizedPages(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			handler := New(config.Config{DefaultLanguage: test.defaultLanguage},
-				db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
+				db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
 			request := httptest.NewRequest(http.MethodGet, test.target, nil)
 			request.RemoteAddr = "192.0.2.10:12345"
 			request.Header.Set("Accept-Language", test.accept)
@@ -950,7 +950,7 @@ func TestAdminCookieSecureAutoAllowsPlainHTTP(t *testing.T) {
 	defer db.Close()
 
 	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret", AdminCookieSecure: "auto"}
-	handler := New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
 
 	login := url.Values{"password": {"admin"}}
 	request := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(login.Encode()))
@@ -989,7 +989,7 @@ func TestAdminCookieSecureAutoHonorsTrustedForwardedProto(t *testing.T) {
 		AdminPassword: "admin", SessionSecret: "secret",
 		AdminCookieSecure: "auto", TrustProxyHeader: true,
 	}
-	handler := New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
 
 	login := url.Values{"password": {"admin"}}
 	request := httptest.NewRequest(http.MethodPost, "/admin/login", strings.NewReader(login.Encode()))
@@ -1043,7 +1043,7 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 
 	cfg := testConfig()
-	syncer := feeds.NewSyncer(db)
+	syncer := feeds.NewSyncer(db, config.Config{})
 	bgp := &fakeBGP{}
 	server := New(cfg, db, syncer, bgp)
 

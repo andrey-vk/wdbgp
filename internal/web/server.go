@@ -738,7 +738,7 @@ func parseFeedAdapter(r *http.Request, id int64) (store.FeedAdapter, error) {
 	if err := store.ValidateFeedAdapter(adapter); err != nil {
 		return adapter, err
 	}
-	if err := feeds.ValidateAdapterSource(adapter.Source); err != nil {
+	if err := feeds.ValidateAdapterSource(adapter.Source, 1<<20); err != nil {
 		return adapter, err
 	}
 	return adapter, nil
