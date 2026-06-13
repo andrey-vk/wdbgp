@@ -486,9 +486,12 @@ var inp=cell.querySelector('.community-input');
 var newVal=inp.value;
 if(findDuplicate(cell.dataset.name,newVal)){alert('This community number is already used. Please choose a different number.');return}
 inp.value=newVal;
-if (newVal!=inp.dataset.original||cell.classList.contains('reverted')){
-inp.dataset.changed='1';cell.classList.remove('reverted')
-}
+	// Clean up any revert-hidden input since we're accepting a new manual value
+	var oldHidden=cell.querySelector('.revert-hidden');
+	if(oldHidden) oldHidden.remove();
+	if (newVal!=inp.dataset.original||cell.classList.contains('reverted')){
+	inp.dataset.changed='1';cell.classList.remove('reverted')
+	}
 cell.querySelector('.community-value').textContent=newVal;
 cell.querySelector('.community-value').style.display='';
 var auto=cell.dataset.auto;
@@ -525,9 +528,12 @@ cell.querySelector('.community-value').textContent=auto;
 cell.classList.add('reverted');
 var hidden=document.createElement('input');
 hidden.type='hidden';hidden.name=cell.dataset.name;hidden.value=auto;hidden.className='revert-hidden';
-var oldHidden=cell.querySelector('.revert-hidden');
-oldHidden&&oldHidden.remove();
-cell.appendChild(hidden);
+	var oldHidden=cell.querySelector('.revert-hidden');
+	oldHidden&&oldHidden.remove();
+	cell.appendChild(hidden);
+	// Also update the edit input so it doesn't conflict on form submit
+	var editInput=cell.querySelector('.community-input');
+	if(editInput) editInput.value=auto;
 this.style.display='none';
 cell.querySelector('.edit-actions').style.display='none';
 cell.querySelector('.community-value').style.display='';
