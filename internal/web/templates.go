@@ -526,6 +526,13 @@ activeEdit = null;
 function setupRevert(btn){
 btn.addEventListener('click',function(){
 var cell=this.closest('.community-cell');
+var inp = cell.querySelector('.community-input');
+var editActions = cell.querySelector('.edit-actions');
+// If user is in edit mode but never applied the change, just cancel the edit
+if (editActions && editActions.style.display !== 'none' && inp && inp.dataset.changed === '0') {
+	cell.querySelector('.cancel-btn').click();
+	return;
+}
 var auto=cell.dataset.auto;
 cell.querySelector('.community-value').textContent=auto;
 cell.classList.add('reverted');
