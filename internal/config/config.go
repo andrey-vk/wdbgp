@@ -30,8 +30,15 @@ type Config struct {
 	RateLimitLogin    int
 	RateLimitAdmin    int
 	SessionMaxAge     int
-	LogLevel          string
-	LogFormat         string
+	LogLevel           string
+	LogFormat          string
+	JSTimeout          time.Duration
+	JSMaxSourceBytes   int
+	JSMaxResponseBytes int
+	JSMaxTotalBytes    int
+	JSMaxEntries       int
+	JSMaxRequests      int
+	JSMaxCallStack     int
 }
 
 func Load() (Config, error) {
@@ -99,6 +106,34 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	jsTimeout, err := integer("WDBGP_JS_TIMEOUT", 120)
+	if err != nil {
+		return Config{}, err
+	}
+	jsMaxSource, err := integer("WDBGP_JS_MAX_SOURCE", 1048576)
+	if err != nil {
+		return Config{}, err
+	}
+	jsMaxResponse, err := integer("WDBGP_JS_MAX_RESPONSE", 16777216)
+	if err != nil {
+		return Config{}, err
+	}
+	jsMaxTotal, err := integer("WDBGP_JS_MAX_TOTAL", 67108864)
+	if err != nil {
+		return Config{}, err
+	}
+	jsMaxEntries, err := integer("WDBGP_JS_MAX_ENTRIES", 1000000)
+	if err != nil {
+		return Config{}, err
+	}
+	jsMaxRequests, err := integer("WDBGP_JS_MAX_REQUESTS", 200)
+	if err != nil {
+		return Config{}, err
+	}
+	jsMaxCallStack, err := integer("WDBGP_JS_MAX_CALL_STACK", 1000)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		DBPath:            dbPath,
 		Host:              host,
@@ -118,8 +153,15 @@ func Load() (Config, error) {
 		RateLimitLogin:    rateLimitLogin,
 		RateLimitAdmin:    rateLimitAdmin,
 		SessionMaxAge:     sessionMaxAge,
-		LogLevel:          logLevel,
-		LogFormat:         logFormat,
+		LogLevel:           logLevel,
+		LogFormat:          logFormat,
+		JSTimeout:          time.Duration(jsTimeout) * time.Second,
+		JSMaxSourceBytes:   jsMaxSource,
+		JSMaxResponseBytes: jsMaxResponse,
+		JSMaxTotalBytes:    jsMaxTotal,
+		JSMaxEntries:       jsMaxEntries,
+		JSMaxRequests:      jsMaxRequests,
+		JSMaxCallStack:     jsMaxCallStack,
 	}
 	return cfg, nil
 }

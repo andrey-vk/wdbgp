@@ -12,8 +12,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
+
+func testLimits() AdapterLimits {
+	return AdapterLimits{
+		MaxSourceBytes: 1 << 20, MaxResponseBytes: 16 << 20,
+		MaxTotalBytes: 64 << 20, MaxEntries: 1_000_000,
+		MaxRequests: 200, MaxCallStack: 1_000,
+	}
+}
 
 func TestParseCanonicalNormalizesAndDeduplicates(t *testing.T) {
 	entries, err := Parse([]byte(`{"entries":[
@@ -69,7 +78,7 @@ func TestJavaScriptAdapterNormalizesResult(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})}
-	entries, err := (adapterRunner{client: client, timeout: time.Second}).run(
+	entries, err := (adapterRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
 		context.Background(),
 		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed"},
 		store.FeedAdapter{
@@ -96,7 +105,7 @@ func TestJavaScriptAdapterRejectsUnlistedHost(t *testing.T) {
 		t.Fatal("HTTP client must not be called")
 		return nil, nil
 	})}
-	_, err := (adapterRunner{client: client, timeout: time.Second}).run(
+	_, err := (adapterRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
 		context.Background(),
 		store.Feed{URL: "https://example.test/feed"},
 		store.FeedAdapter{
@@ -114,7 +123,7 @@ func TestJavaScriptAdapterRejectsUnlistedHost(t *testing.T) {
 
 func TestJavaScriptAdapterTimesOut(t *testing.T) {
 	_, err := (adapterRunner{
-		client: &http.Client{}, timeout: 10 * time.Millisecond,
+		limits: testLimits(), client: &http.Client{}, timeout: 10 * time.Millisecond,
 	}).run(
 		context.Background(),
 		store.Feed{URL: "https://example.test/feed"},
@@ -138,7 +147,7 @@ func TestJavaScriptAdapterStopsWhenContextIsCanceled(t *testing.T) {
 	}()
 	started := time.Now()
 	_, err := (adapterRunner{
-		client: &http.Client{}, timeout: 5 * time.Second,
+		limits: testLimits(), client: &http.Client{}, timeout: 5 * time.Second,
 	}).run(
 		ctx,
 		store.Feed{URL: "https://example.test/feed"},
@@ -175,7 +184,8 @@ func TestAdapterHTTPFollowsValidatedRedirect(t *testing.T) {
 		}, nil
 	})}
 	api, err := newAdapterHTTP(
-		context.Background(), client, "https://example.test/feed", "")
+		context.Background(), client, "https://example.test/feed", "",
+		AdapterLimits{MaxRequests: 200, MaxResponseBytes: 16 << 20, MaxTotalBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +209,8 @@ func TestAdapterHTTPRejectsRedirectToUnlistedHost(t *testing.T) {
 		}, nil
 	})}
 	api, err := newAdapterHTTP(
-		context.Background(), client, "https://example.test/feed", "")
+		context.Background(), client, "https://example.test/feed", "",
+		AdapterLimits{MaxRequests: 200, MaxResponseBytes: 16 << 20, MaxTotalBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +304,7 @@ func TestSyncAllSkipsDisabledFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	syncer := NewSyncer(db)
+	syncer := NewSyncer(db, config.Config{})
 	syncer.Client = client
 	if syncErrors := syncer.SyncAll(context.Background()); len(syncErrors) != 0 {
 		t.Fatalf("SyncAll errors = %v", syncErrors)
@@ -338,7 +349,7 @@ func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	}
 	feed := feedList[0]
 
-	syncer := NewSyncer(db)
+	syncer := NewSyncer(db, config.Config{})
 	syncer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != oldURL {
 			t.Fatalf("download URL = %q, want %q", request.URL, oldURL)
@@ -401,7 +412,7 @@ func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	syncer := NewSyncer(db)
+	syncer := NewSyncer(db, config.Config{})
 	syncer.Client = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		adapter.Name = "changed during sync"
 		if err := db.UpdateFeedAdapter(ctx, adapter); err != nil {
@@ -456,7 +467,7 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	if len(feedList) != 1 || feedList[0].URL != ipRangesURL {
 		t.Fatalf("enabled feeds = %#v", feedList)
 	}
-	syncer := NewSyncer(db)
+	syncer := NewSyncer(db, config.Config{})
 	syncer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body := "203.0.113.0/24\n"
 		if strings.Contains(request.URL.Path, "ipv6_merged.txt") {

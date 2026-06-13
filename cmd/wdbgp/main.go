@@ -54,7 +54,7 @@ func run() error {
 	case "stats":
 		return printStats(context.Background(), db)
 	case "sync":
-		syncer := feeds.NewSyncer(db)
+		syncer := feeds.NewSyncer(db, cfg)
 		if syncErrors := syncer.SyncAll(context.Background()); len(syncErrors) > 0 {
 			for _, syncErr := range syncErrors {
 				logging.Error("feed sync error", "error", syncErr)
@@ -96,7 +96,7 @@ func serve(cfg config.Config, db *store.Store) error {
 		}
 	}()
 
-	syncer := feeds.NewSyncer(db)
+	syncer := feeds.NewSyncer(db, cfg)
 	go syncLoop(ctx, cfg.SyncInterval, syncer, bgpManager)
 
 	httpServer := &http.Server{
