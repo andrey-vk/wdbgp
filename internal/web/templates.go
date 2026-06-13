@@ -529,19 +529,19 @@ input,select{padding:4px 8px;border:1px solid var(--border);border-radius:4px;ba
 .stat-card .label{font-size:.85em;color:var(--muted);margin-top:.3rem}
 .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
 .status-dot.up{background:var(--ok)}.status-dot.down{background:var(--danger)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1rem}
-.row-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem}
+.row-actions{display:flex;gap:.5rem;margin-top:.5rem}
 .error-output{white-space:pre-wrap;overflow:auto;padding:1rem;border-radius:.6rem;background:#fff1f0;color:#8a1c13;border:1px solid #f2b8b5}
 .selection-form{padding-bottom:5.5rem}
-.catalog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem;margin-top:1rem}
-fieldset.category-card{border:1px solid var(--border);border-radius:1rem;background:var(--card-bg);margin:0;padding:0;overflow:hidden}
-.category-card legend{float:left;width:100%;padding:.85rem 1rem;background:var(--group-row-bg);border-bottom:1px solid var(--border)}
-.category-card legend+*{clear:both}
-.category-title{display:flex;gap:.55rem;align-items:center;margin:0;font-size:1.05rem}
-.service-list{padding:.75rem 1rem 1rem}.service-list label{font-weight:500;margin:.4rem 0}
-.pill{display:inline-block;padding:.15rem .5rem;border-radius:999px;background:var(--group-row-bg);color:var(--text)}
-.community-tag{font-size:.8em;color:var(--muted);font-family:ui-monospace,monospace;margin-left:.3em}
-.empty{background:var(--card-bg);border:1px dashed var(--border);border-radius:1rem;padding:1rem}
+.catalog-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-top:1rem}
+.category-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:.8rem}
+.category-title{font-weight:600;display:flex;align-items:center;gap:.3rem;cursor:pointer}
+.category-title input[type=checkbox]{margin:0}
+.service-list{display:flex;flex-direction:column;gap:4px;margin-top:6px;padding-left:1.5rem}
+.service-list label{display:flex;align-items:center;gap:4px;font-size:.9em}
+.pill{font-size:.75em;background:var(--accent);color:#fff;padding:1px 6px;border-radius:8px}
+.community-tag{font-size:.75em;color:var(--muted);margin-left:4px;font-family:ui-monospace,monospace}
+.empty{text-align:center;padding:2rem;color:var(--muted)}
 </style>
 <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
 <script src="https://unpkg.com/alpinejs@3.14.9" defer></script>
