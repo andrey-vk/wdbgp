@@ -79,7 +79,8 @@ type selectionView struct {
 	Communities             map[string]uint32
 	PrefixCounts            map[string]map[string]int // category -> service -> count
 	CategoryCounts          map[string]int            // category -> total unique prefixes
-	TotalPrefixes           int                       // total unique prefixes for selection
+	TotalPrefixesV4         int                       // total unique IPv4 prefixes for selection
+	TotalPrefixesV6         int                       // total unique IPv6 prefixes for selection
 }
 
 type adapterTestView struct {
@@ -1451,7 +1452,7 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 		return selectionView{}, err
 	}
 	view.PrefixCounts = prefixCounts
-	view.TotalPrefixes, err = s.store.CountSelectionPrefixes(ctx, user.ID)
+	view.TotalPrefixesV4, view.TotalPrefixesV6, err = s.store.CountSelectionPrefixes(ctx, user.ID, s.cfg.LocalAddressV6 == "")
 	if err != nil {
 		return selectionView{}, err
 	}

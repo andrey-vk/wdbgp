@@ -1140,6 +1140,77 @@ func prefixContains(parent, child netip.Prefix) bool {
 	return parent.Contains(child.Addr()) && child.Bits() >= parent.Bits()
 }
 
+func TestCountSelectionPrefixesSkipsIPv6(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Get a feed ID for mode 1 (opencck, already enabled)
+	var feedID int64
+	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").Scan(&feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert catalog entries with both IPv4 and IPv6 prefixes
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'CountTest', 'ServiceA', '8.8.8.0/24'),
+		(?, 'CountTest', 'ServiceA', '2a01::/32'),
+		(?, 'CountTest', 'ServiceB', '37.228.0.0/24')`,
+		feedID, feedID, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a user with mode 1
+	userID, err := s.AddUser(ctx, User{
+		Name: "client", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		CatalogModeID: 1,
+		Networks:      []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Select the CountTest category
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserSelection(ctx, tx, userID, []string{"CountTest"}, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Count all prefixes (v4 + v6)
+	v4All, v6All, err := s.CountSelectionPrefixes(ctx, userID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v4All != 2 {
+		t.Fatalf("CountSelectionPrefixes(skipIPv6=false) v4 = %d, want 2", v4All)
+	}
+	if v6All != 1 {
+		t.Fatalf("CountSelectionPrefixes(skipIPv6=false) v6 = %d, want 1", v6All)
+	}
+
+	// Count only IPv4 prefixes
+	v4Skip, v6Skip, err := s.CountSelectionPrefixes(ctx, userID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v4Skip != 2 {
+		t.Fatalf("CountSelectionPrefixes(skipIPv6=true) v4 = %d, want 2", v4Skip)
+	}
+	if v6Skip != 0 {
+		t.Fatalf("CountSelectionPrefixes(skipIPv6=true) v6 = %d, want 0", v6Skip)
+	}
+
+	// Verify DesiredPrefixes returns all 3 (matching skipIPv6=false)
+	desired, _, err := s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(desired) != 3 {
+		t.Fatalf("DesiredPrefixes count = %d, want 3", len(desired))
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))

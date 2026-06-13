@@ -1186,20 +1186,21 @@ type userRoute struct {
 	service  string
 }
 
-// CountSelectionPrefixes returns the number of unique prefixes that would be
-// announced for a single user after applying their route filters (global and per-user).
-// It replicates the same filter logic as DesiredPrefixes: collect prefixes matching
-// the user's selection, then apply allow/deny lists according to the filter mode.
-func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64) (int, error) {
+// CountSelectionPrefixes returns the number of unique IPv4 and IPv6 prefixes that
+// would be announced for a single user after applying their route filters (global
+// and per-user). It replicates the same filter logic as DesiredPrefixes: collect
+// prefixes matching the user's selection, then apply allow/deny lists according
+// to the filter mode.
+func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64, skipIPv6 bool) (v4, v6 int, err error) {
 	var catalogModeID int64
 	var filterMode string
 	var filterOverride bool
-	err := s.DB.QueryRowContext(ctx,
+	err = s.DB.QueryRowContext(ctx,
 		`SELECT catalog_mode_id, COALESCE(filter_mode, ''), filter_override_enabled
 		 FROM users WHERE id = ?`, userID).
 		Scan(&catalogModeID, &filterMode, &filterOverride)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	filterMode = normalizeFilterMode(filterMode, filterOverride)
 
@@ -1233,7 +1234,7 @@ WHERE f.mode_id = ?1
         AND ss.service = ce.service
   )`, catalogModeID, userID)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer rows.Close()
 
@@ -1241,11 +1242,11 @@ WHERE f.mode_id = ?1
 	for rows.Next() {
 		var rawPrefix string
 		if err := rows.Scan(&rawPrefix); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		prefix, err := netip.ParsePrefix(rawPrefix)
 		if err != nil {
-			return 0, fmt.Errorf("parse prefix %q: %w", rawPrefix, err)
+			return 0, 0, fmt.Errorf("parse prefix %q: %w", rawPrefix, err)
 		}
 		if prefix.Bits() == 0 {
 			continue
@@ -1253,11 +1254,11 @@ WHERE f.mode_id = ?1
 		seen[prefix.Masked()] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	if len(seen) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	prefixes := make([]netip.Prefix, 0, len(seen))
@@ -1267,12 +1268,12 @@ WHERE f.mode_id = ?1
 
 	userFilters, err := s.UserRouteFilters(ctx, userID)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	globalFilters, err := s.GlobalRouteFilters(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	var effectiveFilters RouteFilters
@@ -1287,10 +1288,20 @@ WHERE f.mode_id = ?1
 
 	filtered, err := applyRouteFiltersToPrefixes(prefixes, effectiveFilters)
 	if err != nil {
-		return 0, fmt.Errorf("filter routes for user %d: %w", userID, err)
+		return 0, 0, fmt.Errorf("filter routes for user %d: %w", userID, err)
 	}
 
-	return len(filtered), nil
+	for _, pfx := range filtered {
+		if skipIPv6 && pfx.Addr().Is6() {
+			continue
+		}
+		if pfx.Addr().Is6() {
+			v6++
+		} else {
+			v4++
+		}
+	}
+	return v4, v6, nil
 }
 
 func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, map[string]PrefixRouteInfo, error) {

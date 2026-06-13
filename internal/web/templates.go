@@ -189,7 +189,7 @@ const selectionBody = `{{$selection := .}}
 <span id=selected-covered-service-label data-one="{{tr "selection.service_one"}}" data-few="{{tr "selection.service_few"}}" data-many="{{tr "selection.service_many"}}">{{plural .SelectedCoveredServices "selection.service_one" "selection.service_few" "selection.service_many"}}</span> {{tr "selection.in_categories"}}).
 <span id=selected-service-count>{{.SelectedServiceCount}}</span>
 <span id=selected-service-label data-one="{{tr "selection.standalone_one"}}" data-few="{{tr "selection.standalone_few"}}" data-many="{{tr "selection.standalone_many"}}">{{plural .SelectedServiceCount "selection.standalone_one" "selection.standalone_few" "selection.standalone_many"}}</span>.
-{{tr "selection.apply_hint"}}</span><br><span class=muted>{{tr "selection.prefixes"}}: <span id=total-prefix-count>{{.TotalPrefixes}}</span></span></div>
+{{tr "selection.apply_hint"}}</span><br><span class=muted>IPv4: <strong id=total-prefix-v4>{{.TotalPrefixesV4}}</strong> pref. · IPv6: <strong id=total-prefix-v6>{{.TotalPrefixesV6}}</strong> pref.</span></div>
 <button {{if and (not .Editable) (not .CanChangeMode)}}disabled{{end}} form=selection-form>{{tr "selection.save"}}</button></div>
 <form id=selection-form class=selection-form method=post action="{{if .Admin}}/admin/user/{{.User.ID}}{{else}}/selection{{end}}">
 {{if .Admin}}<input type=hidden name=action value=selection>{{end}}
