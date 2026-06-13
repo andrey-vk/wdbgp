@@ -49,16 +49,18 @@ type Server struct {
 }
 
 type categoryView struct {
-	Name     string
-	Selected bool
-	Services []serviceView
+	Name        string
+	Selected    bool
+	Services    []serviceView
+	PrefixCount int // total prefixes in this category
 }
 
 type serviceView struct {
-	Name     string
-	Value    string
-	Selected bool
-	Disabled bool
+	Name        string
+	Value       string
+	Selected    bool
+	Disabled    bool
+	PrefixCount int // prefixes for this specific service
 }
 
 type selectionView struct {
@@ -75,6 +77,9 @@ type selectionView struct {
 	SelectedServiceCount    int
 	CSRFToken               string
 	Communities             map[string]uint32
+	PrefixCounts            map[string]map[string]int // category -> service -> count
+	CategoryCounts          map[string]int            // category -> total unique prefixes
+	TotalPrefixes           int                       // total unique prefixes for selection
 }
 
 type adapterTestView struct {
@@ -1441,9 +1446,22 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 	}
 	comms, _ := s.store.GetCommunities(ctx, user.CatalogModeID)
 	view.Communities = comms
+	prefixCounts, err := s.store.PrefixCounts(ctx, user.CatalogModeID)
+	if err != nil {
+		return selectionView{}, err
+	}
+	view.PrefixCounts = prefixCounts
+	view.CategoryCounts = map[string]int{}
 	for _, category := range names {
+		catPrefixCount := 0
+		if svcCounts, ok := prefixCounts[category]; ok {
+			for _, n := range svcCounts {
+				catPrefixCount += n
+			}
+		}
+		view.CategoryCounts[category] = catPrefixCount
 		categorySelected := selectedCategories[category]
-		item := categoryView{Name: category, Selected: categorySelected}
+		item := categoryView{Name: category, Selected: selectedCategories[category], PrefixCount: catPrefixCount}
 		if categorySelected {
 			view.SelectedCategoryCount++
 			view.SelectedCoveredServices += len(catalog[category])
@@ -1453,10 +1471,15 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 			if !categorySelected && selectedServices[key] {
 				view.SelectedServiceCount++
 			}
+			svcPrefixCount := 0
+			if svcCounts, ok := prefixCounts[category]; ok {
+				svcPrefixCount = svcCounts[service]
+			}
 			item.Services = append(item.Services, serviceView{
 				Name: service, Value: serviceValue(category, service),
 				Selected: !categorySelected && selectedServices[key],
 				Disabled: categorySelected,
+				PrefixCount: svcPrefixCount,
 			})
 		}
 		view.Categories = append(view.Categories, item)

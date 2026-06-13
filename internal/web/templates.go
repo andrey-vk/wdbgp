@@ -48,6 +48,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .empty{text-align:center;padding:2rem;color:var(--muted)}
 .pill{font-size:.75em;background:var(--accent);color:#fff;padding:1px 6px;border-radius:8px}
 .community-tag{font-size:.75em;color:var(--muted);margin-left:4px;font-family:ui-monospace,monospace}
+.prefix-count{font-size:.8em;color:var(--muted);margin-left:.3em}
 
 .community-value{color:var(--accent);cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}
 .community-value:hover{opacity:.8}
@@ -187,15 +188,15 @@ const selectionBody = `{{$selection := .}}
 <span id=selected-covered-service-label data-one="{{tr "selection.service_one"}}" data-few="{{tr "selection.service_few"}}" data-many="{{tr "selection.service_many"}}">{{plural .SelectedCoveredServices "selection.service_one" "selection.service_few" "selection.service_many"}}</span> {{tr "selection.in_categories"}}).
 <span id=selected-service-count>{{.SelectedServiceCount}}</span>
 <span id=selected-service-label data-one="{{tr "selection.standalone_one"}}" data-few="{{tr "selection.standalone_few"}}" data-many="{{tr "selection.standalone_many"}}">{{plural .SelectedServiceCount "selection.standalone_one" "selection.standalone_few" "selection.standalone_many"}}</span>.
-{{tr "selection.apply_hint"}}</span></div>
+{{tr "selection.apply_hint"}}</span><br><span class=muted>{{tr "selection.prefixes"}}: <span id=total-prefix-count>{{.TotalPrefixes}}</span></span></div>
 <button {{if and (not .Editable) (not .CanChangeMode)}}disabled{{end}} form=selection-form>{{tr "selection.save"}}</button></div>
 <form id=selection-form class=selection-form method=post action="{{if .Admin}}/admin/user/{{.User.ID}}{{else}}/selection{{end}}">
 {{if .Admin}}<input type=hidden name=action value=selection>{{end}}
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=catalog_mode_id value="{{.User.CatalogModeID}}">
 {{if .Categories}}<div class=catalog-grid>{{range .Categories}}{{$cat := .Name}}
-<fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>{{tr "selection.whole_category"}}</span>{{if index $selection.Communities .Name}} <span class=community-tag>{{index $selection.Communities .Name}}</span>{{end}}</label></legend>
-<div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}{{if index $selection.Communities (printf "%s|%s" $cat .Name)}} <span class=community-tag>{{index $selection.Communities (printf "%s|%s" $cat .Name)}}</span>{{end}}</label>{{end}}</div>
+<fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" data-prefixes="{{.PrefixCount}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>{{tr "selection.whole_category"}}</span>{{if index $selection.Communities .Name}} <span class=community-tag>{{index $selection.Communities .Name}}</span>{{end}} <span class=prefix-count>{{index $selection.CategoryCounts .Name}} pref.</span></label></legend>
+<div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" data-prefixes="{{.PrefixCount}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}{{if index $selection.Communities (printf "%s|%s" $cat .Name)}} <span class=community-tag>{{index $selection.Communities (printf "%s|%s" $cat .Name)}}</span>{{end}} <span class=prefix-count>{{.PrefixCount}} pref.</span></label>{{end}}</div>
 </fieldset>{{end}}</div>{{else}}<p class=empty>{{tr "selection.empty"}}</p>{{end}}</form></section>
 <script>
 var catalogModeSelect = document.getElementById('catalog-mode-select');
@@ -242,6 +243,18 @@ function updateSelectionCounts() {
   updateSelectionLabel('selected-category-label', categoryCount);
   updateSelectionLabel('selected-covered-service-label', coveredServiceCount);
   updateSelectionLabel('selected-service-label', standaloneServiceCount);
+  var prefixTotal = 0;
+  document.querySelectorAll('fieldset.category-card').forEach(function(fs) {
+    var catCheckbox = fs.querySelector('input[name="category"]');
+    if (catCheckbox && catCheckbox.checked) {
+      prefixTotal += parseInt(catCheckbox.dataset.prefixes || '0');
+      return;
+    }
+    fs.querySelectorAll('input[name="service"]').forEach(function(svc) {
+      if (svc.checked) prefixTotal += parseInt(svc.dataset.prefixes || '0');
+    });
+  });
+  document.getElementById('total-prefix-count').textContent = prefixTotal;
 }
 document.querySelectorAll('input[name="category"]').forEach(function(categoryInput) {
   var fieldset = categoryInput.closest('fieldset');

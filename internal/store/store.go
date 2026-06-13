@@ -930,6 +930,35 @@ ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 	return prefixes, rows.Err()
 }
 
+// PrefixCounts returns the number of distinct CIDR prefixes for each service in each category for a mode.
+// Returns map[category]map[service]count.
+func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (map[string]map[string]int, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT ce.category, ce.service, COUNT(DISTINCT ce.cidr)
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+WHERE f.mode_id = ? AND f.enabled = 1
+GROUP BY ce.category, ce.service
+ORDER BY ce.category, ce.service`, modeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]map[string]int{}
+	for rows.Next() {
+		var category, service string
+		var count int
+		if err := rows.Scan(&category, &service, &count); err != nil {
+			return nil, err
+		}
+		if counts[category] == nil {
+			counts[category] = map[string]int{}
+		}
+		counts[category][service] = count
+	}
+	return counts, rows.Err()
+}
+
 func (s *Store) UserSelection(
 	ctx context.Context,
 	userID int64,

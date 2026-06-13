@@ -394,10 +394,10 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 			t.Fatalf("selection details %q not rendered: %s", want, body)
 		}
 	}
-	if !strings.Contains(body, `value="Messengers:Telegram"  disabled`) {
+	if !strings.Contains(body, `name=service value="Messengers:Telegram"`) || !strings.Contains(body, `disabled`) {
 		t.Fatalf("contained selected service is not disabled: %s", body)
 	}
-	if !strings.Contains(body, `value="Messengers:Signal"  disabled`) {
+	if !strings.Contains(body, `name=service value="Messengers:Signal"`) || !strings.Contains(body, `disabled`) {
 		t.Fatalf("contained unselected service is not disabled: %s", body)
 	}
 }
