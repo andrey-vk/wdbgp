@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,13 +13,14 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/bgp"
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/feeds"
+	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/store"
 	"github.com/andrey-vk/wdbgp/internal/web"
 )
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		logging.Fatal("application error", "error", err)
 	}
 }
 
@@ -29,6 +29,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	
+	// Configure logging based on config
+	logging.Configure(cfg.LogLevel, cfg.LogFormat)
+	
 	command := "serve"
 	if len(os.Args) > 1 {
 		command = os.Args[1]
@@ -45,7 +49,7 @@ func run() error {
 
 	switch command {
 	case "migrate", "init":
-		fmt.Println("database migrations are up to date")
+		logging.Info("database migrations are up to date")
 		return nil
 	case "stats":
 		return printStats(context.Background(), db)
@@ -53,7 +57,7 @@ func run() error {
 		syncer := feeds.NewSyncer(db)
 		if syncErrors := syncer.SyncAll(context.Background()); len(syncErrors) > 0 {
 			for _, syncErr := range syncErrors {
-				log.Print(syncErr)
+				logging.Error("feed sync error", "error", syncErr)
 			}
 			return fmt.Errorf("%d feed(s) failed", len(syncErrors))
 		}
@@ -69,6 +73,14 @@ func serve(cfg config.Config, db *store.Store) error {
 	if err := cfg.ValidateServe(); err != nil {
 		return err
 	}
+	
+	logging.Info("starting application",
+		"bgp_asn", cfg.LocalASN,
+		"bgp_port", cfg.BGPListenPort,
+		"http_address", cfg.ListenAddress(),
+		"sync_interval", cfg.SyncInterval,
+	)
+	
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -80,7 +92,7 @@ func serve(cfg config.Config, db *store.Store) error {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer stopCancel()
 		if err := bgpManager.Stop(stopCtx); err != nil {
-			log.Printf("stop BGP: %v", err)
+			logging.Error("failed to stop BGP manager", "error", err)
 		}
 	}()
 
@@ -95,17 +107,24 @@ func serve(cfg config.Config, db *store.Store) error {
 	}
 	serverErrors := make(chan error, 1)
 	go func() {
-		log.Printf("HTTP listening on %s, BGP ASN %d port %d", cfg.ListenAddress(), cfg.LocalASN, cfg.BGPListenPort)
+		logging.Info("HTTP server starting",
+			"address", cfg.ListenAddress(),
+			"bgp_asn", cfg.LocalASN,
+			"bgp_port", cfg.BGPListenPort,
+		)
 		serverErrors <- httpServer.ListenAndServe()
 	}()
 
 	select {
 	case <-ctx.Done():
+		logging.Info("shutdown signal received")
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 	}
+	
+	logging.Info("shutting down HTTP server")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	return httpServer.Shutdown(shutdownCtx)
@@ -113,11 +132,23 @@ func serve(cfg config.Config, db *store.Store) error {
 
 func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer, manager *bgp.Manager) {
 	syncNow := func() {
-		for _, err := range syncer.SyncAll(ctx) {
-			log.Printf("feed sync: %v", err)
+		logger := logging.FromContext(ctx)
+		logger.Info("starting feed sync")
+		
+		errors := syncer.SyncAll(ctx)
+		if len(errors) > 0 {
+			for _, err := range errors {
+				logger.Error("feed sync error", "error", err)
+			}
+			logger.Error("feed sync completed with errors", "error_count", len(errors))
+		} else {
+			logger.Info("feed sync completed successfully")
 		}
+		
 		if err := manager.Reconcile(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("BGP reconcile: %v", err)
+			logger.Error("BGP reconcile error", "error", err)
+		} else if ctx.Err() == nil {
+			logger.Info("BGP reconcile completed")
 		}
 	}
 	syncNow()
@@ -126,6 +157,7 @@ func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer,
 	for {
 		select {
 		case <-ctx.Done():
+			logging.FromContext(ctx).Info("sync loop stopping")
 			return
 		case <-ticker.C:
 			syncNow()
@@ -138,11 +170,19 @@ func printStats(ctx context.Context, db *store.Store) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("catalog: %d categories, %d services, %d entries\n", categories, services, entries)
+	
+	logger := logging.FromContext(ctx)
+	logger.Info("catalog statistics",
+		"categories", categories,
+		"services", services,
+		"entries", entries,
+	)
+	
 	feedList, err := db.Feeds(ctx, false)
 	if err != nil {
 		return err
 	}
+	
 	for _, feed := range feedList {
 		status := feed.LastSuccess
 		if status == "" {
@@ -151,7 +191,12 @@ func printStats(ctx context.Context, db *store.Store) error {
 		if feed.LastError != "" {
 			status = "error: " + feed.LastError
 		}
-		fmt.Printf("%s: %s\n", feed.Name, status)
+		logger.Info("feed status",
+			"name", feed.Name,
+			"status", status,
+			"enabled", feed.Enabled,
+			"mode_id", feed.ModeID,
+		)
 	}
 	return nil
 }

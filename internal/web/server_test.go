@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,9 +18,25 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
+func testConfig() config.Config {
+	return config.Config{
+		AdminPassword:     "admin",
+		SessionSecret:     "test-secret",
+		AdminCookieSecure: "true",
+		DefaultLanguage:   "ru",
+		RateLimitLogin:    0,  // Disable rate limiting in tests
+		RateLimitAdmin:    0,  // Disable rate limiting in tests
+		SessionMaxAge:     28800, // 8 hours
+		SecurityHeaders:   false, // Disable security headers in tests to avoid CSP issues
+	}
+}
+
 type fakeBGP struct {
 	reconciles int
 	reloads    int
+	adds       int
+	updates    int
+	deletes    int
 }
 
 func (f *fakeBGP) Reconcile(context.Context) error {
@@ -34,6 +51,21 @@ func (f *fakeBGP) ReloadPeers(context.Context) error {
 
 func (f *fakeBGP) PeerStates(context.Context) (map[string]string, error) {
 	return map[string]string{"172.16.0.2": "ESTABLISHED"}, nil
+}
+
+func (f *fakeBGP) AddPeer(context.Context, store.User) error {
+	f.adds++
+	return nil
+}
+
+func (f *fakeBGP) UpdatePeer(context.Context, store.User) error {
+	f.updates++
+	return nil
+}
+
+func (f *fakeBGP) DeletePeer(context.Context, string) error {
+	f.deletes++
+	return nil
 }
 
 func TestUserSelectionAndAdminPages(t *testing.T) {
@@ -54,10 +86,7 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	bgp := &fakeBGP{}
-	cfg := config.Config{
-		AdminPassword: "admin", SessionSecret: "secret",
-		AdminCookieSecure: "true", DefaultLanguage: "ru",
-	}
+	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
 
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -220,7 +249,7 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	bgp := &fakeBGP{}
-	handler := New(config.Config{}, db, feeds.NewSyncer(db), bgp).Handler()
+	handler := New(testConfig(), db, feeds.NewSyncer(db), bgp).Handler()
 	form := url.Values{
 		"catalog_mode_id": {strconv.FormatInt(ipranges.ID, 10)},
 		"service":         {serviceValue("Precise", "Resolver")},
@@ -289,7 +318,7 @@ func TestLockedUserCanChangeEditableCatalogMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	bgp := &fakeBGP{}
-	handler := New(config.Config{}, db, feeds.NewSyncer(db), bgp).Handler()
+	handler := New(testConfig(), db, feeds.NewSyncer(db), bgp).Handler()
 	form := url.Values{
 		"catalog_mode_id": {strconv.FormatInt(ipranges.ID, 10)},
 	}
@@ -345,7 +374,9 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.RemoteAddr = "192.168.20.15:12345"
 	response := httptest.NewRecorder()
-	New(config.Config{DefaultLanguage: "ru"}, db, feeds.NewSyncer(db), &fakeBGP{}).
+	cfg := testConfig()
+	cfg.DefaultLanguage = "ru"
+	New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).
 		Handler().ServeHTTP(response, request)
 	body := response.Body.String()
 	if response.Code != http.StatusOK {
@@ -379,9 +410,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 	defer db.Close()
 
 	bgp := &fakeBGP{}
-	cfg := config.Config{
-		AdminPassword: "admin", SessionSecret: "secret", DefaultLanguage: "en",
-	}
+	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 
@@ -480,7 +509,7 @@ func TestAdminCanEditFeedAdapter(t *testing.T) {
 	}
 	defer db.Close()
 
-	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret"}
+	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 	adapter, err := db.FeedAdapter(context.Background(), 1)
@@ -586,7 +615,7 @@ func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})}
-	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret"}
+	cfg := testConfig()
 	handler := New(cfg, db, syncer, &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 	form := url.Values{
@@ -682,9 +711,7 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := config.Config{
-		AdminPassword: "admin", SessionSecret: "secret", DefaultLanguage: "en",
-	}
+	cfg := testConfig()
 	bgp := &fakeBGP{}
 	handler := New(cfg, db, feeds.NewSyncer(db), bgp).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
@@ -984,4 +1011,97 @@ type testRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn testRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return fn(request)
+}
+
+func TestStatusEndpoint(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "status.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Create some test data
+	_, err = db.AddUser(context.Background(), store.User{
+		Name: "test-client", PeerIP: "172.16.0.3", PeerASN: 65002, Enabled: true,
+		Networks: []string{"192.168.30.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a feed
+	err = db.AddFeedForModeAdapter(
+		context.Background(),
+		"test-feed",
+		"http://example.com/feed.json",
+		1,
+		1,
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	syncer := feeds.NewSyncer(db)
+	bgp := &fakeBGP{}
+	server := New(cfg, db, syncer, bgp)
+
+	req := httptest.NewRequest("GET", "/status", nil)
+	w := httptest.NewRecorder()
+	server.Handler().ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	// Check that it's valid JSON
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		t.Fatalf("failed to parse JSON response: %v\nbody: %s", err, body)
+	}
+
+	// Check basic structure
+	if _, ok := data["uptime"]; !ok {
+		t.Error("response missing uptime field")
+	}
+	if _, ok := data["database"]; !ok {
+		t.Error("response missing database field")
+	}
+	if _, ok := data["bgp"]; !ok {
+		t.Error("response missing bgp field")
+	}
+	if _, ok := data["feeds"]; !ok {
+		t.Error("response missing feeds field")
+	}
+	if _, ok := data["prefixes"]; !ok {
+		t.Error("response missing prefixes field")
+	}
+	if _, ok := data["build"]; !ok {
+		t.Error("response missing build field")
+	}
+
+	// Check BGP data
+	bgpData, ok := data["bgp"].(map[string]any)
+	if !ok {
+		t.Error("bgp field is not an object")
+	}
+	if total, ok := bgpData["total_peers"].(float64); !ok || total != 1 {
+		t.Errorf("expected total_peers=1, got %v", total)
+	}
+
+	// Check database data
+	dbData, ok := data["database"].(map[string]any)
+	if !ok {
+		t.Error("database field is not an object")
+	}
+	if connected, ok := dbData["connected"].(bool); !ok || !connected {
+		t.Error("database should show as connected")
+	}
 }
