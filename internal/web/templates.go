@@ -59,7 +59,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .revert-btn{color:#c90;background:0 0;border:none;cursor:pointer;font-size:1.1em;margin-left:4px;padding:0 2px}
 .group-row td{background:var(--group-row-bg);font-weight:600}
 .communities-table th:last-child,.communities-table td:last-child{min-width:180px}
-.save-bar{position:sticky;top:.5rem;z-index:2;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:var(--save-bar-bg);border-radius:1rem;padding:.8rem 1.25rem;box-shadow:0 4px 16px #00000018;margin-bottom:1rem}
+.save-bar{position:sticky;top:0;z-index:10;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:var(--save-bar-bg);border-radius:1rem;padding:.8rem 1.25rem;box-shadow:0 4px 16px #00000018;margin-bottom:1rem}
 .save-bar .muted{color:var(--text);opacity:.7}.save-bar button{background:var(--accent);color:#fff}.save-bar button:disabled{background:var(--muted);cursor:not-allowed}
 
 .selection-form{padding-bottom:5.5rem}
@@ -175,10 +175,6 @@ const selectionBody = `{{$selection := .}}
 {{if not .CanChangeMode}}<p class=muted>{{tr "catalog.managed"}}</p>{{end}}
 {{if eq .Saved "1"}}<p class=ok>{{tr "selection.saved"}}</p>{{else if eq .Saved "0"}}<p class=error>{{tr "selection.save_failed"}}</p>{{end}}
 {{if not .Editable}}<p class=muted>{{tr "selection.locked"}}</p>{{end}}
-<form class=selection-form method=post action="{{if .Admin}}/admin/user/{{.User.ID}}{{else}}/selection{{end}}">
-{{if .Admin}}<input type=hidden name=action value=selection>{{end}}
-<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
-<input type=hidden name=catalog_mode_id value="{{.User.CatalogModeID}}">
 <div class=save-bar><div><strong>{{.User.Name}}</strong><br><span class=muted>{{tr "selection.selected"}}
 <span id=selected-category-count>{{.SelectedCategoryCount}}</span>
 <span id=selected-category-label data-one="{{tr "selection.category_one"}}" data-few="{{tr "selection.category_few"}}" data-many="{{tr "selection.category_many"}}">{{plural .SelectedCategoryCount "selection.category_one" "selection.category_few" "selection.category_many"}}</span>
@@ -187,7 +183,11 @@ const selectionBody = `{{$selection := .}}
 <span id=selected-service-count>{{.SelectedServiceCount}}</span>
 <span id=selected-service-label data-one="{{tr "selection.standalone_one"}}" data-few="{{tr "selection.standalone_few"}}" data-many="{{tr "selection.standalone_many"}}">{{plural .SelectedServiceCount "selection.standalone_one" "selection.standalone_few" "selection.standalone_many"}}</span>.
 {{tr "selection.apply_hint"}}</span></div>
-<button {{if and (not .Editable) (not .CanChangeMode)}}disabled{{end}}>{{tr "selection.save"}}</button></div>
+<button {{if and (not .Editable) (not .CanChangeMode)}}disabled{{end}} form=selection-form>{{tr "selection.save"}}</button></div>
+<form id=selection-form class=selection-form method=post action="{{if .Admin}}/admin/user/{{.User.ID}}{{else}}/selection{{end}}">
+{{if .Admin}}<input type=hidden name=action value=selection>{{end}}
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<input type=hidden name=catalog_mode_id value="{{.User.CatalogModeID}}">
 {{if .Categories}}<div class=catalog-grid>{{range .Categories}}{{$cat := .Name}}
 <fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>{{tr "selection.whole_category"}}</span>{{if index $selection.Communities .Name}} <span class=community-tag>{{index $selection.Communities .Name}}</span>{{end}}</label></legend>
 <div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}{{if index $selection.Communities (printf "%s|%s" $cat .Name)}} <span class=community-tag>{{index $selection.Communities (printf "%s|%s" $cat .Name)}}</span>{{end}}</label>{{end}}</div>
@@ -346,14 +346,14 @@ const communitiesBody = `{{with .Data}}
 <label>{{tr "catalog.mode"}} <select id=mode-select>
 {{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.Mode.ID}}selected{{end}}>{{.Name}}</option>{{end}}
 </select></label>
+<div class="save-bar" style="top:0;border-radius:0;margin-bottom:0">
+  <div><strong>{{tr "communities.title"}}</strong><br>
+  <span class=muted id=change-summary>{{tr "communities.no_changes"}}</span></div>
+  <button type=submit class=primary id=save-btn disabled form=communities-form>{{tr "communities.apply"}}</button>
+</div>
 <form method=post action="/admin/communities" id=communities-form>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=mode value="{{.Mode.ID}}">
-<div class=save-bar>
-  <div><strong>{{tr "communities.title"}}</strong><br>
-  <span class=muted id=change-summary>{{tr "communities.no_changes"}}</span></div>
-  <button type=submit class=primary id=save-btn disabled>{{tr "communities.apply"}}</button>
-</div>
 <table class=communities-table><tr><th>{{tr "catalog.category"}}</th><th>{{tr "catalog.service"}}</th><th>{{tr "communities.group_community"}}</th></tr>
 {{range .Groups}}{{$group := .}}
 <tr class=group-row>
@@ -612,6 +612,9 @@ function updateThemeIcon(){var t=document.documentElement.getAttribute('data-the
 (function(){var s=localStorage.getItem('wdbgp-theme');if(!s){s=window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}if(s==='auto')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',s);updateThemeIcon()})();
 // Active nav link
 document.querySelectorAll('.sidebar a').forEach(function(a){a.addEventListener('click',function(){document.querySelectorAll('.sidebar a').forEach(function(x){x.classList.remove('active')});this.classList.add('active')})});
+// Set active nav based on current location (for direct page loads)
+function setActiveNav(){var p=window.location.pathname;document.querySelectorAll('.sidebar a').forEach(function(a){var href=a.getAttribute('href');if(href===p||(p.startsWith('/admin/user/')&&href==='/admin/users')||(p.startsWith('/admin/adapter/')&&href==='/admin/adapters')){a.classList.add('active')}else{a.classList.remove('active')}})}
+setActiveNav();
 // htmx after-swap: update active nav
 document.body.addEventListener('htmx:afterSettle',function(evt){if(!evt.detail || !evt.detail.requestConfig)return;var path=evt.detail.requestConfig.path;document.querySelectorAll('.sidebar a').forEach(function(a){var href=a.getAttribute('href');if(href===path){a.classList.add('active')}else{a.classList.remove('active')}})});
 function switchLang(lang) {
