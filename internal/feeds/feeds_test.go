@@ -471,7 +471,7 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	if err := syncer.syncOne(ctx, feedList[0]); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := db.CatalogForMode(ctx, store.IPRangesCatalogModeID)
+	catalog, err := db.CatalogForMode(ctx, store.IPRangesCatalogModeID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
