@@ -50,6 +50,11 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .community-tag{font-size:.75em;color:var(--muted);margin-left:4px;font-family:ui-monospace,monospace}
 .htmx-indicator{opacity:.5}
 .prefix-count{font-size:.8em;color:var(--muted);margin-left:.3em;white-space:nowrap}
+.loading-dots span{animation:wave 1.2s infinite;font-size:1.2em;font-weight:bold;color:var(--muted)}
+.loading-dots span:nth-child(1){animation-delay:0s}
+.loading-dots span:nth-child(2){animation-delay:.2s}
+.loading-dots span:nth-child(3){animation-delay:.4s}
+@keyframes wave{0%,60%,100%{opacity:.2;transform:translateY(0)}30%{opacity:1;transform:translateY(-3px)}}
 
 .community-value{color:var(--accent);cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}
 .community-value:hover{opacity:.8}
@@ -190,7 +195,7 @@ const selectionBody = `{{$selection := .}}
 <span id=selected-covered-service-label data-one="{{tr "selection.service_one"}}" data-few="{{tr "selection.service_few"}}" data-many="{{tr "selection.service_many"}}">{{plural .SelectedCoveredServices "selection.service_one" "selection.service_few" "selection.service_many"}}</span> {{tr "selection.in_categories"}}).
 <span id=selected-service-count>{{.SelectedServiceCount}}</span>
 <span id=selected-service-label data-one="{{tr "selection.standalone_one"}}" data-few="{{tr "selection.standalone_few"}}" data-many="{{tr "selection.standalone_many"}}">{{plural .SelectedServiceCount "selection.standalone_one" "selection.standalone_few" "selection.standalone_many"}}</span>.
-{{tr "selection.apply_hint"}}</span><br><span class=muted>IPv4: <strong id=total-prefix-v4>{{.TotalPrefixesV4}}</strong> pref. · IPv6: <strong id=total-prefix-v6>{{.TotalPrefixesV6}}</strong> pref.</span></div>
+{{tr "selection.apply_hint"}}</span><br><span class=muted id=prefix-count>IPv4: <strong id=total-prefix-v4>{{.TotalPrefixesV4}}</strong> pref. · IPv6: <strong id=total-prefix-v6>{{.TotalPrefixesV6}}</strong> pref.</span></div>
 <button {{if and (not .Editable) (not .CanChangeMode)}}disabled{{end}} form=selection-form>{{tr "selection.save"}}</button></div>
 <form id=selection-form class=selection-form method=post action="{{if .Admin}}/admin/user/{{.User.ID}}{{else}}/selection{{end}}">
 {{if .Admin}}<input type=hidden name=action value=selection>{{end}}
@@ -247,15 +252,14 @@ function updateSelectionCounts() {
   updateSelectionLabel('selected-service-label', standaloneServiceCount);
   // Trigger exact count from backend
   var form = document.getElementById('selection-form');
+  var countEl = document.getElementById('prefix-count');
+  if (countEl) {
+    countEl.innerHTML = '<span class=loading-dots><span>.</span><span>.</span><span>.</span></span>';
+  }
   var xhr = new XMLHttpRequest();
   xhr.open('POST', '/selection/count');
   xhr.onload = function() {
-    if (xhr.status === 200) {
-      var v4el = document.getElementById('total-prefix-v4');
-      var v6el = document.getElementById('total-prefix-v6');
-      var parentSpan = (v4el || v6el) ? (v4el || v6el).parentElement : null;
-      if (parentSpan) parentSpan.innerHTML = xhr.responseText;
-    }
+    if (xhr.status === 200) countEl.innerHTML = xhr.responseText;
   };
   xhr.send(new FormData(form));
 }
