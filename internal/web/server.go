@@ -1456,17 +1456,13 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 	if err != nil {
 		return selectionView{}, err
 	}
-	view.CategoryCounts = map[string]int{}
+	view.CategoryCounts, err = s.store.CategoryPrefixCounts(ctx, user.CatalogModeID)
+	if err != nil {
+		view.CategoryCounts = map[string]int{}
+	}
 	for _, category := range names {
-		catPrefixCount := 0
-		if svcCounts, ok := prefixCounts[category]; ok {
-			for _, n := range svcCounts {
-				catPrefixCount += n
-			}
-		}
-		view.CategoryCounts[category] = catPrefixCount
 		categorySelected := selectedCategories[category]
-		item := categoryView{Name: category, Selected: selectedCategories[category], PrefixCount: catPrefixCount}
+		item := categoryView{Name: category, Selected: selectedCategories[category], PrefixCount: view.CategoryCounts[category]}
 		if categorySelected {
 			view.SelectedCategoryCount++
 			view.SelectedCoveredServices += len(catalog[category])

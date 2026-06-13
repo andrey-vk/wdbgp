@@ -930,6 +930,31 @@ ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 	return prefixes, rows.Err()
 }
 
+// CategoryPrefixCounts returns the total number of distinct CIDRs per category,
+// deduplicating prefixes that appear in multiple services (or feeds) within the same category.
+func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (map[string]int, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT ce.category, COUNT(DISTINCT ce.cidr)
+FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
+WHERE f.mode_id = ? AND f.enabled = 1
+GROUP BY ce.category
+ORDER BY ce.category`, modeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var category string
+		var count int
+		if err := rows.Scan(&category, &count); err != nil {
+			return nil, err
+		}
+		counts[category] = count
+	}
+	return counts, rows.Err()
+}
+
 // PrefixCounts returns the number of distinct CIDR prefixes for each service in each category for a mode.
 // Returns map[category]map[service]count.
 func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (map[string]map[string]int, error) {

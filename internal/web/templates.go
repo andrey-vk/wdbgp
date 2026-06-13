@@ -67,8 +67,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 .selection-form{padding-bottom:5.5rem}
 .catalog-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-top:1rem}
-.category-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:.8rem}
-.category-card legend{padding:0 .5rem;margin-left:-.5rem}
+.category-card{border:1px solid var(--border);border-radius:8px;padding:.8rem;padding-top:0}
+.category-card legend{float:left;width:auto;padding:0 .5rem;font-size:1em;line-height:1;margin-top:-.6em}
 .category-title{font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;flex-wrap:wrap}
 .category-title input[type=checkbox]{margin:0}
 .service-list{display:flex;flex-direction:column;gap:4px;margin-top:6px;padding-left:1.5rem}
@@ -196,8 +196,8 @@ const selectionBody = `{{$selection := .}}
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=catalog_mode_id value="{{.User.CatalogModeID}}">
 {{if .Categories}}<div class=catalog-grid>{{range .Categories}}{{$cat := .Name}}
-<fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" data-prefixes="{{.PrefixCount}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong>{{if index $selection.Communities .Name}} <span class=community-tag>{{index $selection.Communities .Name}}</span>{{end}} <span class=prefix-count>{{index $selection.CategoryCounts .Name}} pref.</span></label></legend>
-<div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" data-prefixes="{{.PrefixCount}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}{{if index $selection.Communities (printf "%s|%s" $cat .Name)}} <span class=community-tag>{{index $selection.Communities (printf "%s|%s" $cat .Name)}}</span>{{end}} <span class=prefix-count>{{.PrefixCount}} pref.</span></label>{{end}}</div>
+<fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" data-prefixes="{{.PrefixCount}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong>{{if index $selection.Communities .Name}} <span class=community-tag title="{{tr "communities.group_community"}}">{{index $selection.Communities .Name}}</span>{{end}} <span class=prefix-count title="{{tr "selection.prefix_count"}}">{{index $selection.CategoryCounts .Name}} pref.</span></label></legend>
+<div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" data-prefixes="{{.PrefixCount}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}{{if index $selection.Communities (printf "%s|%s" $cat .Name)}} <span class=community-tag title="{{tr "communities.service_community"}}">{{index $selection.Communities (printf "%s|%s" $cat .Name)}}</span>{{end}} <span class=prefix-count title="{{tr "selection.prefix_count"}}">{{.PrefixCount}} pref.</span></label>{{end}}</div>
 </fieldset>{{end}}</div>{{else}}<p class=empty>{{tr "selection.empty"}}</p>{{end}}</form></section>
 <script>
 var catalogModeSelect = document.getElementById('catalog-mode-select');
