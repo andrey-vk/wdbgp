@@ -1,41 +1,104 @@
 package web
 
-const pageStart = `<!doctype html>
-<html lang="{{.Lang}}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>{{.Title}}</title><style>
-*{box-sizing:border-box} body{font:16px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;max-width:1100px;margin:0 auto;padding:1.5rem 1rem 3rem;color:#18212b;background:#f6f8fb}
-header{display:flex;gap:1rem;justify-content:space-between;align-items:center;margin:0 0 1rem} a{color:#2457a6} h1,h2,h3{margin:.4rem 0 1rem} code{font-size:.9em}
-form{margin:1rem 0} label{display:block;margin:.55rem 0;font-weight:600}
-input:not([type]),input[type=text],input[type=password],input[type=number],input[type=url],textarea{width:100%;max-width:42rem;padding:.6rem .7rem;border:1px solid #c8d2df;border-radius:.55rem;background:white}
-textarea{min-height:10rem;font:14px/1.4 ui-monospace,monospace;resize:vertical}
-button,.button{display:inline-block;padding:.65rem 1rem;border:0;border-radius:.6rem;background:#2457a6;color:white;font-weight:700;text-decoration:none;cursor:pointer}
-button.danger{background:#b42318} button.secondary{background:#667} table{border-collapse:separate;border-spacing:0;width:100%;background:white;border:1px solid #dfe5ee;border-radius:.8rem;overflow:hidden}
-td,th{border-bottom:1px solid #e8edf4;padding:.65rem;text-align:left;vertical-align:top} tr:last-child td{border-bottom:0}
-.card{background:white;border:1px solid #dfe5ee;border-radius:1rem;padding:1rem;margin:1rem 0;box-shadow:0 8px 24px #16233a0d}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1rem}.row-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
-.feed-actions{flex-wrap:nowrap}.feed-actions form{margin:0}.feed-actions button{padding:.45rem .65rem;border-radius:.5rem;white-space:nowrap}
-.muted{color:#667}.error{color:#a00}.ok{color:#075}.pill{display:inline-block;padding:.15rem .5rem;border-radius:999px;background:#edf2f8;color:#445}
-.error-output{white-space:pre-wrap;overflow:auto;padding:1rem;border-radius:.6rem;background:#fff1f0;color:#8a1c13;border:1px solid #f2b8b5}
-.selection-form{padding-bottom:5.5rem}.save-bar{position:sticky;top:.5rem;z-index:2;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:#10294f;color:white;border-radius:1rem;padding:.8rem 1rem;box-shadow:0 12px 28px #10294f40}
-.save-bar .muted{color:#d7e4f5}.save-bar button{background:#33a36f}.save-bar button:disabled{background:#71829b;cursor:not-allowed}
-.catalog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:1rem;margin-top:1rem}fieldset.category-card{border:1px solid #dfe5ee;border-radius:1rem;background:white;margin:0;padding:0;overflow:hidden}
-.category-card legend{float:left;width:100%;padding:.85rem 1rem;background:#eef4fb;border-bottom:1px solid #dfe5ee}.category-card legend+*{clear:both}
-.category-title{display:flex;gap:.55rem;align-items:center;margin:0;font-size:1.05rem}.service-list{padding:.75rem 1rem 1rem}.service-list label{font-weight:500;margin:.4rem 0}
-.empty{background:white;border:1px dashed #b9c5d4;border-radius:1rem;padding:1rem}.status{font:12px ui-monospace,monospace;padding:.2rem .45rem;border-radius:999px;background:#edf2f8}
-.language-switcher{display:flex;justify-content:flex-end;gap:.5rem;margin-bottom:.75rem}.language-switcher a[aria-current=page]{font-weight:700;text-decoration:none;color:#18212b}
-dialog{width:min(52rem,calc(100% - 2rem));max-height:calc(100% - 2rem);border:0;border-radius:1rem;padding:0;box-shadow:0 24px 80px #10294f66}dialog::backdrop{background:#10294f99}
-.dialog-body{padding:1.25rem}.dialog-header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.dialog-header button{background:#667;padding:.45rem .7rem}
-.debug-list{margin:.5rem 0 1rem;padding-left:1.25rem}.debug-list li{margin:.3rem 0}
-.community-tag{font-size:.8em;color:#667;font-family:ui-monospace,monospace;margin-left:.3em}
-.community-value{color:#06c;cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}.community-value:hover{color:#049}
+const sharedCSS = `
+:root,[data-theme=light]{--bg:#f0f2f5;--text:#1a1a2e;--sidebar-bg:#e8ecf1;--sidebar-text:#1a1a2e;--sidebar-active-bg:var(--accent);--sidebar-active-text:#fff;--sidebar-hover:#d0d7e0;--card-bg:#fff;--border:#d0d7e0;--accent:#06c;--muted:#667;--danger:#c00;--ok:#0a0;--group-row-bg:#eef2f7;--save-bar-bg:#e8ecf1}
+[data-theme=dark]{--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active-bg:var(--accent);--sidebar-active-text:#fff;--sidebar-hover:#21262d;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950;--group-row-bg:#1c2433;--save-bar-bg:#1c2433}
+@media(prefers-color-scheme:dark){:root:not([data-theme]){--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active-bg:var(--accent);--sidebar-active-text:#fff;--sidebar-hover:#21262d;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950;--group-row-bg:#1c2433;--save-bar-bg:#1c2433}}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+a{color:var(--accent)}
+h1{font-size:1.3em;margin-bottom:.75rem}
+.card{background:var(--card-bg);border-radius:8px;padding:1.25rem;margin-bottom:1rem;border:1px solid var(--border)}
+.card h2{font-size:1.1em;margin-bottom:.75rem;padding-bottom:.5rem;border-bottom:1px solid var(--border)}
+.muted{color:var(--muted)}
+.error{color:var(--danger)}.ok{color:var(--ok)}
+
+table{width:100%;border-collapse:collapse}
+th{text-align:left;padding:8px;border-bottom:2px solid var(--border);font-weight:600;font-size:.85em;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
+td{padding:8px;border-bottom:1px solid var(--border)}
+tr:hover td:not(.group-row td){background:var(--group-row-bg)}
+
+label{display:block;margin-bottom:12px;font-weight:500}
+label input,label select{margin-top:4px;display:block;width:100%}
+label input[type=checkbox]{display:inline;width:auto;margin-top:0;margin-right:6px}
+input,select,textarea{padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg);color:var(--text);font-size:.9em;font-family:inherit}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
+
+button,.button{padding:8px 16px;border-radius:6px;cursor:pointer;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:.9em;font-family:inherit;font-weight:500;transition:all .15s}
+button:hover,.button:hover{opacity:.9}
+button.primary,.button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+button.danger,.button.danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+button:disabled{opacity:.5;cursor:not-allowed}
+
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.form-grid label{margin-bottom:0}
+.checkbox-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.checkbox-row label{margin-bottom:0;display:flex;align-items:center;gap:6px;font-weight:400}
+.checkbox-row label input[type=checkbox]{margin:0}
+
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1rem}
+.stat-card{background:var(--card-bg);border-radius:8px;padding:1.25rem;border:1px solid var(--border);text-align:center}
+.stat-card .value{font-size:2em;font-weight:bold;color:var(--accent)}
+.stat-card .label{font-size:.85em;color:var(--muted);margin-top:.3rem}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.status-dot.up{background:var(--ok)}.status-dot.down{background:var(--danger)}
+
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem}
+.empty{text-align:center;padding:2rem;color:var(--muted)}
+.pill{font-size:.75em;background:var(--accent);color:#fff;padding:1px 6px;border-radius:8px}
+.community-tag{font-size:.75em;color:var(--muted);margin-left:4px;font-family:ui-monospace,monospace}
+
+.community-value{color:var(--accent);cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}
+.community-value:hover{opacity:.8}
 .community-cell{white-space:nowrap;display:inline-flex;align-items:center;gap:2px}
-.community-input{width:7ch;padding:1px 3px;border:1px solid #aaa;border-radius:2px}
+.community-input{width:7ch;padding:2px 4px;border:1px solid var(--border);border-radius:3px;background:var(--card-bg);color:var(--text);font-family:ui-monospace,monospace;font-size:.9em}
 .edit-actions{display:none;align-items:center;gap:2px}
-.apply-btn{color:#0a0;background:0 0;border:1px solid #0a0;cursor:pointer;padding:1px 5px;margin-left:2px;border-radius:2px}
-.cancel-btn{color:#c00;background:0 0;border:1px solid #c00;cursor:pointer;padding:1px 5px;margin-left:1px;border-radius:2px}
+.apply-btn{color:var(--ok);background:0 0;border:1px solid var(--ok);cursor:pointer;padding:2px 6px;margin-left:4px;border-radius:3px;font-size:.85em}
+.cancel-btn{color:var(--danger);background:0 0;border:1px solid var(--danger);cursor:pointer;padding:2px 6px;margin-left:2px;border-radius:3px;font-size:.85em}
 .revert-btn{color:#c90;background:0 0;border:none;cursor:pointer;font-size:1.1em;margin-left:4px;padding:0 2px}
+.group-row td{background:var(--group-row-bg);font-weight:600}
 .communities-table th:last-child,.communities-table td:last-child{min-width:180px}
-</style></head><body><nav class=language-switcher aria-label="{{tr "language.label"}}">
+.save-bar{position:sticky;top:.5rem;z-index:2;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:var(--save-bar-bg);border-radius:1rem;padding:.8rem 1.25rem;box-shadow:0 4px 16px #00000018;margin-bottom:1rem}
+.save-bar .muted{color:var(--text);opacity:.7}.save-bar button{background:var(--accent);color:#fff}.save-bar button:disabled{background:var(--muted);cursor:not-allowed}
+
+.selection-form{padding-bottom:5.5rem}
+.catalog-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-top:1rem}
+.category-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:.8rem}
+.category-title{font-weight:600;display:flex;align-items:center;gap:.3rem;cursor:pointer}
+.category-title input[type=checkbox]{margin:0}
+.service-list{display:flex;flex-direction:column;gap:4px;margin-top:6px;padding-left:1.5rem}
+.service-list label{display:flex;align-items:center;gap:4px;font-size:.9em;margin-bottom:0}
+.service-list label input[type=checkbox]{margin:0}
+
+.cred-row{display:flex;gap:1rem;align-items:flex-end;margin-bottom:8px}
+.cred-row label{margin-bottom:0;flex:1}
+.error-output{background:var(--card-bg);border:1px solid var(--danger);border-radius:6px;padding:.75rem;margin-top:.5rem;font-family:ui-monospace,monospace;font-size:.85em;white-space:pre-wrap;max-height:300px;overflow-y:auto}
+
+.row-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem}
+
+.language-switcher{display:flex;justify-content:flex-end;gap:.5rem;margin-bottom:.75rem}
+.language-switcher a[aria-current=page]{font-weight:700;text-decoration:none;color:var(--text)}
+
+textarea.large{min-height:10rem;font:14px/1.4 ui-monospace,monospace;resize:vertical}
+
+button.secondary{background:var(--muted);color:#fff;border-color:var(--muted)}
+
+form{margin:1rem 0}
+code{font-size:.9em}
+header{display:flex;gap:1rem;justify-content:space-between;align-items:center;margin:0 0 1rem}
+`
+
+const pageStart = `<!DOCTYPE html>
+<html lang="{{.Lang}}">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} - wdbgp</title>
+<style>` + sharedCSS + `
+body{max-width:1100px;margin:0 auto;padding:1.5rem 1rem 3rem}
+</style>
+</head>
+<body>
+<nav class=language-switcher aria-label="{{tr "language.label"}}">
 <a href="{{.EnglishURL}}" title="{{tr "language.english"}}" aria-current="{{if eq .Lang "en"}}page{{else}}false{{end}}">EN</a>
 <a href="{{.RussianURL}}" title="{{tr "language.russian"}}" aria-current="{{if eq .Lang "ru"}}page{{else}}false{{end}}">RU</a>
 </nav>`
@@ -52,7 +115,7 @@ const userLoginTemplate = `{{with .Data}}
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <label>{{tr "user.login"}} <input name=login required autofocus></label>
 <label>{{tr "user.password"}} <input type=password name=password required></label>
-<button>{{tr "title.login"}}</button>
+<button class=primary>{{tr "title.login"}}</button>
 </form>
 </section>
 {{end}}`
@@ -60,7 +123,7 @@ const userLoginTemplate = `{{with .Data}}
 const loginTemplate = `<h1>{{tr "admin.heading"}}</h1>{{if .Data}}<p class=error>{{.Data}}</p>{{end}}
 <form method=post><label>{{tr "login.password"}} <input type=password name=password autofocus required></label>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
-<button>{{tr "login.submit"}}</button></form>`
+<button class=primary>{{tr "login.submit"}}</button></form>`
 
 const adapterTestTemplate = `{{with .Data}}
 <header><h1>{{tr "adapters.test_result"}}</h1><a href="/admin/adapter/{{.Adapter.ID}}">{{tr "adapters.back_to_editor"}}</a></header>
@@ -83,13 +146,13 @@ const adapterEditTemplate = `{{with .Data}}
  <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
  <label>{{tr "feeds.name"}} <input name=name value="{{.Adapter.Name}}" required></label>
  <label>{{tr "adapters.allowed_hosts"}} <input name=allowed_hosts value="{{.Adapter.AllowedHosts}}"></label>
- <label>{{tr "adapters.source"}} <textarea name=source rows=30 required>{{.Adapter.Source}}</textarea></label>
+ <label>{{tr "adapters.source"}} <textarea name=source class=large rows=30 required>{{.Adapter.Source}}</textarea></label>
  <label>{{tr "adapters.test_feed"}} <select name=feed_id>
  <option value="">{{tr "adapters.select_feed"}}</option>
  {{range .Feeds}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
  </select></label>
- <div class=row-actions><button>{{tr "common.save"}}</button>
- <button type=submit formaction="/admin/adapter/{{.Adapter.ID}}/test">{{tr "adapters.test"}}</button></div>
+ <div class=row-actions><button class=primary>{{tr "common.save"}}</button>
+ <button type=submit class=secondary formaction="/admin/adapter/{{.Adapter.ID}}/test">{{tr "adapters.test"}}</button></div>
  </form>
 {{if .Adapter.BuiltIn}}<form method=post action="/admin/adapter/{{.Adapter.ID}}/reset" onsubmit="return confirm('{{tr "adapters.reset_confirm"}}');">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
@@ -195,9 +258,9 @@ updateSelectionCounts();
 <option value="extend" {{if eq .Mode "extend"}}selected{{end}}>{{tr "filters.mode_extend"}}</option>
 <option value="override" {{if eq .Mode "override"}}selected{{end}}>{{tr "filters.mode_override"}}</option>
 </select></label>
-<div class=grid><label>{{tr "filters.allow"}} <textarea name=filter_allow placeholder="{{tr "filters.allow_placeholder"}}">{{.AllowText}}</textarea></label>
-<label>{{tr "filters.deny"}} <textarea name=filter_deny placeholder="1.1.1.1/32">{{.DenyText}}</textarea></label></div>
-<button>{{tr "filters.save"}}</button></form>
+<div class=grid><label>{{tr "filters.allow"}} <textarea class=large name=filter_allow placeholder="{{tr "filters.allow_placeholder"}}">{{.AllowText}}</textarea></label>
+<label>{{tr "filters.deny"}} <textarea class=large name=filter_deny placeholder="1.1.1.1/32">{{.DenyText}}</textarea></label></div>
+<button class=primary>{{tr "filters.save"}}</button></form>
 {{else}}<p class=muted>{{if eq .Mode "override"}}{{tr "filters.managed_override"}}{{else if eq .Mode "extend"}}{{tr "filters.managed_extend"}}{{else}}{{tr "filters.managed_global"}}{{end}}</p>{{end}}
 </section>{{end}}`
 
@@ -238,7 +301,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <label><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> {{tr "users.allow_filter_editing"}}</label>
 <label><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
 <input type=hidden name=filter_mode value="{{.User.FilterMode}}">
-<button>{{tr "user.save"}}</button></form>
+<button class=primary>{{tr "user.save"}}</button></form>
 <form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form></section>
 {{template "selection" .Selection}}
 <script>
@@ -293,8 +356,8 @@ const communitiesBody = `{{with .Data}}
 </span></td>
 </tr>{{end}}
 {{end}}</table>
-<div style="margin-top:1rem;display:flex;gap:1rem">
-<form method=post action="/admin/communities/reset" style="display:inline" onsubmit="return confirm('{{tr "communities.reset_confirm"}}')">
+<div class=row-actions>
+<form method=post action="/admin/communities/reset" onsubmit="return confirm('{{tr "communities.reset_confirm"}}')">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=mode value="{{.Mode.ID}}">
 <button type=submit class=danger>{{tr "communities.reset_all"}}</button>
@@ -485,63 +548,20 @@ const adminShellTemplate = `<!DOCTYPE html>
 <html lang="{{.Lang}}">
 <head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>{{.Title}} - wdbgp</title>
-<style>
-:root,[data-theme=light]{--bg:#f0f2f5;--text:#1a1a2e;--sidebar-bg:#1a1a2e;--sidebar-text:#e0e0e0;--sidebar-active:#4da6ff;--card-bg:#fff;--border:#e0e0e0;--accent:#06c;--muted:#666;--danger:#c00;--ok:#0a0;--group-row-bg:#e4e9f0;--save-bar-bg:#dde4f0}
-[data-theme=dark]{--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950;--group-row-bg:#1c2433;--save-bar-bg:#1c2433}
-@media(prefers-color-scheme:dark){:root:not([data-theme]){--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950;--group-row-bg:#1c2433;--save-bar-bg:#1c2433}}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh}
-.sidebar{width:200px;background:var(--sidebar-bg);color:var(--sidebar-text);padding:1rem 0;flex-shrink:0;display:flex;flex-direction:column}
-.sidebar h2{padding:0 1rem .5rem;font-size:1.1em;border-bottom:1px solid #333;margin-bottom:.5rem}
-.sidebar a{color:var(--sidebar-text);text-decoration:none;padding:.5rem 1rem;display:block;font-size:.95em;transition:background .2s}
-.sidebar a:hover,.sidebar a.active{background:#2a3a5c;color:var(--sidebar-active)}
-.main{flex:1;padding:1rem;overflow-y:auto}
-header.topbar{background:var(--card-bg);border-bottom:1px solid var(--border);padding:.5rem 1rem;display:flex;justify-content:flex-end;align-items:center;gap:.5rem;margin-bottom:1rem}
-.topbar button,.topbar a{background:none;border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:.85em;text-decoration:none}
+<style>` + sharedCSS + `
+body{display:flex}
+.sidebar{width:220px;background:var(--sidebar-bg);color:var(--sidebar-text);padding:1.25rem 0;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid var(--border)}
+.sidebar h2{padding:0 1.25rem .75rem;font-size:1.1em;border-bottom:1px solid var(--border);margin-bottom:.5rem;font-weight:700}
+.sidebar a{color:var(--sidebar-text);text-decoration:none;padding:.6rem 1.25rem;display:block;font-size:.95em;transition:background .15s}
+.sidebar a:hover{background:var(--sidebar-hover)}
+.sidebar a.active{background:var(--sidebar-active-bg);color:var(--sidebar-active-text)}
+.sidebar-spacer{flex:1}
+.sidebar-subtle{font-size:.85em;opacity:.7}
+.main{flex:1;padding:1.5rem;overflow-y:auto}
+.topbar{display:flex;justify-content:flex-end;align-items:center;gap:.5rem;margin-bottom:1.5rem}
+.topbar button,.topbar a{background:none;border:1px solid var(--border);color:var(--text);padding:6px 12px;border-radius:6px;cursor:pointer;font-size:.85em;text-decoration:none}
 .topbar button:hover{background:var(--accent);color:#fff}
-.card{background:var(--card-bg);border-radius:8px;padding:1rem;margin-bottom:1rem;border:1px solid var(--border)}
-h1{font-size:1.3em;margin-bottom:.5rem}
-.muted{color:var(--muted)}
-table{width:100%;border-collapse:collapse}
-th,td{padding:6px 8px;text-align:left;border-bottom:1px solid var(--border)}
-button, .button{padding:6px 14px;border-radius:4px;cursor:pointer;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:.9em}
-button.primary,.button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-button.danger,.button.danger{background:var(--danger);color:#fff;border-color:var(--danger)}
-button:disabled{opacity:.5;cursor:not-allowed}
-input,select{padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg);color:var(--text);font-size:.9em}
-.error{color:var(--danger)}.ok{color:var(--ok)}
-.group-row td{background:var(--group-row-bg)}
-.group-row td:first-child{font-weight:bold}
-.communities-table th:last-child,.communities-table td:last-child{min-width:180px}
-.community-value{color:var(--accent);cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}
-.community-value:hover{opacity:.8}
-.community-cell{white-space:nowrap;display:inline-flex;align-items:center;gap:2px}
-.community-input{width:7ch;padding:1px 3px;border:1px solid var(--border);border-radius:2px;background:var(--card-bg);color:var(--text)}
-.edit-actions{display:none;align-items:center;gap:2px}
-.apply-btn{color:var(--ok);background:0 0;border:1px solid var(--ok);cursor:pointer;padding:1px 5px;margin-left:2px;border-radius:2px}
-.cancel-btn{color:var(--danger);background:0 0;border:1px solid var(--danger);cursor:pointer;padding:1px 5px;margin-left:1px;border-radius:2px}
-.revert-btn{color:#c90;background:0 0;border:none;cursor:pointer;font-size:1.1em;margin-left:4px;padding:0 2px}
-.save-bar{position:sticky;top:.5rem;z-index:2;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:var(--save-bar-bg);color:var(--text);border-radius:1rem;padding:.8rem 1rem;box-shadow:0 12px 28px #0003}
-.save-bar .muted{color:#d7e4f5}.save-bar button{background:var(--ok)}.save-bar button:disabled{background:#71829b;cursor:not-allowed}
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1rem}
-.stat-card{background:var(--card-bg);border-radius:8px;padding:1rem;border:1px solid var(--border);text-align:center}
-.stat-card .value{font-size:2em;font-weight:bold;color:var(--accent)}
-.stat-card .label{font-size:.85em;color:var(--muted);margin-top:.3rem}
-.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
-.status-dot.up{background:var(--ok)}.status-dot.down{background:var(--danger)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem}
-.row-actions{display:flex;gap:.5rem;margin-top:.5rem}
-.error-output{white-space:pre-wrap;overflow:auto;padding:1rem;border-radius:.6rem;background:#fff1f0;color:#8a1c13;border:1px solid #f2b8b5}
-.selection-form{padding-bottom:5.5rem}
-.catalog-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-top:1rem}
-.category-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:.8rem}
-.category-title{font-weight:600;display:flex;align-items:center;gap:.3rem;cursor:pointer}
-.category-title input[type=checkbox]{margin:0}
-.service-list{display:flex;flex-direction:column;gap:4px;margin-top:6px;padding-left:1.5rem}
-.service-list label{display:flex;align-items:center;gap:4px;font-size:.9em}
-.pill{font-size:.75em;background:var(--accent);color:#fff;padding:1px 6px;border-radius:8px}
-.community-tag{font-size:.75em;color:var(--muted);margin-left:4px;font-family:ui-monospace,monospace}
-.empty{text-align:center;padding:2rem;color:var(--muted)}
+.topbar .theme-btn{font-size:1.1em;padding:2px 8px}
 </style>
 <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
 <script src="https://unpkg.com/alpinejs@3.14.9" defer></script>
@@ -555,12 +575,12 @@ input,select{padding:4px 8px;border:1px solid var(--border);border-radius:4px;ba
 <a href=/admin/communities hx-get=/admin/communities hx-target=#main hx-push-url=true>{{tr "nav.communities"}}</a>
 <a href=/admin/adapters hx-get=/admin/adapters hx-target=#main hx-push-url=true>{{tr "nav.adapters"}}</a>
 <a href=/admin/settings hx-get=/admin/settings hx-target=#main hx-push-url=true>{{tr "nav.settings"}}</a>
-<div style="flex:1"></div>
-<a href=/ hx-get=/ hx-target=#main hx-push-url=true style="font-size:.85em;opacity:.7">{{tr "nav.user_page"}}</a>
+<div class=sidebar-spacer></div>
+<a href=/ hx-get=/ hx-target=#main hx-push-url=true class=sidebar-subtle>{{tr "nav.user_page"}}</a>
 </nav>
 <div class=main>
 <header class=topbar id=topbar>
-<button onclick="cycleTheme()" title="Theme" style="font-size:1.1em;padding:2px 8px">🌙</button>
+<button onclick="cycleTheme()" title="Theme" class=theme-btn>🌙</button>
 <a href="#" data-lang="en" class="lang-switch">EN</a>
 <a href="#" data-lang="ru" class="lang-switch">RU</a>
 </header>
