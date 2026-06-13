@@ -1244,7 +1244,7 @@ type userRoute struct {
 // announced for a given explicit selection (categories + services lists) after
 // applying the user's route filters. It does NOT read selected_categories or
 // selected_services from the DB — use the passed-in slices instead.
-func (s *Store) CountPrefixes(ctx context.Context, modeID int64, categories []string, services []ServiceKey, userID int64, skipIPv6 bool) (v4, v6 int, err error) {
+func (s *Store) CountPrefixes(ctx context.Context, modeID int64, categories []string, services []ServiceKey, userID int64) (v4, v6 int, err error) {
 	var filterMode string
 	var filterOverride bool
 	err = s.DB.QueryRowContext(ctx,
@@ -1363,9 +1363,6 @@ WHERE f.mode_id = ?1
 	}
 
 	for _, pfx := range filtered {
-		if skipIPv6 && pfx.Addr().Is6() {
-			continue
-		}
 		if pfx.Addr().Is6() {
 			v6++
 		} else {
@@ -1380,7 +1377,7 @@ WHERE f.mode_id = ?1
 // and per-user). It replicates the same filter logic as DesiredPrefixes: collect
 // prefixes matching the user's selection, then apply allow/deny lists according
 // to the filter mode.
-func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64, skipIPv6 bool) (v4, v6 int, err error) {
+func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64) (v4, v6 int, err error) {
 	var catalogModeID int64
 	var filterMode string
 	var filterOverride bool
@@ -1481,9 +1478,6 @@ WHERE f.mode_id = ?1
 	}
 
 	for _, pfx := range filtered {
-		if skipIPv6 && pfx.Addr().Is6() {
-			continue
-		}
 		if pfx.Addr().Is6() {
 			v6++
 		} else {

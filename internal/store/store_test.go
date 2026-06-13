@@ -1140,7 +1140,7 @@ func prefixContains(parent, child netip.Prefix) bool {
 	return parent.Contains(child.Addr()) && child.Bits() >= parent.Bits()
 }
 
-func TestCountSelectionPrefixesSkipsIPv6(t *testing.T) {
+func TestCountSelectionPrefixes(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
@@ -1177,37 +1177,16 @@ func TestCountSelectionPrefixesSkipsIPv6(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Count all prefixes (v4 + v6)
-	v4All, v6All, err := s.CountSelectionPrefixes(ctx, userID, false)
+	// Count all prefixes (both IPv4 and IPv6)
+	v4, v6, err := s.CountSelectionPrefixes(ctx, userID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v4All != 2 {
-		t.Fatalf("CountSelectionPrefixes(skipIPv6=false) v4 = %d, want 2", v4All)
+	if v4 != 2 {
+		t.Fatalf("CountSelectionPrefixes v4 = %d, want 2", v4)
 	}
-	if v6All != 1 {
-		t.Fatalf("CountSelectionPrefixes(skipIPv6=false) v6 = %d, want 1", v6All)
-	}
-
-	// Count only IPv4 prefixes
-	v4Skip, v6Skip, err := s.CountSelectionPrefixes(ctx, userID, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v4Skip != 2 {
-		t.Fatalf("CountSelectionPrefixes(skipIPv6=true) v4 = %d, want 2", v4Skip)
-	}
-	if v6Skip != 0 {
-		t.Fatalf("CountSelectionPrefixes(skipIPv6=true) v6 = %d, want 0", v6Skip)
-	}
-
-	// Verify DesiredPrefixes returns all 3 (matching skipIPv6=false)
-	desired, _, err := s.DesiredPrefixes(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(desired) != 3 {
-		t.Fatalf("DesiredPrefixes count = %d, want 3", len(desired))
+	if v6 != 1 {
+		t.Fatalf("CountSelectionPrefixes v6 = %d, want 1", v6)
 	}
 }
 

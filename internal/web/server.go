@@ -450,7 +450,7 @@ func (s *Server) selectionCount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	v4, v6, err := s.store.CountPrefixes(r.Context(), modeID, categories, services, user.ID, s.cfg.LocalAddressV6 == "")
+	v4, v6, err := s.store.CountPrefixes(r.Context(), modeID, categories, services, user.ID)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
@@ -1523,7 +1523,7 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 	}
 	view.PrefixCountsV4 = prefixCountsV4
 	view.PrefixCountsV6 = prefixCountsV6
-	view.TotalPrefixesV4, view.TotalPrefixesV6, err = s.store.CountSelectionPrefixes(ctx, user.ID, s.cfg.LocalAddressV6 == "")
+	view.TotalPrefixesV4, view.TotalPrefixesV6, err = s.store.CountSelectionPrefixes(ctx, user.ID)
 	if err != nil {
 		return selectionView{}, err
 	}
