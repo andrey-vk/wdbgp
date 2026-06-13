@@ -9,7 +9,7 @@ form{margin:1rem 0} label{display:block;margin:.55rem 0;font-weight:600}
 input:not([type]),input[type=text],input[type=password],input[type=number],input[type=url],textarea{width:100%;max-width:42rem;padding:.6rem .7rem;border:1px solid #c8d2df;border-radius:.55rem;background:white}
 textarea{min-height:10rem;font:14px/1.4 ui-monospace,monospace;resize:vertical}
 button,.button{display:inline-block;padding:.65rem 1rem;border:0;border-radius:.6rem;background:#2457a6;color:white;font-weight:700;text-decoration:none;cursor:pointer}
-button.danger{background:#b42318} table{border-collapse:separate;border-spacing:0;width:100%;background:white;border:1px solid #dfe5ee;border-radius:.8rem;overflow:hidden}
+button.danger{background:#b42318} button.secondary{background:#667} table{border-collapse:separate;border-spacing:0;width:100%;background:white;border:1px solid #dfe5ee;border-radius:.8rem;overflow:hidden}
 td,th{border-bottom:1px solid #e8edf4;padding:.65rem;text-align:left;vertical-align:top} tr:last-child td{border-bottom:0}
 .card{background:white;border:1px solid #dfe5ee;border-radius:1rem;padding:1rem;margin:1rem 0;box-shadow:0 8px 24px #16233a0d}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));gap:1rem}.row-actions{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
@@ -365,6 +365,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 
 const communitiesBody = `{{with .Data}}
 <header><h1>{{tr "communities.title"}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>
+{{if .Saved}}<p class=ok>{{if eq .Saved "reset"}}All communities reset to auto-generated values.{{else if eq .Saved "generated"}}Missing communities auto-generated.{{else}}{{tr "communities.saved"}}{{end}}</p>{{end}}
 {{if .Error}}<p class=error>{{.Error}}</p>{{end}}
 <section class=card>
 <label>{{tr "catalog.mode"}} <select id=mode-select>
@@ -393,7 +394,21 @@ const communitiesBody = `{{with .Data}}
 </span></td>
 </tr>{{end}}
 {{end}}</table>
-<div class="communities-bar"><button type=submit class=primary id=save-btn>{{tr "communities.apply"}}</button> <span id=change-count class=muted></span></div>
+<div class="communities-bar">
+<button type=submit class=primary id=save-btn>{{tr "communities.apply"}}</button>
+<span id=change-count class=muted></span>
+<span style="flex:1"></span>
+<form method=post action="/admin/communities/generate" style="display:inline" onsubmit="return confirm('Generate community numbers for all categories and services that do not have one yet?')">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<input type=hidden name=mode value="{{.Mode.ID}}">
+<button type=submit class=secondary>{{tr "communities.auto_generate"}}</button>
+</form>
+<form method=post action="/admin/communities/reset" style="display:inline" onsubmit="return confirm('This will reset ALL community numbers to auto-generated values. Any manual changes will be lost. Continue?')">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<input type=hidden name=mode value="{{.Mode.ID}}">
+<button type=submit class=danger>{{tr "communities.reset_all"}}</button>
+</form>
+</div>
 </form>
 </section>
 <script>

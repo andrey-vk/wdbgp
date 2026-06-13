@@ -105,6 +105,7 @@ type communitiesView struct {
 	Mode   store.CatalogMode
 	Groups []communityGroupView
 	Error  string
+	Saved  string
 }
 
 type communityGroupView struct {
@@ -155,6 +156,8 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("GET /admin", server.requireAdmin(server.adminPage))
 	mux.HandleFunc("GET /admin/communities", server.requireAdmin(server.communitiesPage))
 	mux.HandleFunc("POST /admin/communities", server.requireAdmin(server.saveCommunities))
+	mux.HandleFunc("POST /admin/communities/reset", server.requireAdmin(server.resetCommunities))
+	mux.HandleFunc("POST /admin/communities/generate", server.requireAdmin(server.generateCommunities))
 	mux.HandleFunc("GET /admin/debug/cidr", server.requireAdmin(server.debugCIDRHandler))
 	mux.HandleFunc("POST /admin/mode/{id}", server.requireAdmin(server.updateCatalogMode))
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
@@ -468,7 +471,7 @@ func (s *Server) communitiesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	sortStrings(catNames)
 
-	view := communitiesView{Modes: modes, Mode: mode, Error: r.URL.Query().Get("error")}
+	view := communitiesView{Modes: modes, Mode: mode, Error: r.URL.Query().Get("error"), Saved: r.URL.Query().Get("saved")}
 	groupIndex := 0
 	for _, catName := range catNames {
 		svcNames := catalog[catName]
@@ -566,6 +569,60 @@ func (s *Server) saveCommunities(w http.ResponseWriter, r *http.Request) {
 		logger.Warn("reconcile after communities update failed", "error", err)
 	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d", modeID), http.StatusSeeOther)
+}
+
+func (s *Server) resetCommunities(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := r.ParseForm(); err != nil {
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
+		return
+	}
+	modeID := store.DefaultCatalogModeID
+	if rawMode := r.FormValue("mode"); rawMode != "" {
+		if id, err := strconv.ParseInt(rawMode, 10, 64); err == nil && id > 0 {
+			modeID = id
+		}
+	}
+	// Delete all communities for this mode.
+	if _, err := s.store.DB.ExecContext(ctx, "DELETE FROM catalog_communities WHERE mode_id = ?", modeID); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	// Regenerate from scratch.
+	if _, err := s.store.GenerateCommunities(ctx, modeID); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		logger := logging.FromContext(r.Context())
+		logger.Warn("reconcile after reset communities failed", "error", err)
+	}
+	s.logAdminAction(r, "communities_reset", fmt.Sprintf("mode=%d", modeID))
+	http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d&saved=reset", modeID), http.StatusSeeOther)
+}
+
+func (s *Server) generateCommunities(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := r.ParseForm(); err != nil {
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
+		return
+	}
+	modeID := store.DefaultCatalogModeID
+	if rawMode := r.FormValue("mode"); rawMode != "" {
+		if id, err := strconv.ParseInt(rawMode, 10, 64); err == nil && id > 0 {
+			modeID = id
+		}
+	}
+	if _, err := s.store.GenerateCommunities(ctx, modeID); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		logger := logging.FromContext(r.Context())
+		logger.Warn("reconcile after generate communities failed", "error", err)
+	}
+	s.logAdminAction(r, "communities_generate", fmt.Sprintf("mode=%d", modeID))
+	http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d&saved=generated", modeID), http.StatusSeeOther)
 }
 
 func (s *Server) debugCIDRHandler(w http.ResponseWriter, r *http.Request) {
