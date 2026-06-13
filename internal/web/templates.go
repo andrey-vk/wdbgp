@@ -48,6 +48,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .empty{text-align:center;padding:2rem;color:var(--muted)}
 .pill{font-size:.75em;color:var(--muted);border:1px solid var(--border);padding:1px 6px;border-radius:8px;white-space:nowrap}
 .community-tag{font-size:.75em;color:var(--muted);margin-left:4px;font-family:ui-monospace,monospace}
+.htmx-indicator{opacity:.5}
 .prefix-count{font-size:.8em;color:var(--muted);margin-left:.3em;white-space:nowrap}
 
 .community-value{color:var(--accent);cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}
@@ -200,8 +201,6 @@ const selectionBody = `{{$selection := .}}
 <div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" data-prefixes="{{.PrefixCount}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}{{if index $selection.Communities (printf "%s|%s" $cat .Name)}} <span class=community-tag title="{{tr "communities.service_community"}}">{{index $selection.Communities (printf "%s|%s" $cat .Name)}}</span>{{end}} <span class=prefix-count title="{{tr "selection.prefix_count"}}">{{.PrefixCount}} pref.</span></label>{{end}}</div>
 </fieldset>{{end}}</div>{{else}}<p class=empty>{{tr "selection.empty"}}</p>{{end}}</form></section>
 <script>
-var serverV4 = {{.TotalPrefixesV4}};
-var serverV6 = {{.TotalPrefixesV6}};
 var catalogModeSelect = document.getElementById('catalog-mode-select');
 if (catalogModeSelect && !catalogModeSelect.disabled) {
   catalogModeSelect.addEventListener('change', function() {
@@ -246,14 +245,19 @@ function updateSelectionCounts() {
   updateSelectionLabel('selected-category-label', categoryCount);
   updateSelectionLabel('selected-covered-service-label', coveredServiceCount);
   updateSelectionLabel('selected-service-label', standaloneServiceCount);
-  var pTotal = 0;
-  document.querySelectorAll('fieldset.category-card').forEach(function(fs) {
-    var catCb = fs.querySelector('input[name="category"]');
-    if (catCb && catCb.checked) {
-      pTotal += parseInt(catCb.dataset.prefixes || '0');
+  // Trigger exact count from backend
+  var form = document.getElementById('selection-form');
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/selection/count');
+  xhr.onload = function() {
+    if (xhr.status === 200) {
+      var v4el = document.getElementById('total-prefix-v4');
+      var v6el = document.getElementById('total-prefix-v6');
+      var parentSpan = (v4el || v6el) ? (v4el || v6el).parentElement : null;
+      if (parentSpan) parentSpan.innerHTML = xhr.responseText;
     }
-  });
-  document.getElementById('total-prefix-v4').textContent = pTotal;
+  };
+  xhr.send(new FormData(form));
 }
 document.querySelectorAll('input[name="category"]').forEach(function(categoryInput) {
   var fieldset = categoryInput.closest('fieldset');

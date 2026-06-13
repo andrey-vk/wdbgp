@@ -1211,6 +1211,141 @@ type userRoute struct {
 	service  string
 }
 
+// CountPrefixes returns the number of unique IPv4 and IPv6 prefixes that would be
+// announced for a given explicit selection (categories + services lists) after
+// applying the user's route filters. It does NOT read selected_categories or
+// selected_services from the DB — use the passed-in slices instead.
+func (s *Store) CountPrefixes(ctx context.Context, modeID int64, categories []string, services []ServiceKey, userID int64, skipIPv6 bool) (v4, v6 int, err error) {
+	var filterMode string
+	var filterOverride bool
+	err = s.DB.QueryRowContext(ctx,
+		`SELECT COALESCE(filter_mode, ''), filter_override_enabled
+		 FROM users WHERE id = ?`, userID).
+		Scan(&filterMode, &filterOverride)
+	if err != nil {
+		return 0, 0, err
+	}
+	filterMode = normalizeFilterMode(filterMode, filterOverride)
+
+	if len(categories) == 0 && len(services) == 0 {
+		return 0, 0, nil
+	}
+
+	// Build the same UNION pattern as CountSelectionPrefixes but with
+	// explicit category/service lists instead of DB lookups.
+	args := []any{modeID}
+
+	var queryParts []string
+
+	if len(categories) > 0 {
+		placeholders := make([]string, len(categories))
+		for i, cat := range categories {
+			placeholders[i] = "?"
+			args = append(args, cat)
+		}
+		queryParts = append(queryParts, fmt.Sprintf(`
+SELECT DISTINCT ce.cidr
+FROM feeds f
+JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_entries ce ON ce.feed_id = f.id
+WHERE f.mode_id = ?1
+  AND f.enabled = 1
+  AND m.enabled = 1
+  AND ce.category IN (%s)`, strings.Join(placeholders, ", ")))
+	}
+
+	if len(services) > 0 {
+		pairs := make([]string, len(services))
+		for i, svc := range services {
+			pairs[i] = "(?, ?)"
+			args = append(args, svc.Category, svc.Service)
+		}
+		queryParts = append(queryParts, fmt.Sprintf(`
+SELECT DISTINCT ce.cidr
+FROM feeds f
+JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_entries ce ON ce.feed_id = f.id
+WHERE f.mode_id = ?1
+  AND f.enabled = 1
+  AND m.enabled = 1
+  AND (ce.category, ce.service) IN (%s)`, strings.Join(pairs, ", ")))
+	}
+
+	query := strings.Join(queryParts, " UNION ")
+
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+
+	seen := make(map[netip.Prefix]struct{})
+	for rows.Next() {
+		var rawPrefix string
+		if err := rows.Scan(&rawPrefix); err != nil {
+			return 0, 0, err
+		}
+		prefix, err := netip.ParsePrefix(rawPrefix)
+		if err != nil {
+			return 0, 0, fmt.Errorf("parse prefix %q: %w", rawPrefix, err)
+		}
+		if prefix.Bits() == 0 {
+			continue
+		}
+		seen[prefix.Masked()] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+
+	if len(seen) == 0 {
+		return 0, 0, nil
+	}
+
+	prefixes := make([]netip.Prefix, 0, len(seen))
+	for p := range seen {
+		prefixes = append(prefixes, p)
+	}
+
+	// Apply the same filter logic as CountSelectionPrefixes
+	userFilters, err := s.UserRouteFilters(ctx, userID)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	globalFilters, err := s.GlobalRouteFilters(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var effectiveFilters RouteFilters
+	switch filterMode {
+	case FilterModeOverride:
+		effectiveFilters = userFilters
+	case FilterModeExtend:
+		effectiveFilters = mergeRouteFilters(globalFilters, userFilters)
+	default:
+		effectiveFilters = globalFilters
+	}
+
+	filtered, err := applyRouteFiltersToPrefixes(prefixes, effectiveFilters)
+	if err != nil {
+		return 0, 0, fmt.Errorf("filter routes for user %d: %w", userID, err)
+	}
+
+	for _, pfx := range filtered {
+		if skipIPv6 && pfx.Addr().Is6() {
+			continue
+		}
+		if pfx.Addr().Is6() {
+			v6++
+		} else {
+			v4++
+		}
+	}
+	return v4, v6, nil
+}
+
 // CountSelectionPrefixes returns the number of unique IPv4 and IPv6 prefixes that
 // would be announced for a single user after applying their route filters (global
 // and per-user). It replicates the same filter logic as DesiredPrefixes: collect

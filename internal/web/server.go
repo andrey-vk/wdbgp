@@ -183,6 +183,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/logout", server.requireAdmin(server.logout))
 	mux.HandleFunc("GET /login", server.userLoginPage)
 	mux.HandleFunc("POST /login", server.userLogin)
+	mux.HandleFunc("POST /selection/count", server.selectionCount)
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /status", server.status)
 	mux.HandleFunc("GET /admin/users", server.requireAdmin(server.usersList))
@@ -388,6 +389,71 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/?saved=1", http.StatusSeeOther)
+}
+
+// identifyUser resolves a user from the request using the same logic as userPage:
+// IP match first, then session cookie. Returns the user or an error.
+func (s *Server) identifyUser(r *http.Request) (store.User, error) {
+	clientIP := s.clientIP(r)
+	user, err := s.store.UserByIP(r.Context(), clientIP)
+	if err != nil {
+		// No IP match — try session-based auth
+		sessionID := getUserSessionID(r, s.cfg.SessionSecret)
+		if sessionID > 0 {
+			user, err = s.store.User(r.Context(), sessionID)
+			if err == nil && user.Enabled && user.WebAuth == "login" {
+				return user, nil
+			}
+			return store.User{}, err
+		}
+		return store.User{}, err
+	}
+	// IP matched — check web_auth mode
+	switch user.WebAuth {
+	case "network":
+		return user, nil
+	case "login", "both":
+		if !validUserSession(r, user.ID, s.cfg.SessionSecret) {
+			return store.User{}, errors.New("session required")
+		}
+		return user, nil
+	}
+	return user, nil
+}
+
+func (s *Server) selectionCount(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	user, err := s.identifyUser(r)
+	if err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	categories, services, err := selectionFromValues(r.Form)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	modeID := user.CatalogModeID
+	if rawMode := r.FormValue("catalog_mode_id"); rawMode != "" {
+		if id, parseErr := strconv.ParseInt(rawMode, 10, 64); parseErr == nil && id > 0 {
+			modeID = id
+		}
+	}
+
+	v4, v6, err := s.store.CountPrefixes(r.Context(), modeID, categories, services, user.ID, s.cfg.LocalAddressV6 == "")
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, "IPv4: <strong id=total-prefix-v4>%d</strong> pref. · IPv6: <strong id=total-prefix-v6>%d</strong> pref.", v4, v6)
 }
 
 func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
