@@ -401,12 +401,12 @@ const communitiesBody = `{{with .Data}}
 </tr>{{end}}
 {{end}}</table>
 <div style="margin-top:1rem;display:flex;gap:1rem">
-<form method=post action="/admin/communities/generate" style="display:inline" onsubmit="return confirm('Generate community numbers for all categories and services that do not have one yet?')">
+<form method=post action="/admin/communities/generate" style="display:inline" onsubmit="return confirm('{{tr "communities.generate_confirm"}}')">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=mode value="{{.Mode.ID}}">
 <button type=submit class=secondary>{{tr "communities.auto_generate"}}</button>
 </form>
-<form method=post action="/admin/communities/reset" style="display:inline" onsubmit="return confirm('This will reset ALL community numbers to auto-generated values. Any manual changes will be lost. Continue?')">
+<form method=post action="/admin/communities/reset" style="display:inline" onsubmit="return confirm('{{tr "communities.reset_confirm"}}')">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=mode value="{{.Mode.ID}}">
 <button type=submit class=danger>{{tr "communities.reset_all"}}</button>
@@ -418,6 +418,9 @@ const communitiesBody = `{{with .Data}}
 (function(){
 var modeSelect=document.getElementById('mode-select');
 modeSelect.addEventListener('change',function(){window.location.href='/admin/communities?mode='+this.value});
+var i18nChangedOne={{printf "%q" (tr "communities.changed_one")}};
+var i18nChangedMany={{printf "%q" (tr "communities.changed_many")}};
+var i18nReverted={{printf "%q" (tr "communities.reverted")}};
 
 var activeEdit = null;
 
@@ -425,7 +428,7 @@ function closeEdit(cell, forceApply) {
   var inp = cell.querySelector('.community-input');
   if (inp && inp.dataset.changed === '0' && inp.value !== inp.dataset.original) {
     if (forceApply === undefined) {
-      if (!confirm('Apply changes to this community number?')) {
+      if (!confirm({{printf "%q" (tr "communities.apply_edit_confirm")}})) {
         cell.querySelector('.cancel-btn').click();
         return;
       }
@@ -454,8 +457,8 @@ function updateUI(){
   var total = edited + reverted;
   var el = document.getElementById('change-summary');
   var parts = [];
-  if (edited > 0) parts.push(edited + ' community number' + (edited > 1 ? 's' : '') + ' changed');
-  if (reverted > 0) parts.push(reverted + ' reverted to auto');
+  if (edited > 0) parts.push(edited + ' ' + (edited > 1 ? i18nChangedMany : i18nChangedOne));
+  if (reverted > 0) parts.push(reverted + ' ' + i18nReverted);
   el.textContent = parts.length > 0 ? parts.join(', ') : {{printf "%q" (tr "communities.no_changes")}};
   document.getElementById('save-btn').disabled = total === 0;
 }
@@ -484,7 +487,7 @@ b.addEventListener('click',function(){
 var cell=this.closest('.community-cell');
 var inp=cell.querySelector('.community-input');
 var newVal=inp.value;
-if(findDuplicate(cell.dataset.name,newVal)){alert('This community number is already used. Please choose a different number.');return}
+if(findDuplicate(cell.dataset.name,newVal)){alert({{printf "%q" (tr "communities.duplicate_error")}});return}
 inp.value=newVal;
 	// Clean up any revert-hidden input since we're accepting a new manual value
 	var oldHidden=cell.querySelector('.revert-hidden');
@@ -496,7 +499,7 @@ cell.querySelector('.community-value').textContent=newVal;
 cell.querySelector('.community-value').style.display='';
 var auto=cell.dataset.auto;
 var revert=cell.querySelector('.revert-btn');
-if(newVal!=auto){if(!revert){revert=document.createElement('button');revert.type='button';revert.className='revert-btn';revert.textContent='↺';revert.title='Revert to auto';cell.insertBefore(revert,cell.querySelector('.edit-actions'));setupRevert(revert)}}else{if(revert)revert.style.display='none'}
+if(newVal!=auto){if(!revert){revert=document.createElement('button');revert.type='button';revert.className='revert-btn';revert.textContent='↺';revert.title={{printf "%q" (tr "communities.revert")}};cell.insertBefore(revert,cell.querySelector('.edit-actions'));setupRevert(revert)}}else{if(revert)revert.style.display='none'}
 revert&&(revert.style.display=newVal!=auto?'':'none');
 cell.querySelector('.edit-actions').style.display='none';
 updateUI();
@@ -549,7 +552,7 @@ inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault(
 // Form submit confirm
 document.getElementById('communities-form').addEventListener('submit',function(e){
 var c=countChanged()+countReverted();
-if(c>0&&!confirm('Confirm: N communities will be updated. Continue?'.replace('N',c))){e.preventDefault()}
+if(c>0&&!confirm({{printf "%q" (tr "communities.confirm")}}.replace('N',c))){e.preventDefault()}
 });
 
 updateUI()
