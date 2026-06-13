@@ -74,7 +74,7 @@ type selectionView struct {
 	SelectedCoveredServices int
 	SelectedServiceCount    int
 	CSRFToken               string
-	Communities             map[string]int64
+	Communities             map[string]uint32
 }
 
 type adminView struct {
@@ -110,15 +110,15 @@ type communitiesView struct {
 
 type communityGroupView struct {
 	Category  string
-	Community int64
-	AutoGroup int64
+	Community uint32
+	AutoGroup uint32
 	Services  []communityServiceView
 }
 
 type communityServiceView struct {
 	Name      string
-	Community int64
-	AutoSvc   int64
+	Community uint32
+	AutoSvc   uint32
 }
 
 type userEditView struct {
@@ -481,7 +481,7 @@ func (s *Server) communitiesPage(w http.ResponseWriter, r *http.Request) {
 		group := communityGroupView{
 			Category:  catName,
 			Community: comms[catName],
-			AutoGroup: int64((groupIndex+1)*10000),
+			AutoGroup: uint32((groupIndex+1)*10000),
 		}
 		svcCounter := 0
 		curGroup := groupIndex
@@ -524,10 +524,11 @@ func (s *Server) saveCommunities(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(key, "cat_") && !strings.HasPrefix(key, "svc_") {
 			continue
 		}
-		community, err := strconv.ParseInt(values[0], 10, 64)
-		if err != nil || community <= 0 || community > 4294967295 {
+		community64, err := strconv.ParseUint(values[0], 10, 32)
+		if err != nil || community64 == 0 {
 			continue
 		}
+		community := uint32(community64)
 		if strings.HasPrefix(key, "cat_") {
 			category := key[4:]
 			if err := s.store.SetCommunity(ctx, modeID, category, "", community); err != nil {

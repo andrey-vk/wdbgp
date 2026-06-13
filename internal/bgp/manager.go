@@ -503,7 +503,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	}
 
 	// Load communities for every mode seen across prefixes.
-	modeCommunities := make(map[int64]map[string]int64)
+	modeCommunities := make(map[int64]map[string]uint32)
 	for _, info := range prefixMeta {
 		if _, ok := modeCommunities[info.ModeID]; !ok {
 			comms, _ := m.store.GetCommunities(ctx, info.ModeID)
@@ -542,7 +542,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		}
 
 		meta, hasMeta := prefixMeta[prefix]
-		comms := map[string]int64{}
+		comms := map[string]uint32{}
 		if hasMeta {
 			comms = modeCommunities[meta.ModeID]
 		}
@@ -569,7 +569,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) path(rawPrefix string, userIDs []int64, category, service string, communities map[string]int64) (*api.Path, error) {
+func (m *Manager) path(rawPrefix string, userIDs []int64, category, service string, communities map[string]uint32) (*api.Path, error) {
 	prefix, err := netip.ParsePrefix(rawPrefix)
 	if err != nil {
 		return nil, err
@@ -597,13 +597,13 @@ func (m *Manager) path(rawPrefix string, userIDs []int64, category, service stri
 	if category != "" {
 		if c, ok := communities[category]; ok {
 			comms = append(comms, &api.LargeCommunity{
-				GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: uint32(c),
+				GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
 			})
 		}
 		if service != "" {
 			if c, ok := communities[category+"|"+service]; ok {
 				comms = append(comms, &api.LargeCommunity{
-					GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: uint32(c),
+					GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
 				})
 			}
 		}
