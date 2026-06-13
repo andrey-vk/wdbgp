@@ -104,6 +104,7 @@ type communitiesView struct {
 	Modes  []store.CatalogMode
 	Mode   store.CatalogMode
 	Groups []communityGroupView
+	Error  string
 }
 
 type communityGroupView struct {
@@ -467,7 +468,7 @@ func (s *Server) communitiesPage(w http.ResponseWriter, r *http.Request) {
 	}
 	sortStrings(catNames)
 
-	view := communitiesView{Modes: modes, Mode: mode}
+	view := communitiesView{Modes: modes, Mode: mode, Error: r.URL.Query().Get("error")}
 	groupIndex := 0
 	for _, catName := range catNames {
 		svcNames := catalog[catName]
@@ -512,6 +513,7 @@ func (s *Server) saveCommunities(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	updated := 0
+	var saveErrors []string
 	for key, values := range r.PostForm {
 		if len(values) == 0 {
 			continue
@@ -526,6 +528,10 @@ func (s *Server) saveCommunities(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(key, "cat_") {
 			category := key[4:]
 			if err := s.store.SetCommunity(ctx, modeID, category, "", community); err != nil {
+				if strings.Contains(err.Error(), "already used") {
+					saveErrors = append(saveErrors, category+": "+err.Error())
+					continue
+				}
 				s.internalError(w, r, err)
 				return
 			}
@@ -540,11 +546,19 @@ func (s *Server) saveCommunities(w http.ResponseWriter, r *http.Request) {
 			category := parts[0]
 			service := parts[1]
 			if err := s.store.SetCommunity(ctx, modeID, category, service, community); err != nil {
+				if strings.Contains(err.Error(), "already used") {
+					saveErrors = append(saveErrors, service+": "+err.Error())
+					continue
+				}
 				s.internalError(w, r, err)
 				return
 			}
 			updated++
 		}
+	}
+	if len(saveErrors) > 0 {
+		http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d&error=%s", modeID, url.QueryEscape(strings.Join(saveErrors, "; "))), http.StatusSeeOther)
+		return
 	}
 	s.logAdminAction(r, "communities_update", fmt.Sprintf("mode=%d, updated=%d", modeID, updated))
 	if err := s.bgp.Reconcile(r.Context()); err != nil {

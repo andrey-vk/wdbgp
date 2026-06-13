@@ -365,6 +365,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 
 const communitiesBody = `{{with .Data}}
 <header><h1>{{tr "communities.title"}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>
+{{if .Error}}<p class=error>{{.Error}}</p>{{end}}
 <section class=card>
 <label>{{tr "catalog.mode"}} <select id=mode-select>
 {{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.Mode.ID}}selected{{end}}>{{.Name}}</option>{{end}}
@@ -400,6 +401,7 @@ const communitiesBody = `{{with .Data}}
 var modeSelect=document.getElementById('mode-select');
 modeSelect.addEventListener('change',function(){window.location.href='/admin/communities?mode='+this.value});
 
+function findDuplicate(name,value){var cells=document.querySelectorAll('.community-cell');for(var i=0;i<cells.length;i++){if(cells[i].dataset.name===name)continue;var cellVal=cells[i].querySelector('.community-value').textContent;var inp=cells[i].querySelector('.community-input');if(inp&&inp.dataset.changed==='1')cellVal=inp.value;if(cellVal===value)return true}var hiddens=document.querySelectorAll('.revert-hidden');for(var j=0;j<hiddens.length;j++){if(hiddens[j].value===value)return true}return false}
 function countChanges(){return document.querySelectorAll('.community-input[data-changed="1"]').length+document.querySelectorAll('.community-cell.reverted').length}
 function updateUI(){var c=countChanges();var el=document.getElementById('change-count');el.textContent=c>0?c+' changed':'no changes';document.getElementById('save-btn').disabled=c===0}
 
@@ -423,6 +425,7 @@ b.addEventListener('click',function(){
 var cell=this.closest('.community-cell');
 var inp=cell.querySelector('.community-input');
 var newVal=inp.value;
+if(findDuplicate(cell.dataset.name,newVal)){alert('This community number is already used. Please choose a different number.');return}
 inp.value=newVal;
 if (newVal!=inp.dataset.original||cell.classList.contains('reverted')){
 inp.dataset.changed='1';cell.classList.remove('reverted')

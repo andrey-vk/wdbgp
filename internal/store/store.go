@@ -2042,7 +2042,20 @@ func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]in
 
 // SetCommunity upserts a community. service="" means group-level.
 func (s *Store) SetCommunity(ctx context.Context, modeID int64, category, service string, community int) error {
-	_, err := s.DB.ExecContext(ctx,
+	// Check for duplicate community value
+	var existing int
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM catalog_communities
+		WHERE mode_id = ? AND community = ? AND NOT (category = ? AND service = ?)`,
+		modeID, community, category, service).Scan(&existing)
+	if err != nil {
+		return err
+	}
+	if existing > 0 {
+		return fmt.Errorf("community %d is already used by another category or service in this mode", community)
+	}
+	// Upsert
+	_, err = s.DB.ExecContext(ctx,
 		`INSERT INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)
 ON CONFLICT(mode_id, category, service) DO UPDATE SET community = excluded.community`,
 		modeID, category, service, community)
