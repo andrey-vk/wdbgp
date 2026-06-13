@@ -385,7 +385,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 
 const communitiesBody = `{{with .Data}}
 <header><h1>{{tr "communities.title"}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>
-{{if .Saved}}<p class=ok>{{if eq .Saved "reset"}}All communities reset to auto-generated values.{{else if eq .Saved "generated"}}Missing communities auto-generated.{{else}}{{tr "communities.saved"}}{{end}}</p>{{end}}
+{{if .Saved}}<p class=ok>{{if eq .Saved "reset"}}All communities reset to auto-generated values.{{else}}{{tr "communities.saved"}}{{end}}</p>{{end}}
 {{if .Error}}<p class=error>{{.Error}}</p>{{end}}
 <section class=card>
 <label>{{tr "catalog.mode"}} <select id=mode-select>
@@ -420,11 +420,6 @@ const communitiesBody = `{{with .Data}}
 </tr>{{end}}
 {{end}}</table>
 <div style="margin-top:1rem;display:flex;gap:1rem">
-<form method=post action="/admin/communities/generate" style="display:inline" onsubmit="return confirm('{{tr "communities.generate_confirm"}}')">
-<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
-<input type=hidden name=mode value="{{.Mode.ID}}">
-<button type=submit class=secondary>{{tr "communities.auto_generate"}}</button>
-</form>
 <form method=post action="/admin/communities/reset" style="display:inline" onsubmit="return confirm('{{tr "communities.reset_confirm"}}')">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=mode value="{{.Mode.ID}}">
@@ -617,9 +612,9 @@ const adminShellTemplate = `<!DOCTYPE html>
 <head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>{{.Title}} - wdbgp</title>
 <style>
-:root,[data-theme=light]{--bg:#f0f2f5;--text:#1a1a2e;--sidebar-bg:#1a1a2e;--sidebar-text:#e0e0e0;--sidebar-active:#4da6ff;--card-bg:#fff;--border:#e0e0e0;--accent:#06c;--muted:#666;--danger:#c00;--ok:#0a0;--group-row-bg:#eef2f7}
-[data-theme=dark]{--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950;--group-row-bg:#1c2433}
-@media(prefers-color-scheme:dark){:root:not([data-theme]){--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950;--group-row-bg:#1c2433}}
+:root,[data-theme=light]{--bg:#f0f2f5;--text:#1a1a2e;--sidebar-bg:#1a1a2e;--sidebar-text:#e0e0e0;--sidebar-active:#4da6ff;--card-bg:#fff;--border:#e0e0e0;--accent:#06c;--muted:#666;--danger:#c00;--ok:#0a0;--group-row-bg:#e4e9f0;--save-bar-bg:#dde4f0}
+[data-theme=dark]{--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950;--group-row-bg:#1c2433;--save-bar-bg:#1c2433}
+@media(prefers-color-scheme:dark){:root:not([data-theme]){--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950;--group-row-bg:#1c2433;--save-bar-bg:#1c2433}}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh}
 .sidebar{width:200px;background:var(--sidebar-bg);color:var(--sidebar-text);padding:1rem 0;flex-shrink:0;display:flex;flex-direction:column}
@@ -652,7 +647,7 @@ input,select{padding:4px 8px;border:1px solid var(--border);border-radius:4px;ba
 .apply-btn{color:var(--ok);background:0 0;border:1px solid var(--ok);cursor:pointer;padding:1px 5px;margin-left:2px;border-radius:2px}
 .cancel-btn{color:var(--danger);background:0 0;border:1px solid var(--danger);cursor:pointer;padding:1px 5px;margin-left:1px;border-radius:2px}
 .revert-btn{color:#c90;background:0 0;border:none;cursor:pointer;font-size:1.1em;margin-left:4px;padding:0 2px}
-.save-bar{position:sticky;top:.5rem;z-index:2;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:var(--sidebar-bg);color:var(--sidebar-text);border-radius:1rem;padding:.8rem 1rem;box-shadow:0 12px 28px #10294f40}
+.save-bar{position:sticky;top:.5rem;z-index:2;display:flex;gap:1rem;align-items:center;justify-content:space-between;background:var(--save-bar-bg);color:var(--text);border-radius:1rem;padding:.8rem 1rem;box-shadow:0 12px 28px #0003}
 .save-bar .muted{color:#d7e4f5}.save-bar button{background:var(--ok)}.save-bar button:disabled{background:#71829b;cursor:not-allowed}
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1rem}
 .stat-card{background:var(--card-bg);border-radius:8px;padding:1rem;border:1px solid var(--border);text-align:center}
