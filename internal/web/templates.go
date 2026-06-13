@@ -522,35 +522,56 @@ activeEdit = null;
 })
 });
 
-// ↺ Revert to auto
+// ↺ Revert
 function setupRevert(btn){
 btn.addEventListener('click',function(){
-var cell=this.closest('.community-cell');
-var inp = cell.querySelector('.community-input');
-var editActions = cell.querySelector('.edit-actions');
-// If user is in edit mode but never applied the change, just cancel the edit
-if (editActions && editActions.style.display !== 'none' && inp && inp.dataset.changed === '0') {
-	cell.querySelector('.cancel-btn').click();
-	return;
-}
-var auto=cell.dataset.auto;
-cell.querySelector('.community-value').textContent=auto;
-cell.classList.add('reverted');
-var hidden=document.createElement('input');
-hidden.type='hidden';hidden.name=cell.dataset.name;hidden.value=auto;hidden.className='revert-hidden';
-	var oldHidden=cell.querySelector('.revert-hidden');
-	oldHidden&&oldHidden.remove();
-	cell.appendChild(hidden);
-	// Also update the edit input so it doesn't conflict on form submit
-	var editInput=cell.querySelector('.community-input');
-	if(editInput) editInput.value=auto;
-this.style.display='none';
-cell.querySelector('.edit-actions').style.display='none';
-cell.querySelector('.community-value').style.display='';
-// Revert supersedes any pending manual edit
-var inp = cell.querySelector('.community-input');
-if (inp) inp.dataset.changed = '0';
-updateUI()
+  var cell=this.closest('.community-cell');
+  var inp = cell.querySelector('.community-input');
+  var editActions = cell.querySelector('.edit-actions');
+  
+  // If in edit mode with un-applied changes, just cancel
+  if (editActions && editActions.style.display !== 'none' && inp && inp.dataset.changed === '0') {
+    cell.querySelector('.cancel-btn').click();
+    return;
+  }
+  
+  // If user applied a change THIS session (✓ was clicked, not saved to server),
+  // revert means UNDO the session edit — go back to original, no counting
+  if (inp && inp.dataset.changed === '1') {
+    var original = inp.dataset.original || cell.dataset.value; // fallback to server value
+    cell.querySelector('.community-value').textContent = original;
+    inp.value = original;
+    inp.dataset.changed = '0';
+    cell.classList.remove('reverted');
+    // Remove any hidden input from a previous revert
+    var oldHidden = cell.querySelector('.revert-hidden');
+    if (oldHidden) oldHidden.remove();
+    // Exit edit mode if active
+    editActions.style.display = 'none';
+    cell.querySelector('.community-value').style.display = '';
+    var revert = cell.querySelector('.revert-btn');
+    var auto = cell.dataset.auto;
+    if (revert) revert.style.display = original != auto ? '' : 'none';
+    updateUI();
+    return;
+  }
+  
+  // Otherwise: revert to auto (the cell has a saved manual value, not from this session)
+  var auto=cell.dataset.auto;
+  cell.querySelector('.community-value').textContent=auto;
+  cell.classList.add('reverted');
+  var hidden=document.createElement('input');
+  hidden.type='hidden';hidden.name=cell.dataset.name;hidden.value=auto;hidden.className='revert-hidden';
+  var oldHidden=cell.querySelector('.revert-hidden');
+  oldHidden&&oldHidden.remove();
+  cell.appendChild(hidden);
+  // Update edit input too
+  if (inp) inp.value = auto;
+  if (inp) inp.dataset.changed = '0';
+  this.style.display='none';
+  cell.querySelector('.edit-actions').style.display='none';
+  cell.querySelector('.community-value').style.display='';
+  updateUI()
 })}
 document.querySelectorAll('.revert-btn').forEach(setupRevert);
 
