@@ -193,6 +193,13 @@ cookie и после правильного пароля снова переки
 | `WDBGP_LOG_LEVEL` | `INFO` |
 | `WDBGP_LOG_FORMAT` | `text` |
 | `WDBGP_TRUST_PROXY_HEADERS` | `false` |
+| `WDBGP_JS_TIMEOUT` | `120` секунд |
+| `WDBGP_JS_MAX_SOURCE` | `1048576` (1 МиБ) |
+| `WDBGP_JS_MAX_RESPONSE` | `16777216` (16 МиБ) |
+| `WDBGP_JS_MAX_TOTAL` | `67108864` (64 МиБ) |
+| `WDBGP_JS_MAX_ENTRIES` | `1000000` |
+| `WDBGP_JS_MAX_REQUESTS` | `200` |
+| `WDBGP_JS_MAX_CALL_STACK` | `1000` |
 
 `WDBGP_ADMIN_PASSWORD` и `WDBGP_SESSION_SECRET` обязательны для `serve`.
 Старые имена `WDBGP_BIRD_LOCAL_ADDRESS` и
