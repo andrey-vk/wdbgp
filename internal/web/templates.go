@@ -73,9 +73,9 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 .selection-form{padding-bottom:5.5rem}
 .catalog-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:1rem;margin-top:1rem}
-.category-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:1rem;padding-top:.5rem;position:relative;margin-top:1rem}
-.category-card legend{background:var(--card-bg);padding:0 .5rem;font-size:1em;font-weight:600;position:absolute;top:-.7em;left:.8rem;line-height:1.4}
-.category-title{font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;flex-wrap:wrap}
+.category-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-top:1rem}
+.category-card legend{background:var(--card-bg);padding:0 .5rem;font-size:1em;font-weight:600;line-height:1.4}
+.category-title{font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;flex-wrap:wrap;margin-bottom:0}
 .category-title input[type=checkbox]{margin:0}
 .service-list{display:flex;flex-direction:column;gap:4px;margin-top:6px;padding-left:1.5rem}
 .service-list label{display:flex;align-items:center;gap:4px;font-size:.9em;margin-bottom:0}
