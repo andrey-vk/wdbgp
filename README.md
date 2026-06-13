@@ -193,6 +193,13 @@ password check. Force `true` only when the admin UI is always served over HTTPS.
 | `WDBGP_LOG_LEVEL` | `INFO` |
 | `WDBGP_LOG_FORMAT` | `text` |
 | `WDBGP_TRUST_PROXY_HEADERS` | `false` |
+| `WDBGP_JS_TIMEOUT` | `120` seconds |
+| `WDBGP_JS_MAX_SOURCE` | `1048576` (1 MiB) |
+| `WDBGP_JS_MAX_RESPONSE` | `16777216` (16 MiB) |
+| `WDBGP_JS_MAX_TOTAL` | `67108864` (64 MiB) |
+| `WDBGP_JS_MAX_ENTRIES` | `1000000` |
+| `WDBGP_JS_MAX_REQUESTS` | `200` |
+| `WDBGP_JS_MAX_CALL_STACK` | `1000` |
 
 `WDBGP_ADMIN_PASSWORD` and `WDBGP_SESSION_SECRET` are required by `serve`.
 The old `WDBGP_BIRD_LOCAL_ADDRESS` and `WDBGP_BIRD_LOCAL_ADDRESS_V6` names are
