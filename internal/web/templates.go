@@ -561,8 +561,8 @@ fieldset.category-card{border:1px solid var(--border);border-radius:1rem;backgro
 <div class=main>
 <header class=topbar id=topbar>
 <button onclick="cycleTheme()" title="Theme" style="font-size:1.1em;padding:2px 8px">🌙</button>
-<a href="" onclick="var u=new URL(window.location.href);u.searchParams.set('lang','en');window.location=u.toString();return false">EN</a>
-<a href="" onclick="var u=new URL(window.location.href);u.searchParams.set('lang','ru');window.location=u.toString();return false">RU</a>
+<a href="?lang=en" onclick="event.preventDefault();var u=new URL(window.location.href);u.searchParams.set('lang','en');window.location.href=u.toString()">EN</a>
+<a href="?lang=ru" onclick="event.preventDefault();var u=new URL(window.location.href);u.searchParams.set('lang','ru');window.location.href=u.toString()">RU</a>
 </header>
 <main id=main hx-history-elt>
 {{.ContentHTML}}
