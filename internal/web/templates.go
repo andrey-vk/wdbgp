@@ -44,6 +44,19 @@ const pageEnd = `</body></html>`
 
 const accessDeniedTemplate = `<h1>{{tr "access_denied.heading"}}</h1><p>IP: <code>{{.Data}}</code></p>`
 
+const userLoginTemplate = `{{with .Data}}
+<header><h1>{{tr "title.login"}}</h1></header>
+<section class=card>
+<p>{{tr "login.not_implemented"}}</p>
+<form method=post action=/login>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<label>{{tr "user.login"}} <input name=login required></label>
+<label>{{tr "user.password"}} <input type=password name=password required></label>
+<button>{{tr "title.login"}}</button>
+</form>
+</section>
+{{end}}`
+
 const loginTemplate = `<h1>{{tr "admin.heading"}}</h1>{{if .Data}}<p class=error>{{.Data}}</p>{{end}}
 <form method=post><label>{{tr "login.password"}} <input type=password name=password autofocus required></label>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">

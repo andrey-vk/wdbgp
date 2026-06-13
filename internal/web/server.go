@@ -175,6 +175,8 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/user/{id}", server.requireAdmin(server.saveAdminUser))
 	mux.HandleFunc("POST /admin/user/{id}/delete", server.requireAdmin(server.deleteAdminUser))
 	mux.HandleFunc("POST /admin/logout", server.requireAdmin(server.logout))
+	mux.HandleFunc("GET /login", server.userLoginPage)
+	mux.HandleFunc("POST /login", server.userLogin)
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /status", server.status)
 	
@@ -249,6 +251,33 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 	view.CSRFToken = csrfToken
 	view.Saved = r.URL.Query().Get("saved")
 	s.render(w, r, http.StatusOK, "title.selection", "selection", view)
+}
+
+func (s *Server) userLoginPage(w http.ResponseWriter, r *http.Request) {
+	// If already logged in, redirect to /
+	cookie, err := r.Cookie("wdbgp_user")
+	if err == nil {
+		// Check if the cookie is valid for any user
+		parts := strings.SplitN(cookie.Value, ".", 4)
+		if len(parts) == 4 {
+			userID, err := strconv.ParseInt(parts[2], 10, 64)
+			if err == nil {
+				user, err := s.store.User(r.Context(), userID)
+				if err == nil && user.Enabled && validUserSession(r, user.ID, s.cfg.SessionSecret) {
+					http.Redirect(w, r, "/", http.StatusSeeOther)
+					return
+				}
+			}
+		}
+	}
+	// Show login form
+	lang, _ := requestLocale(r, s.defaultLang)
+	s.renderTitle(w, r, http.StatusOK, translate(lang, "title.login"), "user-login", nil)
+}
+
+func (s *Server) userLogin(w http.ResponseWriter, r *http.Request) {
+	// Minimal for now — just redirect to /
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
@@ -1597,6 +1626,7 @@ func compileTemplates() map[locale]map[string]*template.Template {
 		"login":         loginTemplate,
 		"selection":     selectionTemplate,
 		"admin":         adminTemplate,
+		"user-login":    userLoginTemplate,
 		"user-edit":     userEditTemplate,
 	}
 	result := make(map[locale]map[string]*template.Template, len(translations))
@@ -2005,7 +2035,7 @@ func csrfProtection(next http.Handler, secret string) http.Handler {
 		
 		// Skip CSRF validation for safe methods and login endpoint
 		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" || 
-		   r.URL.Path == "/healthz" || r.URL.Path == "/admin/login" {
+		   r.URL.Path == "/healthz" || r.URL.Path == "/admin/login" || r.URL.Path == "/login" {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -2037,7 +2067,7 @@ func csrfProtection(next http.Handler, secret string) http.Handler {
 func (s *Server) adminRateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only apply to admin paths
-		if strings.HasPrefix(r.URL.Path, "/admin") && r.URL.Path != "/admin/login" {
+		if strings.HasPrefix(r.URL.Path, "/admin") && r.URL.Path != "/admin/login" && r.URL.Path != "/login" {
 			clientIP := s.clientIP(r)
 			
 			if !s.adminLimiter.allow(clientIP) {
