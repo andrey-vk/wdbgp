@@ -17,22 +17,17 @@ import (
 	"github.com/dop251/goja"
 )
 
-const (
-	maxAdapterRequests      = 200
-	maxAdapterResponseBytes = 16 << 20
-	maxAdapterTotalBytes    = 64 << 20
-	maxAdapterEntries       = 1_000_000
-	maxAdapterSourceBytes   = 1 << 20
-)
+
 
 type adapterRunner struct {
 	client  *http.Client
 	timeout time.Duration
+	limits  AdapterLimits
 }
 
-func ValidateAdapterSource(source string) error {
-	if len(source) > maxAdapterSourceBytes {
-		return fmt.Errorf("adapter source exceeds %d bytes", maxAdapterSourceBytes)
+func ValidateAdapterSource(source string, maxBytes int) error {
+	if len(source) > maxBytes {
+		return fmt.Errorf("adapter source exceeds %d bytes", maxBytes)
 	}
 	_, err := goja.Compile("feed-adapter.js", source, true)
 	if err != nil {
@@ -57,7 +52,7 @@ func (r adapterRunner) run(
 	if adapter.APIVersion != 1 {
 		return nil, fmt.Errorf("unsupported adapter API version %d", adapter.APIVersion)
 	}
-	if err := ValidateAdapterSource(adapter.Source); err != nil {
+	if err := ValidateAdapterSource(adapter.Source, r.limits.MaxSourceBytes); err != nil {
 		return nil, err
 	}
 	timeout := r.timeout
@@ -69,7 +64,7 @@ func (r adapterRunner) run(
 
 	vm := goja.New()
 	vm.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
-	vm.SetMaxCallStackSize(1_000)
+	vm.SetMaxCallStackSize(r.limits.MaxCallStack)
 	program, err := goja.Compile(adapter.Key+".js", adapter.Source, true)
 	if err != nil {
 		return nil, fmt.Errorf("compile adapter: %w", err)
@@ -91,7 +86,7 @@ func (r adapterRunner) run(
 		return nil, fmt.Errorf("adapter must define function sync(feed, api)")
 	}
 
-	httpAPI, err := newAdapterHTTP(runCtx, r.client, feed.URL, adapter.AllowedHosts)
+	httpAPI, err := newAdapterHTTP(runCtx, r.client, feed.URL, adapter.AllowedHosts, r.limits)
 	if err != nil {
 		return nil, err
 	}
@@ -125,13 +120,13 @@ func (r adapterRunner) run(
 	if err := vm.ExportTo(value, &rawEntries); err != nil {
 		return nil, fmt.Errorf("adapter result must be an entry array: %w", err)
 	}
-	if len(rawEntries) > maxAdapterEntries {
-		return nil, fmt.Errorf("adapter returned more than %d entries", maxAdapterEntries)
+	if len(rawEntries) > r.limits.MaxEntries {
+		return nil, fmt.Errorf("adapter returned more than %d entries", r.limits.MaxEntries)
 	}
-	return normalizeCanonical(rawEntries)
+	return normalizeCanonical(rawEntries, r.limits.MaxEntries)
 }
 
-func normalizeCanonical(rawEntries []canonicalEntry) ([]Entry, error) {
+func normalizeCanonical(rawEntries []canonicalEntry, maxEntries int) ([]Entry, error) {
 	var entries []Entry
 	for _, value := range rawEntries {
 		value.Category = strings.TrimSpace(value.Category)
@@ -150,8 +145,8 @@ func normalizeCanonical(rawEntries []canonicalEntry) ([]Entry, error) {
 				Service:  value.Service,
 				CIDR:     cidr,
 			})
-			if len(entries) > maxAdapterEntries {
-				return nil, fmt.Errorf("adapter returned more than %d CIDRs", maxAdapterEntries)
+			if len(entries) > maxEntries {
+				return nil, fmt.Errorf("adapter returned more than %d CIDRs", maxEntries)
 			}
 		}
 	}
@@ -162,6 +157,7 @@ type adapterHTTP struct {
 	ctx          context.Context
 	client       *http.Client
 	allowedHosts map[string]bool
+	limits       AdapterLimits
 	requests     int
 	totalBytes   int64
 }
@@ -171,6 +167,7 @@ func newAdapterHTTP(
 	client *http.Client,
 	feedURL string,
 	additionalHosts string,
+	limits AdapterLimits,
 ) (*adapterHTTP, error) {
 	parsedFeedURL, err := url.Parse(feedURL)
 	if err != nil || parsedFeedURL.Hostname() == "" {
@@ -183,7 +180,7 @@ func newAdapterHTTP(
 		allowed[strings.ToLower(strings.TrimSpace(host))] = true
 	}
 	return &adapterHTTP{
-		ctx: ctx, client: client, allowedHosts: allowed,
+		ctx: ctx, client: client, allowedHosts: allowed, limits: limits,
 	}, nil
 }
 
@@ -252,18 +249,18 @@ func (a *adapterHTTP) doHTTPRequest(parsed *url.URL) (string, error) {
 		return "", fmt.Errorf("HTTP %s", response.Status)
 	}
 	
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxAdapterResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(response.Body, int64(a.limits.MaxResponseBytes)+1))
 	if err != nil {
 		return "", err
 	}
-	
-	if len(body) > maxAdapterResponseBytes {
-		return "", fmt.Errorf("adapter HTTP response exceeds %d bytes", maxAdapterResponseBytes)
+
+	if len(body) > a.limits.MaxResponseBytes {
+		return "", fmt.Errorf("adapter HTTP response exceeds %d bytes", a.limits.MaxResponseBytes)
 	}
-	
+
 	a.totalBytes += int64(len(body))
-	if a.totalBytes > maxAdapterTotalBytes {
-		return "", fmt.Errorf("adapter HTTP responses exceed %d bytes", maxAdapterTotalBytes)
+	if a.totalBytes > int64(a.limits.MaxTotalBytes) {
+		return "", fmt.Errorf("adapter HTTP responses exceed %d bytes", a.limits.MaxTotalBytes)
 	}
 	
 	return string(body), nil
@@ -300,8 +297,8 @@ func (a *adapterHTTP) validateURL(parsed *url.URL) error {
 }
 
 func (a *adapterHTTP) reserveRequest() error {
-	if a.requests >= maxAdapterRequests {
-		return fmt.Errorf("adapter exceeded %d HTTP requests", maxAdapterRequests)
+	if a.requests >= a.limits.MaxRequests {
+		return fmt.Errorf("adapter exceeded %d HTTP requests", a.limits.MaxRequests)
 	}
 	return nil
 }
