@@ -1841,10 +1841,16 @@ type Community struct {
 	Community int
 }
 
+// findFirstFree returns the first integer >= start that is not in used.
+func findFirstFree(start int, used map[int]bool) int {
+	for used[start] {
+		start++
+	}
+	return start
+}
+
 // AutoCommunity returns the auto-generated community number for a given position.
-// groupIndex and serviceIndex are 0-based positions in alphabetical order.
-// Groups start at 10000 and increment by 10000.
-// Services start at group+1. Max 9999 services per group; overflow skips to next 10000 block.
+// This is a positional estimate used for UI display; actual assignment uses findFirstFree.
 func AutoCommunity(groupIndex int, serviceIndex int) int {
 	for serviceIndex >= 9999 {
 		groupIndex++
@@ -1888,14 +1894,39 @@ func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, er
 	}
 
 	generated := 0
-	for _, modeID := range modeIDs {
-		// Get categories in alphabetical order
+	for _, mid := range modeIDs {
+		// Load all currently-assigned communities for this mode.
+		commRows, err := tx.Query(
+			"SELECT category, service, community FROM catalog_communities WHERE mode_id = ? ORDER BY community",
+			mid)
+		if err != nil {
+			return 0, err
+		}
+		used := make(map[int]bool)
+		keyComm := make(map[string]int)
+		for commRows.Next() {
+			var category, service string
+			var community int
+			if err := commRows.Scan(&category, &service, &community); err != nil {
+				commRows.Close()
+				return 0, err
+			}
+			used[community] = true
+			if service == "" {
+				keyComm["grp:"+category] = community
+			} else {
+				keyComm["svc:"+category+"|"+service] = community
+			}
+		}
+		commRows.Close()
+
+		// Get categories in alphabetical order.
 		catRows, err := tx.Query(`
 SELECT DISTINCT ce.category
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
 WHERE f.mode_id = ?
-ORDER BY ce.category`, modeID)
+ORDER BY ce.category`, mid)
 		if err != nil {
 			return 0, err
 		}
@@ -1913,24 +1944,36 @@ ORDER BY ce.category`, modeID)
 
 		groupIndex := 0
 		for _, category := range categories {
-			groupCommunity := (groupIndex + 1) * 10000
 			groupKey := "grp:" + category
-			if existing == nil || !existing[groupKey] {
+
+			// Determine group community: use existing assignment or find a free one.
+			var groupCommunity int
+			if existing != nil && existing[groupKey] {
+				var ok bool
+				groupCommunity, ok = keyComm[groupKey]
+				if !ok {
+					// Existing group expected to have a community; skip if missing.
+					groupIndex++
+					continue
+				}
+			} else {
+				groupCommunity = findFirstFree((groupIndex+1)*10000, used)
 				if _, err := tx.Exec(
 					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, '', ?)",
-					modeID, category, groupCommunity); err != nil {
+					mid, category, groupCommunity); err != nil {
 					return generated, err
 				}
+				used[groupCommunity] = true
 				generated++
 			}
 
-			// Get services in alphabetical order
+			// Get services in alphabetical order.
 			svcRows, err := tx.Query(`
 SELECT DISTINCT ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
 WHERE f.mode_id = ? AND ce.category = ?
-ORDER BY ce.service`, modeID, category)
+ORDER BY ce.service`, mid, category)
 			if err != nil {
 				return generated, err
 			}
@@ -1946,26 +1989,26 @@ ORDER BY ce.service`, modeID, category)
 			}
 			svcRows.Close()
 
-			currentGroup := groupIndex
-			svcCounter := 0
 			for _, service := range services {
-				if svcCounter >= 9999 {
-					currentGroup++
-					svcCounter = 0
-				}
-				svcCommunity := (currentGroup+1)*10000 + svcCounter + 1
 				svcKey := "svc:" + category + "|" + service
-				if existing == nil || !existing[svcKey] {
-					if _, err := tx.Exec(
-						"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)",
-						modeID, category, service, svcCommunity); err != nil {
-						return generated, err
-					}
-					generated++
+				if existing != nil && existing[svcKey] {
+					continue
 				}
-				svcCounter++
+				// Find first free community starting from group_community+1.
+				// Each insertion adds to used, so subsequent services naturally
+				// get the next free number.  Overflow past 9999 services spills
+				// into the next block — findFirstFree skips any used numbers.
+				svcCommunity := findFirstFree(groupCommunity+1, used)
+
+				if _, err := tx.Exec(
+					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)",
+					mid, category, service, svcCommunity); err != nil {
+					return generated, err
+				}
+				used[svcCommunity] = true
+				generated++
 			}
-		groupIndex = currentGroup + 1
+			groupIndex++
 		}
 	}
 	return generated, nil
