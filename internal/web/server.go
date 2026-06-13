@@ -272,7 +272,7 @@ func (s *Server) userLoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 	// Show login form
 	lang, _ := requestLocale(r, s.defaultLang)
-	s.renderTitle(w, r, http.StatusOK, translate(lang, "title.login"), "user-login", nil)
+	s.renderTitle(w, r, http.StatusOK, translate(lang, "title.login"), "user-login", struct{}{})
 }
 
 func (s *Server) userLogin(w http.ResponseWriter, r *http.Request) {
