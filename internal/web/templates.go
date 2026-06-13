@@ -27,9 +27,13 @@ dialog{width:min(52rem,calc(100% - 2rem));max-height:calc(100% - 2rem);border:0;
 .dialog-body{padding:1.25rem}.dialog-header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.dialog-header button{background:#667;padding:.45rem .7rem}
 .debug-list{margin:.5rem 0 1rem;padding-left:1.25rem}.debug-list li{margin:.3rem 0}
 .community-tag{font-size:.8em;color:#667;font-family:ui-monospace,monospace;margin-left:.3em}
-.community-value{cursor:pointer;font-family:ui-monospace,monospace}
-.community-input{font-family:ui-monospace,monospace;padding:.3rem;width:10rem;border:1px solid #2457a6;border-radius:.35rem}
-.revert-btn{cursor:pointer;background:none;border:1px solid #c8d2df;border-radius:.35rem;padding:.1rem .35rem;font-size:.85em;color:#667}
+.community-value{color:#06c;cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}.community-value:hover{color:#049}
+.community-cell{white-space:nowrap}
+.community-input{width:7ch;padding:1px 3px;border:1px solid #aaa;border-radius:2px}
+.apply-btn{color:#0a0;background:0 0;border:1px solid #0a0;cursor:pointer;padding:1px 5px;margin-left:2px;border-radius:2px}
+.cancel-btn{color:#c00;background:0 0;border:1px solid #c00;cursor:pointer;padding:1px 5px;margin-left:1px;border-radius:2px}
+.revert-btn{color:#c90;background:0 0;border:none;cursor:pointer;font-size:1.1em;margin-left:4px;padding:0 2px}
+.communities-bar{margin-top:1rem;display:flex;align-items:center;gap:1rem}
 </style></head><body><nav class=language-switcher aria-label="{{tr "language.label"}}">
 <a href="{{.EnglishURL}}" title="{{tr "language.english"}}" aria-current="{{if eq .Lang "en"}}page{{else}}false{{end}}">EN</a>
 <a href="{{.RussianURL}}" title="{{tr "language.russian"}}" aria-current="{{if eq .Lang "ru"}}page{{else}}false{{end}}">RU</a>
@@ -365,69 +369,121 @@ const communitiesBody = `{{with .Data}}
 <label>{{tr "catalog.mode"}} <select id=mode-select>
 {{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.Mode.ID}}selected{{end}}>{{.Name}}</option>{{end}}
 </select></label>
-<p class=muted>{{tr "communities.group_community"}}: {{tr "communities.auto_generated"}} = (position) × 10000. {{tr "communities.service_community"}}: {{tr "communities.auto_generated"}} = group + position + 1.</p>
 <form method=post action="/admin/communities" id=communities-form>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=mode value="{{.Mode.ID}}">
-<table><tr><th>{{tr "catalog.category"}}</th><th>{{tr "catalog.service"}}</th><th>{{tr "communities.group_community"}}</th></tr>
+<table class=communities-table><tr><th>{{tr "catalog.category"}}</th><th>{{tr "catalog.service"}}</th><th>{{tr "communities.group_community"}}</th></tr>
 {{range .Groups}}{{$group := .}}
-<tr style="background:#eef4fb">
+<tr class=group-row>
 <td><strong>{{.Category}}</strong></td><td></td>
-<td><span class=community-value data-name="cat_{{.Category}}" data-value="{{.Community}}">{{.Community}}</span>
-{{if ne .Community .AutoGroup}} <button type=button class=revert-btn data-name="cat_{{.Category}}" data-auto="{{.AutoGroup}}">↺</button>{{end}}</td>
+<td><span class=community-cell data-name="cat_{{.Category}}" data-value="{{.Community}}" data-auto="{{.AutoGroup}}">
+<span class=community-value>{{.Community}}</span>
+{{if ne .Community .AutoGroup}}<button type=button class=revert-btn title="{{tr "communities.revert"}}">↺</button>{{end}}
+<span class=edit-actions style="display:none"><input type=number class=community-input name="cat_{{.Category}}" min=1 max=4294967295 value="{{.Community}}"><button type=button class=apply-btn title="{{tr "communities.apply"}}">✓</button><button type=button class=cancel-btn title="{{tr "communities.cancel"}}">✗</button></span>
+</span></td>
 </tr>
 {{range .Services}}
 <tr>
 <td></td><td>{{.Name}}</td>
-<td><span class=community-value data-name="svc_{{$group.Category}}|{{.Name}}" data-value="{{.Community}}">{{.Community}}</span>
-{{if ne .Community .AutoSvc}} <button type=button class=revert-btn data-name="svc_{{$group.Category}}|{{.Name}}" data-auto="{{.AutoSvc}}">↺</button>{{end}}</td>
+<td><span class=community-cell data-name="svc_{{$group.Category}}|{{.Name}}" data-value="{{.Community}}" data-auto="{{.AutoSvc}}">
+<span class=community-value>{{.Community}}</span>
+{{if ne .Community .AutoSvc}}<button type=button class=revert-btn title="{{tr "communities.revert"}}">↺</button>{{end}}
+<span class=edit-actions style="display:none"><input type=number class=community-input name="svc_{{$group.Category}}|{{.Name}}" min=1 max=4294967295 value="{{.Community}}"><button type=button class=apply-btn title="{{tr "communities.apply"}}">✓</button><button type=button class=cancel-btn title="{{tr "communities.cancel"}}">✗</button></span>
+</span></td>
 </tr>{{end}}
 {{end}}</table>
-<div class=save-bar style="position:static;margin-top:1rem"><button type=submit>{{tr "communities.apply"}}</button></div>
+<div class="communities-bar"><button type=submit class=primary id=save-btn>{{tr "communities.apply"}}</button> <span id=change-count class=muted></span></div>
 </form>
 </section>
 <script>
-document.getElementById('mode-select').addEventListener('change', function() {
-  window.location.href = '/admin/communities?mode=' + this.value;
+(function(){
+var modeSelect=document.getElementById('mode-select');
+modeSelect.addEventListener('change',function(){window.location.href='/admin/communities?mode='+this.value});
+
+function countChanges(){return document.querySelectorAll('.community-input[data-changed="1"]').length+document.querySelectorAll('.community-cell.reverted').length}
+function updateUI(){var c=countChanges();var el=document.getElementById('change-count');el.textContent=c>0?c+' changed':'no changes';document.getElementById('save-btn').disabled=c===0}
+
+// Click number → edit mode
+document.querySelectorAll('.community-value').forEach(function(v){
+v.addEventListener('click',function(){
+var cell=this.parentElement;
+cell.querySelector('.community-value').style.display='none';
+cell.querySelector('.revert-btn')&&(cell.querySelector('.revert-btn').style.display='none');
+cell.querySelector('.edit-actions').style.display='inline';
+var inp=cell.querySelector('.community-input');
+inp.dataset.original=inp.value;
+inp.dataset.changed='0';
+inp.focus();inp.select();
 });
-document.querySelectorAll('.community-value').forEach(function(el) {
-  el.addEventListener('click', function() {
-    var input = document.createElement('input');
-    input.type = 'number';
-    input.min = 1;
-    input.max = 4294967295;
-    input.value = this.dataset.value;
-    input.name = this.dataset.name;
-    input.className = 'community-input';
-    input.dataset.oldValue = this.dataset.value;
-    this.replaceWith(input);
-    input.focus();
-    input.select();
-  });
 });
-document.querySelectorAll('.revert-btn').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    var name = this.dataset.name;
-    var autoVal = this.dataset.auto;
-    var span = document.querySelector('span.community-value[data-name="' + name + '"]');
-    var input = document.querySelector('input[data-old-value][name="' + name + '"]');
-    if (input) {
-      input.value = autoVal;
-    } else if (span) {
-      var newInput = document.createElement('input');
-      newInput.type = 'hidden';
-      newInput.name = name;
-      newInput.value = autoVal;
-      document.getElementById('communities-form').appendChild(newInput);
-    }
-  });
+
+// ✓ Apply
+document.querySelectorAll('.apply-btn').forEach(function(b){
+b.addEventListener('click',function(){
+var cell=this.closest('.community-cell');
+var inp=cell.querySelector('.community-input');
+var newVal=inp.value;
+inp.value=newVal;
+if (newVal!=inp.dataset.original||cell.classList.contains('reverted')){
+inp.dataset.changed='1';cell.classList.remove('reverted')
+}
+cell.querySelector('.community-value').textContent=newVal;
+cell.querySelector('.community-value').style.display='';
+var auto=cell.dataset.auto;
+var revert=cell.querySelector('.revert-btn');
+if(newVal!=auto){if(!revert){revert=document.createElement('button');revert.type='button';revert.className='revert-btn';revert.textContent='↺';revert.title='Revert to auto';cell.insertBefore(revert,cell.querySelector('.edit-actions'));setupRevert(revert)}}else{if(revert)revert.style.display='none'}
+revert&&(revert.style.display=newVal!=auto?'':'none');
+cell.querySelector('.edit-actions').style.display='none';
+updateUI()
+})
 });
-document.getElementById('communities-form').addEventListener('submit', function(e) {
-  var changed = document.querySelectorAll('.community-input').length + document.querySelectorAll('input[type=hidden][name^="svc_"],input[type=hidden][name^="cat_"]').length;
-  if (changed > 0 && !confirm({{printf "%q" (tr "communities.confirm")}}.replace('N', changed))) {
-    e.preventDefault();
-  }
+
+// ✗ Cancel
+document.querySelectorAll('.cancel-btn').forEach(function(b){
+b.addEventListener('click',function(){
+var cell=this.closest('.community-cell');
+cell.querySelector('.community-value').style.display='';
+var revert=cell.querySelector('.revert-btn');
+var auto=cell.dataset.auto;
+var val=cell.querySelector('.community-value').textContent;
+revert&&(revert.style.display=val!=auto?'':'none');
+cell.querySelector('.edit-actions').style.display='none';
+updateUI()
+})
 });
+
+// ↺ Revert to auto
+function setupRevert(btn){
+btn.addEventListener('click',function(){
+var cell=this.closest('.community-cell');
+var auto=cell.dataset.auto;
+cell.querySelector('.community-value').textContent=auto;
+cell.classList.add('reverted');
+var hidden=document.createElement('input');
+hidden.type='hidden';hidden.name=cell.dataset.name;hidden.value=auto;hidden.className='revert-hidden';
+var oldHidden=cell.querySelector('.revert-hidden');
+oldHidden&&oldHidden.remove();
+cell.appendChild(hidden);
+this.style.display='none';
+cell.querySelector('.edit-actions').style.display='none';
+cell.querySelector('.community-value').style.display='';
+updateUI()
+})}
+document.querySelectorAll('.revert-btn').forEach(setupRevert);
+
+// Enter submits apply
+document.querySelectorAll('.community-input').forEach(function(inp){
+inp.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();this.parentElement.querySelector('.apply-btn').click()}})
+});
+
+// Form submit confirm
+document.getElementById('communities-form').addEventListener('submit',function(e){
+var c=countChanges();
+if(c>0&&!confirm('Confirm: N communities will be updated. Continue?'.replace('N',c))){e.preventDefault()}
+});
+
+updateUI()
+})();
 </script>
 {{end}}`
 
