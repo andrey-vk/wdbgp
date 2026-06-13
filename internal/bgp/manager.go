@@ -501,7 +501,10 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			delete(desired, rawPrefix)
 		}
 	}
-	
+
+	// Load communities for the default mode to attach category/service tags.
+	comms, _ := m.store.GetCommunities(ctx, store.DefaultCatalogModeID)
+
 	// Use retry for BGP operations
 	for prefix, installed := range m.installed {
 		users, exists := desired[prefix]
@@ -509,7 +512,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		if exists && signature == installed.Signature {
 			continue
 		}
-		
+
 		err := retry.Do(ctx, retry.BGPConfig,
 			func() error {
 				return m.server.DeletePath(ctx, &api.DeletePathRequest{
@@ -519,24 +522,25 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			},
 			retry.TransientError,
 		)
-		
+
 		if err != nil {
 			return fmt.Errorf("withdraw %s: %w", prefix, err)
 		}
 		delete(m.installed, prefix)
 	}
-	
+
 	for prefix, users := range desired {
 		sig := signature(users)
 		if installed, ok := m.installed[prefix]; ok && installed.Signature == sig {
 			continue
 		}
-		
-		path, err := m.path(prefix, users)
+
+		category, service, _ := m.store.PrefixCategoryService(ctx, prefix)
+		path, err := m.path(prefix, users, category, service, comms)
 		if err != nil {
 			return err
 		}
-		
+
 		response, err := retry.DoWithResult(ctx, retry.BGPConfig,
 			func() (*api.AddPathResponse, error) {
 				return m.server.AddPath(ctx, &api.AddPathRequest{
@@ -546,7 +550,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			},
 			retry.TransientError,
 		)
-		
+
 		if err != nil {
 			return fmt.Errorf("announce %s: %w", prefix, err)
 		}
@@ -555,7 +559,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) path(rawPrefix string, userIDs []int64) (*api.Path, error) {
+func (m *Manager) path(rawPrefix string, userIDs []int64, category, service string, communities map[string]int) (*api.Path, error) {
 	prefix, err := netip.ParsePrefix(rawPrefix)
 	if err != nil {
 		return nil, err
@@ -568,18 +572,33 @@ func (m *Manager) path(rawPrefix string, userIDs []int64) (*api.Path, error) {
 		return nil, err
 	}
 	origin, _ := anypb.New(&api.OriginAttribute{Origin: 0})
-	communities := make([]*api.LargeCommunity, 0, len(userIDs))
+	comms := make([]*api.LargeCommunity, 0, len(userIDs)+2)
 	for _, userID := range userIDs {
 		if userID < 0 || userID > int64(^uint32(0)) {
 			return nil, fmt.Errorf("user id %d is outside large community range", userID)
 		}
-		communities = append(communities, &api.LargeCommunity{
+		comms = append(comms, &api.LargeCommunity{
 			GlobalAdmin: m.cfg.LocalASN,
 			LocalData1:  uint32(userID),
 			LocalData2:  0,
 		})
 	}
-	communityAttribute, _ := anypb.New(&api.LargeCommunitiesAttribute{Communities: communities})
+	// Attach category and service communities if available.
+	if category != "" {
+		if c, ok := communities[category]; ok {
+			comms = append(comms, &api.LargeCommunity{
+				GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: uint32(c),
+			})
+		}
+		if service != "" {
+			if c, ok := communities[category+"|"+service]; ok {
+				comms = append(comms, &api.LargeCommunity{
+					GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: uint32(c),
+				})
+			}
+		}
+	}
+	communityAttribute, _ := anypb.New(&api.LargeCommunitiesAttribute{Communities: comms})
 	if prefix.Addr().Is4() {
 		nextHop, err := anypb.New(&api.NextHopAttribute{NextHop: m.cfg.LocalAddressV4})
 		if err != nil {

@@ -22,6 +22,7 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
+	Go      func(*sql.Tx) error // optional post-SQL migration function
 }
 
 var migrations = []Migration{
@@ -390,6 +391,22 @@ CREATE INDEX IF NOT EXISTS idx_selected_categories_user_mode_category ON selecte
 CREATE INDEX IF NOT EXISTS idx_selected_services_user_mode_category_service ON selected_services(user_id, mode_id, category, service);
 `,
 	},
+	{
+		Version: 13,
+		Name:    "add catalog communities",
+		SQL: `
+CREATE TABLE catalog_communities (
+    mode_id   INTEGER NOT NULL REFERENCES catalog_modes(id) ON DELETE CASCADE,
+    category  TEXT NOT NULL,
+    service   TEXT NOT NULL DEFAULT '',
+    community INTEGER NOT NULL CHECK(community > 0 AND community <= 4294967295),
+    PRIMARY KEY (mode_id, category, service)
+);
+CREATE INDEX idx_catalog_communities_mode ON catalog_communities(mode_id);
+CREATE INDEX idx_catalog_communities_value ON catalog_communities(community);
+`,
+		Go: autoGenerateCommunities,
+	},
 }
 
 type Store struct {
@@ -541,7 +558,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, migration.SQL); err == nil {
+		if _, err = tx.ExecContext(ctx, migration.SQL); err == nil && migration.Go != nil {
+			err = migration.Go(tx)
+		}
+		if err == nil {
 			_, err = tx.ExecContext(ctx,
 				"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
 				migration.Version, migration.Name, time.Now().UTC().Format(time.RFC3339Nano),
@@ -1740,4 +1760,226 @@ func (s *Store) Stats(ctx context.Context) (int, int, int, error) {
 
 func IsNotFound(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
+}
+
+// Community represents a catalog community assignment.
+type Community struct {
+	ModeID    int64
+	Category  string
+	Service   string // empty = group-level
+	Community int
+}
+
+// AutoCommunity returns the auto-generated community number for a given position.
+// groupIndex and serviceIndex are 0-based positions in alphabetical order.
+// Groups start at 10000 and increment by 10000.
+// Services start at group+1. Max 9999 services per group; overflow skips to next 10000 block.
+func AutoCommunity(groupIndex int, serviceIndex int) int {
+	for serviceIndex >= 9999 {
+		groupIndex++
+		serviceIndex -= 9999
+	}
+	groupCommunity := (groupIndex + 1) * 10000
+	return groupCommunity + serviceIndex + 1
+}
+
+// autoGenerateCommunities is the migration 13 post-SQL function that fills
+// communities for all existing catalog data.
+func autoGenerateCommunities(tx *sql.Tx) error {
+	_, err := genCommunities(tx, nil, 0)
+	return err
+}
+
+// genCommunities generates communities for categories and services that don't have one yet.
+// If existing is non-nil, it's used as the set of already-assigned keys to skip.
+// If modeID is 0, generates for all modes; otherwise only for the specified mode.
+func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, error) {
+	var modeIDs []int64
+	if modeID > 0 {
+		modeIDs = []int64{modeID}
+	} else {
+		modes, err := tx.Query("SELECT DISTINCT id FROM catalog_modes ORDER BY id")
+		if err != nil {
+			return 0, err
+		}
+		defer modes.Close()
+
+		for modes.Next() {
+			var id int64
+			if err := modes.Scan(&id); err != nil {
+				return 0, err
+			}
+			modeIDs = append(modeIDs, id)
+		}
+		if err := modes.Err(); err != nil {
+			return 0, err
+		}
+	}
+
+	generated := 0
+	for _, modeID := range modeIDs {
+		// Get categories in alphabetical order
+		catRows, err := tx.Query(`
+SELECT DISTINCT ce.category
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+WHERE f.mode_id = ?
+ORDER BY ce.category`, modeID)
+		if err != nil {
+			return 0, err
+		}
+
+		var categories []string
+		for catRows.Next() {
+			var cat string
+			if err := catRows.Scan(&cat); err != nil {
+				catRows.Close()
+				return 0, err
+			}
+			categories = append(categories, cat)
+		}
+		catRows.Close()
+
+		groupIndex := 0
+		for _, category := range categories {
+			groupCommunity := (groupIndex + 1) * 10000
+			groupKey := "grp:" + category
+			if existing == nil || !existing[groupKey] {
+				if _, err := tx.Exec(
+					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, '', ?)",
+					modeID, category, groupCommunity); err != nil {
+					return generated, err
+				}
+				generated++
+			}
+
+			// Get services in alphabetical order
+			svcRows, err := tx.Query(`
+SELECT DISTINCT ce.service
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+WHERE f.mode_id = ? AND ce.category = ?
+ORDER BY ce.service`, modeID, category)
+			if err != nil {
+				return generated, err
+			}
+
+			var services []string
+			for svcRows.Next() {
+				var svc string
+				if err := svcRows.Scan(&svc); err != nil {
+					svcRows.Close()
+					return generated, err
+				}
+				services = append(services, svc)
+			}
+			svcRows.Close()
+
+			currentGroup := groupIndex
+			svcCounter := 0
+			for _, service := range services {
+				if svcCounter >= 9999 {
+					currentGroup++
+					svcCounter = 0
+				}
+				svcCommunity := (currentGroup+1)*10000 + svcCounter + 1
+				svcKey := "svc:" + category + "|" + service
+				if existing == nil || !existing[svcKey] {
+					if _, err := tx.Exec(
+						"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)",
+						modeID, category, service, svcCommunity); err != nil {
+						return generated, err
+					}
+					generated++
+				}
+				svcCounter++
+			}
+		groupIndex = currentGroup + 1
+		}
+	}
+	return generated, nil
+}
+
+// GetCommunities returns all communities for a mode.
+// Map key: category for groups, "category|service" for services.
+func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]int, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT category, service, community FROM catalog_communities WHERE mode_id = ? ORDER BY category, service",
+		modeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]int)
+	for rows.Next() {
+		var category, service string
+		var community int
+		if err := rows.Scan(&category, &service, &community); err != nil {
+			return nil, err
+		}
+		if service == "" {
+			result[category] = community
+		} else {
+			result[category+"|"+service] = community
+		}
+	}
+	return result, rows.Err()
+}
+
+// SetCommunity upserts a community. service="" means group-level.
+func (s *Store) SetCommunity(ctx context.Context, modeID int64, category, service string, community int) error {
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)
+ON CONFLICT(mode_id, category, service) DO UPDATE SET community = excluded.community`,
+		modeID, category, service, community)
+	return err
+}
+
+// GenerateCommunities fills missing communities for all categories/services in a mode.
+// Uses the 10000*gap scheme. Skips categories/services that already have a community.
+// Returns count of newly generated communities.
+func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, error) {
+	var count int
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		// Load existing community keys
+		rows, err := tx.QueryContext(ctx,
+			"SELECT category, service FROM catalog_communities WHERE mode_id = ?", modeID)
+		if err != nil {
+			return err
+		}
+
+		existing := make(map[string]bool)
+		for rows.Next() {
+			var category, service string
+			if err := rows.Scan(&category, &service); err != nil {
+				rows.Close()
+				return err
+			}
+			if service == "" {
+				existing["grp:"+category] = true
+			} else {
+				existing["svc:"+category+"|"+service] = true
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+
+		var err2 error
+		count, err2 = genCommunities(tx, existing, modeID)
+		return err2
+	})
+	return count, err
+}
+
+// PrefixCategoryService returns the category and service for a given prefix.
+func (s *Store) PrefixCategoryService(ctx context.Context, prefix string) (category, service string, err error) {
+	err = s.DB.QueryRowContext(ctx,
+		`SELECT DISTINCT ce.category, ce.service
+FROM catalog_entries ce
+WHERE ce.cidr = ? LIMIT 1`, prefix).Scan(&category, &service)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	return
 }

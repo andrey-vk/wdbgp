@@ -26,6 +26,10 @@ td,th{border-bottom:1px solid #e8edf4;padding:.65rem;text-align:left;vertical-al
 dialog{width:min(52rem,calc(100% - 2rem));max-height:calc(100% - 2rem);border:0;border-radius:1rem;padding:0;box-shadow:0 24px 80px #10294f66}dialog::backdrop{background:#10294f99}
 .dialog-body{padding:1.25rem}.dialog-header{display:flex;align-items:center;justify-content:space-between;gap:1rem}.dialog-header button{background:#667;padding:.45rem .7rem}
 .debug-list{margin:.5rem 0 1rem;padding-left:1.25rem}.debug-list li{margin:.3rem 0}
+.community-tag{font-size:.8em;color:#667;font-family:ui-monospace,monospace;margin-left:.3em}
+.community-value{cursor:pointer;font-family:ui-monospace,monospace}
+.community-input{font-family:ui-monospace,monospace;padding:.3rem;width:10rem;border:1px solid #2457a6;border-radius:.35rem}
+.revert-btn{cursor:pointer;background:none;border:1px solid #c8d2df;border-radius:.35rem;padding:.1rem .35rem;font-size:.85em;color:#667}
 </style></head><body><nav class=language-switcher aria-label="{{tr "language.label"}}">
 <a href="{{.EnglishURL}}" title="{{tr "language.english"}}" aria-current="{{if eq .Lang "en"}}page{{else}}false{{end}}">EN</a>
 <a href="{{.RussianURL}}" title="{{tr "language.russian"}}" aria-current="{{if eq .Lang "ru"}}page{{else}}false{{end}}">RU</a>
@@ -98,9 +102,9 @@ const selectionBody = `{{$selection := .}}
 <span id=selected-service-label data-one="{{tr "selection.standalone_one"}}" data-few="{{tr "selection.standalone_few"}}" data-many="{{tr "selection.standalone_many"}}">{{plural .SelectedServiceCount "selection.standalone_one" "selection.standalone_few" "selection.standalone_many"}}</span>.
 {{tr "selection.apply_hint"}}</span></div>
 <button {{if and (not .Editable) (not .CanChangeMode)}}disabled{{end}}>{{tr "selection.save"}}</button></div>
-{{if .Categories}}<div class=catalog-grid>{{range .Categories}}
-<fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>{{tr "selection.whole_category"}}</span></label></legend>
-<div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}</label>{{end}}</div>
+{{if .Categories}}<div class=catalog-grid>{{range .Categories}}{{$cat := .Name}}
+<fieldset class=category-card><legend><label class=category-title><input type=checkbox name=category value="{{.Name}}" {{if .Selected}}checked{{end}} {{if not $selection.Editable}}disabled{{end}}> <strong>{{.Name}}</strong> <span class=pill>{{tr "selection.whole_category"}}</span>{{if index $selection.Communities .Name}} <span class=community-tag>{{index $selection.Communities .Name}}</span>{{end}}</label></legend>
+<div class=service-list>{{range .Services}}<label><input type=checkbox name=service value="{{.Value}}" {{if .Selected}}checked{{end}} {{if or (not $selection.Editable) .Disabled}}disabled{{end}}> {{.Name}}{{if index $selection.Communities (printf "%s|%s" $cat .Name)}} <span class=community-tag>{{index $selection.Communities (printf "%s|%s" $cat .Name)}}</span>{{end}}</label>{{end}}</div>
 </fieldset>{{end}}</div>{{else}}<p class=empty>{{tr "selection.empty"}}</p>{{end}}</form></section>
 <script>
 var catalogModeSelect = document.getElementById('catalog-mode-select');
@@ -185,6 +189,7 @@ const adminTemplate = `{{with .Data}}
 <header><h1>{{tr "admin.heading"}}</h1>
 <div style="display: flex; gap: 1rem; align-items: center;">
 <a href="/">{{tr "user_interface.link"}}</a>
+<a href="/admin/communities">{{tr "communities.link"}}</a>
 <form method=post action="/admin/logout" style="margin: 0;">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <button type=submit class="button danger" style="padding: 0.4rem 0.8rem; font-size: 0.9rem;">{{tr "admin.logout"}}</button>
@@ -353,3 +358,77 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <button>{{tr "user.save"}}</button></form>
 <form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form></section>
 {{template "selection" .Selection}}{{end}}`
+
+const communitiesBody = `{{with .Data}}
+<header><h1>{{tr "communities.title"}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>
+<section class=card>
+<label>{{tr "catalog.mode"}} <select id=mode-select>
+{{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.Mode.ID}}selected{{end}}>{{.Name}}</option>{{end}}
+</select></label>
+<p class=muted>{{tr "communities.group_community"}}: {{tr "communities.auto_generated"}} = (position) × 10000. {{tr "communities.service_community"}}: {{tr "communities.auto_generated"}} = group + position + 1.</p>
+<form method=post action="/admin/communities" id=communities-form>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<input type=hidden name=mode value="{{.Mode.ID}}">
+<table><tr><th>{{tr "catalog.category"}}</th><th>{{tr "catalog.service"}}</th><th>{{tr "communities.group_community"}}</th></tr>
+{{range .Groups}}{{$group := .}}
+<tr style="background:#eef4fb">
+<td><strong>{{.Category}}</strong></td><td></td>
+<td><span class=community-value data-name="cat_{{.Category}}" data-value="{{.Community}}">{{.Community}}</span>
+{{if ne .Community .AutoGroup}} <button type=button class=revert-btn data-name="cat_{{.Category}}" data-auto="{{.AutoGroup}}">↺</button>{{end}}</td>
+</tr>
+{{range .Services}}
+<tr>
+<td></td><td>{{.Name}}</td>
+<td><span class=community-value data-name="svc_{{$group.Category}}|{{.Name}}" data-value="{{.Community}}">{{.Community}}</span>
+{{if ne .Community .AutoSvc}} <button type=button class=revert-btn data-name="svc_{{$group.Category}}|{{.Name}}" data-auto="{{.AutoSvc}}">↺</button>{{end}}</td>
+</tr>{{end}}
+{{end}}</table>
+<div class=save-bar style="position:static;margin-top:1rem"><button type=submit>{{tr "communities.apply"}}</button></div>
+</form>
+</section>
+<script>
+document.getElementById('mode-select').addEventListener('change', function() {
+  window.location.href = '/admin/communities?mode=' + this.value;
+});
+document.querySelectorAll('.community-value').forEach(function(el) {
+  el.addEventListener('click', function() {
+    var input = document.createElement('input');
+    input.type = 'number';
+    input.min = 1;
+    input.max = 4294967295;
+    input.value = this.dataset.value;
+    input.name = this.dataset.name;
+    input.className = 'community-input';
+    input.dataset.oldValue = this.dataset.value;
+    this.replaceWith(input);
+    input.focus();
+    input.select();
+  });
+});
+document.querySelectorAll('.revert-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var name = this.dataset.name;
+    var autoVal = this.dataset.auto;
+    var span = document.querySelector('span.community-value[data-name="' + name + '"]');
+    var input = document.querySelector('input[data-old-value][name="' + name + '"]');
+    if (input) {
+      input.value = autoVal;
+    } else if (span) {
+      var newInput = document.createElement('input');
+      newInput.type = 'hidden';
+      newInput.name = name;
+      newInput.value = autoVal;
+      document.getElementById('communities-form').appendChild(newInput);
+    }
+  });
+});
+document.getElementById('communities-form').addEventListener('submit', function(e) {
+  var changed = document.querySelectorAll('.community-input').length + document.querySelectorAll('input[type=hidden][name^="svc_"],input[type=hidden][name^="cat_"]').length;
+  if (changed > 0 && !confirm({{printf "%q" (tr "communities.confirm")}}.replace('N', changed))) {
+    e.preventDefault();
+  }
+});
+</script>
+{{end}}`
+
+const communitiesTemplate = communitiesBody

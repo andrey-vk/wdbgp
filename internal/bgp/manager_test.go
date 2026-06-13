@@ -20,7 +20,8 @@ func TestPathCarriesUserCommunities(t *testing.T) {
 	manager := NewManager(config.Config{
 		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
 	}, nil)
-	path, err := manager.path("149.154.160.0/20", []int64{2, 7})
+	comms := map[string]int{"testcat": 10000, "testcat|testsvc": 10001}
+	path, err := manager.path("149.154.160.0/20", []int64{2, 7}, "testcat", "testsvc", comms)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,11 +35,24 @@ func TestPathCarriesUserCommunities(t *testing.T) {
 			found = true
 		}
 	}
-	if !found || len(communities.Communities) != 2 {
+	if !found || len(communities.Communities) != 4 {
 		t.Fatalf("large communities not found: %#v", path.Pattrs)
 	}
 	if communities.Communities[1].LocalData1 != 7 {
 		t.Fatalf("unexpected communities: %#v", communities.Communities)
+	}
+	// Verify category and service communities are present.
+	var catFound, svcFound bool
+	for _, c := range communities.Communities {
+		if c.LocalData1 == 0 && c.LocalData2 == 10000 {
+			catFound = true
+		}
+		if c.LocalData1 == 0 && c.LocalData2 == 10001 {
+			svcFound = true
+		}
+	}
+	if !catFound || !svcFound {
+		t.Fatalf("category/service communities missing: %#v", communities.Communities)
 	}
 }
 

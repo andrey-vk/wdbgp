@@ -74,6 +74,7 @@ type selectionView struct {
 	SelectedCoveredServices int
 	SelectedServiceCount    int
 	CSRFToken               string
+	Communities             map[string]int
 }
 
 type adminView struct {
@@ -97,6 +98,25 @@ type adapterEditView struct {
 	Adapter store.FeedAdapter
 	Feeds   []store.Feed
 	Error   string
+}
+
+type communitiesView struct {
+	Modes  []store.CatalogMode
+	Mode   store.CatalogMode
+	Groups []communityGroupView
+}
+
+type communityGroupView struct {
+	Category  string
+	Community int
+	AutoGroup int
+	Services  []communityServiceView
+}
+
+type communityServiceView struct {
+	Name      string
+	Community int
+	AutoSvc   int
 }
 
 type userEditView struct {
@@ -132,6 +152,8 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("GET /admin/login", server.loginPage)
 	mux.HandleFunc("POST /admin/login", server.login)
 	mux.HandleFunc("GET /admin", server.requireAdmin(server.adminPage))
+	mux.HandleFunc("GET /admin/communities", server.requireAdmin(server.communitiesPage))
+	mux.HandleFunc("POST /admin/communities", server.requireAdmin(server.saveCommunities))
 	mux.HandleFunc("GET /admin/debug/cidr", server.requireAdmin(server.debugCIDRHandler))
 	mux.HandleFunc("POST /admin/mode/{id}", server.requireAdmin(server.updateCatalogMode))
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
@@ -399,6 +421,133 @@ func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
 			Admin:     true,
 		},
 	})
+}
+
+func (s *Server) communitiesPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	modes, err := s.store.CatalogModes(ctx, false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if len(modes) == 0 {
+		s.httpError(w, r, "error.internal", http.StatusInternalServerError)
+		return
+	}
+	modeID := store.DefaultCatalogModeID
+	if rawMode := r.URL.Query().Get("mode"); rawMode != "" {
+		if id, parseErr := strconv.ParseInt(rawMode, 10, 64); parseErr == nil && id > 0 {
+			for _, m := range modes {
+				if m.ID == id {
+					modeID = id
+					break
+				}
+			}
+		}
+	}
+	mode, err := s.store.CatalogMode(ctx, modeID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	comms, err := s.store.GetCommunities(ctx, modeID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	// Load categories and services for this mode to know their alphabetical positions.
+	catalog, err := s.store.CatalogForMode(ctx, modeID, true)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	catNames := make([]string, 0, len(catalog))
+	for name := range catalog {
+		catNames = append(catNames, name)
+	}
+	sortStrings(catNames)
+
+	view := communitiesView{Modes: modes, Mode: mode}
+	groupIndex := 0
+	for _, catName := range catNames {
+		svcNames := catalog[catName]
+		sortStrings(svcNames)
+		// Auto group community is always (groupIndex+1)*10000
+
+		group := communityGroupView{
+			Category:  catName,
+			Community: comms[catName],
+			AutoGroup: (groupIndex + 1) * 10000,
+		}
+		svcCounter := 0
+		curGroup := groupIndex
+		for _, svcName := range svcNames {
+			group.Services = append(group.Services, communityServiceView{
+				Name:      svcName,
+				Community: comms[catName+"|"+svcName],
+				AutoSvc:   store.AutoCommunity(curGroup, svcCounter),
+			})
+			svcCounter++
+			if svcCounter >= 9999 {
+				curGroup++
+				svcCounter = 0
+			}
+		}
+		groupIndex = curGroup + 1
+		view.Groups = append(view.Groups, group)
+	}
+	s.render(w, r, http.StatusOK, "communities.title", "communities", view)
+}
+
+func (s *Server) saveCommunities(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := r.ParseForm(); err != nil {
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
+		return
+	}
+	modeID := store.DefaultCatalogModeID
+	if rawMode := r.FormValue("mode"); rawMode != "" {
+		if id, err := strconv.ParseInt(rawMode, 10, 64); err == nil && id > 0 {
+			modeID = id
+		}
+	}
+	updated := 0
+	for key, values := range r.PostForm {
+		if len(values) == 0 {
+			continue
+		}
+		if !strings.HasPrefix(key, "cat_") && !strings.HasPrefix(key, "svc_") {
+			continue
+		}
+		community, err := strconv.Atoi(values[0])
+		if err != nil || community <= 0 || community > 4294967295 {
+			continue
+		}
+		if strings.HasPrefix(key, "cat_") {
+			category := key[4:]
+			if err := s.store.SetCommunity(ctx, modeID, category, "", community); err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+			updated++
+		} else {
+			// svc_key = "svc_category|service"
+			rest := key[4:]
+			parts := strings.SplitN(rest, "|", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			category := parts[0]
+			service := parts[1]
+			if err := s.store.SetCommunity(ctx, modeID, category, service, community); err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+			updated++
+		}
+	}
+	s.logAdminAction(r, "communities_update", fmt.Sprintf("mode=%d, updated=%d", modeID, updated))
+	http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d", modeID), http.StatusSeeOther)
 }
 
 func (s *Server) debugCIDRHandler(w http.ResponseWriter, r *http.Request) {
@@ -1105,6 +1254,8 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 			Admin:     admin,
 		},
 	}
+	comms, _ := s.store.GetCommunities(ctx, user.CatalogModeID)
+	view.Communities = comms
 	for _, category := range names {
 		categorySelected := selectedCategories[category]
 		item := categoryView{Name: category, Selected: categorySelected}
@@ -1335,6 +1486,7 @@ func compileTemplates() map[locale]map[string]*template.Template {
 		"access-denied": accessDeniedTemplate,
 		"adapter-edit":  adapterEditTemplate,
 		"adapter-test":  adapterTestTemplate,
+		"communities":   communitiesTemplate,
 		"login":         loginTemplate,
 		"selection":     selectionTemplate,
 		"admin":         adminTemplate,
