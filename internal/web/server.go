@@ -198,15 +198,39 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
-	user, err := s.store.UserByIP(r.Context(), s.clientIP(r))
-	if store.IsNotFound(err) {
-		s.render(w, r, http.StatusForbidden, "title.access_denied", "access-denied", s.clientIP(r))
-		return
-	}
+	clientIP := s.clientIP(r)
+
+	// Try IP match first
+	user, err := s.store.UserByIP(r.Context(), clientIP)
+
 	if err != nil {
-		s.internalError(w, r, err)
-		return
+		// No IP match — try session-based auth for login-mode users
+		sessionID := getUserSessionID(r, s.cfg.SessionSecret)
+		if sessionID > 0 {
+			user, err = s.store.User(r.Context(), sessionID)
+			if err == nil && user.Enabled && user.WebAuth == "login" {
+				// Fall through to serve page
+			} else {
+				s.render(w, r, http.StatusForbidden, "title.access_denied", "access-denied", clientIP)
+				return
+			}
+		} else {
+			s.render(w, r, http.StatusForbidden, "title.access_denied", "access-denied", clientIP)
+			return
+		}
+	} else {
+		// IP matched — check web_auth mode
+		switch user.WebAuth {
+		case "network":
+			// Serve page (current behavior)
+		case "login", "both":
+			if !validUserSession(r, user.ID, s.cfg.SessionSecret) {
+				http.Redirect(w, r, "/login", http.StatusSeeOther)
+				return
+			}
+		}
 	}
+
 	user, err = s.userWithRequestedMode(r.Context(), r, user, user.CatalogEditable, false)
 	if err != nil {
 		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
@@ -1713,6 +1737,83 @@ func validSession(secret, value string, sessionMaxAge time.Duration) bool {
 	expected := hmac.New(sha256.New, []byte(secret))
 	_, _ = expected.Write([]byte(parts[0] + "." + parts[1]))
 	return hmac.Equal(signature, expected.Sum(nil))
+}
+
+// --- User session helpers (for web_auth=login/both) ---
+
+const userSessionCookieName = "wdbgp_user"
+
+func setUserSessionCookie(w http.ResponseWriter, userID int64, secret string, maxAge int, secure bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     userSessionCookieName,
+		Value:    userSessionToken(secret, userID),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   maxAge,
+	})
+}
+
+func userSessionToken(secret string, userID int64) string {
+	var nonce [16]byte
+	_, _ = rand.Read(nonce[:])
+	timestamp := strconv.FormatInt(time.Now().Unix(), 16)
+	userStr := strconv.FormatInt(userID, 16)
+	text := timestamp + "." + hex.EncodeToString(nonce[:]) + "." + userStr
+	signature := hmac.New(sha256.New, []byte(secret))
+	_, _ = signature.Write([]byte(text))
+	return text + "." + hex.EncodeToString(signature.Sum(nil))
+}
+
+func validUserSession(r *http.Request, userID int64, secret string) bool {
+	cookie, err := r.Cookie(userSessionCookieName)
+	if err != nil {
+		return false
+	}
+	sessionID := parseUserSessionToken(secret, cookie.Value)
+	return sessionID == userID
+}
+
+func getUserSessionID(r *http.Request, secret string) int64 {
+	cookie, err := r.Cookie(userSessionCookieName)
+	if err != nil {
+		return 0
+	}
+	return parseUserSessionToken(secret, cookie.Value)
+}
+
+func parseUserSessionToken(secret, value string) int64 {
+	parts := strings.SplitN(value, ".", 4)
+	if len(parts) != 4 {
+		return 0
+	}
+	// Validate timestamp freshness (reuse session max age from config, default 8h)
+	// We use a fixed 8h window here since we don't have the config struct in this helper.
+	// The full login system in Step 6 will tighten this.
+	timestamp, err := strconv.ParseInt(parts[0], 16, 64)
+	if err != nil {
+		return 0
+	}
+	sessionTime := time.Unix(timestamp, 0)
+	if time.Since(sessionTime) > 8*time.Hour {
+		return 0
+	}
+	// Validate HMAC signature
+	signature, err := hex.DecodeString(parts[3])
+	if err != nil {
+		return 0
+	}
+	expected := hmac.New(sha256.New, []byte(secret))
+	_, _ = expected.Write([]byte(parts[0] + "." + parts[1] + "." + parts[2]))
+	if !hmac.Equal(signature, expected.Sum(nil)) {
+		return 0
+	}
+	userID, err := strconv.ParseInt(parts[2], 16, 64)
+	if err != nil {
+		return 0
+	}
+	return userID
 }
 
 func csrfToken(secret string) string {
