@@ -73,6 +73,7 @@ type selectionView struct {
 	SelectedCategoryCount   int
 	SelectedCoveredServices int
 	SelectedServiceCount    int
+	CSRFToken               string
 }
 
 type adminView struct {
@@ -159,7 +160,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	}
 	handler = csrfProtection(handler, cfg.SessionSecret)
 	// Apply admin rate limiting to admin endpoints
-	handler = adminRateLimitMiddleware(handler, server.adminLimiter)
+	handler = server.adminRateLimitMiddleware(handler)
 	handler = logging.HTTPMiddleware(handler)
 	
 	server.handler = handler
@@ -190,6 +191,12 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	// Add CSRF token to selection view for the template
+	csrfToken := ""
+	if tokenVal := r.Context().Value("csrf_token"); tokenVal != nil {
+		csrfToken = tokenVal.(string)
+	}
+	view.CSRFToken = csrfToken
 	view.Saved = r.URL.Query().Get("saved")
 	s.render(w, r, http.StatusOK, "title.selection", "selection", view)
 }
@@ -800,6 +807,13 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	// Add CSRF token to selection view for the template
+	csrfToken := ""
+	if tokenVal := r.Context().Value("csrf_token"); tokenVal != nil {
+		csrfToken = tokenVal.(string)
+	}
+	selection.CSRFToken = csrfToken
+	
 	lang, _ := requestLocale(r, s.defaultLang)
 	s.renderTitle(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
 		userEditView{User: user, Selection: selection})
@@ -825,7 +839,20 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, r, err)
 			return
 		}
-		err = s.bgp.UpdatePeer(r.Context(), user)
+		if !user.Enabled {
+			err = s.bgp.DeletePeer(r.Context(), user.PeerIP)
+		} else {
+			// Reload user to get correct BGPPassword preserved by store when field was empty.
+			user, err = s.store.User(r.Context(), id)
+			if err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+			err = s.bgp.UpdatePeer(r.Context(), user)
+		}
+		if err == nil {
+			err = s.bgp.Reconcile(r.Context())
+		}
 	} else if r.FormValue("action") == "filters" {
 		filters, parseErr := routeFiltersFromForm(r)
 		if parseErr != nil {
@@ -1244,21 +1271,22 @@ func parseUserForm(r *http.Request, id int64) (store.User, bool, error) {
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("wdbgp_admin")
-		if err != nil || !validSession(s.cfg.SessionSecret, cookie.Value) {
+		sessionMaxAge := time.Duration(s.cfg.SessionMaxAge) * time.Second
+		if sessionMaxAge <= 0 {
+			sessionMaxAge = 8 * time.Hour
+		}
+		if err != nil || !validSession(s.cfg.SessionSecret, cookie.Value, sessionMaxAge) {
 			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 			return
 		}
 		
-		// Renew session if it's more than 1 hour old (but less than 8 hours)
-		// Extract timestamp from token
+		// Renew session if it's more than 1 hour old
 		parts := strings.SplitN(cookie.Value, ".", 3)
 		if len(parts) == 3 {
 			timestamp, err := strconv.ParseInt(parts[0], 16, 64)
 			if err == nil {
 				sessionTime := time.Unix(timestamp, 0)
-				// Renew if session is more than 1 hour old but less than 7 hours
-				if time.Since(sessionTime) > time.Hour && time.Since(sessionTime) < 7*time.Hour {
-					// Set renewed cookie
+				if time.Since(sessionTime) > time.Hour && time.Since(sessionTime) < sessionMaxAge-time.Hour {
 					maxAge := 0 // session cookie
 					if s.cfg.SessionMaxAge > 0 {
 						maxAge = s.cfg.SessionMaxAge
@@ -1428,19 +1456,18 @@ func sessionToken(secret string) string {
 	return text + "." + hex.EncodeToString(signature.Sum(nil))
 }
 
-func validSession(secret, value string) bool {
+func validSession(secret, value string, sessionMaxAge time.Duration) bool {
 	parts := strings.SplitN(value, ".", 3)
 	if len(parts) != 3 {
 		return false
 	}
 	
-	// Check timestamp (8 hours expiration)
 	timestamp, err := strconv.ParseInt(parts[0], 16, 64)
 	if err != nil {
 		return false
 	}
 	sessionTime := time.Unix(timestamp, 0)
-	if time.Since(sessionTime) > 8*time.Hour {
+	if time.Since(sessionTime) > sessionMaxAge {
 		return false
 	}
 	
@@ -1664,16 +1691,13 @@ func csrfProtection(next http.Handler, secret string) http.Handler {
 }
 
 // adminRateLimitMiddleware applies rate limiting to admin endpoints
-func adminRateLimitMiddleware(next http.Handler, limiter *rateLimiter) http.Handler {
+func (s *Server) adminRateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only apply to admin paths
 		if strings.HasPrefix(r.URL.Path, "/admin") && r.URL.Path != "/admin/login" {
-			clientIP := r.RemoteAddr
-			if host, _, err := net.SplitHostPort(clientIP); err == nil {
-				clientIP = host
-			}
+			clientIP := s.clientIP(r)
 			
-			if !limiter.allow(clientIP) {
+			if !s.adminLimiter.allow(clientIP) {
 				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 				return
 			}

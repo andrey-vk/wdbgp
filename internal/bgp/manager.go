@@ -333,9 +333,17 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	if m.server == nil {
 		return fmt.Errorf("BGP server is not running")
 	}
-	// Check if peer exists
-	oldUser, exists := m.peerConfigs[user.PeerIP]
-	if !exists {
+	// Find existing peer by user ID (IP may have changed)
+	var oldUser store.User
+	found := false
+	for _, u := range m.peerConfigs {
+		if u.ID == user.ID {
+			oldUser = u
+			found = true
+			break
+		}
+	}
+	if !found {
 		return fmt.Errorf("peer %s does not exist", user.PeerIP)
 	}
 	// If peer IP changed, we need to delete old peer and add new one
