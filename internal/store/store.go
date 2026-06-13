@@ -1186,6 +1186,113 @@ type userRoute struct {
 	service  string
 }
 
+// CountSelectionPrefixes returns the number of unique prefixes that would be
+// announced for a single user after applying their route filters (global and per-user).
+// It replicates the same filter logic as DesiredPrefixes: collect prefixes matching
+// the user's selection, then apply allow/deny lists according to the filter mode.
+func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64) (int, error) {
+	var catalogModeID int64
+	var filterMode string
+	var filterOverride bool
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT catalog_mode_id, COALESCE(filter_mode, ''), filter_override_enabled
+		 FROM users WHERE id = ?`, userID).
+		Scan(&catalogModeID, &filterMode, &filterOverride)
+	if err != nil {
+		return 0, err
+	}
+	filterMode = normalizeFilterMode(filterMode, filterOverride)
+
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT DISTINCT ce.cidr
+FROM feeds f
+JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_entries ce ON ce.feed_id = f.id
+WHERE f.mode_id = ?1
+  AND f.enabled = 1
+  AND m.enabled = 1
+  AND EXISTS (
+      SELECT 1 FROM selected_categories sc
+      WHERE sc.user_id = ?2
+        AND sc.mode_id = ?1
+        AND sc.category = ce.category
+  )
+UNION
+SELECT DISTINCT ce.cidr
+FROM feeds f
+JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_entries ce ON ce.feed_id = f.id
+WHERE f.mode_id = ?1
+  AND f.enabled = 1
+  AND m.enabled = 1
+  AND EXISTS (
+      SELECT 1 FROM selected_services ss
+      WHERE ss.user_id = ?2
+        AND ss.mode_id = ?1
+        AND ss.category = ce.category
+        AND ss.service = ce.service
+  )`, catalogModeID, userID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	seen := make(map[netip.Prefix]struct{})
+	for rows.Next() {
+		var rawPrefix string
+		if err := rows.Scan(&rawPrefix); err != nil {
+			return 0, err
+		}
+		prefix, err := netip.ParsePrefix(rawPrefix)
+		if err != nil {
+			return 0, fmt.Errorf("parse prefix %q: %w", rawPrefix, err)
+		}
+		if prefix.Bits() == 0 {
+			continue
+		}
+		seen[prefix.Masked()] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	if len(seen) == 0 {
+		return 0, nil
+	}
+
+	prefixes := make([]netip.Prefix, 0, len(seen))
+	for p := range seen {
+		prefixes = append(prefixes, p)
+	}
+
+	userFilters, err := s.UserRouteFilters(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+
+	globalFilters, err := s.GlobalRouteFilters(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	var effectiveFilters RouteFilters
+	switch filterMode {
+	case FilterModeOverride:
+		effectiveFilters = userFilters
+	case FilterModeExtend:
+		effectiveFilters = mergeRouteFilters(globalFilters, userFilters)
+	default:
+		effectiveFilters = globalFilters
+	}
+
+	filtered, err := applyRouteFiltersToPrefixes(prefixes, effectiveFilters)
+	if err != nil {
+		return 0, fmt.Errorf("filter routes for user %d: %w", userID, err)
+	}
+
+	return len(filtered), nil
+}
+
 func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, map[string]PrefixRouteInfo, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 -- Simpler UNION-based approach without CTEs

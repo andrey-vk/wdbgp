@@ -1451,6 +1451,10 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 		return selectionView{}, err
 	}
 	view.PrefixCounts = prefixCounts
+	view.TotalPrefixes, err = s.store.CountSelectionPrefixes(ctx, user.ID)
+	if err != nil {
+		return selectionView{}, err
+	}
 	view.CategoryCounts = map[string]int{}
 	for _, category := range names {
 		catPrefixCount := 0

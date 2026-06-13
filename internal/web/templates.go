@@ -243,18 +243,6 @@ function updateSelectionCounts() {
   updateSelectionLabel('selected-category-label', categoryCount);
   updateSelectionLabel('selected-covered-service-label', coveredServiceCount);
   updateSelectionLabel('selected-service-label', standaloneServiceCount);
-  var prefixTotal = 0;
-  document.querySelectorAll('fieldset.category-card').forEach(function(fs) {
-    var catCheckbox = fs.querySelector('input[name="category"]');
-    if (catCheckbox && catCheckbox.checked) {
-      prefixTotal += parseInt(catCheckbox.dataset.prefixes || '0');
-      return;
-    }
-    fs.querySelectorAll('input[name="service"]').forEach(function(svc) {
-      if (svc.checked) prefixTotal += parseInt(svc.dataset.prefixes || '0');
-    });
-  });
-  document.getElementById('total-prefix-count').textContent = prefixTotal;
 }
 document.querySelectorAll('input[name="category"]').forEach(function(categoryInput) {
   var fieldset = categoryInput.closest('fieldset');
