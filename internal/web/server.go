@@ -547,6 +547,10 @@ func (s *Server) saveCommunities(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.logAdminAction(r, "communities_update", fmt.Sprintf("mode=%d, updated=%d", modeID, updated))
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		logger := logging.FromContext(r.Context())
+		logger.Warn("reconcile after communities update failed", "error", err)
+	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d", modeID), http.StatusSeeOther)
 }
 
