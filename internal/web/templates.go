@@ -540,6 +540,9 @@ hidden.type='hidden';hidden.name=cell.dataset.name;hidden.value=auto;hidden.clas
 this.style.display='none';
 cell.querySelector('.edit-actions').style.display='none';
 cell.querySelector('.community-value').style.display='';
+// Revert supersedes any pending manual edit
+var inp = cell.querySelector('.community-input');
+if (inp) inp.dataset.changed = '0';
 updateUI()
 })}
 document.querySelectorAll('.revert-btn').forEach(setupRevert);
