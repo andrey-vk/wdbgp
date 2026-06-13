@@ -80,13 +80,17 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .language-switcher{display:flex;justify-content:flex-end;gap:.5rem;margin-bottom:.75rem}
 .language-switcher a[aria-current=page]{font-weight:700;text-decoration:none;color:var(--text)}
 
-textarea.large{min-height:10rem;font:14px/1.4 ui-monospace,monospace;resize:vertical}
+textarea.large{width:100%;min-height:6em;font-family:ui-monospace,monospace;font-size:.85em;padding:8px;resize:vertical}
 
 button.secondary{background:var(--muted);color:#fff;border-color:var(--muted)}
 
 form{margin:1rem 0}
 code{font-size:.9em}
 header{display:flex;gap:1rem;justify-content:space-between;align-items:center;margin:0 0 1rem}
+.tab-bar{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:1.25rem}
+.tab{padding:8px 16px;border:none;background:none;color:var(--muted);cursor:pointer;font-size:.9em;font-weight:500;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab:hover:not(.active){color:var(--text)}
 `
 
 const pageStart = `<!DOCTYPE html>
@@ -160,7 +164,8 @@ const adapterEditTemplate = `{{with .Data}}
 </section>{{end}}`
 
 const selectionBody = `{{$selection := .}}
-<header><h1>{{.User.Name}}</h1>{{if not .Admin}}<a href="/admin">{{tr "admin.link"}}</a>{{end}}</header>
+{{if not .Admin}}<header><h1>{{.User.Name}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>{{end}}
+<div class="tab-content tab-selection">
 <section class=card><h2>{{tr "selection.heading"}}</h2>
 <p class=muted>{{tr "selection.category_hint"}}</p>
 <label>{{tr "catalog.mode"}}
@@ -248,6 +253,8 @@ document.querySelectorAll('input[name="category"]').forEach(function(categoryInp
 });
 updateSelectionCounts();
 </script>
+</div>
+<div class="tab-content tab-filters">
 {{with .Filters}}<section class=card><h2>{{tr "filters.heading"}}</h2>
 {{if .Editable}}<p class=muted>{{tr "filters.explanation"}}</p>
 <form method=post action="{{if .Admin}}/admin/user/{{$selection.User.ID}}{{else}}/filters{{end}}">
@@ -262,12 +269,18 @@ updateSelectionCounts();
 <label>{{tr "filters.deny"}} <textarea class=large name=filter_deny placeholder="1.1.1.1/32">{{.DenyText}}</textarea></label></div>
 <button class=primary>{{tr "filters.save"}}</button></form>
 {{else}}<p class=muted>{{if eq .Mode "override"}}{{tr "filters.managed_override"}}{{else if eq .Mode "extend"}}{{tr "filters.managed_extend"}}{{else}}{{tr "filters.managed_global"}}{{end}}</p>{{end}}
-</section>{{end}}`
+</section>{{end}}</div>`
 
 const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
 const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{with .Data}}
-<header><h1>{{printf (tr "title.user") .User.Name}}</h1><a href=/admin>{{tr "admin.link"}}</a></header>
+<header><h1>{{printf (tr "title.user") .User.Name}}</h1></header>
+<div class=tab-bar>
+  <button class="tab active" data-tab=settings>{{tr "user.settings"}}</button>
+  <button class=tab data-tab=selection>{{tr "selection.heading"}}</button>
+  <button class=tab data-tab=filters>{{tr "filters.heading"}}</button>
+</div>
+<div class="tab-content tab-settings">
 <section class=card><h2>{{tr "user.settings"}}</h2><form method=post action="/admin/user/{{.User.ID}}">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=action value=settings><div class=grid>
@@ -302,7 +315,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <label><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
 <input type=hidden name=filter_mode value="{{.User.FilterMode}}">
 <button class=primary>{{tr "user.save"}}</button></form>
-<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form></section>
+<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form></section></div>
 {{template "selection" .Selection}}
 <script>
 (function(){
@@ -317,6 +330,11 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
     toggleCredentials();
   }
 })();
+</script>
+<script>
+document.querySelectorAll('.tab-content').forEach(function(c){c.style.display='none'});
+document.querySelector('.tab-content.tab-settings').style.display='';
+document.querySelectorAll('.tab').forEach(function(t){t.addEventListener('click',function(){document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active')});this.classList.add('active');document.querySelectorAll('.tab-content').forEach(function(c){c.style.display='none'});document.querySelector('.tab-content.tab-'+this.dataset.tab).style.display=''})});
 </script>
 {{end}}`
 
@@ -629,7 +647,7 @@ const usersListTemplate = `{{with .Data}}
 <td><a href="/admin/user/{{.User.ID}}">{{.User.Name}}</a></td>
 <td><code>{{.Networks}}</code></td>
 <td>{{.User.CatalogModeName}}</td>
-<td><code>{{.User.PeerIP}}</code> <span class="status-dot {{if eq .PeerState "ESTABLISHED"}}up{{else}}down{{end}}"></span></td>
+<td><span class="status-dot {{if eq .PeerState "ESTABLISHED"}}up{{else}}down{{end}}" title="{{if eq .PeerState "ESTABLISHED"}}{{tr "bgp.established"}}{{else if eq .PeerState "UNKNOWN"}}{{tr "bgp.unknown"}}{{else}}{{.PeerState}}{{end}}"></span> <code>{{.User.PeerIP}}</code></td>
 <td>{{.User.PeerASN}}</td>
 <td>{{.User.WebAuth}}</td>
 <td>{{if .User.Enabled}}<span class=ok>enabled</span>{{else}}<span class=error>disabled</span>{{end}}</td>
