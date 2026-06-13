@@ -193,23 +193,23 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	if response.Code != http.StatusSeeOther || bgp.reconciles != 3 {
 		t.Fatalf("global filter update: status=%d reconciles=%d", response.Code, bgp.reconciles)
 	}
+	// /admin now redirects to /admin/dashboard
 	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
 	request.AddCookie(cookies[0])
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Глобальная фильтрация маршрутов") {
-		t.Fatalf("admin filter page: status=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("admin redirect: status=%d body=%s", response.Code, response.Body.String())
 	}
 
-	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	request = httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
 	request.Header.Set("Accept-Language", "en")
 	request.AddCookie(cookies[0])
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), "Global route filtering") ||
 		!strings.Contains(response.Body.String(), `<html lang="en">`) {
-		t.Fatalf("English admin page: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("English dashboard page: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -476,10 +476,17 @@ func TestAdminCanManageFeeds(t *testing.T) {
 	request.AddCookie(adminCookie)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `value="custom-renamed"`) ||
-		!strings.Contains(response.Body.String(), "/admin/feed/"+strconv.FormatInt(feed.ID, 10)+"/delete") {
-		t.Fatalf("managed feed not rendered: status=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("admin redirect after feed update: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// Verify dashboard loads after redirect
+	request = httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dashboard not rendered: status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	request = httptest.NewRequest(http.MethodPost,
@@ -973,8 +980,17 @@ func TestAdminCookieSecureAutoAllowsPlainHTTP(t *testing.T) {
 	request.AddCookie(cookies[0])
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("admin redirect after HTTP login: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// Verify dashboard loads after redirect
+	request = httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
+	request.AddCookie(cookies[0])
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("admin page after HTTP login: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("dashboard page after HTTP login: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

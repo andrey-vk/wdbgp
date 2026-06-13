@@ -611,3 +611,85 @@ updateUI()
 {{end}}`
 
 const communitiesTemplate = communitiesBody
+
+const adminShellTemplate = `<!DOCTYPE html>
+<html lang="{{.Lang}}">
+<head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>{{.Title}} - wdbgp</title>
+<style>
+:root,[data-theme=light]{--bg:#f0f2f5;--text:#1a1a2e;--sidebar-bg:#1a1a2e;--sidebar-text:#e0e0e0;--sidebar-active:#4da6ff;--card-bg:#fff;--border:#e0e0e0;--accent:#06c;--muted:#666;--danger:#c00;--ok:#0a0}
+[data-theme=dark]{--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh}
+.sidebar{width:200px;background:var(--sidebar-bg);color:var(--sidebar-text);padding:1rem 0;flex-shrink:0;display:flex;flex-direction:column}
+.sidebar h2{padding:0 1rem .5rem;font-size:1.1em;border-bottom:1px solid #333;margin-bottom:.5rem}
+.sidebar a{color:var(--sidebar-text);text-decoration:none;padding:.5rem 1rem;display:block;font-size:.95em;transition:background .2s}
+.sidebar a:hover,.sidebar a.active{background:#2a3a5c;color:var(--sidebar-active)}
+.main{flex:1;padding:1rem;overflow-y:auto}
+header.topbar{background:var(--card-bg);border-bottom:1px solid var(--border);padding:.5rem 1rem;display:flex;justify-content:flex-end;align-items:center;gap:.5rem;margin-bottom:1rem}
+.topbar button,.topbar a{background:none;border:1px solid var(--border);color:var(--text);padding:4px 10px;border-radius:4px;cursor:pointer;font-size:.85em;text-decoration:none}
+.topbar button:hover{background:var(--accent);color:#fff}
+.card{background:var(--card-bg);border-radius:8px;padding:1rem;margin-bottom:1rem;border:1px solid var(--border)}
+h1{font-size:1.3em;margin-bottom:.5rem}
+.muted{color:var(--muted)}
+table{width:100%;border-collapse:collapse}
+th,td{padding:6px 8px;text-align:left;border-bottom:1px solid var(--border)}
+button, .button{padding:6px 14px;border-radius:4px;cursor:pointer;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:.9em}
+button.primary,.button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+button.danger,.button.danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+button:disabled{opacity:.5;cursor:not-allowed}
+input,select{padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg);color:var(--text);font-size:.9em}
+.error{color:var(--danger)}.ok{color:var(--ok)}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1rem}
+.stat-card{background:var(--card-bg);border-radius:8px;padding:1rem;border:1px solid var(--border);text-align:center}
+.stat-card .value{font-size:2em;font-weight:bold;color:var(--accent)}
+.stat-card .label{font-size:.85em;color:var(--muted);margin-top:.3rem}
+.status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.status-dot.up{background:var(--ok)}.status-dot.down{background:var(--danger)}
+</style>
+<script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+<script src="https://unpkg.com/alpinejs@3.14.9" defer></script>
+</head>
+<body>
+<nav class=sidebar>
+<h2>wdbgp</h2>
+<a href=/admin/dashboard hx-get=/admin/dashboard hx-target=#main hx-push-url=true class=active>{{tr "nav.dashboard"}}</a>
+<a href=/admin/users hx-get=/admin/users hx-target=#main hx-push-url=true>{{tr "nav.users"}}</a>
+<a href=/admin/feeds hx-get=/admin/feeds hx-target=#main hx-push-url=true>{{tr "nav.feeds"}}</a>
+<a href=/admin/communities hx-get=/admin/communities hx-target=#main hx-push-url=true>{{tr "nav.communities"}}</a>
+<a href=/admin/adapters hx-get=/admin/adapters hx-target=#main hx-push-url=true>{{tr "nav.adapters"}}</a>
+<a href=/admin/settings hx-get=/admin/settings hx-target=#main hx-push-url=true>{{tr "nav.settings"}}</a>
+<div style="flex:1"></div>
+<a href=/ hx-get=/ hx-target=#main hx-push-url=true style="font-size:.85em;opacity:.7">{{tr "nav.user_page"}}</a>
+</nav>
+<div class=main>
+<header class=topbar id=topbar>
+<button onclick="cycleTheme()" title="Theme" style="font-size:1.1em;padding:2px 8px">🌙</button>
+<a href="{{.EnglishURL}}">EN</a><a href="{{.RussianURL}}">RU</a>
+</header>
+<main id=main hx-history-elt>
+{{.ContentHTML}}
+</main>
+</div>
+<script>
+function cycleTheme(){var t=document.documentElement;var c=t.getAttribute('data-theme')||'auto';var n={'auto':'light','light':'dark','dark':'auto'}[c];if(n==='auto'){t.removeAttribute('data-theme')}else{t.setAttribute('data-theme',n)}localStorage.setItem('wdbgp-theme',n);updateThemeIcon()}
+function updateThemeIcon(){var t=document.documentElement.getAttribute('data-theme')||'auto';var m=document.querySelector('#topbar button');var i={'auto':'🌓','light':'☀️','dark':'🌙'};if(m)m.textContent=i[t]||'🌙'}
+(function(){var s=localStorage.getItem('wdbgp-theme');if(s){if(s==='auto')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',s)}updateThemeIcon()})();
+// Active nav link
+document.querySelectorAll('.sidebar a').forEach(function(a){a.addEventListener('click',function(){document.querySelectorAll('.sidebar a').forEach(function(x){x.classList.remove('active')});this.classList.add('active')})});
+// htmx after-swap: update active nav
+document.body.addEventListener('htmx:afterSettle',function(evt){if(!evt.detail || !evt.detail.requestConfig)return;var path=evt.detail.requestConfig.path;document.querySelectorAll('.sidebar a').forEach(function(a){var href=a.getAttribute('href');if(href===path){a.classList.add('active')}else{a.classList.remove('active')}})});
+</script>
+</body></html>`
+
+const dashboardTemplate = `{{with .Data}}
+<h1>{{tr "nav.dashboard"}}</h1>
+<div class=stats-grid>
+<div class=stat-card><div class=value>{{.TotalPrefixes}}</div><div class=label>{{tr "stats.prefixes"}}</div></div>
+<div class=stat-card><div class=value>{{.TotalUsers}}</div><div class=label>{{tr "stats.users"}}</div></div>
+<div class=stat-card><div class=value><span class="status-dot {{if gt .ConnectedPeers 0}}up{{else}}down{{end}}"></span>{{.ConnectedPeers}}/{{.TotalPeers}}</div><div class=label>{{tr "stats.bgp_peers"}}</div></div>
+<div class=stat-card><div class=value>{{.EnabledFeeds}}/{{.TotalFeeds}}</div><div class=label>{{tr "stats.feeds"}}</div></div>
+<div class=stat-card><div class=value>{{.Categories}}</div><div class=label>{{tr "stats.categories"}}</div></div>
+<div class=stat-card><div class=value>{{.Services}}</div><div class=label>{{tr "stats.services"}}</div></div>
+</div>
+{{end}}`

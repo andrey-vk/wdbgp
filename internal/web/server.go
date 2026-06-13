@@ -135,6 +135,10 @@ type filterView struct {
 	Admin     bool
 }
 
+func isHtmxRequest(r *http.Request) bool {
+	return r.Header.Get("HX-Request") != ""
+}
+
 func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Server {
 	defaultLang, ok := parseLocale(cfg.DefaultLanguage)
 	if !ok {
@@ -153,7 +157,10 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /filters", server.saveOwnFilters)
 	mux.HandleFunc("GET /admin/login", server.loginPage)
 	mux.HandleFunc("POST /admin/login", server.login)
-	mux.HandleFunc("GET /admin", server.requireAdmin(server.adminPage))
+	mux.HandleFunc("GET /admin", server.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/dashboard", http.StatusSeeOther)
+	}))
+	mux.HandleFunc("GET /admin/dashboard", server.requireAdmin(server.dashboard))
 	mux.HandleFunc("GET /admin/communities", server.requireAdmin(server.communitiesPage))
 	mux.HandleFunc("POST /admin/communities", server.requireAdmin(server.saveCommunities))
 	mux.HandleFunc("POST /admin/communities/reset", server.requireAdmin(server.resetCommunities))
@@ -1629,28 +1636,40 @@ func compileTemplates() map[locale]map[string]*template.Template {
 		"user-login":    userLoginTemplate,
 		"user-edit":     userEditTemplate,
 	}
+	// Fragment templates (body only, no pageStart/pageEnd) for htmx and shell embedding
+	fragments := map[string]string{
+		"dashboard": dashboardTemplate,
+	}
 	result := make(map[locale]map[string]*template.Template, len(translations))
 	for lang := range translations {
-		result[lang] = make(map[string]*template.Template, len(bodies))
+		result[lang] = make(map[string]*template.Template, len(bodies)+len(fragments)+1)
+		funcs := template.FuncMap{
+			"join": strings.Join,
+			"state": func(states map[string]string, peer string) string {
+				if value := states[peer]; value != "" {
+					return value
+				}
+				return "UNKNOWN"
+			},
+			"tr": func(key string) string {
+				return translate(lang, key)
+			},
+			"plural": func(count int, oneKey, fewKey, manyKey string) string {
+				return pluralTranslation(lang, count, oneKey, fewKey, manyKey)
+			},
+		}
 		for name, body := range bodies {
-			funcs := template.FuncMap{
-				"join": strings.Join,
-				"state": func(states map[string]string, peer string) string {
-					if value := states[peer]; value != "" {
-						return value
-					}
-					return "UNKNOWN"
-				},
-				"tr": func(key string) string {
-					return translate(lang, key)
-				},
-				"plural": func(count int, oneKey, fewKey, manyKey string) string {
-					return pluralTranslation(lang, count, oneKey, fewKey, manyKey)
-				},
-			}
 			result[lang][name] = template.Must(template.New("page").Funcs(funcs).
 				Parse(pageStart + body + pageEnd))
 		}
+		// Fragment templates for direct htmx rendering
+		for name, body := range fragments {
+			result[lang][name] = template.Must(template.New(name).Funcs(funcs).
+				Parse(body))
+		}
+		// Admin shell (standalone layout)
+		result[lang]["admin-shell"] = template.Must(template.New("admin-shell").Funcs(funcs).
+			Parse(adminShellTemplate))
 	}
 	return result
 }
@@ -1694,6 +1713,82 @@ func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int,
 		logger := logging.FromContext(r.Context())
 		logger.Error("failed to render template", "template", title, "error", err)
 	}
+}
+
+func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, status int, title, name string, data any) {
+	lang, persist := requestLocale(r, s.defaultLang)
+	if persist {
+		http.SetCookie(w, &http.Cookie{Name: languageCookieName, Value: string(lang), Path: "/", MaxAge: 365 * 24 * 60 * 60, SameSite: http.SameSiteLaxMode})
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+
+	csrfToken, _ := r.Context().Value("csrf_token").(string)
+
+	// Render content fragment to buffer
+	var contentBuf strings.Builder
+	if err := s.templates[lang][name].Execute(&contentBuf, struct {
+		Title      string
+		Lang       string
+		EnglishURL string
+		RussianURL string
+		CSRFToken  string
+		Data       any
+	}{Title: title, Lang: string(lang), EnglishURL: languageURL(r, localeEnglish), RussianURL: languageURL(r, localeRussian), CSRFToken: csrfToken, Data: data}); err != nil {
+		logger := logging.FromContext(r.Context())
+		logger.Error("failed to render template", "template", name, "error", err)
+		return
+	}
+
+	if isHtmxRequest(r) {
+		// Return content fragment only (no shell)
+		w.Write([]byte(contentBuf.String()))
+		return
+	}
+
+	// Full page with shell
+	s.templates[lang]["admin-shell"].Execute(w, struct {
+		Title       string
+		Lang        string
+		EnglishURL  string
+		RussianURL  string
+		CSRFToken   string
+		ContentHTML template.HTML
+	}{Title: title, Lang: string(lang), EnglishURL: languageURL(r, localeEnglish), RussianURL: languageURL(r, localeRussian), CSRFToken: csrfToken, ContentHTML: template.HTML(contentBuf.String())})
+}
+
+func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	// Gather stats
+	categories, services, totalPrefixes, _ := s.store.Stats(ctx)
+	peerStates, _ := s.bgp.PeerStates(ctx)
+	connectedPeers := 0
+	for _, state := range peerStates {
+		if state == "ESTABLISHED" {
+			connectedPeers++
+		}
+	}
+	feeds, _ := s.store.Feeds(ctx, false)
+	enabledFeeds := 0
+	for _, f := range feeds {
+		if f.Enabled {
+			enabledFeeds++
+		}
+	}
+	users, _ := s.store.Users(ctx, false)
+
+	data := map[string]any{
+		"Categories":     categories,
+		"Services":       services,
+		"TotalPrefixes":  totalPrefixes,
+		"ConnectedPeers": connectedPeers,
+		"TotalPeers":     len(peerStates),
+		"EnabledFeeds":   enabledFeeds,
+		"TotalFeeds":     len(feeds),
+		"TotalUsers":     len(users),
+	}
+
+	s.renderAdmin(w, r, http.StatusOK, "Dashboard", "dashboard", data)
 }
 
 func (s *Server) httpError(w http.ResponseWriter, r *http.Request, key string, status int) {
@@ -1906,8 +2001,8 @@ func sortStrings(values []string) {
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Content Security Policy - restrict resource loading
-		// Allow inline styles/scripts for simplicity, could be tightened
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
+		// Allow inline styles/scripts for simplicity, plus unpkg CDN for htmx/alpine
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
 		
 		// Prevent clickjacking
 		w.Header().Set("X-Frame-Options", "DENY")
