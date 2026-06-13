@@ -617,9 +617,9 @@ const adminShellTemplate = `<!DOCTYPE html>
 <head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>{{.Title}} - wdbgp</title>
 <style>
-:root,[data-theme=light]{--bg:#f0f2f5;--text:#1a1a2e;--sidebar-bg:#1a1a2e;--sidebar-text:#e0e0e0;--sidebar-active:#4da6ff;--card-bg:#fff;--border:#e0e0e0;--accent:#06c;--muted:#666;--danger:#c00;--ok:#0a0}
-[data-theme=dark]{--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950}
-@media(prefers-color-scheme:dark){:root:not([data-theme]){--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950}}
+:root,[data-theme=light]{--bg:#f0f2f5;--text:#1a1a2e;--sidebar-bg:#1a1a2e;--sidebar-text:#e0e0e0;--sidebar-active:#4da6ff;--card-bg:#fff;--border:#e0e0e0;--accent:#06c;--muted:#666;--danger:#c00;--ok:#0a0;--group-row-bg:#eef2f7}
+[data-theme=dark]{--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950;--group-row-bg:#1c2433}
+@media(prefers-color-scheme:dark){:root:not([data-theme]){--bg:#0d1117;--text:#c9d1d9;--sidebar-bg:#161b22;--sidebar-text:#c9d1d9;--sidebar-active:#58a6ff;--card-bg:#161b22;--border:#30363d;--accent:#58a6ff;--muted:#8b949e;--danger:#f85149;--ok:#3fb950;--group-row-bg:#1c2433}}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh}
 .sidebar{width:200px;background:var(--sidebar-bg);color:var(--sidebar-text);padding:1rem 0;flex-shrink:0;display:flex;flex-direction:column}
@@ -641,7 +641,7 @@ button.danger,.button.danger{background:var(--danger);color:#fff;border-color:va
 button:disabled{opacity:.5;cursor:not-allowed}
 input,select{padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--card-bg);color:var(--text);font-size:.9em}
 .error{color:var(--danger)}.ok{color:var(--ok)}
-.group-row td{background:var(--sidebar-bg);color:var(--sidebar-text)}
+.group-row td{background:var(--group-row-bg)}
 .group-row td:first-child{font-weight:bold}
 .communities-table th:last-child,.communities-table td:last-child{min-width:180px}
 .community-value{color:var(--accent);cursor:pointer;text-decoration:underline;font-family:ui-monospace,monospace}
