@@ -561,8 +561,8 @@ fieldset.category-card{border:1px solid var(--border);border-radius:1rem;backgro
 <div class=main>
 <header class=topbar id=topbar>
 <button onclick="cycleTheme()" title="Theme" style="font-size:1.1em;padding:2px 8px">🌙</button>
-<a href="?lang=en" onclick="event.preventDefault();var u=new URL(window.location.href);u.searchParams.set('lang','en');window.location.href=u.toString()">EN</a>
-<a href="?lang=ru" onclick="event.preventDefault();var u=new URL(window.location.href);u.searchParams.set('lang','ru');window.location.href=u.toString()">RU</a>
+<a href="#" data-lang="en" class="lang-switch">EN</a>
+<a href="#" data-lang="ru" class="lang-switch">RU</a>
 </header>
 <main id=main hx-history-elt>
 {{.ContentHTML}}
@@ -576,6 +576,14 @@ function updateThemeIcon(){var t=document.documentElement.getAttribute('data-the
 document.querySelectorAll('.sidebar a').forEach(function(a){a.addEventListener('click',function(){document.querySelectorAll('.sidebar a').forEach(function(x){x.classList.remove('active')});this.classList.add('active')})});
 // htmx after-swap: update active nav
 document.body.addEventListener('htmx:afterSettle',function(evt){if(!evt.detail || !evt.detail.requestConfig)return;var path=evt.detail.requestConfig.path;document.querySelectorAll('.sidebar a').forEach(function(a){var href=a.getAttribute('href');if(href===path){a.classList.add('active')}else{a.classList.remove('active')}})});
+function switchLang(lang) {
+  var search = window.location.search.replace(/[?&]lang=[^&]*/g, '');
+  search = search ? search + '&' : '?';
+  window.location.href = window.location.pathname + search + 'lang=' + lang;
+}
+document.querySelectorAll('.lang-switch').forEach(function(a) {
+  a.addEventListener('click', function(e) { e.preventDefault(); switchLang(this.dataset.lang); });
+});
 </script>
 </body></html>`
 
