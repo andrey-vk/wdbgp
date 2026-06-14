@@ -74,6 +74,7 @@ type selectionView struct {
 	Editable                bool
 	Admin                   bool
 	Saved                   string
+	SessionUser             bool // true if user authenticated via session (has logout option)
 	Filters                 filterView
 	SelectedCategoryCount   int
 	SelectedCoveredServices int
@@ -189,6 +190,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/logout", server.requireAdmin(server.logout))
 	mux.HandleFunc("GET /login", server.userLoginPage)
 	mux.HandleFunc("POST /login", server.userLogin)
+	mux.HandleFunc("GET /logout", server.userLogout)
 	mux.HandleFunc("POST /selection/count", server.selectionCount)
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /status", server.status)
@@ -228,7 +230,7 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 		sessionID := getUserSessionID(r, s.cfg.SessionSecret)
 		if sessionID > 0 {
 			user, err = s.store.User(r.Context(), sessionID)
-			if err == nil && user.Enabled && user.WebAuth == "login" {
+			if err == nil && user.Enabled && (user.WebAuth == "login" || user.WebAuth == "any") {
 				// Fall through to serve page
 			} else {
 				s.render(w, r, http.StatusForbidden, "title.access_denied", "access-denied", clientIP)
@@ -239,10 +241,19 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// IP matched — check web_auth mode
+		// IP matched — but a valid session for a different user takes priority
+		sessionID := getUserSessionID(r, s.cfg.SessionSecret)
+		if sessionID > 0 {
+			if sessionUser, sessionErr := s.store.User(r.Context(), sessionID); sessionErr == nil && sessionUser.Enabled {
+				if sessionUser.ID != user.ID && (sessionUser.WebAuth == "login" || sessionUser.WebAuth == "any") {
+					user = sessionUser
+				}
+			}
+		}
+		// Check web_auth mode for the (possibly overridden) user
 		switch user.WebAuth {
-		case "network":
-			// Serve page (current behavior)
+		case "network", "any":
+			// Serve page
 		case "login", "both":
 			if !validUserSession(r, user.ID, s.cfg.SessionSecret) {
 				http.Redirect(w, r, "/login", http.StatusSeeOther)
@@ -268,6 +279,7 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 	}
 	view.CSRFToken = csrfToken
 	view.Saved = r.URL.Query().Get("saved")
+	view.SessionUser = validUserSession(r, user.ID, s.cfg.SessionSecret)
 	s.render(w, r, http.StatusOK, "title.selection", "selection", view)
 }
 
@@ -341,6 +353,19 @@ func (s *Server) userLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+func (s *Server) userLogout(w http.ResponseWriter, r *http.Request) {
+	// Clear the user session cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     userSessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
 func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 	user, err := s.store.UserByIP(r.Context(), s.clientIP(r))
 	if store.IsNotFound(err) {
@@ -409,16 +434,16 @@ func (s *Server) identifyUser(r *http.Request) (store.User, error) {
 		sessionID := getUserSessionID(r, s.cfg.SessionSecret)
 		if sessionID > 0 {
 			user, err = s.store.User(r.Context(), sessionID)
-			if err == nil && user.Enabled && user.WebAuth == "login" {
-				return user, nil
-			}
-			return store.User{}, err
+		if err == nil && user.Enabled && (user.WebAuth == "login" || user.WebAuth == "any") {
+			return user, nil
+		}
+		return store.User{}, err
 		}
 		return store.User{}, err
 	}
 	// IP matched — check web_auth mode
 	switch user.WebAuth {
-	case "network":
+		case "network", "any":
 		return user, nil
 	case "login", "both":
 		if !validUserSession(r, user.ID, s.cfg.SessionSecret) {
@@ -1259,9 +1284,9 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		switch user.WebAuth {
-		case "network", "login", "both":
+		case "network", "login", "both", "any":
 		default:
-			http.Error(w, `web_auth must be "network", "login", or "both"`, http.StatusBadRequest)
+			http.Error(w, `web_auth must be "network", "login", "both", or "any"`, http.StatusBadRequest)
 			return
 		}
 		if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {
@@ -2499,7 +2524,7 @@ func allSettings() []settingField {
 		{Key: "admin_cookie_secure", Name: "settings.admin_cookie_secure", EnvVar: "WDBGP_ADMIN_COOKIE_SECURE", Type: "select", Options: map[string]string{"auto": "settings.auto", "true": "settings.true", "false": "settings.false"}, Section: "settings.section_general"},
 		{Key: "trust_proxy_headers", Name: "settings.trust_proxy_headers", EnvVar: "WDBGP_TRUST_PROXY_HEADERS", Type: "bool", Section: "settings.section_general"},
 		{Key: "security_headers", Name: "settings.security_headers", EnvVar: "WDBGP_SECURITY_HEADERS", Type: "bool", Section: "settings.section_general"},
-		{Key: "default_web_auth", Name: "settings.default_web_auth", EnvVar: "WDBGP_DEFAULT_WEB_AUTH", Type: "select", Options: map[string]string{"network": "users.web_auth_network", "login": "users.web_auth_login", "both": "users.web_auth_both"}, Section: "settings.section_general"},
+		{Key: "default_web_auth", Name: "settings.default_web_auth", EnvVar: "WDBGP_DEFAULT_WEB_AUTH", Type: "select", Options: map[string]string{"network": "users.web_auth_network", "login": "users.web_auth_login", "both": "users.web_auth_both", "any": "users.web_auth_any"}, Section: "settings.section_general"},
 
 		// Rate Limiting
 		{Key: "rate_limit_login", Name: "settings.rate_limit_login", EnvVar: "WDBGP_RATE_LIMIT_LOGIN", Type: "number", Section: "settings.section_rate_limit", Placeholder: "settings.rate_limit_login_placeholder"},

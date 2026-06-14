@@ -197,7 +197,9 @@ const adapterEditTemplate = `{{with .Data}}
 </section>{{end}}`
 
 const selectionBody = `{{$selection := .}}
-{{if not .Admin}}<header><h1>{{.User.Name}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>{{end}}
+{{if not .Admin}}<header><h1>{{.User.Name}}</h1><span>
+{{if .SessionUser}}<a href=/logout>{{tr "user.logout"}}</a>{{else}}<a href=/login>{{tr "title.login"}}</a>{{end}}
+ · <a href="/admin">{{tr "admin.link"}}</a></span></header>{{end}}
 <div class="tab-content tab-selection">
 <section class=card><h2>{{tr "selection.heading"}}</h2>
 <p class=muted>{{tr "selection.category_hint"}}</p>
@@ -340,6 +342,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <option value=network {{if eq .User.WebAuth "network"}}selected{{end}}>{{tr "users.web_auth_network"}}</option>
 <option value=login {{if eq .User.WebAuth "login"}}selected{{end}}>{{tr "users.web_auth_login"}}</option>
 <option value=both {{if eq .User.WebAuth "both"}}selected{{end}}>{{tr "users.web_auth_both"}}</option>
+<option value=any {{if eq .User.WebAuth "any"}}selected{{end}}>{{tr "users.web_auth_any"}}</option>
 </select></label>
 <p class=muted>{{tr "users.web_auth_hint"}}</p>
 <section class=card id=credentials-section>

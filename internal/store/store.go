@@ -2207,7 +2207,7 @@ func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 func (s *Store) Stats(ctx context.Context) (int, int, int, error) {
 	var categories, services, entries int
 	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(DISTINCT category),
-		COUNT(DISTINCT service), COUNT(*) FROM catalog_entries`).
+		COUNT(DISTINCT service), COUNT(DISTINCT cidr) FROM catalog_entries`).
 		Scan(&categories, &services, &entries)
 	return categories, services, entries, err
 }

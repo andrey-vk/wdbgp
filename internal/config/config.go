@@ -549,7 +549,7 @@ func validateWebAuthMode(name string, fallback string) (string, error) {
 		return fallback, nil
 	}
 	switch value {
-	case "network", "login", "both":
+	case "network", "login", "both", "any":
 		return value, nil
 	default:
 		return "", fmt.Errorf("%s must be network, login, or both", name)

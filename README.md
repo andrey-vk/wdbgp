@@ -63,6 +63,7 @@ Each user's web authentication mode controls access to the selection page:
 - **network** — source IP matching their CIDRs
 - **login** — authenticate with login/password
 - **both** — IP match AND credentials required
+- **any** — IP match OR credentials (whichever passes)
 
 Credentials (login + bcrypt-hashed password) are managed per-user in the admin UI.
 A `/login` page serves credential-based authentication. `WDBGP_DEFAULT_WEB_AUTH`
@@ -256,7 +257,7 @@ All values are validated on startup with helpful error messages. If not specifie
 | `WDBGP_LOG_LEVEL` | DEBUG, INFO, WARN, ERROR, FATAL, PANIC (default INFO) |
 | `WDBGP_LOG_FORMAT` | text or json (default text) |
 | `WDBGP_TRUST_PROXY_HEADERS` | Boolean; trust X-Forwarded-Proto header for cookie security detection |
-| `WDBGP_DEFAULT_WEB_AUTH` | network, login, or both |
+| `WDBGP_DEFAULT_WEB_AUTH` | network, login, both, or any |
 | `WDBGP_JS_TIMEOUT` | Integer ≥1; adapter execution timeout in seconds (default 120) |
 | `WDBGP_JS_MAX_SOURCE` | Integer ≥1; max adapter source code size in bytes (default 1 MiB) |
 | `WDBGP_JS_MAX_RESPONSE` | Integer ≥1; max HTTP response bytes per request (default 16 MiB) |
