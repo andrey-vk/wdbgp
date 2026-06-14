@@ -130,6 +130,13 @@ submitted source. Built-in adapters can also be reset to the distribution
 version; reset restores their original name, source, and allowed hosts and
 increments the revision.
 
+When an adapter's source is updated or the adapter is deleted, the previous
+source is backed up to `WDBGP_ADAPTER_BACKUP_DIR` (default
+`<db_dir>/backup/adapters`). The directory is created automatically. Set
+`WDBGP_ADAPTER_BACKUP_DIR` to an empty string to disable backups.
+`WDBGP_ADAPTER_BACKUP_MAX` (default 10) controls how many backup copies are
+kept per adapter; oldest files are deleted first. 0 means unlimited retention.
+
 The admin UI also includes CIDR diagnostics. Enter an IP address or subnet to
 see full and partial service coverage, combined coverage across services, and
 coverage from each enabled user's selected categories and services before and
@@ -225,6 +232,8 @@ password check. Force `true` only when the admin UI is always served over HTTPS.
 | `WDBGP_JS_MAX_ENTRIES` | `1000000` |
 | `WDBGP_JS_MAX_REQUESTS` | `200` |
 | `WDBGP_JS_MAX_CALL_STACK` | `1000` |
+| `WDBGP_ADAPTER_BACKUP_DIR` | `<db_dir>/backup/adapters` |
+| `WDBGP_ADAPTER_BACKUP_MAX` | `10` |
 
 `WDBGP_ADMIN_PASSWORD` and `WDBGP_SESSION_SECRET` are required by `serve`.
 The old `WDBGP_BIRD_LOCAL_ADDRESS` and `WDBGP_BIRD_LOCAL_ADDRESS_V6` names are

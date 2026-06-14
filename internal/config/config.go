@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,8 @@ type Config struct {
 	DefaultWebAuth     string
 	StatusAllowed      []string // comma-separated CIDRs for /status access
 	StatusToken        string   // Bearer token for /status access
+	AdapterBackupDir   string   // backup directory for adapter sources (empty = disabled)
+	AdapterBackupMax   int      // max backup copies per adapter
 }
 
 func Load() (Config, error) {
@@ -172,6 +175,8 @@ func Load() (Config, error) {
 		DefaultWebAuth:     defaultWebAuth,
 		StatusAllowed:      splitCIDRsEnv("WDBGP_STATUS_ALLOWED"),
 		StatusToken:        os.Getenv("WDBGP_STATUS_TOKEN"),
+		AdapterBackupDir:   env("WDBGP_ADAPTER_BACKUP_DIR", filepath.Dir(dbPath)+"/backup/adapters"),
+		AdapterBackupMax:   validateBackupMax("WDBGP_ADAPTER_BACKUP_MAX", 10),
 	}
 	return cfg, nil
 }
@@ -576,6 +581,18 @@ func validateWebAuthMode(name string, fallback string) (string, error) {
 	}
 }
 
+func validateBackupMax(name string, fallback int) int {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
+}
+
 // ApplyDBOverrides sets config fields from database values for keys not overridden by ENV.
 func (c *Config) ApplyDBOverrides(settings map[string]string) {
 	if os.Getenv("WDBGP_DEFAULT_LANGUAGE") == "" {
@@ -670,6 +687,16 @@ func (c *Config) ApplyDBOverrides(settings map[string]string) {
 	if os.Getenv("WDBGP_JS_MAX_CALL_STACK") == "" {
 		if v, ok := settings["js_max_call_stack"]; ok && v != "" {
 			c.JSMaxCallStack, _ = strconv.Atoi(v)
+		}
+	}
+	if os.Getenv("WDBGP_ADAPTER_BACKUP_DIR") == "" {
+		if v, ok := settings["adapter_backup_dir"]; ok && v != "" {
+			c.AdapterBackupDir = v
+		}
+	}
+	if os.Getenv("WDBGP_ADAPTER_BACKUP_MAX") == "" {
+		if v, ok := settings["adapter_backup_max"]; ok && v != "" {
+			c.AdapterBackupMax, _ = strconv.Atoi(v)
 		}
 	}
 }

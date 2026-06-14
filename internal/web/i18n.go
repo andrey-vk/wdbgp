@@ -321,6 +321,13 @@ var translations = map[locale]map[string]string{
 		"settings.js_max_call_stack_placeholder": "Default: 1000",
 		"settings.status_allowed_placeholder": "e.g. 10.0.0.0/8,172.16.0.0/12",
 		"settings.status_token_placeholder": "secret-token",
+
+		"settings.adapter_backup_dir": "Adapter backup directory",
+		"settings.adapter_backup_dir_hint": "Directory for adapter source backups on edit/delete. Empty = disabled. Default: <db_dir>/backup/adapters. Environment variable: WDBGP_ADAPTER_BACKUP_DIR.",
+		"settings.adapter_backup_dir_placeholder": "e.g. /data/backup/adapters",
+		"settings.adapter_backup_max": "Max backup copies per adapter",
+		"settings.adapter_backup_max_hint": "Maximum backup files kept per adapter. Oldest are deleted first. 0 = unlimited. Environment variable: WDBGP_ADAPTER_BACKUP_MAX.",
+		"settings.adapter_backup_max_placeholder": "Default: 10",
 	},
 	localeRussian: {
 		"language.label":             "Язык",
@@ -618,6 +625,13 @@ var translations = map[locale]map[string]string{
 		"settings.js_max_call_stack_placeholder": "По умолчанию: 1000",
 		"settings.status_allowed_placeholder": "например 10.0.0.0/8,172.16.0.0/12",
 		"settings.status_token_placeholder": "секретный-токен",
+
+		"settings.adapter_backup_dir": "Папка бэкапов адаптеров",
+		"settings.adapter_backup_dir_hint": "Директория для бэкапов исходников адаптеров при редактировании/удалении. Пусто = отключено. По умолчанию: <db_dir>/backup/adapters. Переменная окружения: WDBGP_ADAPTER_BACKUP_DIR.",
+		"settings.adapter_backup_dir_placeholder": "например /data/backup/adapters",
+		"settings.adapter_backup_max": "Макс. копий на адаптер",
+		"settings.adapter_backup_max_hint": "Максимальное количество хранимых бэкапов для одного адаптера. Старые удаляются первыми. 0 = без ограничений. Переменная окружения: WDBGP_ADAPTER_BACKUP_MAX.",
+		"settings.adapter_backup_max_placeholder": "По умолчанию: 10",
 	},
 }
 

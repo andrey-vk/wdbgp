@@ -16,6 +16,8 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -979,6 +981,11 @@ func (s *Server) updateFeedAdapter(w http.ResponseWriter, r *http.Request) {
 			adapter, feeds.FormatAdapterError(err))
 		return
 	}
+	if s.cfg.AdapterBackupDir != "" {
+		if old, err := s.store.FeedAdapter(r.Context(), id); err == nil {
+			backupAdapterSource(old, s.cfg.AdapterBackupDir, s.cfg.AdapterBackupMax)
+		}
+	}
 	if err := s.store.UpdateFeedAdapter(r.Context(), adapter); err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
@@ -1072,11 +1079,46 @@ func (s *Server) deleteFeedAdapter(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
 		return
 	}
+	if s.cfg.AdapterBackupDir != "" {
+		if adapter, err := s.store.FeedAdapter(r.Context(), id); err == nil {
+			backupAdapterSource(adapter, s.cfg.AdapterBackupDir, s.cfg.AdapterBackupMax)
+		}
+	}
 	if err := s.store.DeleteFeedAdapter(r.Context(), id); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/admin/adapters", http.StatusSeeOther)
+}
+
+func backupAdapterSource(adapter store.FeedAdapter, backupDir string, maxCopies int) {
+	if backupDir == "" || adapter.Source == "" {
+		return
+	}
+	os.MkdirAll(backupDir, 0755)
+	name := fmt.Sprintf("%s_r%d_%s.js", adapter.Key, adapter.Revision, time.Now().UTC().Format("20060102T150405Z"))
+	os.WriteFile(filepath.Join(backupDir, name), []byte(adapter.Source), 0644)
+	pruneAdapterBackups(adapter.Key, backupDir, maxCopies)
+}
+
+func pruneAdapterBackups(key, dir string, max int) {
+	if max <= 0 {
+		return
+	}
+	entries, _ := os.ReadDir(dir)
+	var files []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), key+"_") {
+			files = append(files, e.Name())
+		}
+	}
+	if len(files) <= max {
+		return
+	}
+	sort.Strings(files)
+	for _, f := range files[:len(files)-max] {
+		os.Remove(filepath.Join(dir, f))
+	}
 }
 
 func (s *Server) renderFeedAdapterEditor(
@@ -2611,6 +2653,8 @@ func allSettings() []settingField {
 		{Key: "default_web_auth", Name: "settings.default_web_auth", EnvVar: "WDBGP_DEFAULT_WEB_AUTH", Type: "select", Options: map[string]string{"network": "users.web_auth_network", "login": "users.web_auth_login", "both": "users.web_auth_both", "any": "users.web_auth_any"}, Section: "settings.section_general"},
 		{Key: "status_allowed", Name: "settings.status_allowed", EnvVar: "WDBGP_STATUS_ALLOWED", Type: "text", Section: "settings.section_general", Placeholder: "settings.status_allowed_placeholder"},
 		{Key: "status_token", Name: "settings.status_token", EnvVar: "WDBGP_STATUS_TOKEN", Type: "text", Section: "settings.section_general", Placeholder: "settings.status_token_placeholder"},
+		{Key: "adapter_backup_dir", Name: "settings.adapter_backup_dir", EnvVar: "WDBGP_ADAPTER_BACKUP_DIR", Type: "text", Section: "settings.section_general", Placeholder: "settings.adapter_backup_dir_placeholder"},
+		{Key: "adapter_backup_max", Name: "settings.adapter_backup_max", EnvVar: "WDBGP_ADAPTER_BACKUP_MAX", Type: "number", Section: "settings.section_general", Placeholder: "settings.adapter_backup_max_placeholder"},
 
 		// Rate Limiting
 		{Key: "rate_limit_login", Name: "settings.rate_limit_login", EnvVar: "WDBGP_RATE_LIMIT_LOGIN", Type: "number", Section: "settings.section_rate_limit", Placeholder: "settings.rate_limit_login_placeholder"},
@@ -2718,6 +2762,10 @@ func (s *Server) settingDefaultValue(key string) string {
 		return cfg.Host
 	case "port":
 		return strconv.Itoa(cfg.Port)
+	case "adapter_backup_dir":
+		return cfg.AdapterBackupDir
+	case "adapter_backup_max":
+		return strconv.Itoa(cfg.AdapterBackupMax)
 	}
 	return ""
 }
@@ -2774,6 +2822,10 @@ func configDefaultValue(cfg config.Config, key string) string {
 		return cfg.Host
 	case "port":
 		return strconv.Itoa(cfg.Port)
+	case "adapter_backup_dir":
+		return cfg.AdapterBackupDir
+	case "adapter_backup_max":
+		return strconv.Itoa(cfg.AdapterBackupMax)
 	}
 	return ""
 }
