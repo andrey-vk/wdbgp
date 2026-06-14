@@ -2,7 +2,7 @@ name: Publish Docker Image
 
 on:
   release:
-    types: [published, prereleased]
+    types: [prereleased, released]
   workflow_dispatch:
 
 permissions:
@@ -15,7 +15,7 @@ concurrency:
 jobs:
   push_to_registry:
     name: Build and Push Docker Image
-    if: github.event_name == 'workflow_dispatch' || github.event.action != 'created'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
@@ -55,6 +55,7 @@ jobs:
           sbom: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
       - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@v4
         with:
