@@ -376,6 +376,13 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	// For credential-based users, require valid session
+	if user.WebAuth == "login" || user.WebAuth == "both" {
+		if !validUserSession(r, user.ID, s.cfg.SessionSecret) {
+			s.httpError(w, r, "error.forbidden", http.StatusForbidden)
+			return
+		}
+	}
 	modeID, err := formModeID(r, user.CatalogModeID)
 	if err != nil {
 		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
@@ -498,6 +505,13 @@ func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.internalError(w, r, err)
 		return
+	}
+	// For credential-based users, require valid session
+	if user.WebAuth == "login" || user.WebAuth == "both" {
+		if !validUserSession(r, user.ID, s.cfg.SessionSecret) {
+			s.httpError(w, r, "error.forbidden", http.StatusForbidden)
+			return
+		}
 	}
 	if !user.FilterEditable {
 		s.httpError(w, r, "error.filters_managed", http.StatusForbidden)
