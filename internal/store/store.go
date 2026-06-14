@@ -435,6 +435,14 @@ CREATE TABLE app_settings (
 );
 `,
 	},
+	{
+		Version: 16,
+		Name:    "make user credentials login globally unique",
+		SQL: `
+DROP INDEX IF EXISTS idx_user_credentials_login;
+CREATE UNIQUE INDEX idx_user_credentials_login_unique ON user_credentials(login);
+`,
+	},
 }
 
 type Store struct {

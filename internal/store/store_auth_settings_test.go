@@ -74,11 +74,11 @@ func TestMigration14AddsWebAuthAndUserCredentials(t *testing.T) {
 		t.Fatalf("user_credentials.password_hash type = %s, want TEXT", columns["password_hash"])
 	}
 
-	// Verify index on login
-	var idxName string
-	err = s.DB.QueryRow("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_user_credentials_login'").Scan(&idxName)
+	// Verify unique index on login
+	var unique int
+	err = s.DB.QueryRow("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_user_credentials_login_unique' AND sql LIKE '%UNIQUE%'").Scan(&unique)
 	if err != nil {
-		t.Fatal("idx_user_credentials_login missing:", err)
+		t.Fatal("idx_user_credentials_login_unique missing:", err)
 	}
 }
 
