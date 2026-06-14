@@ -329,7 +329,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
   <button class=tab data-tab=filters>{{tr "filters.heading"}}</button>
 </div>
 <div class="tab-content tab-settings">
-<section class=card><h2>{{tr "user.settings"}}</h2><form method=post action="/admin/user/{{.User.ID}}">
+<section class=card><h2>{{tr "user.settings"}}</h2><form method=post action="{{if .User.ID}}/admin/user/{{.User.ID}}{{else}}/admin/user{{end}}">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=action value=settings><div class=grid>
 <label>{{tr "feeds.name"}} <input name=name value="{{.User.Name}}" required></label><label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
@@ -345,7 +345,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <option value=any {{if eq .User.WebAuth "any"}}selected{{end}}>{{tr "users.web_auth_any"}}</option>
 </select></label>
 <p class=muted>{{tr "users.web_auth_hint"}}</p>
-<section class=card id=credentials-section>
+{{if .User.ID}}<section class=card id=credentials-section>
 <h2>{{tr "users.credentials"}}</h2>
 {{range $i, $cred := .Credentials}}
 <div class=cred-row>
@@ -358,13 +358,13 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <label>{{tr "user.login"}} <input name=cred_login_new placeholder="{{tr "users.new_credential"}}"></label>
 <label>{{tr "user.password"}} <input type=password name=cred_password_new></label>
 </div>
-</section>
+</section>{{end}}
 <label><input type=checkbox name=locked {{if .User.SelectionLocked}}checked{{end}}> {{tr "user.lock_selection"}}</label>
 <label><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> {{tr "users.allow_filter_editing"}}</label>
 <label><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
 <input type=hidden name=filter_mode value="{{.User.FilterMode}}">
 <button class=primary>{{tr "user.save"}}</button></form>
-<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form></section></div>
+{{if .User.ID}}<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form>{{end}}</section></div>
 {{template "selection" .Selection}}
 <script>
 (function(){

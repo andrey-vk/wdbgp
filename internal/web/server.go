@@ -227,7 +227,7 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		// No IP match — try session-based auth for login-mode users
-		sessionID := getUserSessionID(r, s.cfg.SessionSecret)
+		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
 		if sessionID > 0 {
 			user, err = s.store.User(r.Context(), sessionID)
 			if err == nil && user.Enabled && (user.WebAuth == "login" || user.WebAuth == "any") {
@@ -242,7 +242,7 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// IP matched — but a valid session for a different user takes priority
-		sessionID := getUserSessionID(r, s.cfg.SessionSecret)
+		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
 		if sessionID > 0 {
 			if sessionUser, sessionErr := s.store.User(r.Context(), sessionID); sessionErr == nil && sessionUser.Enabled {
 				if sessionUser.ID != user.ID && (sessionUser.WebAuth == "login" || sessionUser.WebAuth == "any") {
@@ -255,7 +255,7 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 		case "network", "any":
 			// Serve page
 		case "login", "both":
-			if !validUserSession(r, user.ID, s.cfg.SessionSecret) {
+			if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
 				http.Redirect(w, r, "/login", http.StatusSeeOther)
 				return
 			}
@@ -279,7 +279,7 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 	}
 	view.CSRFToken = csrfToken
 	view.Saved = r.URL.Query().Get("saved")
-	view.SessionUser = validUserSession(r, user.ID, s.cfg.SessionSecret)
+	view.SessionUser = validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
 	s.render(w, r, http.StatusOK, "title.selection", "selection", view)
 }
 
@@ -293,7 +293,7 @@ func (s *Server) userLoginPage(w http.ResponseWriter, r *http.Request) {
 			userID, err := strconv.ParseInt(parts[2], 16, 64)
 			if err == nil {
 				user, err := s.store.User(r.Context(), userID)
-				if err == nil && user.Enabled && validUserSession(r, user.ID, s.cfg.SessionSecret) {
+				if err == nil && user.Enabled && validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
 					http.Redirect(w, r, "/", http.StatusSeeOther)
 					return
 				}
@@ -385,7 +385,7 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 	}
 	// For credential-based users, require valid session
 	if user.WebAuth == "login" || user.WebAuth == "both" {
-		if !validUserSession(r, user.ID, s.cfg.SessionSecret) {
+		if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
 			s.httpError(w, r, "error.forbidden", http.StatusForbidden)
 			return
 		}
@@ -445,7 +445,7 @@ func (s *Server) identifyUser(r *http.Request) (store.User, error) {
 	user, err := s.store.UserByIP(r.Context(), clientIP)
 	if err != nil {
 		// No IP match — try session-based auth
-		sessionID := getUserSessionID(r, s.cfg.SessionSecret)
+		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
 		if sessionID > 0 {
 			user, err = s.store.User(r.Context(), sessionID)
 		if err == nil && user.Enabled && (user.WebAuth == "login" || user.WebAuth == "any") {
@@ -460,7 +460,7 @@ func (s *Server) identifyUser(r *http.Request) (store.User, error) {
 		case "network", "any":
 		return user, nil
 	case "login", "both":
-		if !validUserSession(r, user.ID, s.cfg.SessionSecret) {
+		if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
 			return store.User{}, errors.New("session required")
 		}
 		return user, nil
@@ -515,7 +515,7 @@ func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
 	}
 	// For credential-based users, require valid session
 	if user.WebAuth == "login" || user.WebAuth == "both" {
-		if !validUserSession(r, user.ID, s.cfg.SessionSecret) {
+		if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
 			s.httpError(w, r, "error.forbidden", http.StatusForbidden)
 			return
 		}
@@ -1254,6 +1254,18 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
 		s.httpError(w, r, "error.bad_user_id", http.StatusBadRequest)
+		return
+	}
+	if id == 0 {
+		// New user creation form
+		lang, _ := requestLocale(r, s.defaultLang)
+		emptyUser := store.User{
+			WebAuth:       s.cfg.DefaultWebAuth,
+			CatalogModeID: store.DefaultCatalogModeID,
+			Enabled:       true,
+		}
+		s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), translate(lang, "common.add")), "user-edit",
+			userEditView{User: emptyUser})
 		return
 	}
 	user, err := s.store.User(r.Context(), id)
@@ -2231,24 +2243,24 @@ func userSessionToken(secret string, userID int64) string {
 	return text + "." + hex.EncodeToString(signature.Sum(nil))
 }
 
-func validUserSession(r *http.Request, userID int64, secret string) bool {
+func validUserSession(r *http.Request, userID int64, secret string, maxAge time.Duration) bool {
 	cookie, err := r.Cookie(userSessionCookieName)
 	if err != nil {
 		return false
 	}
-	sessionID := parseUserSessionToken(secret, cookie.Value)
+	sessionID := parseUserSessionToken(secret, cookie.Value, maxAge)
 	return sessionID == userID
 }
 
-func getUserSessionID(r *http.Request, secret string) int64 {
+func getUserSessionID(r *http.Request, secret string, maxAge time.Duration) int64 {
 	cookie, err := r.Cookie(userSessionCookieName)
 	if err != nil {
 		return 0
 	}
-	return parseUserSessionToken(secret, cookie.Value)
+	return parseUserSessionToken(secret, cookie.Value, maxAge)
 }
 
-func parseUserSessionToken(secret, value string) int64 {
+func parseUserSessionToken(secret, value string, maxAge time.Duration) int64 {
 	parts := strings.SplitN(value, ".", 4)
 	if len(parts) != 4 {
 		return 0
@@ -2261,7 +2273,10 @@ func parseUserSessionToken(secret, value string) int64 {
 		return 0
 	}
 	sessionTime := time.Unix(timestamp, 0)
-	if time.Since(sessionTime) > 8*time.Hour {
+	if maxAge <= 0 {
+		maxAge = 8 * time.Hour
+	}
+	if time.Since(sessionTime) > maxAge {
 		return 0
 	}
 	// Validate HMAC signature
