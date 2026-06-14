@@ -230,7 +230,7 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.AddFeedForMode(
-		ctx, "precise", "https://example.test/precise", ipranges.ID, true); err != nil {
+		ctx, "precise", "https://example.test/precise", ipranges.ID, true, 0); err != nil {
 		t.Fatal(err)
 	}
 	var feedID int64
@@ -599,7 +599,7 @@ func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.AddFeed(context.Background(), "preview",
-		"https://example.test/feed", false); err != nil {
+		"https://example.test/feed", false, 0); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(context.Background(), false)
@@ -690,10 +690,10 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", true); err != nil {
+	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", true, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", false); err != nil {
+	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", false, 0); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(context.Background(), false)
@@ -1053,6 +1053,7 @@ func TestStatusEndpoint(t *testing.T) {
 		1,
 		1,
 		true,
+		0,
 	)
 	if err != nil {
 		t.Fatal(err)

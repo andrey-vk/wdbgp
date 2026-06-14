@@ -752,7 +752,7 @@ func TestUserCannotChangeCatalogModeWithoutPermission(t *testing.T) {
 func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if err := s.AddFeed(ctx, "custom", "https://example.test/feed.json", true); err != nil {
+	if err := s.AddFeed(ctx, "custom", "https://example.test/feed.json", true, 0); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)
@@ -838,10 +838,10 @@ func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 	if _, err := s.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddFeed(ctx, "enabled", "https://example.test/enabled", true); err != nil {
+	if err := s.AddFeed(ctx, "enabled", "https://example.test/enabled", true, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddFeed(ctx, "disabled", "https://example.test/disabled", false); err != nil {
+	if err := s.AddFeed(ctx, "disabled", "https://example.test/disabled", false, 0); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)
@@ -916,7 +916,7 @@ func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if err := s.AddFeed(ctx, "custom", "https://example.test/old.json", true); err != nil {
+	if err := s.AddFeed(ctx, "custom", "https://example.test/old.json", true, 0); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)
