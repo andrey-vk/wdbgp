@@ -1459,7 +1459,12 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	
+
+	if !s.statusAuthorized(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	// Get database stats
 	categories, services, totalPrefixes, err := s.store.Stats(ctx)
 	if err != nil {
@@ -1526,9 +1531,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"go_version": "1.26",
 	}
 	
-	// Get announced prefixes count (this would need to query BGP manager)
-	// For now, we'll return 0 and implement later if needed
-	announcedPrefixes := 0
+
 	
 	// Prepare response
 	response := map[string]any{
@@ -1543,7 +1546,6 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			"total_peers": len(peerStates),
 			"connected_peers": connectedPeers,
 			"peer_states": peerStates,
-			"announced_prefixes": announcedPrefixes,
 		},
 		"feeds": map[string]any{
 			"total": len(feeds),
@@ -1552,11 +1554,6 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			"failed_syncs": failedSyncs,
 			"last_sync": lastSyncTime,
 			"details": feedStatus,
-		},
-		"prefixes": map[string]any{
-			"total": totalPrefixes,
-			"announced": announcedPrefixes,
-			"filtered": totalPrefixes - announcedPrefixes, // estimate
 		},
 		"build": buildInfo,
 		"timestamp": time.Now().UTC(),
@@ -1865,6 +1862,30 @@ func (s *Server) clientIP(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+func (s *Server) statusAuthorized(r *http.Request) bool {
+	// Check IP
+	if len(s.cfg.StatusAllowed) > 0 {
+		clientIP := s.clientIP(r)
+		ip, err := netip.ParseAddr(clientIP)
+		if err == nil {
+			for _, cidr := range s.cfg.StatusAllowed {
+				prefix, err := netip.ParsePrefix(cidr)
+				if err == nil && prefix.Contains(ip) {
+					return true
+				}
+			}
+		}
+	}
+	// Check token
+	if s.cfg.StatusToken != "" {
+		auth := r.Header.Get("Authorization")
+		if strings.TrimPrefix(auth, "Bearer ") == s.cfg.StatusToken {
+			return true
+		}
+	}
+	return false
 }
 
 func compileTemplates() map[locale]map[string]*template.Template {

@@ -40,6 +40,8 @@ type Config struct {
 	JSMaxRequests      int
 	JSMaxCallStack     int
 	DefaultWebAuth     string
+	StatusAllowed      []string // comma-separated CIDRs for /status access
+	StatusToken        string   // Bearer token for /status access
 }
 
 func Load() (Config, error) {
@@ -168,6 +170,8 @@ func Load() (Config, error) {
 		JSMaxRequests:      jsMaxRequests,
 		JSMaxCallStack:     jsMaxCallStack,
 		DefaultWebAuth:     defaultWebAuth,
+		StatusAllowed:      splitCIDRsEnv("WDBGP_STATUS_ALLOWED"),
+		StatusToken:        os.Getenv("WDBGP_STATUS_TOKEN"),
 	}
 	return cfg, nil
 }
@@ -541,6 +545,22 @@ func validateDefaultLanguage(name string, fallback string) (string, error) {
 		return "", fmt.Errorf("%s must be one of: en, ru", name)
 	}
 	return lowerValue, nil
+}
+
+func splitCIDRsEnv(name string) []string {
+	value := os.Getenv(name)
+	if value == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 func validateWebAuthMode(name string, fallback string) (string, error) {
