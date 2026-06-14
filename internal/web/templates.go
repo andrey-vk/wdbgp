@@ -47,6 +47,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1rem}
 .empty{text-align:center;padding:2rem;color:var(--muted)}
 .pill{font-size:.75em;color:var(--muted);border:1px solid var(--border);padding:1px 6px;border-radius:8px;white-space:nowrap}
+
 .community-tag{font-size:.75em;color:var(--muted);margin-left:4px;font-family:ui-monospace,monospace}
 .htmx-indicator{opacity:.5}
 .prefix-count{font-size:.8em;color:var(--muted);margin-left:.3em;white-space:nowrap}
@@ -104,6 +105,25 @@ header{display:flex;gap:1rem;justify-content:space-between;align-items:center;ma
 .tab{padding:8px 16px;border:none;background:none;color:var(--muted);cursor:pointer;font-size:.9em;font-weight:500;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
 .tab:hover:not(.active){color:var(--text)}
+.settings-grid{display:grid;grid-template-columns:max-content 1fr;align-items:stretch}
+.section-head{grid-column:1/-1;padding:2rem 0 .25rem}
+.section-head:first-child{padding-top:.25rem}
+.section-head h2{font-size:1.2em;font-weight:700;margin:0}
+.setting-row{display:contents}
+.setting-label{white-space:nowrap;padding:.5rem .75rem .5rem 0;font-weight:500;display:flex;align-items:center;gap:.4rem;border-bottom:1px solid var(--border);line-height:1.5}
+.setting-label label{margin:0}
+.setting-field{padding:.5rem 0;display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;border-bottom:1px solid var(--border);position:relative}
+.setting-field input,.setting-field select{width:100%;max-width:300px}
+.setting-field input[type=checkbox]{width:auto}
+select:disabled,input:disabled{opacity:.5;cursor:not-allowed;background:var(--bg)}
+.setting-row:last-of-type .setting-label,.setting-row:last-of-type .setting-field{border-bottom:none}
+.hint-btn{background:var(--border);border:none;border-radius:50%;width:20px;height:20px;line-height:1;font-size:.75em;font-weight:700;cursor:pointer;color:var(--muted);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;vertical-align:middle;margin-left:4px}
+.hint-btn:hover{background:var(--accent);color:#fff}
+.hint-popup{position:absolute;left:0;top:100%;z-index:20;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;box-shadow:0 4px 16px #00000030;max-width:420px;font-size:.85em;line-height:1.5;margin-top:4px}
+.hint-popup p{margin:0 0 .5rem}
+.hint-popup code{font-size:.8em;color:var(--muted)}
+[x-cloak]{display:none!important}
+.card form{margin:0}
 `
 
 const pageStart = `<!DOCTYPE html>
@@ -619,6 +639,7 @@ body{display:flex;height:100vh;overflow:hidden}
 <a href=/admin/communities hx-get=/admin/communities hx-target=#main hx-push-url=true>{{tr "nav.communities"}}</a>
 <a href=/admin/adapters hx-get=/admin/adapters hx-target=#main hx-push-url=true>{{tr "nav.adapters"}}</a>
 <a href=/admin/settings hx-get=/admin/settings hx-target=#main hx-push-url=true>{{tr "nav.settings"}}</a>
+<a href=/admin/debug hx-get=/admin/debug hx-target=#main hx-push-url=true class=sidebar-subtle>{{tr "debug.heading"}}</a>
 <div class=sidebar-spacer></div>
 <a href=/ hx-get=/ hx-target=#main hx-push-url=true class=sidebar-subtle>{{tr "nav.user_page"}}</a>
 </nav>
@@ -653,6 +674,66 @@ document.querySelectorAll('.lang-switch').forEach(function(a) {
 });
 </script>
 </body></html>`
+
+const debugTemplate = `{{with .Data}}
+<h1>{{tr "debug.heading"}}</h1>
+<p class=muted>{{tr "debug.description"}}</p>
+
+<form method=get action=/admin/debug class=card>
+<div class=form-grid>
+<label>{{tr "debug.input"}} <input name=cidr value="{{.CIDR}}" placeholder="8.8.8.8 or 10.0.0.0/8" autofocus></label>
+<label>{{tr "catalog.mode"}}
+<select name=mode>
+{{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.ModeID}}selected{{end}}>{{.Name}}{{if not .Enabled}} ({{tr "catalog.disabled"}}){{end}}</option>{{end}}
+</select></label>
+</div>
+<button type=submit class=primary>{{tr "debug.submit"}}</button>
+</form>
+
+{{if .Result}}
+<section class=card>
+<h2>{{tr "debug.results"}}</h2>
+<p><strong>{{tr "debug.input"}}:</strong> <code>{{.Result.Query}}</code></p>
+
+{{if .Result.FullServices}}
+<h3>{{tr "debug.full_services"}}</h3>
+<table>
+<tr><th>{{tr "catalog.category"}}</th><th>{{tr "catalog.service"}}</th><th>{{tr "debug.coverage"}}</th></tr>
+{{range .Result.FullServices}}
+<tr><td>{{.Category}}</td><td>{{.Service}}</td><td class=ok>100%</td></tr>
+{{end}}
+</table>
+{{end}}
+
+{{if .Result.PartialServices}}
+<h3>{{tr "debug.partial_services"}}</h3>
+<table>
+<tr><th>{{tr "catalog.category"}}</th><th>{{tr "catalog.service"}}</th><th>{{tr "debug.coverage"}}</th></tr>
+{{range .Result.PartialServices}}
+<tr><td>{{.Category}}</td><td>{{.Service}}</td><td>{{printf "%.1f%%" .Percentage}}</td></tr>
+{{end}}
+{{if .Result.CombinedServices}}
+<tr style="font-weight:600"><td colspan=2>{{tr "debug.combined"}}</td><td>{{printf "%.1f%%" .Result.CombinedPercentage}}</td></tr>
+{{end}}
+</table>
+{{end}}
+
+{{if .Result.Users}}
+<h3>{{tr "debug.users"}}</h3>
+<table>
+<tr><th>{{tr "feeds.name"}}</th><th>{{tr "debug.before_filters"}}</th><th>{{tr "debug.after_filters"}}</th></tr>
+{{range .Result.Users}}
+<tr><td>{{.Name}}</td><td>{{printf "%.1f%%" .BeforePercentage}}</td><td>{{printf "%.1f%%" .AfterPercentage}}</td></tr>
+{{end}}
+</table>
+{{end}}
+
+{{if not .Result.FullServices}}{{if not .Result.PartialServices}}{{if not .Result.Users}}
+<p class=muted>{{tr "debug.no_matches"}}</p>
+{{end}}{{end}}{{end}}
+</section>
+{{end}}
+{{end}}`
 
 const dashboardTemplate = `{{with .Data}}
 <h1>{{tr "nav.dashboard"}}</h1>
@@ -745,4 +826,56 @@ const adaptersListTemplate = `{{with .Data}}
 </tr>{{end}}
 </table>
 </div>
+{{end}}`
+
+const settingsTemplate = `{{with .Data}}
+<h1>{{tr "nav.settings"}}</h1>
+{{if .Saved}}<p class=ok>{{tr "settings.saved"}}</p>{{end}}
+<form method=post action=/admin/settings>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<div class=card>
+<div class=settings-grid>
+{{range .Sections}}
+<div class=section-head><h2>{{tr .TitleKey}}</h2></div>
+{{range .Fields}}
+<div class=setting-row x-data="{hint:false}">
+  <div class=setting-label><label for="s_{{.Key}}">{{tr .Name}}</label>
+  {{if .EnvOverride}}<span class="pill muted" title="{{tr "settings.env_override_hint"}}">{{tr "settings.env_override"}}</span>{{end}}
+  <button type=button class="hint-btn" @click="hint=!hint" :aria-expanded="hint" aria-label="{{tr "settings.help"}}">?</button>
+  </div>
+  <div class=setting-field>
+  {{if eq .Type "select"}}
+    <select name="{{.Key}}" id="s_{{.Key}}" {{if .EnvOverride}}disabled title="{{tr "settings.env_override_hint"}}"{{end}}>
+    {{$field := .}}{{range $val, $labelKey := $field.Options}}<option value="{{$val}}" {{if eq $val $field.Value}}selected{{end}}>{{tr $labelKey}}</option>{{end}}
+    </select>
+  {{else if eq .Type "bool"}}
+    <label class=checkbox-row><input type=checkbox name="{{.Key}}" value="true" {{if eq .Value "true"}}checked{{end}} {{if .EnvOverride}}disabled title="{{tr "settings.env_override_hint"}}"{{end}}> {{tr .Name}}</label>
+  {{else if eq .Type "number"}}
+    <input type=number name="{{.Key}}" id="s_{{.Key}}" value="{{.Value}}" {{if .EnvOverride}}disabled title="{{tr "settings.env_override_hint"}}"{{end}} {{if .Placeholder}}placeholder="{{tr .Placeholder}}"{{end}}>
+  {{else}}
+    <input type="{{.Type}}" name="{{.Key}}" id="s_{{.Key}}" value="{{.Value}}" {{if .EnvOverride}}disabled title="{{tr "settings.env_override_hint"}}"{{end}} {{if .Placeholder}}placeholder="{{tr .Placeholder}}"{{end}}>
+  {{end}}
+  {{if .Restart}}<span class=muted> ({{tr "settings.requires_restart"}})</span>{{end}}
+  <div class=hint-popup x-show="hint" @click.away="hint=false" x-transition x-cloak>
+    <p>{{tr (printf "settings.%s_hint" .Key)}}</p>
+    <code>{{.EnvVar}}</code>
+  </div>
+  </div>
+</div>
+{{end}}
+{{end}}
+{{if .GlobalFilters}}
+<div class=section-head><h2>{{tr "settings.section_filters"}}</h2></div>
+<div style="grid-column:1/-1;padding:.5rem 0;border-bottom:1px solid var(--border)">
+<p class=muted style=margin-bottom:.75rem>{{tr "global_filters.explanation"}}</p>
+<div class=grid>
+<label>{{tr "filters.allow"}} <textarea class=large style=min-height:12em name=filter_allow placeholder="{{tr "filters.allow_placeholder"}}">{{.GlobalFilters.Allow}}</textarea></label>
+<label>{{tr "filters.deny"}} <textarea class=large style=min-height:12em name=filter_deny placeholder="0.0.0.0/0">{{.GlobalFilters.Deny}}</textarea></label>
+</div>
+</div>
+{{end}}
+</div>
+</div>
+<div class=save-bar><button type=submit class=primary>{{tr "common.save"}}</button></div>
+</form>
 {{end}}`

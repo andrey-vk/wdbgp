@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -167,6 +168,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/communities", server.requireAdmin(server.saveCommunities))
 	mux.HandleFunc("POST /admin/communities/reset", server.requireAdmin(server.resetCommunities))
 	mux.HandleFunc("GET /admin/debug/cidr", server.requireAdmin(server.debugCIDRHandler))
+	mux.HandleFunc("GET /admin/debug", server.requireAdmin(server.debugPage))
 	mux.HandleFunc("POST /admin/mode/{id}", server.requireAdmin(server.updateCatalogMode))
 	mux.HandleFunc("GET /admin/feed", server.requireAdmin(server.feedEditPage))
 	mux.HandleFunc("GET /admin/feed/{id}", server.requireAdmin(server.feedEditPage))
@@ -193,6 +195,8 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("GET /admin/users", server.requireAdmin(server.usersList))
 	mux.HandleFunc("GET /admin/feeds", server.requireAdmin(server.feedsList))
 	mux.HandleFunc("GET /admin/adapters", server.requireAdmin(server.adaptersList))
+	mux.HandleFunc("GET /admin/settings", server.requireAdmin(server.settingsPage))
+	mux.HandleFunc("POST /admin/settings", server.requireAdmin(server.saveSettings))
 
 	// Build middleware chain
 	handler := http.Handler(mux)
@@ -736,6 +740,40 @@ func (s *Server) resetCommunities(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logAdminAction(r, "communities_reset", fmt.Sprintf("mode=%d", modeID))
 	http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d&saved=reset", modeID), http.StatusSeeOther)
+}
+
+func (s *Server) debugPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	type debugPageView struct {
+		CIDR   string
+		Result *cidrDebugResult
+		Modes  []store.CatalogMode
+		ModeID int64
+	}
+
+	cidr := r.URL.Query().Get("cidr")
+	modeID := store.DefaultCatalogModeID
+	if mid, err := strconv.ParseInt(r.URL.Query().Get("mode"), 10, 64); err == nil && mid > 0 {
+		modeID = mid
+	}
+
+	modes, _ := s.store.CatalogModes(ctx, false)
+
+	view := debugPageView{
+		CIDR:   cidr,
+		Modes:  modes,
+		ModeID: modeID,
+	}
+
+	if cidr != "" {
+		result, err := s.debugCIDR(ctx, cidr, modeID)
+		if err == nil {
+			view.Result = &result
+		}
+	}
+
+	s.renderAdmin(w, r, http.StatusOK, "CIDR diagnostics", "debug", view)
 }
 
 func (s *Server) debugCIDRHandler(w http.ResponseWriter, r *http.Request) {
@@ -1780,6 +1818,7 @@ func compileTemplates() map[locale]map[string]*template.Template {
 	}
 	// Fragment templates (body only, no pageStart/pageEnd) for htmx and shell embedding
 	fragments := map[string]string{
+		"debug":        debugTemplate,
 		"dashboard":    dashboardTemplate,
 		"communities":  communitiesTemplate,
 		"adapter-edit": adapterEditTemplate,
@@ -1789,6 +1828,7 @@ func compileTemplates() map[locale]map[string]*template.Template {
 		"feeds-list":    feedsListTemplate,
 		"feed-edit":     feedEditTemplate,
 		"adapters-list": adaptersListTemplate,
+		"settings":     settingsTemplate,
 	}
 	result := make(map[locale]map[string]*template.Template, len(translations))
 	for lang := range translations {
@@ -2429,6 +2469,262 @@ func countEnabledFeeds(feeds []store.Feed) int {
 		}
 	}
 	return count
+}
+
+// --- Settings page ---
+
+type settingField struct {
+	Key         string            // DB key like "default_language"
+	Name        string            // i18n key for short name like "settings.default_language"
+	EnvVar      string            // ENV var name like "WDBGP_DEFAULT_LANGUAGE"
+	Type        string            // "text", "number", "select", "bool", "password"
+	Options     map[string]string // for select: value→label i18n key
+	Section     string            // i18n key for section title like "settings.section_general"
+	Restart     bool              // requires app restart
+	Placeholder string            // placeholder text (i18n key)
+	Value       string            // current value (populated at render time)
+	EnvOverride bool              // whether an ENV var overrides this setting
+}
+
+type settingSection struct {
+	TitleKey string         // i18n key
+	Fields   []settingField
+}
+
+func allSettings() []settingField {
+	return []settingField{
+		// General
+		{Key: "default_language", Name: "settings.default_language", EnvVar: "WDBGP_DEFAULT_LANGUAGE", Type: "select", Options: map[string]string{"en": "language.english", "ru": "language.russian"}, Section: "settings.section_general"},
+		{Key: "session_max_age", Name: "settings.session_max_age", EnvVar: "WDBGP_SESSION_MAX_AGE", Type: "number", Section: "settings.section_general", Placeholder: "settings.session_max_age_placeholder"},
+		{Key: "admin_cookie_secure", Name: "settings.admin_cookie_secure", EnvVar: "WDBGP_ADMIN_COOKIE_SECURE", Type: "select", Options: map[string]string{"auto": "settings.auto", "true": "settings.true", "false": "settings.false"}, Section: "settings.section_general"},
+		{Key: "trust_proxy_headers", Name: "settings.trust_proxy_headers", EnvVar: "WDBGP_TRUST_PROXY_HEADERS", Type: "bool", Section: "settings.section_general"},
+		{Key: "security_headers", Name: "settings.security_headers", EnvVar: "WDBGP_SECURITY_HEADERS", Type: "bool", Section: "settings.section_general"},
+		{Key: "default_web_auth", Name: "settings.default_web_auth", EnvVar: "WDBGP_DEFAULT_WEB_AUTH", Type: "select", Options: map[string]string{"network": "users.web_auth_network", "login": "users.web_auth_login", "both": "users.web_auth_both"}, Section: "settings.section_general"},
+
+		// Rate Limiting
+		{Key: "rate_limit_login", Name: "settings.rate_limit_login", EnvVar: "WDBGP_RATE_LIMIT_LOGIN", Type: "number", Section: "settings.section_rate_limit", Placeholder: "settings.rate_limit_login_placeholder"},
+		{Key: "rate_limit_admin", Name: "settings.rate_limit_admin", EnvVar: "WDBGP_RATE_LIMIT_ADMIN", Type: "number", Section: "settings.section_rate_limit", Placeholder: "settings.rate_limit_admin_placeholder"},
+
+		// Logging
+		{Key: "log_level", Name: "settings.log_level", EnvVar: "WDBGP_LOG_LEVEL", Type: "select", Options: map[string]string{"DEBUG": "DEBUG", "INFO": "INFO", "WARN": "WARN", "ERROR": "ERROR", "FATAL": "FATAL", "PANIC": "PANIC"}, Section: "settings.section_logging"},
+		{Key: "log_format", Name: "settings.log_format", EnvVar: "WDBGP_LOG_FORMAT", Type: "select", Options: map[string]string{"text": "text", "json": "json"}, Section: "settings.section_logging"},
+
+		// Feed Sync
+		{Key: "sync_interval", Name: "settings.sync_interval", EnvVar: "WDBGP_SYNC_INTERVAL", Type: "number", Section: "settings.section_sync", Placeholder: "settings.sync_interval_placeholder"},
+
+		// JavaScript Runtime
+		{Key: "js_timeout", Name: "settings.js_timeout", EnvVar: "WDBGP_JS_TIMEOUT", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_timeout_placeholder"},
+		{Key: "js_max_source", Name: "settings.js_max_source", EnvVar: "WDBGP_JS_MAX_SOURCE", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_source_placeholder"},
+		{Key: "js_max_response", Name: "settings.js_max_response", EnvVar: "WDBGP_JS_MAX_RESPONSE", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_response_placeholder"},
+		{Key: "js_max_total", Name: "settings.js_max_total", EnvVar: "WDBGP_JS_MAX_TOTAL", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_total_placeholder"},
+		{Key: "js_max_entries", Name: "settings.js_max_entries", EnvVar: "WDBGP_JS_MAX_ENTRIES", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_entries_placeholder"},
+		{Key: "js_max_requests", Name: "settings.js_max_requests", EnvVar: "WDBGP_JS_MAX_REQUESTS", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_requests_placeholder"},
+		{Key: "js_max_call_stack", Name: "settings.js_max_call_stack", EnvVar: "WDBGP_JS_MAX_CALL_STACK", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_call_stack_placeholder"},
+
+		// BGP (requires restart)
+		{Key: "bgp_port", Name: "settings.bgp_port", EnvVar: "WDBGP_BGP_PORT", Type: "number", Section: "settings.section_bgp", Restart: true},
+		{Key: "local_asn", Name: "settings.local_asn", EnvVar: "WDBGP_LOCAL_ASN", Type: "number", Section: "settings.section_bgp", Restart: true},
+		{Key: "router_id", Name: "settings.router_id", EnvVar: "WDBGP_ROUTER_ID", Type: "text", Section: "settings.section_bgp", Restart: true},
+		{Key: "local_address_v4", Name: "settings.local_address_v4", EnvVar: "WDBGP_BGP_LOCAL_ADDRESS", Type: "text", Section: "settings.section_bgp", Restart: true},
+		{Key: "local_address_v6", Name: "settings.local_address_v6", EnvVar: "WDBGP_BGP_LOCAL_ADDRESS_V6", Type: "text", Section: "settings.section_bgp", Restart: true},
+
+		// Network (requires restart)
+		{Key: "host", Name: "settings.host", EnvVar: "WDBGP_HOST", Type: "text", Section: "settings.section_network", Restart: true},
+		{Key: "port", Name: "settings.port", EnvVar: "WDBGP_PORT", Type: "number", Section: "settings.section_network", Restart: true},
+	}
+}
+
+func allSettingKeys() []string {
+	settings := allSettings()
+	keys := make([]string, len(settings))
+	for i, s := range settings {
+		keys[i] = s.Key
+	}
+	return keys
+}
+
+func isEnvOverridden(envVar string) bool {
+	return os.Getenv(envVar) != ""
+}
+
+func boolStr(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
+}
+
+func (s *Server) settingDefaultValue(key string) string {
+	cfg := s.cfg
+	switch key {
+	case "default_language":
+		return cfg.DefaultLanguage
+	case "session_max_age":
+		return strconv.Itoa(cfg.SessionMaxAge)
+	case "admin_cookie_secure":
+		return cfg.AdminCookieSecure
+	case "trust_proxy_headers":
+		return boolStr(cfg.TrustProxyHeader)
+	case "security_headers":
+		return boolStr(cfg.SecurityHeaders)
+	case "default_web_auth":
+		return cfg.DefaultWebAuth
+	case "rate_limit_login":
+		return strconv.Itoa(cfg.RateLimitLogin)
+	case "rate_limit_admin":
+		return strconv.Itoa(cfg.RateLimitAdmin)
+	case "log_level":
+		return cfg.LogLevel
+	case "log_format":
+		return cfg.LogFormat
+	case "sync_interval":
+		return strconv.Itoa(int(cfg.SyncInterval.Seconds()))
+	case "js_timeout":
+		return strconv.Itoa(int(cfg.JSTimeout.Seconds()))
+	case "js_max_source":
+		return strconv.Itoa(cfg.JSMaxSourceBytes)
+	case "js_max_response":
+		return strconv.Itoa(cfg.JSMaxResponseBytes)
+	case "js_max_total":
+		return strconv.Itoa(cfg.JSMaxTotalBytes)
+	case "js_max_entries":
+		return strconv.Itoa(cfg.JSMaxEntries)
+	case "js_max_requests":
+		return strconv.Itoa(cfg.JSMaxRequests)
+	case "js_max_call_stack":
+		return strconv.Itoa(cfg.JSMaxCallStack)
+	case "bgp_port":
+		return strconv.Itoa(int(cfg.BGPListenPort))
+	case "local_asn":
+		return strconv.FormatUint(uint64(cfg.LocalASN), 10)
+	case "router_id":
+		return cfg.RouterID
+	case "local_address_v4":
+		return cfg.LocalAddressV4
+	case "local_address_v6":
+		return cfg.LocalAddressV6
+	case "host":
+		return cfg.Host
+	case "port":
+		return strconv.Itoa(cfg.Port)
+	}
+	return ""
+}
+
+func buildSettingsSections(cfg config.Config, dbSettings map[string]string) []settingSection {
+	all := allSettings()
+	sectionMap := make(map[string][]settingField)
+	sectionOrder := []string{} // preserve order
+
+	for _, f := range all {
+		// Populate value and env override
+		if v := os.Getenv(f.EnvVar); v != "" {
+			f.Value = v
+			f.EnvOverride = true
+		} else if v, ok := dbSettings[f.Key]; ok {
+			f.Value = v
+			f.EnvOverride = false
+		} else {
+			f.Value = "" // zero value, template shows placeholder/default
+			f.EnvOverride = false
+		}
+
+		if _, ok := sectionMap[f.Section]; !ok {
+			sectionOrder = append(sectionOrder, f.Section)
+		}
+		sectionMap[f.Section] = append(sectionMap[f.Section], f)
+	}
+
+	sections := make([]settingSection, 0, len(sectionOrder))
+	for _, sKey := range sectionOrder {
+		sections = append(sections, settingSection{
+			TitleKey: sKey,
+			Fields:   sectionMap[sKey],
+		})
+	}
+	return sections
+}
+
+type globalFiltersView struct {
+	Allow string // newline-separated CIDRs
+	Deny  string // newline-separated CIDRs
+}
+
+func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	dbSettings, _ := s.store.GetAllSettings(ctx)
+
+	sections := buildSettingsSections(s.cfg, dbSettings)
+
+	// Global route filters
+	globalFilters, _ := s.store.GlobalRouteFilters(ctx)
+
+	s.renderAdmin(w, r, http.StatusOK, "Settings", "settings", map[string]any{
+		"Sections": sections,
+		"Saved":    r.URL.Query().Get("saved") == "1",
+		"GlobalFilters": globalFiltersView{
+			Allow: strings.Join(globalFilters.Allow, "\n"),
+			Deny:  strings.Join(globalFilters.Deny, "\n"),
+		},
+	})
+}
+
+func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
+		return
+	}
+
+	settings := make(map[string]string)
+	knownKeys := allSettingKeys()
+	for _, key := range knownKeys {
+		f := fieldByKey(key)
+		if f == nil {
+			continue
+		}
+		if isEnvOverridden(f.EnvVar) {
+			continue
+		}
+		if f.Type == "bool" {
+			// Unchecked checkbox doesn't send a value; treat missing as "false"
+			if r.Form.Has(key) {
+				settings[key] = "true"
+			} else {
+				settings[key] = "false"
+			}
+		} else {
+			if val, ok := r.Form[key]; ok && len(val) > 0 {
+				settings[key] = val[0]
+			}
+		}
+	}
+
+	if err := s.store.SaveSettings(r.Context(), settings); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+
+	// Save global route filters if the fields are present in the form
+	if r.Form.Has("filter_allow") || r.Form.Has("filter_deny") {
+		if filters, err := routeFiltersFromForm(r); err == nil {
+			if err := s.store.SetGlobalRouteFilters(r.Context(), filters); err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+			_ = s.bgp.Reconcile(r.Context())
+		}
+	}
+
+	http.Redirect(w, r, "/admin/settings?saved=1", http.StatusSeeOther)
+}
+
+func fieldByKey(key string) *settingField {
+	for _, f := range allSettings() {
+		if f.Key == key {
+			return &f
+		}
+	}
+	return nil
 }
 
 
