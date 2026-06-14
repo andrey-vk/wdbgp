@@ -181,6 +181,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/adapter/{id}", server.requireAdmin(server.updateFeedAdapter))
 	mux.HandleFunc("POST /admin/adapter/{id}/test", server.requireAdmin(server.testFeedAdapter))
 	mux.HandleFunc("POST /admin/adapter/{id}/reset", server.requireAdmin(server.resetFeedAdapter))
+	mux.HandleFunc("POST /admin/adapter/{id}/delete", server.requireAdmin(server.deleteFeedAdapter))
 	mux.HandleFunc("POST /admin/sync", server.requireAdmin(server.syncFeeds))
 	mux.HandleFunc("POST /admin/filters", server.requireAdmin(server.saveGlobalFilters))
 	mux.HandleFunc("POST /admin/user", server.requireAdmin(server.addUser))
@@ -943,6 +944,17 @@ func (s *Server) feedAdapterPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad adapter id", http.StatusBadRequest)
 		return
 	}
+	if id == 0 {
+		// New adapter creation form
+		feeds, _ := s.store.Feeds(r.Context(), false)
+		lang, _ := requestLocale(r, s.defaultLang)
+		emptyAdapter := store.FeedAdapter{
+			Language:   "javascript",
+			APIVersion: 1,
+		}
+		s.renderAdmin(w, r, http.StatusOK, translate(lang, "title.adapter_edit"), "adapter-edit", adapterEditView{Adapter: emptyAdapter, Feeds: feeds})
+		return
+	}
 	adapter, err := s.store.FeedAdapter(r.Context(), id)
 	if err != nil {
 		if store.IsNotFound(err) {
@@ -1052,6 +1064,19 @@ func (s *Server) resetFeedAdapter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/adapter/%d", id), http.StatusSeeOther)
+}
+
+func (s *Server) deleteFeedAdapter(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.DeleteFeedAdapter(r.Context(), id); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/admin/adapters", http.StatusSeeOther)
 }
 
 func (s *Server) renderFeedAdapterEditor(

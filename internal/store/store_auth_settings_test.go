@@ -862,3 +862,48 @@ func (s *Store) UserByName(ctx context.Context, name string) (User, error) {
 	}
 	return s.User(ctx, id)
 }
+
+// =============================================================================
+// DeleteFeedAdapter
+// =============================================================================
+
+func TestDeleteFeedAdapter(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Add a custom adapter
+	_, err := s.DB.ExecContext(ctx,
+		"INSERT INTO feed_adapters(key, name, source) VALUES ('test-del', 'Test Delete', 'function sync(f,a){return[]}')")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Find its ID
+	var id int64
+	err = s.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE key='test-del'").Scan(&id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete it
+	if err := s.DeleteFeedAdapter(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify gone
+	var count int
+	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM feed_adapters WHERE id=?", id).Scan(&count)
+	if count != 0 {
+		t.Fatal("adapter not deleted")
+	}
+}
+
+func TestDeleteFeedAdapterNotFound(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	err := s.DeleteFeedAdapter(ctx, 99999)
+	if !IsNotFound(err) {
+		t.Fatalf("expected ErrNoRows, got %v", err)
+	}
+}

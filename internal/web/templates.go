@@ -123,7 +123,7 @@ select:disabled,input:disabled{opacity:.5;cursor:not-allowed;background:var(--bg
 .hint-popup p{margin:0 0 .5rem}
 .hint-popup code{font-size:.8em;color:var(--muted)}
 [x-cloak]{display:none!important}
-.card form{margin:0}
+.card form + form{margin-top:1rem}
 `
 
 const pageStart = `<!DOCTYPE html>
@@ -179,7 +179,7 @@ const adapterEditTemplate = `{{with .Data}}
 <section class=card>
 <p><code>{{.Adapter.Key}}</code> · rev. {{.Adapter.Revision}}{{if .Adapter.BuiltIn}} · {{tr "adapters.built_in"}}{{end}}</p>
 {{if .Error}}<h2>{{tr "adapters.error"}}</h2><pre class=error-output>{{.Error}}</pre>{{end}}
-<form method=post action="/admin/adapter/{{.Adapter.ID}}">
+<form method=post action="{{if .Adapter.ID}}/admin/adapter/{{.Adapter.ID}}{{else}}/admin/adapter{{end}}">
  <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
  <label>{{tr "feeds.name"}} <input name=name value="{{.Adapter.Name}}" required></label>
  <label>{{tr "adapters.allowed_hosts"}} <input name=allowed_hosts value="{{.Adapter.AllowedHosts}}"></label>
@@ -191,9 +191,10 @@ const adapterEditTemplate = `{{with .Data}}
  <div class=row-actions><button class=primary>{{tr "common.save"}}</button>
  <button type=submit class=secondary formaction="/admin/adapter/{{.Adapter.ID}}/test">{{tr "adapters.test"}}</button></div>
  </form>
-{{if .Adapter.BuiltIn}}<form method=post action="/admin/adapter/{{.Adapter.ID}}/reset" onsubmit="return confirm('{{tr "adapters.reset_confirm"}}');">
+{{if .Adapter.ID}}{{if .Adapter.BuiltIn}}<form method=post action="/admin/adapter/{{.Adapter.ID}}/reset" onsubmit="return confirm('{{tr "adapters.reset_confirm"}}');">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <button class=danger>{{tr "adapters.reset"}}</button></form>{{end}}
+{{if not .Adapter.BuiltIn}}<form method=post action="/admin/adapter/{{.Adapter.ID}}/delete" onsubmit="return confirm('Delete this adapter?');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "common.delete"}}</button></form>{{end}}{{end}}
 </section>{{end}}`
 
 const selectionBody = `{{$selection := .}}
@@ -364,7 +365,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <label><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
 <input type=hidden name=filter_mode value="{{.User.FilterMode}}">
 <button class=primary>{{tr "user.save"}}</button></form>
-{{if .User.ID}}<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');" style=margin-top:1rem><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form>{{end}}</section></div>
+{{if .User.ID}}<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form>{{end}}</section></div>
 {{template "selection" .Selection}}
 <script>
 (function(){
@@ -814,7 +815,7 @@ const feedEditTemplate = `{{with .Data}}
 <div class=checkbox-row><label><input type=checkbox name=enabled {{if .Feed.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label></div>
 <button type=submit class=primary>{{tr "common.save"}}</button>
 </form>
-{{if not .IsNew}}<form method=post action="/admin/feed/{{.Feed.ID}}/delete" style="margin-top:1rem" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}')">
+{{if not .IsNew}}<form method=post action="/admin/feed/{{.Feed.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}')">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button type=submit class=danger>{{tr "common.delete"}}</button></form>{{end}}
 </div>
 {{end}}`
@@ -833,6 +834,7 @@ const adaptersListTemplate = `{{with .Data}}
 </tr>{{end}}
 </table>
 </div>
+<p><a href="/admin/adapter/0" class="button primary">{{tr "adapters.add"}}</a></p>
 {{end}}`
 
 const settingsTemplate = `{{with .Data}}

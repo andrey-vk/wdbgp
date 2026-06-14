@@ -211,6 +211,18 @@ VALUES (?, ?, 'javascript', 1, ?, ?)`,
 	return result.LastInsertId()
 }
 
+// DeleteFeedAdapter deletes an adapter. Fails if any feeds reference it (FK constraint).
+func (s *Store) DeleteFeedAdapter(ctx context.Context, id int64) error {
+	result, err := s.DB.ExecContext(ctx, "DELETE FROM feed_adapters WHERE id = ?", id)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) UpdateFeedAdapter(ctx context.Context, adapter FeedAdapter) error {
 	result, err := s.DB.ExecContext(ctx, `
 UPDATE feed_adapters
