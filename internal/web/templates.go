@@ -833,6 +833,7 @@ const settingsTemplate = `{{with .Data}}
 {{if .Saved}}<p class=ok>{{tr "settings.saved"}}</p>{{end}}
 <form method=post action=/admin/settings>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<div class=save-bar><button type=submit class=primary>{{tr "common.save"}}</button></div>
 <div class=card>
 <div class=settings-grid>
 {{range .Sections}}
@@ -876,6 +877,5 @@ const settingsTemplate = `{{with .Data}}
 {{end}}
 </div>
 </div>
-<div class=save-bar><button type=submit class=primary>{{tr "common.save"}}</button></div>
 </form>
 {{end}}`
