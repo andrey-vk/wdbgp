@@ -1062,6 +1062,12 @@ func (s *Server) resetFeedAdapter(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad adapter id", http.StatusBadRequest)
 		return
 	}
+	// Backup old source before reset
+	if s.cfg.AdapterBackupDir != "" {
+		if old, err := s.store.FeedAdapter(r.Context(), id); err == nil {
+			backupAdapterSource(old, s.cfg.AdapterBackupDir, s.cfg.AdapterBackupMax)
+		}
+	}
 	if err := s.store.ResetFeedAdapter(r.Context(), id); err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
