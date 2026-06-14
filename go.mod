@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/dop251/goja v0.0.0-20260607120635-348e6bea910d
 	github.com/osrg/gobgp/v3 v3.37.0
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/text v0.37.0
 	google.golang.org/protobuf v1.36.10
 	modernc.org/sqlite v1.51.0
