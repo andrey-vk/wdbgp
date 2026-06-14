@@ -47,6 +47,11 @@ func run() error {
 	}
 	defer db.Close()
 
+	// Apply DB-stored settings (ENV overrides are preserved)
+	if dbSettings, err := db.GetAllSettings(context.Background()); err == nil {
+		cfg.ApplyDBOverrides(dbSettings)
+	}
+
 	switch command {
 	case "migrate", "init":
 		logging.Info("database migrations are up to date")

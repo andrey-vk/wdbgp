@@ -193,23 +193,23 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	if response.Code != http.StatusSeeOther || bgp.reconciles != 3 {
 		t.Fatalf("global filter update: status=%d reconciles=%d", response.Code, bgp.reconciles)
 	}
+	// /admin now redirects to /admin/dashboard
 	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
 	request.AddCookie(cookies[0])
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Глобальная фильтрация маршрутов") {
-		t.Fatalf("admin filter page: status=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("admin redirect: status=%d body=%s", response.Code, response.Body.String())
 	}
 
-	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
+	request = httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
 	request.Header.Set("Accept-Language", "en")
 	request.AddCookie(cookies[0])
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), "Global route filtering") ||
 		!strings.Contains(response.Body.String(), `<html lang="en">`) {
-		t.Fatalf("English admin page: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("English dashboard page: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -230,7 +230,7 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.AddFeedForMode(
-		ctx, "precise", "https://example.test/precise", ipranges.ID, true); err != nil {
+		ctx, "precise", "https://example.test/precise", ipranges.ID, true, 0); err != nil {
 		t.Fatal(err)
 	}
 	var feedID int64
@@ -394,10 +394,10 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 			t.Fatalf("selection details %q not rendered: %s", want, body)
 		}
 	}
-	if !strings.Contains(body, `value="Messengers:Telegram"  disabled`) {
+	if !strings.Contains(body, `name=service value="Messengers:Telegram"`) || !strings.Contains(body, `disabled`) {
 		t.Fatalf("contained selected service is not disabled: %s", body)
 	}
-	if !strings.Contains(body, `value="Messengers:Signal"  disabled`) {
+	if !strings.Contains(body, `name=service value="Messengers:Signal"`) || !strings.Contains(body, `disabled`) {
 		t.Fatalf("contained unselected service is not disabled: %s", body)
 	}
 }
@@ -476,10 +476,17 @@ func TestAdminCanManageFeeds(t *testing.T) {
 	request.AddCookie(adminCookie)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `value="custom-renamed"`) ||
-		!strings.Contains(response.Body.String(), "/admin/feed/"+strconv.FormatInt(feed.ID, 10)+"/delete") {
-		t.Fatalf("managed feed not rendered: status=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("admin redirect after feed update: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// Verify dashboard loads after redirect
+	request = httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dashboard not rendered: status=%d body=%s", response.Code, response.Body.String())
 	}
 
 	request = httptest.NewRequest(http.MethodPost,
@@ -592,7 +599,7 @@ func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.AddFeed(context.Background(), "preview",
-		"https://example.test/feed", false); err != nil {
+		"https://example.test/feed", false, 0); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(context.Background(), false)
@@ -683,10 +690,10 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", true); err != nil {
+	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", true, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", false); err != nil {
+	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", false, 0); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(context.Background(), false)
@@ -973,8 +980,17 @@ func TestAdminCookieSecureAutoAllowsPlainHTTP(t *testing.T) {
 	request.AddCookie(cookies[0])
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("admin redirect after HTTP login: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// Verify dashboard loads after redirect
+	request = httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
+	request.AddCookie(cookies[0])
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("admin page after HTTP login: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("dashboard page after HTTP login: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -1037,6 +1053,7 @@ func TestStatusEndpoint(t *testing.T) {
 		1,
 		1,
 		true,
+		0,
 	)
 	if err != nil {
 		t.Fatal(err)

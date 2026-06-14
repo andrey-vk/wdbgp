@@ -56,6 +56,19 @@ does not modify RouterOS through an API.
 
 Do not expose HTTP or TCP/179 to untrusted networks.
 
+## Web authentication
+
+Each user's web authentication mode controls access to the selection page:
+
+- **network** — source IP matching their CIDRs
+- **login** — authenticate with login/password
+- **both** — IP match AND credentials required
+- **any** — IP match OR credentials (whichever passes)
+
+Credentials (login + bcrypt-hashed password) are managed per-user in the admin UI.
+A `/login` page serves credential-based authentication. `WDBGP_DEFAULT_WEB_AUTH`
+sets the default mode for new users (default: `network`).
+
 ## Feeds
 
 Main and beta OpenCCK feeds for IPv4 and IPv6 are inserted on first start. The
@@ -139,6 +152,15 @@ accidental prefix explosions.
 The route-filter migration initializes the global deny list with common private,
 loopback, link-local, documentation, benchmark, multicast, and reserved networks.
 
+## Settings
+
+All application settings are stored in the database and editable at
+`/admin/settings`. Environment variables always override stored values — ENV-controlled
+settings are grayed out and show a tooltip. Non-ENV settings take effect
+immediately where possible; BGP and network settings require a restart.
+
+The global route allow/deny filters are on the same page.
+
 ## Run
 
 ```sh
@@ -193,6 +215,7 @@ password check. Force `true` only when the admin UI is always served over HTTPS.
 | `WDBGP_LOG_LEVEL` | `INFO` |
 | `WDBGP_LOG_FORMAT` | `text` |
 | `WDBGP_TRUST_PROXY_HEADERS` | `false` |
+| `WDBGP_DEFAULT_WEB_AUTH` | `network` |
 | `WDBGP_JS_TIMEOUT` | `120` seconds |
 | `WDBGP_JS_MAX_SOURCE` | `1048576` (1 MiB) |
 | `WDBGP_JS_MAX_RESPONSE` | `16777216` (16 MiB) |
@@ -234,6 +257,7 @@ All values are validated on startup with helpful error messages. If not specifie
 | `WDBGP_LOG_LEVEL` | DEBUG, INFO, WARN, ERROR, FATAL, PANIC (default INFO) |
 | `WDBGP_LOG_FORMAT` | text or json (default text) |
 | `WDBGP_TRUST_PROXY_HEADERS` | Boolean; trust X-Forwarded-Proto header for cookie security detection |
+| `WDBGP_DEFAULT_WEB_AUTH` | network, login, both, or any |
 | `WDBGP_JS_TIMEOUT` | Integer ≥1; adapter execution timeout in seconds (default 120) |
 | `WDBGP_JS_MAX_SOURCE` | Integer ≥1; max adapter source code size in bytes (default 1 MiB) |
 | `WDBGP_JS_MAX_RESPONSE` | Integer ≥1; max HTTP response bytes per request (default 16 MiB) |

@@ -39,6 +39,7 @@ type Config struct {
 	JSMaxEntries       int
 	JSMaxRequests      int
 	JSMaxCallStack     int
+	DefaultWebAuth     string
 }
 
 func Load() (Config, error) {
@@ -134,6 +135,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	defaultWebAuth, err := validateWebAuthMode("WDBGP_DEFAULT_WEB_AUTH", "network")
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		DBPath:            dbPath,
 		Host:              host,
@@ -162,6 +167,7 @@ func Load() (Config, error) {
 		JSMaxEntries:       jsMaxEntries,
 		JSMaxRequests:      jsMaxRequests,
 		JSMaxCallStack:     jsMaxCallStack,
+		DefaultWebAuth:     defaultWebAuth,
 	}
 	return cfg, nil
 }
@@ -535,4 +541,115 @@ func validateDefaultLanguage(name string, fallback string) (string, error) {
 		return "", fmt.Errorf("%s must be one of: en, ru", name)
 	}
 	return lowerValue, nil
+}
+
+func validateWebAuthMode(name string, fallback string) (string, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	switch value {
+	case "network", "login", "both", "any":
+		return value, nil
+	default:
+		return "", fmt.Errorf("%s must be network, login, or both", name)
+	}
+}
+
+// ApplyDBOverrides sets config fields from database values for keys not overridden by ENV.
+func (c *Config) ApplyDBOverrides(settings map[string]string) {
+	if os.Getenv("WDBGP_DEFAULT_LANGUAGE") == "" {
+		if v, ok := settings["default_language"]; ok && v != "" {
+			c.DefaultLanguage = v
+		}
+	}
+	if os.Getenv("WDBGP_SESSION_MAX_AGE") == "" {
+		if v, ok := settings["session_max_age"]; ok && v != "" {
+			c.SessionMaxAge, _ = strconv.Atoi(v)
+		}
+	}
+	if os.Getenv("WDBGP_ADMIN_COOKIE_SECURE") == "" {
+		if v, ok := settings["admin_cookie_secure"]; ok && v != "" {
+			c.AdminCookieSecure = v
+		}
+	}
+	if os.Getenv("WDBGP_TRUST_PROXY_HEADERS") == "" {
+		if v, ok := settings["trust_proxy_headers"]; ok && v == "true" {
+			c.TrustProxyHeader = true
+		}
+	}
+	if os.Getenv("WDBGP_SECURITY_HEADERS") == "" {
+		if v, ok := settings["security_headers"]; ok && v == "true" {
+			c.SecurityHeaders = true
+		}
+	}
+	if os.Getenv("WDBGP_DEFAULT_WEB_AUTH") == "" {
+		if v, ok := settings["default_web_auth"]; ok && v != "" {
+			c.DefaultWebAuth = v
+		}
+	}
+	if os.Getenv("WDBGP_RATE_LIMIT_LOGIN") == "" {
+		if v, ok := settings["rate_limit_login"]; ok && v != "" {
+			c.RateLimitLogin, _ = strconv.Atoi(v)
+		}
+	}
+	if os.Getenv("WDBGP_RATE_LIMIT_ADMIN") == "" {
+		if v, ok := settings["rate_limit_admin"]; ok && v != "" {
+			c.RateLimitAdmin, _ = strconv.Atoi(v)
+		}
+	}
+	if os.Getenv("WDBGP_SYNC_INTERVAL") == "" {
+		if v, ok := settings["sync_interval"]; ok && v != "" {
+			if sec, err := strconv.Atoi(v); err == nil {
+				c.SyncInterval = time.Duration(sec) * time.Second
+			}
+		}
+	}
+	if os.Getenv("WDBGP_LOG_LEVEL") == "" {
+		if v, ok := settings["log_level"]; ok && v != "" {
+			c.LogLevel = v
+		}
+	}
+	if os.Getenv("WDBGP_LOG_FORMAT") == "" {
+		if v, ok := settings["log_format"]; ok && v != "" {
+			c.LogFormat = v
+		}
+	}
+	if os.Getenv("WDBGP_JS_TIMEOUT") == "" {
+		if v, ok := settings["js_timeout"]; ok && v != "" {
+			if sec, err := strconv.Atoi(v); err == nil {
+				c.JSTimeout = time.Duration(sec) * time.Second
+			}
+		}
+	}
+	if os.Getenv("WDBGP_JS_MAX_SOURCE") == "" {
+		if v, ok := settings["js_max_source"]; ok && v != "" {
+			c.JSMaxSourceBytes, _ = strconv.Atoi(v)
+		}
+	}
+	if os.Getenv("WDBGP_JS_MAX_RESPONSE") == "" {
+		if v, ok := settings["js_max_response"]; ok && v != "" {
+			c.JSMaxResponseBytes, _ = strconv.Atoi(v)
+		}
+	}
+	if os.Getenv("WDBGP_JS_MAX_TOTAL") == "" {
+		if v, ok := settings["js_max_total"]; ok && v != "" {
+			c.JSMaxTotalBytes, _ = strconv.Atoi(v)
+		}
+	}
+	if os.Getenv("WDBGP_JS_MAX_ENTRIES") == "" {
+		if v, ok := settings["js_max_entries"]; ok && v != "" {
+			c.JSMaxEntries, _ = strconv.Atoi(v)
+		}
+	}
+	if os.Getenv("WDBGP_JS_MAX_REQUESTS") == "" {
+		if v, ok := settings["js_max_requests"]; ok && v != "" {
+			c.JSMaxRequests, _ = strconv.Atoi(v)
+		}
+	}
+	if os.Getenv("WDBGP_JS_MAX_CALL_STACK") == "" {
+		if v, ok := settings["js_max_call_stack"]; ok && v != "" {
+			c.JSMaxCallStack, _ = strconv.Atoi(v)
+		}
+	}
 }

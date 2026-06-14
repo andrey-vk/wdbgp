@@ -136,7 +136,7 @@ func TestCIDRDebugUsesSelectedModeAndMatchingUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.AddFeedForMode(
-		ctx, "precise", "https://example.test/precise", ipranges.ID, true); err != nil {
+		ctx, "precise", "https://example.test/precise", ipranges.ID, true, 0); err != nil {
 		t.Fatal(err)
 	}
 	var preciseFeedID int64
@@ -249,7 +249,7 @@ func debugTestStore(t *testing.T) *store.Store {
 
 func addDebugFeed(t *testing.T, db *store.Store, name string, enabled bool) int64 {
 	t.Helper()
-	if err := db.AddFeed(context.Background(), name, "https://example.test/"+name, enabled); err != nil {
+	if err := db.AddFeed(context.Background(), name, "https://example.test/"+name, enabled, 0); err != nil {
 		t.Fatal(err)
 	}
 	var id int64

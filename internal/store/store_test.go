@@ -752,7 +752,7 @@ func TestUserCannotChangeCatalogModeWithoutPermission(t *testing.T) {
 func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if err := s.AddFeed(ctx, "custom", "https://example.test/feed.json", true); err != nil {
+	if err := s.AddFeed(ctx, "custom", "https://example.test/feed.json", true, 0); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)
@@ -838,10 +838,10 @@ func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 	if _, err := s.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddFeed(ctx, "enabled", "https://example.test/enabled", true); err != nil {
+	if err := s.AddFeed(ctx, "enabled", "https://example.test/enabled", true, 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddFeed(ctx, "disabled", "https://example.test/disabled", false); err != nil {
+	if err := s.AddFeed(ctx, "disabled", "https://example.test/disabled", false, 0); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)
@@ -916,7 +916,7 @@ func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if err := s.AddFeed(ctx, "custom", "https://example.test/old.json", true); err != nil {
+	if err := s.AddFeed(ctx, "custom", "https://example.test/old.json", true, 0); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)
@@ -1138,6 +1138,56 @@ func addFilteredTestUser(t *testing.T, s *Store, override bool) int64 {
 
 func prefixContains(parent, child netip.Prefix) bool {
 	return parent.Contains(child.Addr()) && child.Bits() >= parent.Bits()
+}
+
+func TestCountSelectionPrefixes(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Get a feed ID for mode 1 (opencck, already enabled)
+	var feedID int64
+	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").Scan(&feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert catalog entries with both IPv4 and IPv6 prefixes
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'CountTest', 'ServiceA', '8.8.8.0/24'),
+		(?, 'CountTest', 'ServiceA', '2a01::/32'),
+		(?, 'CountTest', 'ServiceB', '37.228.0.0/24')`,
+		feedID, feedID, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add a user with mode 1
+	userID, err := s.AddUser(ctx, User{
+		Name: "client", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		CatalogModeID: 1,
+		Networks:      []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Select the CountTest category
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserSelection(ctx, tx, userID, []string{"CountTest"}, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Count all prefixes (both IPv4 and IPv6)
+	v4, v6, err := s.CountSelectionPrefixes(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v4 != 2 {
+		t.Fatalf("CountSelectionPrefixes v4 = %d, want 2", v4)
+	}
+	if v6 != 1 {
+		t.Fatalf("CountSelectionPrefixes v6 = %d, want 1", v6)
+	}
 }
 
 func openTestStore(t *testing.T) *Store {

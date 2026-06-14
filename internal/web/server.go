@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,16 +50,20 @@ type Server struct {
 }
 
 type categoryView struct {
-	Name     string
-	Selected bool
-	Services []serviceView
+	Name          string
+	Selected      bool
+	Services      []serviceView
+	PrefixCountV4 int
+	PrefixCountV6 int
 }
 
 type serviceView struct {
-	Name     string
-	Value    string
-	Selected bool
-	Disabled bool
+	Name          string
+	Value         string
+	Selected      bool
+	Disabled      bool
+	PrefixCountV4 int
+	PrefixCountV6 int
 }
 
 type selectionView struct {
@@ -69,21 +74,19 @@ type selectionView struct {
 	Editable                bool
 	Admin                   bool
 	Saved                   string
+	SessionUser             bool // true if user authenticated via session (has logout option)
 	Filters                 filterView
 	SelectedCategoryCount   int
 	SelectedCoveredServices int
 	SelectedServiceCount    int
 	CSRFToken               string
 	Communities             map[string]uint32
-}
-
-type adminView struct {
-	Modes         []store.CatalogMode
-	Feeds         []store.Feed
-	Adapters      []store.FeedAdapter
-	Users         []store.User
-	PeerStates    map[string]string
-	GlobalFilters filterView
+	PrefixCountsV4          map[string]map[string]int // category -> service -> v4 count
+	PrefixCountsV6          map[string]map[string]int // category -> service -> v6 count
+	CategoryCountsV4        map[string]int            // category -> total unique v4 prefixes
+	CategoryCountsV6        map[string]int            // category -> total unique v6 prefixes
+	TotalPrefixesV4         int                       // total unique IPv4 prefixes for selection
+	TotalPrefixesV6         int                       // total unique IPv6 prefixes for selection
 }
 
 type adapterTestView struct {
@@ -122,8 +125,9 @@ type communityServiceView struct {
 }
 
 type userEditView struct {
-	User      store.User
-	Selection selectionView
+	User        store.User
+	Selection   selectionView
+	Credentials []store.UserCredential
 }
 
 type filterView struct {
@@ -133,6 +137,10 @@ type filterView struct {
 	Mode      string
 	Editable  bool
 	Admin     bool
+}
+
+func isHtmxRequest(r *http.Request) bool {
+	return r.Header.Get("HX-Request") != ""
 }
 
 func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Server {
@@ -153,13 +161,18 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /filters", server.saveOwnFilters)
 	mux.HandleFunc("GET /admin/login", server.loginPage)
 	mux.HandleFunc("POST /admin/login", server.login)
-	mux.HandleFunc("GET /admin", server.requireAdmin(server.adminPage))
+	mux.HandleFunc("GET /admin", server.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/admin/dashboard", http.StatusSeeOther)
+	}))
+	mux.HandleFunc("GET /admin/dashboard", server.requireAdmin(server.dashboard))
 	mux.HandleFunc("GET /admin/communities", server.requireAdmin(server.communitiesPage))
 	mux.HandleFunc("POST /admin/communities", server.requireAdmin(server.saveCommunities))
 	mux.HandleFunc("POST /admin/communities/reset", server.requireAdmin(server.resetCommunities))
-	mux.HandleFunc("POST /admin/communities/generate", server.requireAdmin(server.generateCommunities))
 	mux.HandleFunc("GET /admin/debug/cidr", server.requireAdmin(server.debugCIDRHandler))
+	mux.HandleFunc("GET /admin/debug", server.requireAdmin(server.debugPage))
 	mux.HandleFunc("POST /admin/mode/{id}", server.requireAdmin(server.updateCatalogMode))
+	mux.HandleFunc("GET /admin/feed", server.requireAdmin(server.feedEditPage))
+	mux.HandleFunc("GET /admin/feed/{id}", server.requireAdmin(server.feedEditPage))
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
 	mux.HandleFunc("POST /admin/feed/{id}", server.requireAdmin(server.updateFeed))
 	mux.HandleFunc("POST /admin/feed/{id}/delete", server.requireAdmin(server.deleteFeed))
@@ -175,9 +188,18 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/user/{id}", server.requireAdmin(server.saveAdminUser))
 	mux.HandleFunc("POST /admin/user/{id}/delete", server.requireAdmin(server.deleteAdminUser))
 	mux.HandleFunc("POST /admin/logout", server.requireAdmin(server.logout))
+	mux.HandleFunc("GET /login", server.userLoginPage)
+	mux.HandleFunc("POST /login", server.userLogin)
+	mux.HandleFunc("GET /logout", server.userLogout)
+	mux.HandleFunc("POST /selection/count", server.selectionCount)
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /status", server.status)
-	
+	mux.HandleFunc("GET /admin/users", server.requireAdmin(server.usersList))
+	mux.HandleFunc("GET /admin/feeds", server.requireAdmin(server.feedsList))
+	mux.HandleFunc("GET /admin/adapters", server.requireAdmin(server.adaptersList))
+	mux.HandleFunc("GET /admin/settings", server.requireAdmin(server.settingsPage))
+	mux.HandleFunc("POST /admin/settings", server.requireAdmin(server.saveSettings))
+
 	// Build middleware chain
 	handler := http.Handler(mux)
 	handler = panicRecovery(handler)
@@ -198,15 +220,48 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
-	user, err := s.store.UserByIP(r.Context(), s.clientIP(r))
-	if store.IsNotFound(err) {
-		s.render(w, r, http.StatusForbidden, "title.access_denied", "access-denied", s.clientIP(r))
-		return
-	}
+	clientIP := s.clientIP(r)
+
+	// Try IP match first
+	user, err := s.store.UserByIP(r.Context(), clientIP)
+
 	if err != nil {
-		s.internalError(w, r, err)
-		return
+		// No IP match — try session-based auth for login-mode users
+		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
+		if sessionID > 0 {
+			user, err = s.store.User(r.Context(), sessionID)
+			if err == nil && user.Enabled && (user.WebAuth == "login" || user.WebAuth == "any") {
+				// Fall through to serve page
+			} else {
+				s.render(w, r, http.StatusForbidden, "title.access_denied", "access-denied", clientIP)
+				return
+			}
+		} else {
+			s.render(w, r, http.StatusForbidden, "title.access_denied", "access-denied", clientIP)
+			return
+		}
+	} else {
+		// IP matched — but a valid session for a different user takes priority
+		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
+		if sessionID > 0 {
+			if sessionUser, sessionErr := s.store.User(r.Context(), sessionID); sessionErr == nil && sessionUser.Enabled {
+				if sessionUser.ID != user.ID && (sessionUser.WebAuth == "login" || sessionUser.WebAuth == "any") {
+					user = sessionUser
+				}
+			}
+		}
+		// Check web_auth mode for the (possibly overridden) user
+		switch user.WebAuth {
+		case "network", "any":
+			// Serve page
+		case "login", "both":
+			if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
+				http.Redirect(w, r, "/login", http.StatusSeeOther)
+				return
+			}
+		}
 	}
+
 	user, err = s.userWithRequestedMode(r.Context(), r, user, user.CatalogEditable, false)
 	if err != nil {
 		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
@@ -224,7 +279,98 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 	}
 	view.CSRFToken = csrfToken
 	view.Saved = r.URL.Query().Get("saved")
+	view.SessionUser = validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
 	s.render(w, r, http.StatusOK, "title.selection", "selection", view)
+}
+
+func (s *Server) userLoginPage(w http.ResponseWriter, r *http.Request) {
+	// If already logged in, redirect to /
+	cookie, err := r.Cookie("wdbgp_user")
+	if err == nil {
+		// Check if the cookie is valid for any user
+		parts := strings.SplitN(cookie.Value, ".", 4)
+		if len(parts) == 4 {
+			userID, err := strconv.ParseInt(parts[2], 16, 64)
+			if err == nil {
+				user, err := s.store.User(r.Context(), userID)
+				if err == nil && user.Enabled && validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
+					http.Redirect(w, r, "/", http.StatusSeeOther)
+					return
+				}
+			}
+		}
+	}
+	// Show login form with optional error message
+	lang, _ := requestLocale(r, s.defaultLang)
+	errorMsg := r.URL.Query().Get("error")
+	s.renderTitle(w, r, http.StatusOK, translate(lang, "title.login"), "user-login", map[string]string{
+		"Error": errorMsg,
+	})
+}
+
+func (s *Server) userLogin(w http.ResponseWriter, r *http.Request) {
+	lang, _ := requestLocale(r, s.defaultLang)
+
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/login?error=bad_request", http.StatusSeeOther)
+		return
+	}
+
+	// Rate-limit login attempts
+	clientIP := s.clientIP(r)
+	if !s.loginLimiter.allow(clientIP) {
+		http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.rate_limit")), http.StatusSeeOther)
+		return
+	}
+
+	login := strings.TrimSpace(r.FormValue("login"))
+	password := r.FormValue("password")
+
+	if login == "" || password == "" {
+		http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.error_empty")), http.StatusSeeOther)
+		return
+	}
+
+	user, err := s.store.AuthenticateUser(r.Context(), login, password)
+	if err != nil {
+		s.logAdminAction(r, "USER_LOGIN_FAILED", fmt.Sprintf("login=%s", login))
+		http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.error_invalid")), http.StatusSeeOther)
+		return
+	}
+
+	// For web_auth=both, also verify IP match
+	if strings.ToLower(user.WebAuth) == "both" {
+		clientIP := s.clientIP(r)
+		ipUser, err := s.store.UserByIP(r.Context(), clientIP)
+		if err != nil || ipUser.ID != user.ID {
+			s.logAdminAction(r, "USER_LOGIN_IP_MISMATCH", fmt.Sprintf("user=%d login=%s ip=%s", user.ID, login, clientIP))
+			http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.error_ip")), http.StatusSeeOther)
+			return
+		}
+	}
+
+	// Set session cookie
+	maxAge := 0 // session cookie
+	if s.cfg.SessionMaxAge > 0 {
+		maxAge = s.cfg.SessionMaxAge
+	}
+	setUserSessionCookie(w, user.ID, s.cfg.SessionSecret, maxAge, s.userCookieSecure(r))
+
+	s.logAdminAction(r, "USER_LOGIN_SUCCESS", fmt.Sprintf("user=%d login=%s", user.ID, login))
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *Server) userLogout(w http.ResponseWriter, r *http.Request) {
+	// Clear the user session cookie
+	http.SetCookie(w, &http.Cookie{
+		Name:     userSessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +382,13 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.internalError(w, r, err)
 		return
+	}
+	// For credential-based users, require valid session
+	if user.WebAuth == "login" || user.WebAuth == "both" {
+		if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
+			s.httpError(w, r, "error.forbidden", http.StatusForbidden)
+			return
+		}
 	}
 	modeID, err := formModeID(r, user.CatalogModeID)
 	if err != nil {
@@ -285,6 +438,71 @@ func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?saved=1", http.StatusSeeOther)
 }
 
+// identifyUser resolves a user from the request using the same logic as userPage:
+// IP match first, then session cookie. Returns the user or an error.
+func (s *Server) identifyUser(r *http.Request) (store.User, error) {
+	clientIP := s.clientIP(r)
+	user, err := s.store.UserByIP(r.Context(), clientIP)
+	if err != nil {
+		// No IP match — try session-based auth
+		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
+		if sessionID > 0 {
+			user, err = s.store.User(r.Context(), sessionID)
+		if err == nil && user.Enabled && (user.WebAuth == "login" || user.WebAuth == "any") {
+			return user, nil
+		}
+		return store.User{}, err
+		}
+		return store.User{}, err
+	}
+	// IP matched — check web_auth mode
+	switch user.WebAuth {
+		case "network", "any":
+		return user, nil
+	case "login", "both":
+		if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
+			return store.User{}, errors.New("session required")
+		}
+		return user, nil
+	}
+	return user, nil
+}
+
+func (s *Server) selectionCount(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	user, err := s.identifyUser(r)
+	if err != nil {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	categories, services, err := selectionFromValues(r.Form)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	modeID := user.CatalogModeID
+	if rawMode := r.FormValue("catalog_mode_id"); rawMode != "" {
+		if id, parseErr := strconv.ParseInt(rawMode, 10, 64); parseErr == nil && id > 0 {
+			modeID = id
+		}
+	}
+
+	v4, v6, err := s.store.CountPrefixes(r.Context(), modeID, categories, services, user.ID)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, "IPv4: <strong id=total-prefix-v4>%d</strong> pref. · IPv6: <strong id=total-prefix-v6>%d</strong> pref.", v4, v6)
+}
+
 func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
 	user, err := s.store.UserByIP(r.Context(), s.clientIP(r))
 	if store.IsNotFound(err) {
@@ -294,6 +512,13 @@ func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.internalError(w, r, err)
 		return
+	}
+	// For credential-based users, require valid session
+	if user.WebAuth == "login" || user.WebAuth == "both" {
+		if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
+			s.httpError(w, r, "error.forbidden", http.StatusForbidden)
+			return
+		}
 	}
 	if !user.FilterEditable {
 		s.httpError(w, r, "error.filters_managed", http.StatusForbidden)
@@ -383,48 +608,8 @@ func (s *Server) adminCookieSecure(r *http.Request) bool {
 	return false
 }
 
-func (s *Server) adminPage(w http.ResponseWriter, r *http.Request) {
-	modes, err := s.store.CatalogModes(r.Context(), false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	feedList, err := s.store.Feeds(r.Context(), false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	adapters, err := s.store.FeedAdapters(r.Context())
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	users, err := s.store.Users(r.Context(), false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	states, err := s.bgp.PeerStates(r.Context())
-	if err != nil {
-		logger := logging.FromContext(r.Context())
-		logger.Error("failed to read BGP peer states", "error", err)
-		states = map[string]string{}
-	}
-	globalFilters, err := s.store.GlobalRouteFilters(r.Context())
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	s.render(w, r, http.StatusOK, "title.admin", "admin", adminView{
-		Modes: modes, Feeds: feedList, Adapters: adapters,
-		Users: users, PeerStates: states,
-		GlobalFilters: filterView{
-			AllowText: strings.Join(globalFilters.Allow, "\n"),
-			DenyText:  strings.Join(globalFilters.Deny, "\n"),
-			Editable:  true,
-			Admin:     true,
-		},
-	})
+func (s *Server) userCookieSecure(r *http.Request) bool {
+	return s.adminCookieSecure(r)
 }
 
 func (s *Server) communitiesPage(w http.ResponseWriter, r *http.Request) {
@@ -500,7 +685,8 @@ func (s *Server) communitiesPage(w http.ResponseWriter, r *http.Request) {
 		groupIndex = curGroup + 1
 		view.Groups = append(view.Groups, group)
 	}
-	s.render(w, r, http.StatusOK, "communities.title", "communities", view)
+	lang, _ := requestLocale(r, s.defaultLang)
+	s.renderAdmin(w, r, http.StatusOK, translate(lang, "communities.title"), "communities", view)
 }
 
 func (s *Server) saveCommunities(w http.ResponseWriter, r *http.Request) {
@@ -602,28 +788,38 @@ func (s *Server) resetCommunities(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d&saved=reset", modeID), http.StatusSeeOther)
 }
 
-func (s *Server) generateCommunities(w http.ResponseWriter, r *http.Request) {
+func (s *Server) debugPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
+
+	type debugPageView struct {
+		CIDR   string
+		Result *cidrDebugResult
+		Modes  []store.CatalogMode
+		ModeID int64
 	}
+
+	cidr := r.URL.Query().Get("cidr")
 	modeID := store.DefaultCatalogModeID
-	if rawMode := r.FormValue("mode"); rawMode != "" {
-		if id, err := strconv.ParseInt(rawMode, 10, 64); err == nil && id > 0 {
-			modeID = id
+	if mid, err := strconv.ParseInt(r.URL.Query().Get("mode"), 10, 64); err == nil && mid > 0 {
+		modeID = mid
+	}
+
+	modes, _ := s.store.CatalogModes(ctx, false)
+
+	view := debugPageView{
+		CIDR:   cidr,
+		Modes:  modes,
+		ModeID: modeID,
+	}
+
+	if cidr != "" {
+		result, err := s.debugCIDR(ctx, cidr, modeID)
+		if err == nil {
+			view.Result = &result
 		}
 	}
-	if _, err := s.store.GenerateCommunities(ctx, modeID); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		logger := logging.FromContext(r.Context())
-		logger.Warn("reconcile after generate communities failed", "error", err)
-	}
-	s.logAdminAction(r, "communities_generate", fmt.Sprintf("mode=%d", modeID))
-	http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d&saved=generated", modeID), http.StatusSeeOther)
+
+	s.renderAdmin(w, r, http.StatusOK, "CIDR diagnostics", "debug", view)
 }
 
 func (s *Server) debugCIDRHandler(w http.ResponseWriter, r *http.Request) {
@@ -683,11 +879,48 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.AddFeedForModeAdapter(
-		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled); err != nil {
+		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
+}
+
+func (s *Server) feedEditPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var feed store.Feed
+	isNew := true
+
+	if rawID := r.PathValue("id"); rawID != "" {
+		id, err := strconv.ParseInt(rawID, 10, 64)
+		if err != nil {
+			s.httpError(w, r, "error.bad_feed_id", http.StatusBadRequest)
+			return
+		}
+		feed, err = s.store.Feed(ctx, id)
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		isNew = false
+	}
+
+	modes, _ := s.store.CatalogModes(ctx, false)
+	adapters, _ := s.store.FeedAdapters(ctx)
+
+	lang, _ := requestLocale(r, s.defaultLang)
+	title := translate(lang, "feeds.add")
+	if !isNew {
+		title = translate(lang, "feeds.edit")
+	}
+
+	s.renderAdmin(w, r, http.StatusOK, title, "feed-edit", map[string]any{
+		"Feed": feed, "IsNew": isNew, "Modes": modes, "Adapters": adapters,
+	})
 }
 
 func (s *Server) addFeedAdapter(w http.ResponseWriter, r *http.Request) {
@@ -800,7 +1033,8 @@ func (s *Server) testFeedAdapter(w http.ResponseWriter, r *http.Request) {
 		view.Entries = view.Entries[:previewLimit]
 		view.Truncated = true
 	}
-	s.render(w, r, http.StatusOK, "title.adapter_test", "adapter-test", view)
+	lang, _ := requestLocale(r, s.defaultLang)
+	s.renderAdmin(w, r, http.StatusOK, translate(lang, "title.adapter_test"), "adapter-test", view)
 }
 
 func (s *Server) resetFeedAdapter(w http.ResponseWriter, r *http.Request) {
@@ -852,7 +1086,8 @@ func (s *Server) renderFeedAdapterEditor(
 			adapterFeeds = append(adapterFeeds, feed)
 		}
 	}
-	s.render(w, r, status, "title.adapter_edit", "adapter-edit", adapterEditView{
+	lang, _ := requestLocale(r, s.defaultLang)
+	s.renderAdmin(w, r, status, translate(lang, "title.adapter_edit"), "adapter-edit", adapterEditView{
 		Adapter: adapter, Feeds: adapterFeeds, Error: errorMessage,
 	})
 }
@@ -943,7 +1178,8 @@ func parseFeed(r *http.Request, id int64) (store.Feed, error) {
 	}
 	return store.Feed{
 		ID: id, Name: name, URL: rawURL, ModeID: modeID, AdapterID: adapterID,
-		Enabled: r.Form.Has("enabled"),
+		Enabled:      r.Form.Has("enabled"),
+		SyncInterval: formInt(r, "sync_interval"),
 	}, nil
 }
 
@@ -1020,6 +1256,18 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, r, "error.bad_user_id", http.StatusBadRequest)
 		return
 	}
+	if id == 0 {
+		// New user creation form
+		lang, _ := requestLocale(r, s.defaultLang)
+		emptyUser := store.User{
+			WebAuth:       s.cfg.DefaultWebAuth,
+			CatalogModeID: store.DefaultCatalogModeID,
+			Enabled:       true,
+		}
+		s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), translate(lang, "common.add")), "user-edit",
+			userEditView{User: emptyUser})
+		return
+	}
 	user, err := s.store.User(r.Context(), id)
 	if store.IsNotFound(err) {
 		http.NotFound(w, r)
@@ -1046,9 +1294,10 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	}
 	selection.CSRFToken = csrfToken
 	
+	credentials, _ := s.store.GetUserCredentials(r.Context(), id)
 	lang, _ := requestLocale(r, s.defaultLang)
-	s.renderTitle(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
-		userEditView{User: user, Selection: selection})
+	s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
+		userEditView{User: user, Selection: selection, Credentials: credentials})
 }
 
 func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
@@ -1067,10 +1316,42 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		switch user.WebAuth {
+		case "network", "login", "both", "any":
+		default:
+			http.Error(w, `web_auth must be "network", "login", "both", or "any"`, http.StatusBadRequest)
+			return
+		}
 		if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {
 			s.internalError(w, r, err)
 			return
 		}
+
+		// Process existing credentials
+		for i := 0; ; i++ {
+			loginKey := fmt.Sprintf("cred_login_%d", i)
+			deleteKey := fmt.Sprintf("cred_delete_%d", i)
+			passwordKey := fmt.Sprintf("cred_password_%d", i)
+
+			login := r.FormValue(loginKey)
+			if login == "" {
+				break
+			}
+
+			if r.FormValue(deleteKey) == "on" {
+				s.store.SetUserCredential(r.Context(), id, login, "")
+			} else if pw := r.FormValue(passwordKey); pw != "" {
+				s.store.SetUserCredential(r.Context(), id, login, pw)
+			}
+		}
+
+		// Process new credential
+		if newLogin := r.FormValue("cred_login_new"); newLogin != "" {
+			if newPassword := r.FormValue("cred_password_new"); newPassword != "" {
+				s.store.SetUserCredential(r.Context(), id, newLogin, newPassword)
+			}
+		}
+
 		if !user.Enabled {
 			err = s.bgp.DeletePeer(r.Context(), user.PeerIP)
 		} else {
@@ -1332,9 +1613,27 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 	}
 	comms, _ := s.store.GetCommunities(ctx, user.CatalogModeID)
 	view.Communities = comms
+	prefixCountsV4, prefixCountsV6, err := s.store.PrefixCounts(ctx, user.CatalogModeID)
+	if err != nil {
+		return selectionView{}, err
+	}
+	view.PrefixCountsV4 = prefixCountsV4
+	view.PrefixCountsV6 = prefixCountsV6
+	view.TotalPrefixesV4, view.TotalPrefixesV6, err = s.store.CountSelectionPrefixes(ctx, user.ID)
+	if err != nil {
+		return selectionView{}, err
+	}
+	categoryCountsV4, categoryCountsV6, err := s.store.CategoryPrefixCounts(ctx, user.CatalogModeID)
+	if err != nil {
+		view.CategoryCountsV4 = map[string]int{}
+		view.CategoryCountsV6 = map[string]int{}
+	} else {
+		view.CategoryCountsV4 = categoryCountsV4
+		view.CategoryCountsV6 = categoryCountsV6
+	}
 	for _, category := range names {
 		categorySelected := selectedCategories[category]
-		item := categoryView{Name: category, Selected: categorySelected}
+		item := categoryView{Name: category, Selected: selectedCategories[category], PrefixCountV4: view.CategoryCountsV4[category], PrefixCountV6: view.CategoryCountsV6[category]}
 		if categorySelected {
 			view.SelectedCategoryCount++
 			view.SelectedCoveredServices += len(catalog[category])
@@ -1344,10 +1643,20 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 			if !categorySelected && selectedServices[key] {
 				view.SelectedServiceCount++
 			}
+			svcPrefixCountV4 := 0
+			svcPrefixCountV6 := 0
+			if svcCounts, ok := prefixCountsV4[category]; ok {
+				svcPrefixCountV4 = svcCounts[service]
+			}
+			if svcCounts, ok := prefixCountsV6[category]; ok {
+				svcPrefixCountV6 = svcCounts[service]
+			}
 			item.Services = append(item.Services, serviceView{
 				Name: service, Value: serviceValue(category, service),
 				Selected: !categorySelected && selectedServices[key],
 				Disabled: categorySelected,
+				PrefixCountV4: svcPrefixCountV4,
+				PrefixCountV6: svcPrefixCountV6,
 			})
 		}
 		view.Categories = append(view.Categories, item)
@@ -1498,6 +1807,7 @@ func parseUserForm(r *http.Request, id int64) (store.User, bool, error) {
 		FilterEditable:  r.Form.Has("filter_editable"),
 		CatalogModeID:   modeID,
 		CatalogEditable: r.Form.Has("catalog_mode_editable"),
+		WebAuth:         r.FormValue("web_auth"),
 		Networks:        networks,
 	}, r.Form.Has("clear_bgp_password"), nil
 }
@@ -1560,36 +1870,54 @@ func (s *Server) clientIP(r *http.Request) string {
 func compileTemplates() map[locale]map[string]*template.Template {
 	bodies := map[string]string{
 		"access-denied": accessDeniedTemplate,
-		"adapter-edit":  adapterEditTemplate,
-		"adapter-test":  adapterTestTemplate,
-		"communities":   communitiesTemplate,
 		"login":         loginTemplate,
 		"selection":     selectionTemplate,
-		"admin":         adminTemplate,
+		"user-login":    userLoginTemplate,
+	}
+	// Fragment templates (body only, no pageStart/pageEnd) for htmx and shell embedding
+	fragments := map[string]string{
+		"debug":        debugTemplate,
+		"dashboard":    dashboardTemplate,
+		"communities":  communitiesTemplate,
+		"adapter-edit": adapterEditTemplate,
+		"adapter-test": adapterTestTemplate,
 		"user-edit":     userEditTemplate,
+		"users-list":    usersListTemplate,
+		"feeds-list":    feedsListTemplate,
+		"feed-edit":     feedEditTemplate,
+		"adapters-list": adaptersListTemplate,
+		"settings":     settingsTemplate,
 	}
 	result := make(map[locale]map[string]*template.Template, len(translations))
 	for lang := range translations {
-		result[lang] = make(map[string]*template.Template, len(bodies))
+		result[lang] = make(map[string]*template.Template, len(bodies)+len(fragments)+1)
+		funcs := template.FuncMap{
+			"join": strings.Join,
+			"state": func(states map[string]string, peer string) string {
+				if value := states[peer]; value != "" {
+					return value
+				}
+				return "UNKNOWN"
+			},
+			"tr": func(key string) string {
+				return translate(lang, key)
+			},
+			"plural": func(count int, oneKey, fewKey, manyKey string) string {
+				return pluralTranslation(lang, count, oneKey, fewKey, manyKey)
+			},
+		}
 		for name, body := range bodies {
-			funcs := template.FuncMap{
-				"join": strings.Join,
-				"state": func(states map[string]string, peer string) string {
-					if value := states[peer]; value != "" {
-						return value
-					}
-					return "UNKNOWN"
-				},
-				"tr": func(key string) string {
-					return translate(lang, key)
-				},
-				"plural": func(count int, oneKey, fewKey, manyKey string) string {
-					return pluralTranslation(lang, count, oneKey, fewKey, manyKey)
-				},
-			}
 			result[lang][name] = template.Must(template.New("page").Funcs(funcs).
 				Parse(pageStart + body + pageEnd))
 		}
+		// Fragment templates for direct htmx rendering
+		for name, body := range fragments {
+			result[lang][name] = template.Must(template.New(name).Funcs(funcs).
+				Parse(body))
+		}
+		// Admin shell (standalone layout)
+		result[lang]["admin-shell"] = template.Must(template.New("admin-shell").Funcs(funcs).
+			Parse(adminShellTemplate))
 	}
 	return result
 }
@@ -1633,6 +1961,167 @@ func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int,
 		logger := logging.FromContext(r.Context())
 		logger.Error("failed to render template", "template", title, "error", err)
 	}
+}
+
+func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, status int, title, name string, data any) {
+	lang, persist := requestLocale(r, s.defaultLang)
+	if persist {
+		http.SetCookie(w, &http.Cookie{Name: languageCookieName, Value: string(lang), Path: "/", MaxAge: 365 * 24 * 60 * 60, SameSite: http.SameSiteLaxMode})
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+
+	csrfToken, _ := r.Context().Value("csrf_token").(string)
+
+	// Render content fragment to buffer
+	var contentBuf strings.Builder
+	if err := s.templates[lang][name].Execute(&contentBuf, struct {
+		Title      string
+		Lang       string
+		EnglishURL string
+		RussianURL string
+		CSRFToken  string
+		Data       any
+	}{Title: title, Lang: string(lang), EnglishURL: languageURL(r, localeEnglish), RussianURL: languageURL(r, localeRussian), CSRFToken: csrfToken, Data: data}); err != nil {
+		logger := logging.FromContext(r.Context())
+		logger.Error("failed to render template", "template", name, "error", err)
+		return
+	}
+
+	if isHtmxRequest(r) {
+		// Return content fragment only (no shell)
+		w.Write([]byte(contentBuf.String()))
+		return
+	}
+
+	// Full page with shell
+	s.templates[lang]["admin-shell"].Execute(w, struct {
+		Title       string
+		Lang        string
+		EnglishURL  string
+		RussianURL  string
+		CSRFToken   string
+		ContentHTML template.HTML
+	}{Title: title, Lang: string(lang), EnglishURL: languageURL(r, localeEnglish), RussianURL: languageURL(r, localeRussian), CSRFToken: csrfToken, ContentHTML: template.HTML(contentBuf.String())})
+}
+
+func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	// Gather stats
+	categories, services, totalPrefixes, _ := s.store.Stats(ctx)
+	peerStates, _ := s.bgp.PeerStates(ctx)
+	connectedPeers := 0
+	for _, state := range peerStates {
+		if state == "ESTABLISHED" {
+			connectedPeers++
+		}
+	}
+	feeds, _ := s.store.Feeds(ctx, false)
+	enabledFeeds := 0
+	for _, f := range feeds {
+		if f.Enabled {
+			enabledFeeds++
+		}
+	}
+	users, _ := s.store.Users(ctx, false)
+
+	data := map[string]any{
+		"Categories":     categories,
+		"Services":       services,
+		"TotalPrefixes":  totalPrefixes,
+		"ConnectedPeers": connectedPeers,
+		"TotalPeers":     len(peerStates),
+		"EnabledFeeds":   enabledFeeds,
+		"TotalFeeds":     len(feeds),
+		"TotalUsers":     len(users),
+	}
+
+	s.renderAdmin(w, r, http.StatusOK, "Dashboard", "dashboard", data)
+}
+
+func (s *Server) usersList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	users, err := s.store.Users(ctx, false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+
+	// Get peer states for status
+	peerStates, _ := s.bgp.PeerStates(ctx)
+
+	type userRow struct {
+		User      store.User
+		PeerState string
+		Networks  string
+	}
+
+	rows := make([]userRow, 0, len(users))
+	for _, u := range users {
+		state := peerStates[u.PeerIP]
+		if state == "" {
+			state = "—"
+		}
+		rows = append(rows, userRow{
+			User:       u,
+			PeerState:  state,
+			Networks:   strings.Join(u.Networks, ", "),
+		})
+	}
+
+	s.renderAdmin(w, r, http.StatusOK, "Users", "users-list", map[string]any{
+		"Users": rows,
+	})
+}
+
+func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	feeds, err := s.store.Feeds(ctx, false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	modes, err := s.store.CatalogModes(ctx, false)
+	if err != nil {
+		modes = nil
+	}
+
+	type feedRow struct {
+		Feed     store.Feed
+		ModeName string
+		LastSync string
+	}
+
+	modeMap := make(map[int64]string)
+	for _, m := range modes {
+		modeMap[m.ID] = m.Name
+	}
+
+	rows := make([]feedRow, 0, len(feeds))
+	for _, f := range feeds {
+		rows = append(rows, feedRow{
+			Feed:     f,
+			ModeName: modeMap[f.ModeID],
+			LastSync: f.LastSuccess,
+		})
+	}
+
+	s.renderAdmin(w, r, http.StatusOK, "Feeds", "feeds-list", map[string]any{
+		"Feeds": rows,
+		"Modes": modes,
+	})
+}
+
+func (s *Server) adaptersList(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	adapters, err := s.store.FeedAdapters(ctx)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	s.renderAdmin(w, r, http.StatusOK, "Adapters", "adapters-list", map[string]any{
+		"Adapters": adapters,
+	})
 }
 
 func (s *Server) httpError(w http.ResponseWriter, r *http.Request, key string, status int) {
@@ -1681,6 +2170,18 @@ func formModeID(r *http.Request, fallback int64) (int64, error) {
 	return modeID, nil
 }
 
+func formInt(r *http.Request, key string) int {
+	raw := strings.TrimSpace(r.FormValue(key))
+	if raw == "" {
+		return 0
+	}
+	val, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return val
+}
+
 func sessionToken(secret string) string {
 	var nonce [16]byte
 	_, _ = rand.Read(nonce[:])
@@ -1713,6 +2214,86 @@ func validSession(secret, value string, sessionMaxAge time.Duration) bool {
 	expected := hmac.New(sha256.New, []byte(secret))
 	_, _ = expected.Write([]byte(parts[0] + "." + parts[1]))
 	return hmac.Equal(signature, expected.Sum(nil))
+}
+
+// --- User session helpers (for web_auth=login/both) ---
+
+const userSessionCookieName = "wdbgp_user"
+
+func setUserSessionCookie(w http.ResponseWriter, userID int64, secret string, maxAge int, secure bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     userSessionCookieName,
+		Value:    userSessionToken(secret, userID),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   maxAge,
+	})
+}
+
+func userSessionToken(secret string, userID int64) string {
+	var nonce [16]byte
+	_, _ = rand.Read(nonce[:])
+	timestamp := strconv.FormatInt(time.Now().Unix(), 16)
+	userStr := strconv.FormatInt(userID, 16)
+	text := timestamp + "." + hex.EncodeToString(nonce[:]) + "." + userStr
+	signature := hmac.New(sha256.New, []byte(secret))
+	_, _ = signature.Write([]byte(text))
+	return text + "." + hex.EncodeToString(signature.Sum(nil))
+}
+
+func validUserSession(r *http.Request, userID int64, secret string, maxAge time.Duration) bool {
+	cookie, err := r.Cookie(userSessionCookieName)
+	if err != nil {
+		return false
+	}
+	sessionID := parseUserSessionToken(secret, cookie.Value, maxAge)
+	return sessionID == userID
+}
+
+func getUserSessionID(r *http.Request, secret string, maxAge time.Duration) int64 {
+	cookie, err := r.Cookie(userSessionCookieName)
+	if err != nil {
+		return 0
+	}
+	return parseUserSessionToken(secret, cookie.Value, maxAge)
+}
+
+func parseUserSessionToken(secret, value string, maxAge time.Duration) int64 {
+	parts := strings.SplitN(value, ".", 4)
+	if len(parts) != 4 {
+		return 0
+	}
+	// Validate timestamp freshness (reuse session max age from config, default 8h)
+	// We use a fixed 8h window here since we don't have the config struct in this helper.
+	// The full login system in Step 6 will tighten this.
+	timestamp, err := strconv.ParseInt(parts[0], 16, 64)
+	if err != nil {
+		return 0
+	}
+	sessionTime := time.Unix(timestamp, 0)
+	if maxAge <= 0 {
+		maxAge = 8 * time.Hour
+	}
+	if time.Since(sessionTime) > maxAge {
+		return 0
+	}
+	// Validate HMAC signature
+	signature, err := hex.DecodeString(parts[3])
+	if err != nil {
+		return 0
+	}
+	expected := hmac.New(sha256.New, []byte(secret))
+	_, _ = expected.Write([]byte(parts[0] + "." + parts[1] + "." + parts[2]))
+	if !hmac.Equal(signature, expected.Sum(nil)) {
+		return 0
+	}
+	userID, err := strconv.ParseInt(parts[2], 16, 64)
+	if err != nil {
+		return 0
+	}
+	return userID
 }
 
 func csrfToken(secret string) string {
@@ -1768,8 +2349,8 @@ func sortStrings(values []string) {
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Content Security Policy - restrict resource loading
-		// Allow inline styles/scripts for simplicity, could be tightened
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
+		// Allow inline styles/scripts for simplicity, plus unpkg CDN for htmx/alpine
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
 		
 		// Prevent clickjacking
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -1897,7 +2478,7 @@ func csrfProtection(next http.Handler, secret string) http.Handler {
 		
 		// Skip CSRF validation for safe methods and login endpoint
 		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" || 
-		   r.URL.Path == "/healthz" || r.URL.Path == "/admin/login" {
+		   r.URL.Path == "/healthz" || r.URL.Path == "/admin/login" || r.URL.Path == "/login" {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -1929,7 +2510,7 @@ func csrfProtection(next http.Handler, secret string) http.Handler {
 func (s *Server) adminRateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Only apply to admin paths
-		if strings.HasPrefix(r.URL.Path, "/admin") && r.URL.Path != "/admin/login" {
+		if strings.HasPrefix(r.URL.Path, "/admin") && r.URL.Path != "/admin/login" && r.URL.Path != "/login" {
 			clientIP := s.clientIP(r)
 			
 			if !s.adminLimiter.allow(clientIP) {
@@ -1949,6 +2530,262 @@ func countEnabledFeeds(feeds []store.Feed) int {
 		}
 	}
 	return count
+}
+
+// --- Settings page ---
+
+type settingField struct {
+	Key         string            // DB key like "default_language"
+	Name        string            // i18n key for short name like "settings.default_language"
+	EnvVar      string            // ENV var name like "WDBGP_DEFAULT_LANGUAGE"
+	Type        string            // "text", "number", "select", "bool", "password"
+	Options     map[string]string // for select: value→label i18n key
+	Section     string            // i18n key for section title like "settings.section_general"
+	Restart     bool              // requires app restart
+	Placeholder string            // placeholder text (i18n key)
+	Value       string            // current value (populated at render time)
+	EnvOverride bool              // whether an ENV var overrides this setting
+}
+
+type settingSection struct {
+	TitleKey string         // i18n key
+	Fields   []settingField
+}
+
+func allSettings() []settingField {
+	return []settingField{
+		// General
+		{Key: "default_language", Name: "settings.default_language", EnvVar: "WDBGP_DEFAULT_LANGUAGE", Type: "select", Options: map[string]string{"en": "language.english", "ru": "language.russian"}, Section: "settings.section_general"},
+		{Key: "session_max_age", Name: "settings.session_max_age", EnvVar: "WDBGP_SESSION_MAX_AGE", Type: "number", Section: "settings.section_general", Placeholder: "settings.session_max_age_placeholder"},
+		{Key: "admin_cookie_secure", Name: "settings.admin_cookie_secure", EnvVar: "WDBGP_ADMIN_COOKIE_SECURE", Type: "select", Options: map[string]string{"auto": "settings.auto", "true": "settings.true", "false": "settings.false"}, Section: "settings.section_general"},
+		{Key: "trust_proxy_headers", Name: "settings.trust_proxy_headers", EnvVar: "WDBGP_TRUST_PROXY_HEADERS", Type: "bool", Section: "settings.section_general"},
+		{Key: "security_headers", Name: "settings.security_headers", EnvVar: "WDBGP_SECURITY_HEADERS", Type: "bool", Section: "settings.section_general"},
+		{Key: "default_web_auth", Name: "settings.default_web_auth", EnvVar: "WDBGP_DEFAULT_WEB_AUTH", Type: "select", Options: map[string]string{"network": "users.web_auth_network", "login": "users.web_auth_login", "both": "users.web_auth_both", "any": "users.web_auth_any"}, Section: "settings.section_general"},
+
+		// Rate Limiting
+		{Key: "rate_limit_login", Name: "settings.rate_limit_login", EnvVar: "WDBGP_RATE_LIMIT_LOGIN", Type: "number", Section: "settings.section_rate_limit", Placeholder: "settings.rate_limit_login_placeholder"},
+		{Key: "rate_limit_admin", Name: "settings.rate_limit_admin", EnvVar: "WDBGP_RATE_LIMIT_ADMIN", Type: "number", Section: "settings.section_rate_limit", Placeholder: "settings.rate_limit_admin_placeholder"},
+
+		// Logging
+		{Key: "log_level", Name: "settings.log_level", EnvVar: "WDBGP_LOG_LEVEL", Type: "select", Options: map[string]string{"DEBUG": "DEBUG", "INFO": "INFO", "WARN": "WARN", "ERROR": "ERROR", "FATAL": "FATAL", "PANIC": "PANIC"}, Section: "settings.section_logging"},
+		{Key: "log_format", Name: "settings.log_format", EnvVar: "WDBGP_LOG_FORMAT", Type: "select", Options: map[string]string{"text": "text", "json": "json"}, Section: "settings.section_logging"},
+
+		// Feed Sync
+		{Key: "sync_interval", Name: "settings.sync_interval", EnvVar: "WDBGP_SYNC_INTERVAL", Type: "number", Section: "settings.section_sync", Placeholder: "settings.sync_interval_placeholder"},
+
+		// JavaScript Runtime
+		{Key: "js_timeout", Name: "settings.js_timeout", EnvVar: "WDBGP_JS_TIMEOUT", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_timeout_placeholder"},
+		{Key: "js_max_source", Name: "settings.js_max_source", EnvVar: "WDBGP_JS_MAX_SOURCE", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_source_placeholder"},
+		{Key: "js_max_response", Name: "settings.js_max_response", EnvVar: "WDBGP_JS_MAX_RESPONSE", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_response_placeholder"},
+		{Key: "js_max_total", Name: "settings.js_max_total", EnvVar: "WDBGP_JS_MAX_TOTAL", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_total_placeholder"},
+		{Key: "js_max_entries", Name: "settings.js_max_entries", EnvVar: "WDBGP_JS_MAX_ENTRIES", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_entries_placeholder"},
+		{Key: "js_max_requests", Name: "settings.js_max_requests", EnvVar: "WDBGP_JS_MAX_REQUESTS", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_requests_placeholder"},
+		{Key: "js_max_call_stack", Name: "settings.js_max_call_stack", EnvVar: "WDBGP_JS_MAX_CALL_STACK", Type: "number", Section: "settings.section_js", Placeholder: "settings.js_max_call_stack_placeholder"},
+
+		// BGP (requires restart)
+		{Key: "bgp_port", Name: "settings.bgp_port", EnvVar: "WDBGP_BGP_PORT", Type: "number", Section: "settings.section_bgp", Restart: true},
+		{Key: "local_asn", Name: "settings.local_asn", EnvVar: "WDBGP_LOCAL_ASN", Type: "number", Section: "settings.section_bgp", Restart: true},
+		{Key: "router_id", Name: "settings.router_id", EnvVar: "WDBGP_ROUTER_ID", Type: "text", Section: "settings.section_bgp", Restart: true},
+		{Key: "local_address_v4", Name: "settings.local_address_v4", EnvVar: "WDBGP_BGP_LOCAL_ADDRESS", Type: "text", Section: "settings.section_bgp", Restart: true},
+		{Key: "local_address_v6", Name: "settings.local_address_v6", EnvVar: "WDBGP_BGP_LOCAL_ADDRESS_V6", Type: "text", Section: "settings.section_bgp", Restart: true},
+
+		// Network (requires restart)
+		{Key: "host", Name: "settings.host", EnvVar: "WDBGP_HOST", Type: "text", Section: "settings.section_network", Restart: true},
+		{Key: "port", Name: "settings.port", EnvVar: "WDBGP_PORT", Type: "number", Section: "settings.section_network", Restart: true},
+	}
+}
+
+func allSettingKeys() []string {
+	settings := allSettings()
+	keys := make([]string, len(settings))
+	for i, s := range settings {
+		keys[i] = s.Key
+	}
+	return keys
+}
+
+func isEnvOverridden(envVar string) bool {
+	return os.Getenv(envVar) != ""
+}
+
+func boolStr(v bool) string {
+	if v {
+		return "true"
+	}
+	return "false"
+}
+
+func (s *Server) settingDefaultValue(key string) string {
+	cfg := s.cfg
+	switch key {
+	case "default_language":
+		return cfg.DefaultLanguage
+	case "session_max_age":
+		return strconv.Itoa(cfg.SessionMaxAge)
+	case "admin_cookie_secure":
+		return cfg.AdminCookieSecure
+	case "trust_proxy_headers":
+		return boolStr(cfg.TrustProxyHeader)
+	case "security_headers":
+		return boolStr(cfg.SecurityHeaders)
+	case "default_web_auth":
+		return cfg.DefaultWebAuth
+	case "rate_limit_login":
+		return strconv.Itoa(cfg.RateLimitLogin)
+	case "rate_limit_admin":
+		return strconv.Itoa(cfg.RateLimitAdmin)
+	case "log_level":
+		return cfg.LogLevel
+	case "log_format":
+		return cfg.LogFormat
+	case "sync_interval":
+		return strconv.Itoa(int(cfg.SyncInterval.Seconds()))
+	case "js_timeout":
+		return strconv.Itoa(int(cfg.JSTimeout.Seconds()))
+	case "js_max_source":
+		return strconv.Itoa(cfg.JSMaxSourceBytes)
+	case "js_max_response":
+		return strconv.Itoa(cfg.JSMaxResponseBytes)
+	case "js_max_total":
+		return strconv.Itoa(cfg.JSMaxTotalBytes)
+	case "js_max_entries":
+		return strconv.Itoa(cfg.JSMaxEntries)
+	case "js_max_requests":
+		return strconv.Itoa(cfg.JSMaxRequests)
+	case "js_max_call_stack":
+		return strconv.Itoa(cfg.JSMaxCallStack)
+	case "bgp_port":
+		return strconv.Itoa(int(cfg.BGPListenPort))
+	case "local_asn":
+		return strconv.FormatUint(uint64(cfg.LocalASN), 10)
+	case "router_id":
+		return cfg.RouterID
+	case "local_address_v4":
+		return cfg.LocalAddressV4
+	case "local_address_v6":
+		return cfg.LocalAddressV6
+	case "host":
+		return cfg.Host
+	case "port":
+		return strconv.Itoa(cfg.Port)
+	}
+	return ""
+}
+
+func buildSettingsSections(cfg config.Config, dbSettings map[string]string) []settingSection {
+	all := allSettings()
+	sectionMap := make(map[string][]settingField)
+	sectionOrder := []string{} // preserve order
+
+	for _, f := range all {
+		// Populate value and env override
+		if v := os.Getenv(f.EnvVar); v != "" {
+			f.Value = v
+			f.EnvOverride = true
+		} else if v, ok := dbSettings[f.Key]; ok {
+			f.Value = v
+			f.EnvOverride = false
+		} else {
+			f.Value = "" // zero value, template shows placeholder/default
+			f.EnvOverride = false
+		}
+
+		if _, ok := sectionMap[f.Section]; !ok {
+			sectionOrder = append(sectionOrder, f.Section)
+		}
+		sectionMap[f.Section] = append(sectionMap[f.Section], f)
+	}
+
+	sections := make([]settingSection, 0, len(sectionOrder))
+	for _, sKey := range sectionOrder {
+		sections = append(sections, settingSection{
+			TitleKey: sKey,
+			Fields:   sectionMap[sKey],
+		})
+	}
+	return sections
+}
+
+type globalFiltersView struct {
+	Allow string // newline-separated CIDRs
+	Deny  string // newline-separated CIDRs
+}
+
+func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	dbSettings, _ := s.store.GetAllSettings(ctx)
+
+	sections := buildSettingsSections(s.cfg, dbSettings)
+
+	// Global route filters
+	globalFilters, _ := s.store.GlobalRouteFilters(ctx)
+
+	s.renderAdmin(w, r, http.StatusOK, "Settings", "settings", map[string]any{
+		"Sections": sections,
+		"Saved":    r.URL.Query().Get("saved") == "1",
+		"GlobalFilters": globalFiltersView{
+			Allow: strings.Join(globalFilters.Allow, "\n"),
+			Deny:  strings.Join(globalFilters.Deny, "\n"),
+		},
+	})
+}
+
+func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
+		return
+	}
+
+	settings := make(map[string]string)
+	knownKeys := allSettingKeys()
+	for _, key := range knownKeys {
+		f := fieldByKey(key)
+		if f == nil {
+			continue
+		}
+		if isEnvOverridden(f.EnvVar) {
+			continue
+		}
+		if f.Type == "bool" {
+			// Unchecked checkbox doesn't send a value; treat missing as "false"
+			if r.Form.Has(key) {
+				settings[key] = "true"
+			} else {
+				settings[key] = "false"
+			}
+		} else {
+			if val, ok := r.Form[key]; ok && len(val) > 0 {
+				settings[key] = val[0]
+			}
+		}
+	}
+
+	if err := s.store.SaveSettings(r.Context(), settings); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+
+	// Save global route filters if the fields are present in the form
+	if r.Form.Has("filter_allow") || r.Form.Has("filter_deny") {
+		if filters, err := routeFiltersFromForm(r); err == nil {
+			if err := s.store.SetGlobalRouteFilters(r.Context(), filters); err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+			_ = s.bgp.Reconcile(r.Context())
+		}
+	}
+
+	http.Redirect(w, r, "/admin/settings?saved=1", http.StatusSeeOther)
+}
+
+func fieldByKey(key string) *settingField {
+	for _, f := range allSettings() {
+		if f.Key == key {
+			return &f
+		}
+	}
+	return nil
 }
 
 

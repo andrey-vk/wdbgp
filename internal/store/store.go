@@ -15,6 +15,8 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/prefixfilter"
 	"github.com/andrey-vk/wdbgp/internal/retry"
 
+	"golang.org/x/crypto/bcrypt"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -407,6 +409,47 @@ CREATE INDEX idx_catalog_communities_value ON catalog_communities(community);
 `,
 		Go: autoGenerateCommunities,
 	},
+	{
+		Version: 14,
+		Name:    "add web auth",
+		SQL: `
+ALTER TABLE users ADD COLUMN web_auth TEXT NOT NULL DEFAULT 'network';
+
+CREATE TABLE user_credentials (
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    login         TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    PRIMARY KEY (user_id, login)
+);
+CREATE INDEX idx_user_credentials_login ON user_credentials(login);
+`,
+	},
+	{
+		Version: 15,
+		Name:    "add app settings",
+		SQL: `
+CREATE TABLE app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`,
+	},
+	{
+		Version: 16,
+		Name:    "make user credentials login globally unique",
+		SQL: `
+DROP INDEX IF EXISTS idx_user_credentials_login;
+CREATE UNIQUE INDEX idx_user_credentials_login_unique ON user_credentials(login);
+`,
+	},
+	{
+		Version: 17,
+		Name:    "add sync_interval to feeds",
+		SQL: `
+ALTER TABLE feeds ADD COLUMN sync_interval INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 type Store struct {
@@ -414,14 +457,15 @@ type Store struct {
 }
 
 type Feed struct {
-	ID          int64
-	Name        string
-	URL         string
-	ModeID      int64
-	AdapterID   int64
-	Enabled     bool
-	LastSuccess string
-	LastError   string
+	ID           int64
+	Name         string
+	URL          string
+	ModeID       int64
+	AdapterID    int64
+	Enabled      bool
+	SyncInterval int
+	LastSuccess  string
+	LastError    string
 }
 
 type FeedAdapter struct {
@@ -441,6 +485,13 @@ type CatalogMode struct {
 	Key     string
 	Name    string
 	Enabled bool
+}
+
+// AppSetting represents a single row from app_settings.
+type AppSetting struct {
+	Key       string
+	Value     string
+	UpdatedAt string
 }
 
 const (
@@ -463,7 +514,14 @@ type User struct {
 	CatalogModeID   int64
 	CatalogModeName string
 	CatalogEditable bool
+	WebAuth         string // "network", "login", "both"
 	Networks        []string
+}
+
+type UserCredential struct {
+	UserID       int64
+	Login        string
+	PasswordHash string
 }
 
 type ServiceKey struct {
@@ -606,6 +664,7 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 
 func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	query := `SELECT f.id, f.name, f.url, f.mode_id, f.adapter_id, f.enabled,
+	                 COALESCE(f.sync_interval, 0),
 	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
 	          FROM feeds f
 	          JOIN catalog_modes m ON m.id = f.mode_id
@@ -624,7 +683,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 		var feed Feed
 		if err := rows.Scan(
 			&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
-			&feed.Enabled, &feed.LastSuccess, &feed.LastError,
+			&feed.Enabled, &feed.SyncInterval, &feed.LastSuccess, &feed.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -637,11 +696,12 @@ func (s *Store) Feed(ctx context.Context, id int64) (Feed, error) {
 	var feed Feed
 	err := s.DB.QueryRowContext(ctx, `
 SELECT id, name, url, mode_id, adapter_id, enabled,
+       COALESCE(sync_interval, 0),
        COALESCE(last_success, ''), COALESCE(last_error, '')
 FROM feeds
 WHERE id = ?`, id).Scan(
 		&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
-		&feed.Enabled, &feed.LastSuccess, &feed.LastError,
+		&feed.Enabled, &feed.SyncInterval, &feed.LastSuccess, &feed.LastError,
 	)
 	return feed, err
 }
@@ -733,7 +793,8 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 	                 COALESCE(bgp_password, ''), selection_locked, enabled,
 	                 filter_override_enabled, COALESCE(filter_mode, ''), filter_editable,
 	                 catalog_mode_id, catalog_mode_editable,
-	                 COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), '')
+	                 COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), ''),
+	                 web_auth
 	          FROM users`
 	if enabledOnly {
 		query += " WHERE enabled = 1"
@@ -752,6 +813,7 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
 			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
 			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName,
+			&user.WebAuth,
 		); err != nil {
 			return nil, err
 		}
@@ -779,12 +841,14 @@ func (s *Store) User(ctx context.Context, id int64) (User, error) {
 		COALESCE(bgp_password, ''), selection_locked, enabled,
 		filter_override_enabled, COALESCE(filter_mode, ''), filter_editable,
 		catalog_mode_id, catalog_mode_editable,
-		COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), '')
+		COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), ''),
+		web_auth
 		FROM users WHERE id = ?`, id).
 		Scan(&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
 			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
-			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName)
+			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName,
+			&user.WebAuth)
 	if err != nil {
 		return User{}, err
 	}
@@ -899,6 +963,89 @@ ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 		prefixes = append(prefixes, prefix)
 	}
 	return prefixes, rows.Err()
+}
+
+// CategoryPrefixCounts returns the number of distinct IPv4 and IPv6 CIDRs per category.
+func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (v4 map[string]int, v6 map[string]int, err error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT ce.category, ce.cidr
+FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
+WHERE f.mode_id = ? AND f.enabled = 1
+GROUP BY ce.category, ce.cidr
+ORDER BY ce.category`, modeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	v4 = map[string]int{}
+	v6 = map[string]int{}
+	seen := map[string]map[netip.Prefix]struct{}{}
+	for rows.Next() {
+		var category, rawCIDR string
+		if err := rows.Scan(&category, &rawCIDR); err != nil {
+			return nil, nil, err
+		}
+		prefix, err := netip.ParsePrefix(rawCIDR)
+		if err != nil {
+			continue
+		}
+		if seen[category] == nil {
+			seen[category] = map[netip.Prefix]struct{}{}
+		}
+		if _, ok := seen[category][prefix]; ok {
+			continue
+		}
+		seen[category][prefix] = struct{}{}
+		if prefix.Addr().Is6() {
+			v6[category]++
+		} else {
+			v4[category]++
+		}
+	}
+	return v4, v6, rows.Err()
+}
+
+// PrefixCounts returns the number of distinct IPv4 and IPv6 CIDR prefixes for each service in each category.
+func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (v4 map[string]map[string]int, v6 map[string]map[string]int, err error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT ce.category, ce.service, ce.cidr
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+WHERE f.mode_id = ? AND f.enabled = 1
+GROUP BY ce.category, ce.service, ce.cidr
+ORDER BY ce.category, ce.service`, modeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	v4 = map[string]map[string]int{}
+	v6 = map[string]map[string]int{}
+	ens := ensureCount
+	for rows.Next() {
+		var category, service, rawCIDR string
+		if err := rows.Scan(&category, &service, &rawCIDR); err != nil {
+			return nil, nil, err
+		}
+		prefix, err := netip.ParsePrefix(rawCIDR)
+		if err != nil {
+			continue
+		}
+		if prefix.Addr().Is6() {
+			ens(&v6, category, service)
+		} else {
+			ens(&v4, category, service)
+		}
+	}
+	return v4, v6, rows.Err()
+}
+
+func ensureCount(m *map[string]map[string]int, category, service string) {
+	cat, ok := (*m)[category]
+	if !ok {
+		cat = map[string]int{}
+		(*m)[category] = cat
+	}
+	cat[service]++
 }
 
 func (s *Store) UserSelection(
@@ -1126,6 +1273,253 @@ type userRoute struct {
 	modeID   int64
 	category string
 	service  string
+}
+
+// CountPrefixes returns the number of unique IPv4 and IPv6 prefixes that would be
+// announced for a given explicit selection (categories + services lists) after
+// applying the user's route filters. It does NOT read selected_categories or
+// selected_services from the DB — use the passed-in slices instead.
+func (s *Store) CountPrefixes(ctx context.Context, modeID int64, categories []string, services []ServiceKey, userID int64) (v4, v6 int, err error) {
+	var filterMode string
+	var filterOverride bool
+	err = s.DB.QueryRowContext(ctx,
+		`SELECT COALESCE(filter_mode, ''), filter_override_enabled
+		 FROM users WHERE id = ?`, userID).
+		Scan(&filterMode, &filterOverride)
+	if err != nil {
+		return 0, 0, err
+	}
+	filterMode = normalizeFilterMode(filterMode, filterOverride)
+
+	if len(categories) == 0 && len(services) == 0 {
+		return 0, 0, nil
+	}
+
+	// Build the same UNION pattern as CountSelectionPrefixes but with
+	// explicit category/service lists instead of DB lookups.
+	args := []any{modeID}
+
+	var queryParts []string
+
+	if len(categories) > 0 {
+		placeholders := make([]string, len(categories))
+		for i, cat := range categories {
+			placeholders[i] = "?"
+			args = append(args, cat)
+		}
+		queryParts = append(queryParts, fmt.Sprintf(`
+SELECT DISTINCT ce.cidr
+FROM feeds f
+JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_entries ce ON ce.feed_id = f.id
+WHERE f.mode_id = ?1
+  AND f.enabled = 1
+  AND m.enabled = 1
+  AND ce.category IN (%s)`, strings.Join(placeholders, ", ")))
+	}
+
+	if len(services) > 0 {
+		pairs := make([]string, len(services))
+		for i, svc := range services {
+			pairs[i] = "(?, ?)"
+			args = append(args, svc.Category, svc.Service)
+		}
+		queryParts = append(queryParts, fmt.Sprintf(`
+SELECT DISTINCT ce.cidr
+FROM feeds f
+JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_entries ce ON ce.feed_id = f.id
+WHERE f.mode_id = ?1
+  AND f.enabled = 1
+  AND m.enabled = 1
+  AND (ce.category, ce.service) IN (%s)`, strings.Join(pairs, ", ")))
+	}
+
+	query := strings.Join(queryParts, " UNION ")
+
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+
+	seen := make(map[netip.Prefix]struct{})
+	for rows.Next() {
+		var rawPrefix string
+		if err := rows.Scan(&rawPrefix); err != nil {
+			return 0, 0, err
+		}
+		prefix, err := netip.ParsePrefix(rawPrefix)
+		if err != nil {
+			return 0, 0, fmt.Errorf("parse prefix %q: %w", rawPrefix, err)
+		}
+		if prefix.Bits() == 0 {
+			continue
+		}
+		seen[prefix.Masked()] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+
+	if len(seen) == 0 {
+		return 0, 0, nil
+	}
+
+	prefixes := make([]netip.Prefix, 0, len(seen))
+	for p := range seen {
+		prefixes = append(prefixes, p)
+	}
+
+	// Apply the same filter logic as CountSelectionPrefixes
+	userFilters, err := s.UserRouteFilters(ctx, userID)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	globalFilters, err := s.GlobalRouteFilters(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var effectiveFilters RouteFilters
+	switch filterMode {
+	case FilterModeOverride:
+		effectiveFilters = userFilters
+	case FilterModeExtend:
+		effectiveFilters = mergeRouteFilters(globalFilters, userFilters)
+	default:
+		effectiveFilters = globalFilters
+	}
+
+	filtered, err := applyRouteFiltersToPrefixes(prefixes, effectiveFilters)
+	if err != nil {
+		return 0, 0, fmt.Errorf("filter routes for user %d: %w", userID, err)
+	}
+
+	for _, pfx := range filtered {
+		if pfx.Addr().Is6() {
+			v6++
+		} else {
+			v4++
+		}
+	}
+	return v4, v6, nil
+}
+
+// CountSelectionPrefixes returns the number of unique IPv4 and IPv6 prefixes that
+// would be announced for a single user after applying their route filters (global
+// and per-user). It replicates the same filter logic as DesiredPrefixes: collect
+// prefixes matching the user's selection, then apply allow/deny lists according
+// to the filter mode.
+func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64) (v4, v6 int, err error) {
+	var catalogModeID int64
+	var filterMode string
+	var filterOverride bool
+	err = s.DB.QueryRowContext(ctx,
+		`SELECT catalog_mode_id, COALESCE(filter_mode, ''), filter_override_enabled
+		 FROM users WHERE id = ?`, userID).
+		Scan(&catalogModeID, &filterMode, &filterOverride)
+	if err != nil {
+		return 0, 0, err
+	}
+	filterMode = normalizeFilterMode(filterMode, filterOverride)
+
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT DISTINCT ce.cidr
+FROM feeds f
+JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_entries ce ON ce.feed_id = f.id
+WHERE f.mode_id = ?1
+  AND f.enabled = 1
+  AND m.enabled = 1
+  AND EXISTS (
+      SELECT 1 FROM selected_categories sc
+      WHERE sc.user_id = ?2
+        AND sc.mode_id = ?1
+        AND sc.category = ce.category
+  )
+UNION
+SELECT DISTINCT ce.cidr
+FROM feeds f
+JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_entries ce ON ce.feed_id = f.id
+WHERE f.mode_id = ?1
+  AND f.enabled = 1
+  AND m.enabled = 1
+  AND EXISTS (
+      SELECT 1 FROM selected_services ss
+      WHERE ss.user_id = ?2
+        AND ss.mode_id = ?1
+        AND ss.category = ce.category
+        AND ss.service = ce.service
+  )`, catalogModeID, userID)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+
+	seen := make(map[netip.Prefix]struct{})
+	for rows.Next() {
+		var rawPrefix string
+		if err := rows.Scan(&rawPrefix); err != nil {
+			return 0, 0, err
+		}
+		prefix, err := netip.ParsePrefix(rawPrefix)
+		if err != nil {
+			return 0, 0, fmt.Errorf("parse prefix %q: %w", rawPrefix, err)
+		}
+		if prefix.Bits() == 0 {
+			continue
+		}
+		seen[prefix.Masked()] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+
+	if len(seen) == 0 {
+		return 0, 0, nil
+	}
+
+	prefixes := make([]netip.Prefix, 0, len(seen))
+	for p := range seen {
+		prefixes = append(prefixes, p)
+	}
+
+	userFilters, err := s.UserRouteFilters(ctx, userID)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	globalFilters, err := s.GlobalRouteFilters(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var effectiveFilters RouteFilters
+	switch filterMode {
+	case FilterModeOverride:
+		effectiveFilters = userFilters
+	case FilterModeExtend:
+		effectiveFilters = mergeRouteFilters(globalFilters, userFilters)
+	default:
+		effectiveFilters = globalFilters
+	}
+
+	filtered, err := applyRouteFiltersToPrefixes(prefixes, effectiveFilters)
+	if err != nil {
+		return 0, 0, fmt.Errorf("filter routes for user %d: %w", userID, err)
+	}
+
+	for _, pfx := range filtered {
+		if pfx.Addr().Is6() {
+			v6++
+		} else {
+			v4++
+		}
+	}
+	return v4, v6, nil
 }
 
 func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, map[string]PrefixRouteInfo, error) {
@@ -1592,8 +1986,8 @@ func parseRouteFilters(filters RouteFilters) (prefixfilter.Lists, error) {
 	return prefixfilter.Lists{Allow: allow, Deny: deny}, nil
 }
 
-func (s *Store) AddFeed(ctx context.Context, name, url string, enabled bool) error {
-	return s.AddFeedForMode(ctx, name, url, DefaultCatalogModeID, enabled)
+func (s *Store) AddFeed(ctx context.Context, name, url string, enabled bool, syncInterval int) error {
+	return s.AddFeedForMode(ctx, name, url, DefaultCatalogModeID, enabled, syncInterval)
 }
 
 func (s *Store) AddFeedForMode(
@@ -1602,8 +1996,9 @@ func (s *Store) AddFeedForMode(
 	url string,
 	modeID int64,
 	enabled bool,
+	syncInterval int,
 ) error {
-	return s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled)
+	return s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval)
 }
 
 func (s *Store) AddFeedForModeAdapter(
@@ -1613,10 +2008,11 @@ func (s *Store) AddFeedForModeAdapter(
 	modeID int64,
 	adapterID int64,
 	enabled bool,
+	syncInterval int,
 ) error {
 	_, err := s.DB.ExecContext(ctx,
-		"INSERT INTO feeds(name, url, mode_id, adapter_id, enabled) VALUES (?, ?, ?, ?, ?)",
-		name, url, modeID, adapterID, enabled)
+		"INSERT INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval) VALUES (?, ?, ?, ?, ?, ?)",
+		name, url, modeID, adapterID, enabled, syncInterval)
 	return err
 }
 
@@ -1631,9 +2027,9 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE feeds
-			 SET name = ?, url = ?, mode_id = ?, adapter_id = ?, enabled = ?
+			 SET name = ?, url = ?, mode_id = ?, adapter_id = ?, enabled = ?, sync_interval = ?
 			 WHERE id = ?`,
-			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.ID); err != nil {
+			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.ID); err != nil {
 			return err
 		}
 		if oldURL == feed.URL && oldAdapterID == feed.AdapterID {
@@ -1689,15 +2085,18 @@ func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 	if user.CatalogModeID == 0 {
 		user.CatalogModeID = DefaultCatalogModeID
 	}
+	if user.WebAuth == "" {
+		user.WebAuth = "network"
+	}
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `INSERT INTO users
 			(name, peer_ip, peer_asn, next_hop, bgp_password, selection_locked, enabled,
 			 filter_override_enabled, filter_mode, filter_editable,
-			 catalog_mode_id, catalog_mode_editable)
-			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)`,
+			 catalog_mode_id, catalog_mode_editable, web_auth)
+			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?)`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, user.BGPPassword,
 			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
-			user.FilterEditable, user.CatalogModeID, user.CatalogEditable)
+			user.FilterEditable, user.CatalogModeID, user.CatalogEditable, user.WebAuth)
 		if err != nil {
 			return err
 		}
@@ -1725,13 +2124,16 @@ func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) e
 				return err
 			}
 		}
+		if user.WebAuth == "" {
+			user.WebAuth = "network"
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE users SET name=?, peer_ip=?, peer_asn=?,
 			next_hop=NULLIF(?, ''), bgp_password=?, selection_locked=?, enabled=?,
 			filter_override_enabled=?, filter_mode=?, filter_editable=?,
-			catalog_mode_id=?, catalog_mode_editable=? WHERE id=?`,
+			catalog_mode_id=?, catalog_mode_editable=?, web_auth=? WHERE id=?`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, password,
 			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
-			user.FilterEditable, user.CatalogModeID, user.CatalogEditable, user.ID)
+			user.FilterEditable, user.CatalogModeID, user.CatalogEditable, user.WebAuth, user.ID)
 		if err != nil {
 			return err
 		}
@@ -1824,13 +2226,72 @@ func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 func (s *Store) Stats(ctx context.Context) (int, int, int, error) {
 	var categories, services, entries int
 	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(DISTINCT category),
-		COUNT(DISTINCT service), COUNT(*) FROM catalog_entries`).
+		COUNT(DISTINCT service), COUNT(DISTINCT cidr) FROM catalog_entries`).
 		Scan(&categories, &services, &entries)
 	return categories, services, entries, err
 }
 
 func IsNotFound(err error) bool {
 	return errors.Is(err, sql.ErrNoRows)
+}
+
+// AuthenticateUser looks up a user by login credential (login + password).
+// It joins user_credentials with users and compares the bcrypt hash.
+// Returns the User on success, or an error (sql.ErrNoRows if not found,
+// bcrypt.ErrMismatchedHashAndPassword if password is wrong).
+func (s *Store) AuthenticateUser(ctx context.Context, login, password string) (User, error) {
+	var userID int64
+	var passwordHash string
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT uc.user_id, uc.password_hash
+		FROM user_credentials uc
+		JOIN users u ON u.id = uc.user_id
+		WHERE uc.login = ? AND u.enabled = 1`, login).Scan(&userID, &passwordHash)
+	if err != nil {
+		return User{}, err
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+		return User{}, err
+	}
+	return s.User(ctx, userID)
+}
+
+// GetUserCredentials returns all login credentials for a user.
+func (s *Store) GetUserCredentials(ctx context.Context, userID int64) ([]UserCredential, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT login FROM user_credentials WHERE user_id = ? ORDER BY login", userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var credentials []UserCredential
+	for rows.Next() {
+		var cred UserCredential
+		if err := rows.Scan(&cred.Login); err != nil {
+			return nil, err
+		}
+		cred.UserID = userID
+		credentials = append(credentials, cred)
+	}
+	return credentials, rows.Err()
+}
+
+// SetUserCredential creates or updates a credential for a user.
+// If password is empty, deletes the credential. Passwords are bcrypt-hashed.
+func (s *Store) SetUserCredential(ctx context.Context, userID int64, login, password string) error {
+	if password == "" {
+		_, err := s.DB.ExecContext(ctx,
+			"DELETE FROM user_credentials WHERE user_id = ? AND login = ?", userID, login)
+		return err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx,
+		`INSERT OR REPLACE INTO user_credentials(user_id, login, password_hash) VALUES (?, ?, ?)`,
+		userID, login, string(hash))
+	return err
 }
 
 // Community represents a catalog community assignment.
@@ -2097,5 +2558,38 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, err
 		return err2
 	})
 	return count, err
+}
+
+// GetAllSettings returns all rows from app_settings as a map[key]value.
+func (s *Store) GetAllSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT key, value FROM app_settings")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	settings := make(map[string]string)
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		settings[key] = value
+	}
+	return settings, rows.Err()
+}
+
+// SaveSettings upserts multiple settings in a transaction.
+// Each entry in the map is a key→value pair.
+func (s *Store) SaveSettings(ctx context.Context, settings map[string]string) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		for key, value := range settings {
+			if _, err := tx.ExecContext(ctx,
+				"INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES (?, ?, datetime('now'))",
+				key, value); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
