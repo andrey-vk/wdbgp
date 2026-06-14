@@ -294,6 +294,7 @@ var translations = map[locale]map[string]string{
 		"settings.host_hint": "IP address or hostname the HTTP server binds to. Environment variable: WDBGP_HOST.",
 		"settings.port_hint": "TCP port the HTTP server listens on. Environment variable: WDBGP_PORT.",
 
+		"settings.default":            "Default",
 		"settings.saved":              "Settings saved.",
 		"settings.env_override":       "ENV override",
 		"settings.env_override_hint":  "This setting is controlled by an environment variable and cannot be changed here.",
@@ -584,6 +585,7 @@ var translations = map[locale]map[string]string{
 		"settings.host_hint": "IP-адрес или имя хоста, к которому привязывается HTTP-сервер. Переменная окружения: WDBGP_HOST.",
 		"settings.port_hint": "TCP-порт, на котором слушает HTTP-сервер. Переменная окружения: WDBGP_PORT.",
 
+		"settings.default":            "По умолчанию",
 		"settings.saved":              "Настройки сохранены.",
 		"settings.env_override":       "ENV",
 		"settings.env_override_hint":  "Эта настройка задана переменной окружения и не может быть изменена здесь.",

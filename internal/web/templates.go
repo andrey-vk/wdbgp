@@ -372,7 +372,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
   var credSection = document.getElementById('credentials-section');
   function toggleCredentials() {
     var v = authSelect.value;
-    credSection.style.display = (v === 'login' || v === 'both') ? '' : 'none';
+    credSection.style.display = (v === 'login' || v === 'both' || v === 'any') ? '' : 'none';
   }
   if (authSelect) {
     authSelect.addEventListener('change', toggleCredentials);
@@ -850,7 +850,8 @@ const settingsTemplate = `{{with .Data}}
   <div class=setting-field>
   {{if eq .Type "select"}}
     <select name="{{.Key}}" id="s_{{.Key}}" {{if .EnvOverride}}disabled title="{{tr "settings.env_override_hint"}}"{{end}}>
-    {{$field := .}}{{range $val, $labelKey := $field.Options}}<option value="{{$val}}" {{if eq $val $field.Value}}selected{{end}}>{{tr $labelKey}}</option>{{end}}
+    {{$field := .}}{{if not $field.Value}}<option value="" disabled selected>{{tr "settings.default"}}: {{$field.DefaultValue}}</option>{{end}}
+    {{range $val, $labelKey := $field.Options}}<option value="{{$val}}" {{if eq $val $field.Value}}selected{{end}}>{{tr $labelKey}}</option>{{end}}
     </select>
   {{else if eq .Type "bool"}}
     <label class=checkbox-row><input type=checkbox name="{{.Key}}" value="true" {{if eq .Value "true"}}checked{{end}} {{if .EnvOverride}}disabled title="{{tr "settings.env_override_hint"}}"{{end}}> {{tr .Name}}</label>
