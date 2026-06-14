@@ -1536,6 +1536,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	// Prepare response
 	response := map[string]any{
 		"uptime": time.Since(s.startTime).Seconds(),
+		"prefixes": totalPrefixes,
 		"database": map[string]any{
 			"connected": true, // health check already passed
 			"categories": categories,
@@ -2583,6 +2584,8 @@ func allSettings() []settingField {
 		{Key: "trust_proxy_headers", Name: "settings.trust_proxy_headers", EnvVar: "WDBGP_TRUST_PROXY_HEADERS", Type: "bool", Section: "settings.section_general"},
 		{Key: "security_headers", Name: "settings.security_headers", EnvVar: "WDBGP_SECURITY_HEADERS", Type: "bool", Section: "settings.section_general"},
 		{Key: "default_web_auth", Name: "settings.default_web_auth", EnvVar: "WDBGP_DEFAULT_WEB_AUTH", Type: "select", Options: map[string]string{"network": "users.web_auth_network", "login": "users.web_auth_login", "both": "users.web_auth_both", "any": "users.web_auth_any"}, Section: "settings.section_general"},
+		{Key: "status_allowed", Name: "settings.status_allowed", EnvVar: "WDBGP_STATUS_ALLOWED", Type: "text", Section: "settings.section_general", Placeholder: "settings.status_allowed_placeholder"},
+		{Key: "status_token", Name: "settings.status_token", EnvVar: "WDBGP_STATUS_TOKEN", Type: "text", Section: "settings.section_general", Placeholder: "settings.status_token_placeholder"},
 
 		// Rate Limiting
 		{Key: "rate_limit_login", Name: "settings.rate_limit_login", EnvVar: "WDBGP_RATE_LIMIT_LOGIN", Type: "number", Section: "settings.section_rate_limit", Placeholder: "settings.rate_limit_login_placeholder"},

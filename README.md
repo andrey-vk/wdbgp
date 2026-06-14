@@ -215,6 +215,8 @@ password check. Force `true` only when the admin UI is always served over HTTPS.
 | `WDBGP_LOG_LEVEL` | `INFO` |
 | `WDBGP_LOG_FORMAT` | `text` |
 | `WDBGP_TRUST_PROXY_HEADERS` | `false` |
+| `WDBGP_STATUS_ALLOWED` | empty (no IPs allowed) |
+| `WDBGP_STATUS_TOKEN` | empty (no token) |
 | `WDBGP_DEFAULT_WEB_AUTH` | `network` |
 | `WDBGP_JS_TIMEOUT` | `120` seconds |
 | `WDBGP_JS_MAX_SOURCE` | `1048576` (1 MiB) |
@@ -229,6 +231,10 @@ The old `WDBGP_BIRD_LOCAL_ADDRESS` and `WDBGP_BIRD_LOCAL_ADDRESS_V6` names are
 temporarily accepted as compatibility aliases.
 When `WDBGP_BGP_LOCAL_ADDRESS_V6` is empty, IPv6 selections remain stored but
 only IPv4 prefixes are announced.
+
+The `/status` endpoint provides operational visibility in JSON format. Access requires
+either a client IP matching `WDBGP_STATUS_ALLOWED` (comma-separated CIDRs) or an
+`Authorization: Bearer <WDBGP_STATUS_TOKEN>` header. When neither is configured, `/status` returns 403.
 
 ### BGP Communities
 

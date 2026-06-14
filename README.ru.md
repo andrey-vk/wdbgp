@@ -216,6 +216,8 @@ cookie и после правильного пароля снова переки
 | `WDBGP_LOG_LEVEL` | `INFO` |
 | `WDBGP_LOG_FORMAT` | `text` |
 | `WDBGP_TRUST_PROXY_HEADERS` | `false` |
+| `WDBGP_STATUS_ALLOWED` | пусто (IP не разрешены) |
+| `WDBGP_STATUS_TOKEN` | пусто (токен не задан) |
 | `WDBGP_DEFAULT_WEB_AUTH` | `network` |
 | `WDBGP_JS_TIMEOUT` | `120` секунд |
 | `WDBGP_JS_MAX_SOURCE` | `1048576` (1 МиБ) |
@@ -230,6 +232,10 @@ cookie и после правильного пароля снова переки
 `WDBGP_BIRD_LOCAL_ADDRESS_V6` пока принимаются как совместимые aliases.
 Если `WDBGP_BGP_LOCAL_ADDRESS_V6` не задан, IPv6-выбор сохраняется в базе, но
 анонсируются только IPv4-префиксы.
+
+Эндпоинт `/status` возвращает операционные данные в JSON. Доступ требует
+либо IP клиента из `WDBGP_STATUS_ALLOWED` (CIDR через запятую), либо
+заголовок `Authorization: Bearer <WDBGP_STATUS_TOKEN>`. Если ни то, ни другое не задано — 403.
 
 ### BGP Communities
 

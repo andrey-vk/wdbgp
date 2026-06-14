@@ -28,6 +28,7 @@ func testConfig() config.Config {
 		RateLimitAdmin:    0,  // Disable rate limiting in tests
 		SessionMaxAge:     28800, // 8 hours
 		SecurityHeaders:   false, // Disable security headers in tests to avoid CSP issues
+		StatusAllowed:    []string{"0.0.0.0/0"}, // Allow all IPs for tests
 	}
 }
 
