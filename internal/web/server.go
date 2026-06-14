@@ -316,6 +316,13 @@ func (s *Server) userLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rate-limit login attempts
+	clientIP := s.clientIP(r)
+	if !s.loginLimiter.allow(clientIP) {
+		http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.rate_limit")), http.StatusSeeOther)
+		return
+	}
+
 	login := strings.TrimSpace(r.FormValue("login"))
 	password := r.FormValue("password")
 

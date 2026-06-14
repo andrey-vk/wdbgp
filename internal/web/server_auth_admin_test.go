@@ -580,8 +580,52 @@ func addCommunityTestData(t *testing.T, db *store.Store) {
 }
 
 func TestUserLoginRateLimited(t *testing.T) {
-	// Rate limiting (loginLimiter) is only applied to admin login, not user login.
-	// The userLogin handler does not use the rate limiter.
-	// This test is intentionally skipped.
-	t.Skip("rate limiting is only applied to admin login, not user login")
+	// Rate limiting (loginLimiter) is applied to both admin and user login.
+	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	userID, err := db.AddUser(ctx, store.User{
+		Name: "login-user", PeerIP: "10.0.1.1", PeerASN: 65001, Enabled: true,
+		WebAuth:  "login",
+		Networks: []string{"10.0.1.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = db.SetUserCredential(ctx, userID, "alice", "secret123")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.RateLimitLogin = 1 // allow only 1 request per minute
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+
+	form := url.Values{"login": {"alice"}, "password": {"secret123"}}
+
+	// First request should succeed (not rate-limited)
+	req1 := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req1.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec1 := httptest.NewRecorder()
+	handler.ServeHTTP(rec1, req1)
+	if rec1.Code != http.StatusSeeOther {
+		t.Fatalf("first request should succeed, got %d", rec1.Code)
+	}
+
+	// Second request should be rate-limited (redirected to /login?error=...)
+	req2 := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect for rate-limited request, got %d", rec2.Code)
+	}
+	loc := rec2.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/login?error=") {
+		t.Fatalf("expected redirect to /login?error=..., got %s", loc)
+	}
 }
