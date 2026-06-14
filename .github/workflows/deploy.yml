@@ -63,6 +63,5 @@ jobs:
           repository: ${{ secrets.DOCKERHUB_USERNAME }}/wdbgp
           readme-filepath: ./dockerhub-description.md
           short-description: |
-            Downloads categorized IPv4/IPv6 CIDR feeds, builds a service catalog,
-            and announces prefixes to routers over BGP. Single Go binary.
+            Downloads CIDR feeds, announces BGP prefixes to routers. Single Go binary.
 
