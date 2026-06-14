@@ -651,6 +651,10 @@ body{display:flex;height:100vh;overflow:hidden}
 <button onclick="cycleTheme()" title="Theme" class=theme-btn>🌙</button>
 <a href="#" data-lang="en" class="lang-switch">EN</a>
 <a href="#" data-lang="ru" class="lang-switch">RU</a>
+<form method=post action=/admin/logout style=display:inline>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<button type=submit>{{tr "admin.logout"}}</button>
+</form>
 </header>
 <main id=main hx-history-elt>
 {{.ContentHTML}}
