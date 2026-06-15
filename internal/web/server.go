@@ -1206,6 +1206,7 @@ func (s *Server) deleteFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.syncer.RemoveFeedLock(id)
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
 		s.internalError(w, r, err)
 		return
@@ -2228,6 +2229,15 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "feed is disabled", http.StatusBadRequest)
 		return
 	}
+
+	// Double-click prevention: if a sync is already in progress for this feed,
+	// Skip without launching a new goroutine.
+	if !s.syncer.TryLockFeed(id) {
+		http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
+		return
+	}
+	s.syncer.UnlockFeed(id) // release immediately; SyncOne will lock again
+
 	// Only clear last_error to trigger re-sync; keep last_success
 	_, err = s.store.DB.ExecContext(r.Context(),
 		"UPDATE feeds SET last_error = NULL WHERE id = ?", id)
@@ -2236,13 +2246,8 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		// NOTE: rapid double-clicks launch two goroutines. The per-feed mutex
-		// in SyncOne serializes them. Second goroutine waits for the first
-		// to finish, then re-checks the feed URL/adapter/data/mode/enabled
-		// guard (below) — if the first sync already succeeded, the guard
-		// sees that data has already been stored and the second sync
-		// results are discarded as stale. The mutex is acquired inside
-		// SyncOne, so the second goroutine blocks until the first completes.
+		// SyncOne acquires the per-feed lock internally, serializing
+		// this request with scheduled syncs and other force-syncs.
 		var syncErr error
 		if err := s.syncer.SyncOne(context.Background(), feed); err != nil {
 			syncErr = err

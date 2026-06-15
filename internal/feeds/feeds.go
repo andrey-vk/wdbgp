@@ -93,6 +93,37 @@ func ifZero(val, def int) int {
 	return val
 }
 
+// RemoveFeedLock cleans up the per-feed mutex when a feed is deleted,
+// preventing unbounded growth of the feedLocks map.
+func (s *Syncer) RemoveFeedLock(feedID int64) {
+	s.feedLocksMu.Lock()
+	delete(s.feedLocks, feedID)
+	s.feedLocksMu.Unlock()
+}
+
+// TryLockFeed attempts to acquire the per-feed mutex without blocking.
+// Returns true if the lock was acquired, false if another sync is in progress.
+// Used for double-click prevention in force-sync handlers.
+func (s *Syncer) TryLockFeed(feedID int64) bool {
+	s.feedLocksMu.Lock()
+	if s.feedLocks[feedID] == nil {
+		s.feedLocks[feedID] = &sync.Mutex{}
+	}
+	mu := s.feedLocks[feedID]
+	s.feedLocksMu.Unlock()
+	return mu.TryLock()
+}
+
+// UnlockFeed releases the per-feed mutex previously acquired by TryLockFeed.
+func (s *Syncer) UnlockFeed(feedID int64) {
+	s.feedLocksMu.Lock()
+	mu := s.feedLocks[feedID]
+	s.feedLocksMu.Unlock()
+	if mu != nil {
+		mu.Unlock()
+	}
+}
+
 func (s *Syncer) SyncAll(ctx context.Context) []error {
 	logger := logging.FromContext(ctx)
 	logger.Info("starting feed synchronization")
