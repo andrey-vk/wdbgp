@@ -461,10 +461,10 @@ ALTER TABLE feeds ADD COLUMN data TEXT NOT NULL DEFAULT '';
 		Version: 19,
 		Name:    "add sing-box SRS catalog mode",
 		SQL: `
--- Handle name collision: rename any existing mode/adapter with the same name but different key
-UPDATE catalog_modes SET name = name || ' (custom)'
+		-- Handle name collision: rename any existing mode/adapter with the same name but different key
+UPDATE catalog_modes SET name = name || ' (custom ' || id || ')'
 WHERE name = 'sing-box SRS' AND key != 'singbox-srs';
-UPDATE feed_adapters SET name = name || ' (custom)'
+UPDATE feed_adapters SET name = name || ' (custom ' || id || ')'
 WHERE name = 'sing-box SRS' AND key != 'singbox-srs';
 
 INSERT OR IGNORE INTO catalog_modes(key, name, enabled) VALUES ('singbox-srs', 'sing-box SRS', 0);

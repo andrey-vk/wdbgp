@@ -92,9 +92,9 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 		return nil, fmt.Errorf("srs: zlib decompress: %w", err)
 	}
 	defer zr.Close()
-	lr := io.LimitReader(zr, maxDecompressedSRS)
+	cr := &countReader{r: zr, limit: maxDecompressedSRS}
 
-	ruleCount, err := binary.ReadUvarint(&byteReader{r: lr})
+	ruleCount, err := binary.ReadUvarint(&byteReader{r: cr})
 	if err != nil {
 		return nil, fmt.Errorf("srs: read rule count: %w", err)
 	}
@@ -107,13 +107,13 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 			return nil, ctx.Err()
 		default:
 		}
-		ruleType, err := readByte(lr)
+		ruleType, err := readByte(cr)
 		if err != nil {
 			return nil, fmt.Errorf("srs: rule[%d] type: %w", i, err)
 		}
 		switch ruleType {
 		case 0: // default rule
-			cidrs, err := parseDefaultRule(ctx, lr, &cfg)
+			cidrs, err := parseDefaultRule(ctx, cr, &cfg)
 			if err != nil {
 				return nil, fmt.Errorf("srs: rule[%d]: %w", i, err)
 			}
@@ -121,7 +121,7 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 				entries = append(entries, canonicalEntry{CIDRs: cidrs})
 			}
 		case 1: // logical rule
-			cidrs, err := parseLogicalRule(ctx, lr, &cfg, 0)
+			cidrs, err := parseLogicalRule(ctx, cr, &cfg, 0)
 			if err != nil {
 				return nil, fmt.Errorf("srs: rule[%d] logical: %w", i, err)
 			}
@@ -143,8 +143,13 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 	}
 
 	// Drain remaining zlib stream to validate checksum and detect truncation
-	if _, err := io.Copy(io.Discard, lr); err != nil {
+	if _, err := io.Copy(io.Discard, cr); err != nil {
 		return nil, fmt.Errorf("srs: zlib stream error: %w", err)
+	}
+
+	// Check if the decompressed stream exceeded the size limit
+	if cr.exceeded {
+		return nil, fmt.Errorf("srs: decompressed size exceeds %d bytes", maxDecompressedSRS)
 	}
 
 	return entries, nil
@@ -176,6 +181,7 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 			if err := skipIPSet(ctx, r); err != nil {
 				return nil, err
 			}
+			hasConstraint = true
 		case srsItemDomain:
 			if err := skipDomainMatcher(r); err != nil {
 				return nil, err
@@ -184,6 +190,7 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 			if err := skipStringArray(ctx, r); err != nil {
 				return nil, err
 			}
+			hasConstraint = true
 		case srsItemAdGuardDomain:
 			if err := skipAdGuardMatcher(r); err != nil {
 				return nil, err
@@ -618,4 +625,23 @@ func readByte(r io.Reader) (byte, error) {
 	var buf [1]byte
 	_, err := io.ReadFull(r, buf[:])
 	return buf[0], err
+}
+
+// countReader wraps an io.Reader and tracks the total bytes read. It signals
+// when the limit is exceeded via the exceeded field but continues reading to
+// allow draining the underlying stream.
+type countReader struct {
+	r        io.Reader
+	limit    int64
+	n        int64
+	exceeded bool
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	if c.n > c.limit {
+		c.exceeded = true
+	}
+	return n, err
 }
