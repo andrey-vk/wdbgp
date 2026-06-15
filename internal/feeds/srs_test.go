@@ -19,7 +19,7 @@ func TestParseSRS_GeoIP_RU(t *testing.T) {
 		t.Skipf("test file not found: %v", err)
 	}
 
-	entries, err := ParseSRS(data, `{"cidrs":true}`)
+	entries, err := ParseSRS(data, `{"cidrs":true}`, 0)
 	if err != nil {
 		t.Fatalf("ParseSRS: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestParseSRS_EmptyConfigDefaultsCIDRs(t *testing.T) {
 	bw.Flush()
 	zw.Close()
 
-	entries, err := ParseSRS(srsBuf.Bytes(), "")
+	entries, err := ParseSRS(srsBuf.Bytes(), "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

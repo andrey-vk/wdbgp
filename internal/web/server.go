@@ -2237,8 +2237,21 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 	}
 	go func() {
 		if err := s.syncer.SyncOne(context.Background(), feed); err != nil {
-			s.store.DB.ExecContext(context.Background(),
-				"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
+			// Verify feed hasn't been edited since the goroutine was launched.
+			// If the feed was edited (url, adapter_id, or data changed), the
+			// error is from a stale sync and must not overwrite the new feed's status.
+			var currentURL, currentData string
+			var currentAdapterID int64
+			checkErr := s.store.DB.QueryRowContext(context.Background(),
+				"SELECT url, adapter_id, data FROM feeds WHERE id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData)
+			if checkErr == nil &&
+				currentURL == feed.URL &&
+				currentAdapterID == feed.AdapterID &&
+				currentData == feed.Data {
+				s.store.DB.ExecContext(context.Background(),
+					"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
+			}
 		}
 		s.bgp.Reconcile(context.Background())
 	}()

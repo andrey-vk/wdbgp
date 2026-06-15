@@ -58,7 +58,10 @@ type ParseSRSConfig struct {
 // Logical rules (type 1) are recursively traversed to extract CIDRs.
 // Inverted rules are skipped — their semantics (everything EXCEPT) are opposite of what we want.
 // Supports SRS format versions 1 through 5.
-func ParseSRS(data []byte, cfgJSON string) ([]canonicalEntry, error) {
+// maxEntries limits the total number of CIDRs across all entries; 0 means no limit.
+// This is enforced during parsing (not just at the end) because ParseSRS runs
+// synchronously and goja's timeout/interrupt cannot interrupt it.
+func ParseSRS(data []byte, cfgJSON string, maxEntries int) ([]canonicalEntry, error) {
 	var cfg ParseSRSConfig
 	if cfgJSON == "" {
 		cfg.CIDRs = true
@@ -119,6 +122,15 @@ func ParseSRS(data []byte, cfgJSON string) ([]canonicalEntry, error) {
 		default:
 			return nil, fmt.Errorf("srs: rule[%d] unknown type %d", i, ruleType)
 		}
+	}
+
+	// Enforce maxEntries limit on total CIDRs across all entries.
+	totalCIDRs := 0
+	for _, e := range entries {
+		totalCIDRs += len(e.CIDRs)
+	}
+	if maxEntries > 0 && totalCIDRs > maxEntries {
+		return nil, fmt.Errorf("srs: %d CIDRs exceeds limit of %d", totalCIDRs, maxEntries)
 	}
 
 	return entries, nil

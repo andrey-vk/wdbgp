@@ -462,7 +462,7 @@ ALTER TABLE feeds ADD COLUMN data TEXT NOT NULL DEFAULT '';
 		Name:    "add sing-box SRS catalog mode",
 		SQL: `
 INSERT OR IGNORE INTO catalog_modes(id, key, name, enabled) VALUES (3, 'singbox-srs', 'sing-box SRS', 0);
-INSERT OR IGNORE INTO feed_adapters(key, name) VALUES ('singbox-srs', 'sing-box SRS');
+INSERT INTO feed_adapters(key, name) VALUES ('singbox-srs', 'sing-box SRS') ON CONFLICT(key) DO UPDATE SET name = 'sing-box SRS', source = '';
 INSERT OR IGNORE INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval, data)
 SELECT 'Russia GeoIP (SRS)',
        'https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geoip/geoip-ru.srs',
