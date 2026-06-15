@@ -464,7 +464,13 @@ ALTER TABLE feeds ADD COLUMN data TEXT NOT NULL DEFAULT '';
 INSERT OR IGNORE INTO catalog_modes(id, key, name, enabled) VALUES (3, 'singbox-srs', 'sing-box SRS', 0);
 INSERT OR IGNORE INTO feed_adapters(id, key, name) VALUES (4, 'singbox-srs', 'sing-box SRS');
 INSERT OR IGNORE INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval, data)
-VALUES ('Russia GeoIP (SRS)', 'https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geoip/geoip-ru.srs', 3, 4, 0, 0, '{"category":"Russia","service":"geoip-ru"}');
+SELECT 'Russia GeoIP (SRS)',
+       'https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geoip/geoip-ru.srs',
+       3,
+       (SELECT id FROM feed_adapters WHERE key = 'singbox-srs'),
+       0, 0,
+       '{"category":"Russia","service":"geoip-ru"}'
+WHERE EXISTS (SELECT 1 FROM feed_adapters WHERE key = 'singbox-srs');
 `,
 	},
 }
@@ -2042,9 +2048,10 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		var oldURL string
 		var oldAdapterID int64
+		var oldData string
 		if err := tx.QueryRowContext(ctx,
-			"SELECT url, adapter_id FROM feeds WHERE id = ?", feed.ID).
-			Scan(&oldURL, &oldAdapterID); err != nil {
+			"SELECT url, adapter_id, data FROM feeds WHERE id = ?", feed.ID).
+			Scan(&oldURL, &oldAdapterID, &oldData); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -2054,7 +2061,7 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
 			return err
 		}
-		if oldURL == feed.URL && oldAdapterID == feed.AdapterID {
+		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data {
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx,
