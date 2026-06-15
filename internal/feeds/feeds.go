@@ -108,8 +108,9 @@ func (s *Syncer) SyncAll(ctx context.Context) []error {
 			logger.Error("feed sync failed", "name", feed.Name, "error", err)
 			errors = append(errors, fmt.Errorf("%s: %w", feed.Name, err))
 			_, _ = s.Store.DB.ExecContext(ctx,
-				"UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1",
-				err.Error(), feed.ID, feed.URL)
+				`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
+				 AND data = ? AND mode_id = ? AND adapter_id = ?`,
+				err.Error(), feed.ID, feed.URL, feed.Data, feed.ModeID, feed.AdapterID)
 		} else {
 			logger.Info("feed synced successfully", "name", feed.Name, "feed_id", feed.ID)
 		}
