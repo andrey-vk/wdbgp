@@ -133,7 +133,7 @@ func parseDefaultRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 			return nil, err
 		}
 		switch itemType {
-		case srsItemIPCIDR, srsItemSourceIPCIDR:
+		case srsItemIPCIDR:
 			if !cfg.CIDRs {
 				if err := skipIPSet(r); err != nil {
 					return nil, err
@@ -145,6 +145,10 @@ func parseDefaultRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 				return nil, err
 			}
 			allCIDRs = append(allCIDRs, cidrs...)
+		case srsItemSourceIPCIDR:
+			if err := skipIPSet(r); err != nil {
+				return nil, err
+			}
 		case srsItemDomain:
 			if err := skipDomainMatcher(r); err != nil {
 				return nil, err

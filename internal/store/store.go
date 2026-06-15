@@ -466,11 +466,12 @@ INSERT OR IGNORE INTO feed_adapters(key, name) VALUES ('singbox-srs', 'sing-box 
 INSERT OR IGNORE INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval, data)
 SELECT 'Russia GeoIP (SRS)',
        'https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geoip/geoip-ru.srs',
-       3,
+       (SELECT id FROM catalog_modes WHERE key = 'singbox-srs'),
        (SELECT id FROM feed_adapters WHERE key = 'singbox-srs'),
        0, 0,
        '{"category":"Russia","service":"geoip-ru"}'
-WHERE EXISTS (SELECT 1 FROM feed_adapters WHERE key = 'singbox-srs');
+WHERE EXISTS (SELECT 1 FROM feed_adapters WHERE key = 'singbox-srs')
+  AND EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs');
 `,
 	},
 }
