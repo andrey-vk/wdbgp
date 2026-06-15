@@ -162,18 +162,18 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 		switch itemType {
 		case srsItemIPCIDR:
 			if !cfg.CIDRs {
-				if err := skipIPSet(r); err != nil {
-					return nil, err
-				}
-				continue
+		if err := skipIPSet(ctx, r); err != nil {
+				return nil, err
 			}
-			cidrs, err := readIPSetAsCIDRs(ctx, r)
+			continue
+		}
+		cidrs, err := readIPSetAsCIDRs(ctx, r)
 			if err != nil {
 				return nil, err
 			}
 			allCIDRs = append(allCIDRs, cidrs...)
 		case srsItemSourceIPCIDR:
-			if err := skipIPSet(r); err != nil {
+			if err := skipIPSet(ctx, r); err != nil {
 				return nil, err
 			}
 		case srsItemDomain:
@@ -181,7 +181,7 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 				return nil, err
 			}
 		case srsItemDomainKeyword, srsItemDomainRegex:
-			if err := skipStringArray(r); err != nil {
+			if err := skipStringArray(ctx, r); err != nil {
 				return nil, err
 			}
 		case srsItemAdGuardDomain:
@@ -197,7 +197,7 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 			srsItemSourcePortRange, srsItemPortRange,
 			srsItemProcessName, srsItemProcessPath, srsItemProcessPathRegex,
 			srsItemPackageName, srsItemPackageNameRegex, srsItemWIFISSID, srsItemWIFIBSSID:
-			if err := skipStringArray(r); err != nil {
+			if err := skipStringArray(ctx, r); err != nil {
 				return nil, err
 			}
 			hasConstraint = true
@@ -215,7 +215,7 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 			}
 			hasConstraint = true
 		case srsItemDefaultInterfaceAddress:
-			if err := skipPrefixArray(r); err != nil {
+			if err := skipPrefixArray(ctx, r); err != nil {
 				return nil, err
 			}
 			hasConstraint = true
@@ -306,7 +306,12 @@ func readIPSetAsCIDRs(ctx context.Context, r io.Reader) ([]string, error) {
 
 // --- skip helpers for items we don't need ---
 
-func skipIPSet(r io.Reader) error {
+func skipIPSet(ctx context.Context, r io.Reader) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	ver, err := readByte(r)
 	if err != nil {
 		return fmt.Errorf("ipset version: %w", err)
@@ -323,6 +328,11 @@ func skipIPSet(r io.Reader) error {
 	}
 	br := &byteReader{r: r}
 	for i := uint64(0); i < count; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		fl, err := binary.ReadUvarint(br)
 		if err != nil {
 			return fmt.Errorf("ipset fromLen: %w", err)
@@ -341,7 +351,12 @@ func skipIPSet(r io.Reader) error {
 	return nil
 }
 
-func skipStringArray(r io.Reader) error {
+func skipStringArray(ctx context.Context, r io.Reader) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	br := &byteReader{r: r}
 	count, err := binary.ReadUvarint(br)
 	if err != nil {
@@ -351,6 +366,11 @@ func skipStringArray(r io.Reader) error {
 		return fmt.Errorf("string array: count %d exceeds max %d", count, maxIPSetRangeCount)
 	}
 	for i := uint64(0); i < count; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		slen, err := binary.ReadUvarint(br)
 		if err != nil {
 			return err
@@ -394,7 +414,12 @@ func skipAdGuardMatcher(r io.Reader) error {
 	return fmt.Errorf("srs: adguard domain items are not supported")
 }
 
-func skipPrefixArray(r io.Reader) error {
+func skipPrefixArray(ctx context.Context, r io.Reader) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	br := &byteReader{r: r}
 	count, err := binary.ReadUvarint(br)
 	if err != nil {
@@ -404,6 +429,11 @@ func skipPrefixArray(r io.Reader) error {
 		return fmt.Errorf("prefix array: count %d exceeds limit", count)
 	}
 	for i := uint64(0); i < count; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		addrLen, err := binary.ReadUvarint(br)
 		if err != nil {
 			return err
@@ -462,6 +492,40 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 	if err != nil {
 		return nil, err
 	}
+
+	// Validate mode before reading sub-rules so we can skip them correctly.
+	if mode != 0 && mode != 1 {
+		br := &byteReader{r: r}
+		subCount, err := binary.ReadUvarint(br)
+		if err != nil {
+			return nil, err
+		}
+		skipCfg := &ParseSRSConfig{}
+		for i := uint64(0); i < subCount; i++ {
+			rt, err := readByte(r)
+			if err != nil {
+				return nil, err
+			}
+			switch rt {
+			case 0:
+				if _, err := parseDefaultRule(ctx, r, skipCfg); err != nil {
+					return nil, err
+				}
+			case 1:
+				if _, err := parseLogicalRule(ctx, r, skipCfg, depth+1); err != nil {
+					return nil, err
+				}
+			default:
+				return nil, fmt.Errorf("srs: unknown sub-rule type %d", rt)
+			}
+		}
+		var invert uint8
+		if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("srs: unknown logical rule mode %d", mode)
+	}
+
 	br := &byteReader{r: r}
 	subCount, err := binary.ReadUvarint(br)
 	if err != nil {
