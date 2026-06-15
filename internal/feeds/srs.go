@@ -113,7 +113,7 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 		}
 		switch ruleType {
 		case 0: // default rule
-			cidrs, err := parseDefaultRule(ctx, cr, &cfg)
+			cidrs, _, err := parseDefaultRule(ctx, cr, &cfg)
 			if err != nil {
 				return nil, fmt.Errorf("srs: rule[%d]: %w", i, err)
 			}
@@ -121,7 +121,7 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 				entries = append(entries, canonicalEntry{CIDRs: cidrs})
 			}
 		case 1: // logical rule
-			cidrs, err := parseLogicalRule(ctx, cr, &cfg, 0)
+			cidrs, _, err := parseLogicalRule(ctx, cr, &cfg, 0)
 			if err != nil {
 				return nil, fmt.Errorf("srs: rule[%d] logical: %w", i, err)
 			}
@@ -151,48 +151,50 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 }
 
 // parseDefaultRule loops items until srsItemFinal.
-func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
+func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]string, bool, error) {
 	var allCIDRs []string
 	var hasConstraint bool
 	for {
 		itemType, err := readByte(r)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		switch itemType {
 		case srsItemIPCIDR:
 			if !cfg.CIDRs {
 		if err := skipIPSet(ctx, r); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			continue
 		}
 		cidrs, err := readIPSetAsCIDRs(ctx, r)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			allCIDRs = append(allCIDRs, cidrs...)
 		case srsItemSourceIPCIDR:
 			if err := skipIPSet(ctx, r); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			hasConstraint = true
 		case srsItemDomain:
 			if err := skipDomainMatcher(r); err != nil {
-				return nil, err
+				return nil, false, err
 			}
+			hasConstraint = true
 		case srsItemDomainKeyword, srsItemDomainRegex:
 			if err := skipStringArray(ctx, r); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			hasConstraint = true
 		case srsItemAdGuardDomain:
 			if err := skipAdGuardMatcher(r); err != nil {
-				return nil, err
+				return nil, false, err
 			}
+			hasConstraint = true
 		case srsItemQueryType, srsItemSourcePort, srsItemPort:
 			if err := skipUint16Array(r); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			hasConstraint = true
 		case srsItemNetwork,
@@ -200,12 +202,12 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 			srsItemProcessName, srsItemProcessPath, srsItemProcessPathRegex,
 			srsItemPackageName, srsItemPackageNameRegex, srsItemWIFISSID, srsItemWIFIBSSID:
 			if err := skipStringArray(ctx, r); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			hasConstraint = true
 		case srsItemNetworkType:
 			if err := skipUint8Array(r); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			hasConstraint = true
 		case srsItemNetworkIsExpensive, srsItemNetworkIsConstrained:
@@ -213,25 +215,25 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 			hasConstraint = true
 		case srsItemNetworkInterfaceAddress:
 			if err := skipNetworkInterfaceAddress(ctx, r); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			hasConstraint = true
 		case srsItemDefaultInterfaceAddress:
 			if err := skipPrefixArray(ctx, r); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			hasConstraint = true
 		case srsItemFinal:
 			var invert uint8
 			if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			if invert != 0 || hasConstraint {
-				return nil, nil // skip inverted or constrained rules
+				return nil, hasConstraint, nil // skip inverted or constrained rules
 			}
-			return allCIDRs, nil
+			return allCIDRs, false, nil
 		default:
-			return nil, fmt.Errorf("unknown item type %d", itemType)
+			return nil, false, fmt.Errorf("unknown item type %d", itemType)
 		}
 	}
 }
@@ -409,11 +411,78 @@ func skipUint8Array(r io.Reader) error {
 }
 
 func skipDomainMatcher(r io.Reader) error {
-	return fmt.Errorf("srs: domain items are not supported")
+	version, err := readByte(r)
+	if err != nil {
+		return err
+	}
+	br := &byteReader{r: r}
+
+	// Domain prefixes
+	count, err := binary.ReadUvarint(br)
+	if err != nil {
+		return err
+	}
+	for i := uint64(0); i < count; i++ {
+		l, err := binary.ReadUvarint(br)
+		if err != nil {
+			return err
+		}
+		if err := skipBytes(r, int64(l)); err != nil {
+			return err
+		}
+	}
+
+	// Domain suffixes
+	count, err = binary.ReadUvarint(br)
+	if err != nil {
+		return err
+	}
+	for i := uint64(0); i < count; i++ {
+		l, err := binary.ReadUvarint(br)
+		if err != nil {
+			return err
+		}
+		if err := skipBytes(r, int64(l)); err != nil {
+			return err
+		}
+	}
+
+	// v2+: fallback domains
+	if version >= 2 {
+		count, err = binary.ReadUvarint(br)
+		if err != nil {
+			return err
+		}
+		for i := uint64(0); i < count; i++ {
+			l, err := binary.ReadUvarint(br)
+			if err != nil {
+				return err
+			}
+			if err := skipBytes(r, int64(l)); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 func skipAdGuardMatcher(r io.Reader) error {
-	return fmt.Errorf("srs: adguard domain items are not supported")
+	br := &byteReader{r: r}
+	count, err := binary.ReadUvarint(br)
+	if err != nil {
+		return err
+	}
+	for i := uint64(0); i < count; i++ {
+		l, err := binary.ReadUvarint(br)
+		if err != nil {
+			return err
+		}
+		if err := skipBytes(r, int64(l)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func skipPrefixArray(ctx context.Context, r io.Reader) error {
@@ -501,13 +570,13 @@ func skipNetworkInterfaceAddress(ctx context.Context, r io.Reader) error {
 	return nil
 }
 
-func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, depth int) ([]string, error) {
+func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, depth int) ([]string, bool, error) {
 	if depth > maxSRSRecursionDepth {
-		return nil, fmt.Errorf("srs: logical rule recursion depth %d exceeds limit", depth)
+		return nil, false, fmt.Errorf("srs: logical rule recursion depth %d exceeds limit", depth)
 	}
 	mode, err := readByte(r)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	// Validate mode before reading sub-rules so we can skip them correctly.
@@ -515,102 +584,226 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 		br := &byteReader{r: r}
 		subCount, err := binary.ReadUvarint(br)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		skipCfg := &ParseSRSConfig{}
 		for i := uint64(0); i < subCount; i++ {
 			rt, err := readByte(r)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			switch rt {
 			case 0:
-				if _, err := parseDefaultRule(ctx, r, skipCfg); err != nil {
-					return nil, err
+				if _, _, err := parseDefaultRule(ctx, r, skipCfg); err != nil {
+					return nil, false, err
 				}
 			case 1:
-				if _, err := parseLogicalRule(ctx, r, skipCfg, depth+1); err != nil {
-					return nil, err
+				if _, _, err := parseLogicalRule(ctx, r, skipCfg, depth+1); err != nil {
+					return nil, false, err
 				}
 			default:
-				return nil, fmt.Errorf("srs: unknown sub-rule type %d", rt)
+				return nil, false, fmt.Errorf("srs: unknown sub-rule type %d", rt)
 			}
 		}
 		var invert uint8
 		if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return nil, fmt.Errorf("srs: unknown logical rule mode %d", mode)
+		return nil, false, fmt.Errorf("srs: unknown logical rule mode %d", mode)
 	}
 
 	br := &byteReader{r: r}
 	subCount, err := binary.ReadUvarint(br)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	// AND mode (0): intersection of CIDR sets across sub-rules is not
-	// safely representable as a simple union. Skip all sub-rules and return empty.
+	// AND mode (0): compute intersection if all sub-rules are pure CIDR.
 	if mode == 0 {
-		skipCfg := &ParseSRSConfig{} // CIDRs=false, skip extraction
+		var allGroups [][]string
 		for i := uint64(0); i < subCount; i++ {
 			rt, err := readByte(r)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			switch rt {
 			case 0:
-				if _, err := parseDefaultRule(ctx, r, skipCfg); err != nil {
-					return nil, err
+				cidrs, hasConstraint, err := parseDefaultRule(ctx, r, cfg)
+				if err != nil {
+					return nil, false, err
 				}
+				if hasConstraint || len(cidrs) == 0 {
+					// Skip entire AND. Consume remaining sub-rules and invert byte.
+					skipCfg := &ParseSRSConfig{}
+					for j := i + 1; j < subCount; j++ {
+						srt, skipErr := readByte(r)
+						if skipErr != nil {
+							return nil, false, skipErr
+						}
+						switch srt {
+						case 0:
+							if _, _, err := parseDefaultRule(ctx, r, skipCfg); err != nil {
+								return nil, false, err
+							}
+						case 1:
+							if _, _, err := parseLogicalRule(ctx, r, skipCfg, depth+1); err != nil {
+								return nil, false, err
+							}
+						default:
+							return nil, false, fmt.Errorf("srs: unknown sub-rule type %d", srt)
+						}
+					}
+					var invert uint8
+					if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
+						return nil, false, err
+					}
+					return nil, true, nil
+				}
+				allGroups = append(allGroups, cidrs)
 			case 1:
-				if _, err := parseLogicalRule(ctx, r, skipCfg, depth+1); err != nil {
-					return nil, err
+				cidrs, hasConstraint, err := parseLogicalRule(ctx, r, cfg, depth+1)
+				if err != nil {
+					return nil, false, err
 				}
+				if hasConstraint || len(cidrs) == 0 {
+					// Skip entire AND. Consume remaining sub-rules and invert byte.
+					skipCfg := &ParseSRSConfig{}
+					for j := i + 1; j < subCount; j++ {
+						srt, skipErr := readByte(r)
+						if skipErr != nil {
+							return nil, false, skipErr
+						}
+						switch srt {
+						case 0:
+							if _, _, err := parseDefaultRule(ctx, r, skipCfg); err != nil {
+								return nil, false, err
+							}
+						case 1:
+							if _, _, err := parseLogicalRule(ctx, r, skipCfg, depth+1); err != nil {
+								return nil, false, err
+							}
+						default:
+							return nil, false, fmt.Errorf("srs: unknown sub-rule type %d", srt)
+						}
+					}
+					var invert uint8
+					if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
+						return nil, false, err
+					}
+					return nil, true, nil
+				}
+				allGroups = append(allGroups, cidrs)
 			default:
-				return nil, fmt.Errorf("srs: unknown sub-rule type %d", rt)
+				return nil, false, fmt.Errorf("srs: unknown sub-rule type %d", rt)
 			}
 		}
 		var invert uint8
 		if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		_ = invert // AND mode: cannot represent intersection, inverted or not
-		return nil, nil
+		if invert != 0 {
+			return nil, true, nil
+		}
+		if len(allGroups) == 0 {
+			return nil, false, nil
+		}
+		result := intersectCIDRs(allGroups...)
+		return result, false, nil
 	}
 
 	// OR mode (1): collect CIDRs from all sub-rules (union).
 	var allCIDRs []string
+	var hasConstraint bool
 	for i := uint64(0); i < subCount; i++ {
 		rt, err := readByte(r)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		switch rt {
 		case 0:
-			cidrs, err := parseDefaultRule(ctx, r, cfg)
+			cidrs, subConstraint, err := parseDefaultRule(ctx, r, cfg)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			allCIDRs = append(allCIDRs, cidrs...)
+			if subConstraint {
+				hasConstraint = true
+			}
 		case 1:
-			cidrs, err := parseLogicalRule(ctx, r, cfg, depth+1)
+			cidrs, subConstraint, err := parseLogicalRule(ctx, r, cfg, depth+1)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			allCIDRs = append(allCIDRs, cidrs...)
+			if subConstraint {
+				hasConstraint = true
+			}
 		default:
-			return nil, fmt.Errorf("srs: unknown sub-rule type %d", rt)
+			return nil, false, fmt.Errorf("srs: unknown sub-rule type %d", rt)
 		}
 	}
 	var invert uint8
 	if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if invert != 0 {
-		return nil, nil // skip inverted logical rules
+		return nil, true, nil // skip inverted logical rules
 	}
-	return allCIDRs, nil
+	return allCIDRs, hasConstraint, nil
+}
+
+// intersectCIDRs computes the intersection of multiple CIDR groups.
+// Each group is a list of CIDR prefixes. The result is the set of prefixes
+// contained in all groups.
+func intersectCIDRs(groups ...[]string) []string {
+	if len(groups) == 0 {
+		return nil
+	}
+
+	// Build first set.
+	var result *netipx.IPSet
+	{
+		var builder netipx.IPSetBuilder
+		for _, c := range groups[0] {
+			p, err := netip.ParsePrefix(c)
+			if err != nil {
+				continue
+			}
+			builder.AddPrefix(p)
+		}
+		s, err := builder.IPSet()
+		if err != nil {
+			return nil
+		}
+		result = s
+	}
+
+	// Intersect with remaining groups.
+	for i := 1; i < len(groups); i++ {
+		var builder netipx.IPSetBuilder
+		for _, c := range groups[i] {
+			p, err := netip.ParsePrefix(c)
+			if err != nil {
+				continue
+			}
+			builder.AddPrefix(p)
+		}
+		s, err := builder.IPSet()
+		if err != nil {
+			return nil
+		}
+		var ib netipx.IPSetBuilder
+		ib.AddSet(result)
+		ib.Intersect(s)
+		result, _ = ib.IPSet()
+	}
+
+	prefixes := result.Prefixes()
+	out := make([]string, len(prefixes))
+	for i, p := range prefixes {
+		out[i] = p.String()
+	}
+	return out
 }
 
 func skipBytes(r io.Reader, n int64) error {
