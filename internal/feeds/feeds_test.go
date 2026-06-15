@@ -582,7 +582,7 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})}
-	if err := syncer.syncOne(ctx, feedList[0]); err != nil {
+	if err := syncer.SyncOne(ctx, feedList[0]); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := db.CatalogForMode(ctx, store.IPRangesCatalogModeID, false)

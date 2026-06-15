@@ -2224,11 +2224,16 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Trigger immediate sync
+	feed, err := s.store.Feed(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	go func() {
-		if err := s.syncer.SyncAll(context.Background()); err != nil {
-			// errors are logged inside SyncAll
+		if err := s.syncer.SyncOne(context.Background(), feed); err != nil {
+			// errors are logged inside SyncOne
 		}
+		s.bgp.Reconcile(context.Background())
 	}()
 	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
 }

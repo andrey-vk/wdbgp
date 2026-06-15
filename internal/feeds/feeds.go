@@ -100,7 +100,7 @@ func (s *Syncer) SyncAll(ctx context.Context) []error {
 	var errors []error
 	for _, feed := range feeds {
 		logger.Debug("syncing feed", "name", feed.Name, "url", feed.URL, "feed_id", feed.ID)
-		if err := s.syncOne(ctx, feed); err != nil {
+		if err := s.SyncOne(ctx, feed); err != nil {
 			logger.Error("feed sync failed", "name", feed.Name, "error", err)
 			errors = append(errors, fmt.Errorf("%s: %w", feed.Name, err))
 			_, _ = s.Store.DB.ExecContext(ctx,
@@ -129,7 +129,7 @@ func (s *Syncer) TestAdapter(
 	}).run(ctx, feed, adapter)
 }
 
-func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
+func (s *Syncer) SyncOne(ctx context.Context, feed store.Feed) error {
 	logger := logging.FromContext(ctx)
 	
 	adapter, err := s.Store.FeedAdapter(ctx, feed.AdapterID)
