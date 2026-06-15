@@ -55,7 +55,8 @@ type ParseSRSConfig struct {
 // ParseSRS parses raw sing-box rule-set binary (.srs) data and returns
 // canonical entries. cfgJSON controls what data to extract, e.g. {"cidrs":true}.
 // When cfgJSON is empty, CIDRs are extracted by default.
-// Logical rules (type 1) are skipped — only default rules (type 0) are processed.
+// Logical rules (type 1) are recursively traversed to extract CIDRs.
+// Inverted rules are skipped — their semantics (everything EXCEPT) are opposite of what we want.
 // Supports SRS format versions 1 through 5.
 func ParseSRS(data []byte, cfgJSON string) ([]canonicalEntry, error) {
 	var cfg ParseSRSConfig
@@ -108,8 +109,12 @@ func ParseSRS(data []byte, cfgJSON string) ([]canonicalEntry, error) {
 				entries = append(entries, canonicalEntry{CIDRs: cidrs})
 			}
 		case 1: // logical rule
-			if err := skipLogicalRule(lr); err != nil {
+			cidrs, err := parseLogicalRule(lr, &cfg)
+			if err != nil {
 				return nil, fmt.Errorf("srs: rule[%d] logical: %w", i, err)
+			}
+			if len(cidrs) > 0 {
+				entries = append(entries, canonicalEntry{CIDRs: cidrs})
 			}
 		default:
 			return nil, fmt.Errorf("srs: rule[%d] unknown type %d", i, ruleType)
@@ -178,7 +183,9 @@ func parseDefaultRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 			if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
 				return nil, err
 			}
-			_ = invert
+			if invert != 0 {
+				return nil, nil // skip inverted rules — semantics are opposite of what we want
+			}
 			return allCIDRs, nil
 		default:
 			return nil, fmt.Errorf("unknown item type %d", itemType)
@@ -401,37 +408,48 @@ func skipNetworkInterfaceAddress(r io.Reader) error {
 	return nil
 }
 
-func skipLogicalRule(r io.Reader) error {
+func parseLogicalRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 	mode, err := readByte(r)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	_ = mode // 0=and, 1=or
 	br := &byteReader{r: r}
 	subCount, err := binary.ReadUvarint(br)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var allCIDRs []string
 	for i := uint64(0); i < subCount; i++ {
 		rt, err := readByte(r)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		switch rt {
 		case 0:
-			if _, err := parseDefaultRule(r, &ParseSRSConfig{}); err != nil {
-				return err
+			cidrs, err := parseDefaultRule(r, cfg)
+			if err != nil {
+				return nil, err
 			}
+			allCIDRs = append(allCIDRs, cidrs...)
 		case 1:
-			if err := skipLogicalRule(r); err != nil {
-				return err
+			cidrs, err := parseLogicalRule(r, cfg)
+			if err != nil {
+				return nil, err
 			}
+			allCIDRs = append(allCIDRs, cidrs...)
 		default:
-			return fmt.Errorf("srs: unknown sub-rule type %d", rt)
+			return nil, fmt.Errorf("srs: unknown sub-rule type %d", rt)
 		}
 	}
 	var invert uint8
-	return binary.Read(r, binary.BigEndian, &invert)
+	if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
+		return nil, err
+	}
+	if invert != 0 {
+		return nil, nil // skip inverted logical rules
+	}
+	return allCIDRs, nil
 }
 
 func skipBytes(r io.Reader, n int64) error {
