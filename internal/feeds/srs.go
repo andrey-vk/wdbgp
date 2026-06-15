@@ -43,6 +43,9 @@ const (
 // maxIPSetRangeCount limits allocations when reading untrusted count values.
 const maxIPSetRangeCount = 10_000_000
 
+// maxDecompressedSRS limits the total decompressed size of SRS rule data.
+const maxDecompressedSRS = 64 << 20 // 64 MiB
+
 // ParseSRSConfig controls what data to extract from SRS files.
 type ParseSRSConfig struct {
 	CIDRs bool `json:"cidrs"` // extract ip_cidr and source_ip_cidr items
@@ -80,8 +83,9 @@ func ParseSRS(data []byte, cfgJSON string) ([]canonicalEntry, error) {
 		return nil, fmt.Errorf("srs: zlib decompress: %w", err)
 	}
 	defer zr.Close()
+	lr := io.LimitReader(zr, maxDecompressedSRS)
 
-	ruleCount, err := binary.ReadUvarint(&byteReader{r: zr})
+	ruleCount, err := binary.ReadUvarint(&byteReader{r: lr})
 	if err != nil {
 		return nil, fmt.Errorf("srs: read rule count: %w", err)
 	}
@@ -89,13 +93,13 @@ func ParseSRS(data []byte, cfgJSON string) ([]canonicalEntry, error) {
 	var entries []canonicalEntry
 
 	for i := uint64(0); i < ruleCount; i++ {
-		ruleType, err := readByte(zr)
+		ruleType, err := readByte(lr)
 		if err != nil {
 			return nil, fmt.Errorf("srs: rule[%d] type: %w", i, err)
 		}
 		switch ruleType {
 		case 0: // default rule
-			cidrs, err := parseDefaultRule(zr, &cfg)
+			cidrs, err := parseDefaultRule(lr, &cfg)
 			if err != nil {
 				return nil, fmt.Errorf("srs: rule[%d]: %w", i, err)
 			}
@@ -103,7 +107,7 @@ func ParseSRS(data []byte, cfgJSON string) ([]canonicalEntry, error) {
 				entries = append(entries, canonicalEntry{CIDRs: cidrs})
 			}
 		case 1: // logical rule
-			if err := skipLogicalRule(zr); err != nil {
+			if err := skipLogicalRule(lr); err != nil {
 				return nil, fmt.Errorf("srs: rule[%d] logical: %w", i, err)
 			}
 		default:
