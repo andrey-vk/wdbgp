@@ -102,23 +102,25 @@ func (s *Syncer) RemoveFeedLock(feedID int64) {
 }
 
 // TryLockFeed attempts to acquire the per-feed mutex without blocking.
-// Returns true if the lock was acquired, false if another sync is in progress.
+// Returns the mutex and true if the lock was acquired, nil and false if
+// another sync is in progress.  The caller must pass the returned mutex
+// to UnlockFeed — never look it up again from the map.
 // Used for double-click prevention in force-sync handlers.
-func (s *Syncer) TryLockFeed(feedID int64) bool {
+func (s *Syncer) TryLockFeed(feedID int64) (*sync.Mutex, bool) {
 	s.feedLocksMu.Lock()
 	if s.feedLocks[feedID] == nil {
 		s.feedLocks[feedID] = &sync.Mutex{}
 	}
 	mu := s.feedLocks[feedID]
 	s.feedLocksMu.Unlock()
-	return mu.TryLock()
+	if mu.TryLock() {
+		return mu, true
+	}
+	return nil, false
 }
 
 // UnlockFeed releases the per-feed mutex previously acquired by TryLockFeed.
-func (s *Syncer) UnlockFeed(feedID int64) {
-	s.feedLocksMu.Lock()
-	mu := s.feedLocks[feedID]
-	s.feedLocksMu.Unlock()
+func (s *Syncer) UnlockFeed(mu *sync.Mutex) {
 	if mu != nil {
 		mu.Unlock()
 	}
@@ -138,27 +140,21 @@ func (s *Syncer) SyncAll(ctx context.Context) []error {
 	var errors []error
 	for _, feed := range feeds {
 		logger.Debug("syncing feed", "name", feed.Name, "url", feed.URL, "feed_id", feed.ID)
-		// Capture adapter revision before SyncOne so the error guard
-		// uses the pre-sync value, not one modified during or after.
-		adapter, adapterErr := s.Store.FeedAdapter(ctx, feed.AdapterID)
-		var preSyncRevision int64
-		if adapterErr == nil {
-			preSyncRevision = adapter.Revision
-		}
-		if err := s.SyncOne(ctx, feed); err != nil {
+		executedRevision, err := s.SyncOne(ctx, feed)
+		if err != nil {
 			logger.Error("feed sync failed", "name", feed.Name, "error", err)
 			errors = append(errors, fmt.Errorf("%s: %w", feed.Name, err))
 			// Guard against adapter source changes during sync: if the
 			// adapter was edited (same adapter_id, new revision) after
 			// SyncOne loaded it, the error belongs to the old revision
 			// and must not overwrite the new feed status.
-			if adapterErr == nil {
+			if executedRevision > 0 {
 				_, _ = s.Store.DB.ExecContext(ctx,
 					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
 					 AND data = ? AND mode_id = ? AND adapter_id = ? AND name = ?
 					 AND adapter_id IN (SELECT id FROM feed_adapters WHERE id = ? AND revision = ?)`,
 					err.Error(), feed.ID, feed.URL, feed.Data, feed.ModeID, feed.AdapterID, feed.Name,
-					feed.AdapterID, preSyncRevision)
+					feed.AdapterID, executedRevision)
 			} else {
 				_, _ = s.Store.DB.ExecContext(ctx,
 					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
@@ -189,7 +185,8 @@ func (s *Syncer) TestAdapter(
 }
 
 // SyncOne synchronizes one feed, acquiring the per-feed lock internally.
-func (s *Syncer) SyncOne(ctx context.Context, feed store.Feed) error {
+// Returns the adapter revision that was actually used during synchronization.
+func (s *Syncer) SyncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	s.feedLocksMu.Lock()
 	if s.feedLocks[feed.ID] == nil {
 		s.feedLocks[feed.ID] = &sync.Mutex{}
@@ -204,24 +201,25 @@ func (s *Syncer) SyncOne(ctx context.Context, feed store.Feed) error {
 
 // SyncOneLocked synchronizes one feed. The caller must already hold the
 // per-feed lock (acquired via TryLockFeed).
-func (s *Syncer) SyncOneLocked(ctx context.Context, feed store.Feed) error {
+// Returns the adapter revision that was actually used during synchronization.
+func (s *Syncer) SyncOneLocked(ctx context.Context, feed store.Feed) (int64, error) {
 	return s.syncOne(ctx, feed)
 }
 
-func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
+func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	logger := logging.FromContext(ctx)
 	
 	adapter, err := s.Store.FeedAdapter(ctx, feed.AdapterID)
 	if err != nil {
 		logger.Error("failed to get feed adapter", "feed_id", feed.ID, "adapter_id", feed.AdapterID, "error", err)
-		return err
+		return 0, err
 	}
 	logger.Debug("testing adapter", "feed", feed.Name, "adapter", adapter.Name, "adapter_revision", adapter.Revision)
 	
 	entries, err := s.TestAdapter(ctx, feed, adapter)
 	if err != nil {
 		logger.Error("adapter test failed", "feed", feed.Name, "adapter", adapter.Name, "error", err)
-		return err
+		return adapter.Revision, err
 	}
 	logger.Debug("adapter executed successfully", "feed", feed.Name, "entry_count", len(entries))
 	err = s.Store.Transaction(ctx, func(tx *sql.Tx) error {
@@ -277,16 +275,16 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
 		return err
 	})
 	if errors.Is(err, errFeedChanged) {
-		return nil
+		return adapter.Revision, nil
 	}
 	if err != nil {
-		return err
+		return adapter.Revision, err
 	}
 	// Generate communities for newly added categories/services.
 	if _, genErr := s.Store.GenerateCommunities(ctx, feed.ModeID); genErr != nil {
 		logger.Warn("failed to generate communities after sync", "mode_id", feed.ModeID, "error", genErr)
 	}
-	return nil
+	return adapter.Revision, nil
 }
 
 func (s *Syncer) categoryLookup(ctx context.Context, feed store.Feed) (map[string][]string, error) {
