@@ -217,7 +217,7 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 			// no data, just the type byte
 			hasConstraint = true
 		case srsItemNetworkInterfaceAddress:
-			if err := skipNetworkInterfaceAddress(r); err != nil {
+			if err := skipNetworkInterfaceAddress(ctx, r); err != nil {
 				return nil, err
 			}
 			hasConstraint = true
@@ -455,7 +455,12 @@ func skipPrefixArray(ctx context.Context, r io.Reader) error {
 	return nil
 }
 
-func skipNetworkInterfaceAddress(r io.Reader) error {
+func skipNetworkInterfaceAddress(ctx context.Context, r io.Reader) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	br := &byteReader{r: r}
 	mapSize, err := binary.ReadUvarint(br)
 	if err != nil {
@@ -476,6 +481,11 @@ func skipNetworkInterfaceAddress(r io.Reader) error {
 			return fmt.Errorf("network interface: prefix count %d exceeds limit", valCount)
 		}
 		for j := uint64(0); j < valCount; j++ {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 			addrLen, err := binary.ReadUvarint(br)
 			if err != nil {
 				return err
@@ -486,6 +496,11 @@ func skipNetworkInterfaceAddress(r io.Reader) error {
 			if err := skipBytes(r, int64(addrLen+1)); err != nil {
 				return err
 			} // addr + prefix byte
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
 		}
 	}
 	return nil

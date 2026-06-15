@@ -478,8 +478,8 @@ SELECT 'Russia GeoIP (SRS)',
        (SELECT id FROM feed_adapters WHERE key = 'singbox-srs'),
        0, 0,
        '{"category":"Russia","service":"geoip-ru"}'
-WHERE EXISTS (SELECT 1 FROM feed_adapters WHERE key = 'singbox-srs')
-  AND EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs');
+WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
+  AND EXISTS (SELECT 1 FROM feed_adapters WHERE key = 'singbox-srs' AND source = '');
 `,
 	},
 }
@@ -2058,9 +2058,10 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		var oldURL string
 		var oldAdapterID int64
 		var oldData string
+		var oldName string
 		if err := tx.QueryRowContext(ctx,
-			"SELECT url, adapter_id, data FROM feeds WHERE id = ?", feed.ID).
-			Scan(&oldURL, &oldAdapterID, &oldData); err != nil {
+			"SELECT url, adapter_id, data, name FROM feeds WHERE id = ?", feed.ID).
+			Scan(&oldURL, &oldAdapterID, &oldData, &oldName); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -2070,7 +2071,7 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
 			return err
 		}
-		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data {
+		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name {
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx,
