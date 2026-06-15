@@ -188,6 +188,7 @@ func (s *Syncer) TestAdapter(
 	}).run(ctx, feed, adapter)
 }
 
+// SyncOne synchronizes one feed, acquiring the per-feed lock internally.
 func (s *Syncer) SyncOne(ctx context.Context, feed store.Feed) error {
 	s.feedLocksMu.Lock()
 	if s.feedLocks[feed.ID] == nil {
@@ -198,7 +199,16 @@ func (s *Syncer) SyncOne(ctx context.Context, feed store.Feed) error {
 
 	mu.Lock()
 	defer mu.Unlock()
+	return s.syncOne(ctx, feed)
+}
 
+// SyncOneLocked synchronizes one feed. The caller must already hold the
+// per-feed lock (acquired via TryLockFeed).
+func (s *Syncer) SyncOneLocked(ctx context.Context, feed store.Feed) error {
+	return s.syncOne(ctx, feed)
+}
+
+func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
 	logger := logging.FromContext(ctx)
 	
 	adapter, err := s.Store.FeedAdapter(ctx, feed.AdapterID)

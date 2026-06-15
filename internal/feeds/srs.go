@@ -100,6 +100,7 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 	}
 
 	var entries []canonicalEntry
+	var totalCIDRs int
 
 	for i := uint64(0); i < ruleCount; i++ {
 		select {
@@ -119,6 +120,7 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 			}
 			if len(cidrs) > 0 {
 				entries = append(entries, canonicalEntry{CIDRs: cidrs})
+				totalCIDRs += len(cidrs)
 			}
 		case 1: // logical rule
 			cidrs, _, err := parseLogicalRule(ctx, cr, &cfg, 0, maxEntries)
@@ -127,19 +129,15 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 			}
 			if len(cidrs) > 0 {
 				entries = append(entries, canonicalEntry{CIDRs: cidrs})
+				totalCIDRs += len(cidrs)
 			}
 		default:
 			return nil, fmt.Errorf("srs: rule[%d] unknown type %d", i, ruleType)
 		}
-	}
-
-	// Enforce maxEntries limit on total CIDRs across all entries.
-	totalCIDRs := 0
-	for _, e := range entries {
-		totalCIDRs += len(e.CIDRs)
-	}
-	if maxEntries > 0 && totalCIDRs > maxEntries {
-		return nil, fmt.Errorf("srs: %d CIDRs exceeds limit of %d", totalCIDRs, maxEntries)
+		// Abort early if total CIDRs across all rules exceeds the limit.
+		if maxEntries > 0 && totalCIDRs > maxEntries {
+			return nil, fmt.Errorf("srs: %d CIDRs exceeds limit of %d", totalCIDRs, maxEntries)
+		}
 	}
 
 	// Drain remaining zlib stream to validate checksum and detect truncation

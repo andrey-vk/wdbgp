@@ -2222,7 +2222,11 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 	}
 	feed, err := s.store.Feed(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		if store.IsNotFound(err) {
+			http.Error(w, "feed not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
 	if !feed.Enabled {
@@ -2232,24 +2236,25 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 
 	// Double-click prevention: if a sync is already in progress for this feed,
 	// Skip without launching a new goroutine.
+	// Hold the lock until the goroutine finishes to prevent TOCTOU races.
 	if !s.syncer.TryLockFeed(id) {
 		http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
 		return
 	}
-	s.syncer.UnlockFeed(id) // release immediately; SyncOne will lock again
 
 	// Only clear last_error to trigger re-sync; keep last_success
 	_, err = s.store.DB.ExecContext(r.Context(),
 		"UPDATE feeds SET last_error = NULL WHERE id = ?", id)
 	if err != nil {
+		s.syncer.UnlockFeed(id)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	go func() {
-		// SyncOne acquires the per-feed lock internally, serializing
-		// this request with scheduled syncs and other force-syncs.
+		defer s.syncer.UnlockFeed(id)
+		// SyncOneLocked skips the internal lock since we already hold it.
 		var syncErr error
-		if err := s.syncer.SyncOne(context.Background(), feed); err != nil {
+		if err := s.syncer.SyncOneLocked(context.Background(), feed); err != nil {
 			syncErr = err
 			// Verify feed hasn't been edited since the goroutine was launched.
 			// If the feed was edited (url, adapter_id, data, mode_id,
