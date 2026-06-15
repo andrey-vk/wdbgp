@@ -434,12 +434,43 @@ func parseLogicalRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = mode // 0=and, 1=or
 	br := &byteReader{r: r}
 	subCount, err := binary.ReadUvarint(br)
 	if err != nil {
 		return nil, err
 	}
+
+	// AND mode (0): intersection of CIDR sets across sub-rules is not
+	// safely representable as a simple union. Skip all sub-rules and return empty.
+	if mode == 0 {
+		skipCfg := &ParseSRSConfig{} // CIDRs=false, skip extraction
+		for i := uint64(0); i < subCount; i++ {
+			rt, err := readByte(r)
+			if err != nil {
+				return nil, err
+			}
+			switch rt {
+			case 0:
+				if _, err := parseDefaultRule(r, skipCfg); err != nil {
+					return nil, err
+				}
+			case 1:
+				if _, err := parseLogicalRule(r, skipCfg); err != nil {
+					return nil, err
+				}
+			default:
+				return nil, fmt.Errorf("srs: unknown sub-rule type %d", rt)
+			}
+		}
+		var invert uint8
+		if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
+			return nil, err
+		}
+		_ = invert // AND mode: cannot represent intersection, inverted or not
+		return nil, nil
+	}
+
+	// OR mode (1): collect CIDRs from all sub-rules (union).
 	var allCIDRs []string
 	for i := uint64(0); i < subCount; i++ {
 		rt, err := readByte(r)
