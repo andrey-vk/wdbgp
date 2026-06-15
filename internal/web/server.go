@@ -2228,6 +2228,11 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "feed is disabled", http.StatusBadRequest)
 		return
 	}
+	adapter, err := s.store.FeedAdapter(r.Context(), feed.AdapterID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	// Only clear last_error to trigger re-sync; keep last_success
 	_, err = s.store.DB.ExecContext(r.Context(),
 		"UPDATE feeds SET last_error = NULL WHERE id = ?", id)
@@ -2238,17 +2243,19 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		if err := s.syncer.SyncOne(context.Background(), feed); err != nil {
 			// Verify feed hasn't been edited since the goroutine was launched.
-			// If the feed was edited (url, adapter_id, or data changed), the
-			// error is from a stale sync and must not overwrite the new feed's status.
+			// If the feed was edited (url, adapter_id, adapter revision,
+			// or data changed), the error is from a stale sync and must not
+			// overwrite the new feed's status.
 			var currentURL, currentData string
-			var currentAdapterID int64
+			var currentAdapterID, currentAdapterRevision int64
 			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT url, adapter_id, data FROM feeds WHERE id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData)
+				"SELECT f.url, f.adapter_id, f.data, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData, &currentAdapterRevision)
 			if checkErr == nil &&
 				currentURL == feed.URL &&
 				currentAdapterID == feed.AdapterID &&
-				currentData == feed.Data {
+				currentData == feed.Data &&
+				currentAdapterRevision == adapter.Revision {
 				s.store.DB.ExecContext(context.Background(),
 					"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
 			}

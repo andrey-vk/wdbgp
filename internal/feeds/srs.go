@@ -153,6 +153,7 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 // parseDefaultRule loops items until srsItemFinal.
 func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 	var allCIDRs []string
+	var hasConstraint bool
 	for {
 		itemType, err := readByte(r)
 		if err != nil {
@@ -179,6 +180,10 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 			if err := skipDomainMatcher(r); err != nil {
 				return nil, err
 			}
+		case srsItemDomainKeyword, srsItemDomainRegex:
+			if err := skipStringArray(r); err != nil {
+				return nil, err
+			}
 		case srsItemAdGuardDomain:
 			if err := skipAdGuardMatcher(r); err != nil {
 				return nil, err
@@ -187,34 +192,40 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 			if err := skipUint16Array(r); err != nil {
 				return nil, err
 			}
-		case srsItemNetwork, srsItemDomainKeyword, srsItemDomainRegex,
+			hasConstraint = true
+		case srsItemNetwork,
 			srsItemSourcePortRange, srsItemPortRange,
 			srsItemProcessName, srsItemProcessPath, srsItemProcessPathRegex,
 			srsItemPackageName, srsItemPackageNameRegex, srsItemWIFISSID, srsItemWIFIBSSID:
 			if err := skipStringArray(r); err != nil {
 				return nil, err
 			}
+			hasConstraint = true
 		case srsItemNetworkType:
 			if err := skipUint8Array(r); err != nil {
 				return nil, err
 			}
+			hasConstraint = true
 		case srsItemNetworkIsExpensive, srsItemNetworkIsConstrained:
 			// no data, just the type byte
+			hasConstraint = true
 		case srsItemNetworkInterfaceAddress:
 			if err := skipNetworkInterfaceAddress(r); err != nil {
 				return nil, err
 			}
+			hasConstraint = true
 		case srsItemDefaultInterfaceAddress:
 			if err := skipPrefixArray(r); err != nil {
 				return nil, err
 			}
+			hasConstraint = true
 		case srsItemFinal:
 			var invert uint8
 			if err := binary.Read(r, binary.BigEndian, &invert); err != nil {
 				return nil, err
 			}
-			if invert != 0 {
-				return nil, nil // skip inverted rules — semantics are opposite of what we want
+			if invert != 0 || hasConstraint {
+				return nil, nil // skip inverted or constrained rules
 			}
 			return allCIDRs, nil
 		default:

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/config"
@@ -53,6 +54,8 @@ type Syncer struct {
 	Client        *http.Client
 	ScriptTimeout time.Duration
 	Limits        AdapterLimits
+	feedLocks     map[int64]*sync.Mutex
+	feedLocksMu   sync.Mutex
 }
 
 var errFeedChanged = errors.New("feed changed during synchronization")
@@ -76,6 +79,7 @@ func NewSyncer(s *store.Store, cfg config.Config) *Syncer {
 			MaxRequests:      ifZero(cfg.JSMaxRequests, 200),
 			MaxCallStack:     ifZero(cfg.JSMaxCallStack, 1_000),
 		},
+		feedLocks: make(map[int64]*sync.Mutex),
 	}
 }
 
@@ -130,6 +134,16 @@ func (s *Syncer) TestAdapter(
 }
 
 func (s *Syncer) SyncOne(ctx context.Context, feed store.Feed) error {
+	s.feedLocksMu.Lock()
+	if s.feedLocks[feed.ID] == nil {
+		s.feedLocks[feed.ID] = &sync.Mutex{}
+	}
+	mu := s.feedLocks[feed.ID]
+	s.feedLocksMu.Unlock()
+
+	mu.Lock()
+	defer mu.Unlock()
+
 	logger := logging.FromContext(ctx)
 	
 	adapter, err := s.Store.FeedAdapter(ctx, feed.AdapterID)
