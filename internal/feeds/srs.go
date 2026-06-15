@@ -159,6 +159,11 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, max
 	var allCIDRs []string
 	var hasConstraint bool
 	for {
+		select {
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		default:
+		}
 		itemType, err := readByte(r)
 		if err != nil {
 			return nil, false, err
@@ -509,6 +514,10 @@ func skipDomainMatcher(r io.Reader) error {
 }
 
 func skipAdGuardMatcher(r io.Reader) error {
+	version, err := readByte(r)
+	if err != nil {
+		return err
+	}
 	br := &byteReader{r: r}
 
 	// Same succinct-set binary format as the domain matcher:
@@ -540,6 +549,7 @@ func skipAdGuardMatcher(r io.Reader) error {
 	}
 
 	// Byte array.
+	_ = version
 	byteLen, err := binary.ReadUvarint(br)
 	if err != nil {
 		return fmt.Errorf("adguard matcher: read byte array length: %w", err)
@@ -843,6 +853,9 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 			if err != nil {
 				return nil, false, err
 			}
+			if maxEntries > 0 && len(allCIDRs)+len(cidrs) > maxEntries {
+				return nil, false, fmt.Errorf("srs: %d CIDRs exceeds limit of %d", len(allCIDRs)+len(cidrs), maxEntries)
+			}
 			allCIDRs = append(allCIDRs, cidrs...)
 			if subConstraint {
 				hasConstraint = true
@@ -851,6 +864,9 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 			cidrs, subConstraint, err := parseLogicalRule(ctx, r, cfg, depth+1, maxEntries)
 			if err != nil {
 				return nil, false, err
+			}
+			if maxEntries > 0 && len(allCIDRs)+len(cidrs) > maxEntries {
+				return nil, false, fmt.Errorf("srs: %d CIDRs exceeds limit of %d", len(allCIDRs)+len(cidrs), maxEntries)
 			}
 			allCIDRs = append(allCIDRs, cidrs...)
 			if subConstraint {
