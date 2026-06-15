@@ -2255,46 +2255,50 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		defer s.syncer.UnlockFeed(mu)
 		// SyncOneLocked skips the internal lock since we already hold it.
 		var syncErr error
-		if _, err := s.syncer.SyncOneLocked(context.Background(), feed); err != nil {
+		executedRevision, err := s.syncer.SyncOneLocked(context.Background(), feed)
+		if err != nil {
 			syncErr = err
-			// Verify feed hasn't been edited since the goroutine was launched.
-			// If the feed was edited (url, adapter_id, data, mode_id,
-			// enabled, or name changed), the error is from a stale sync and
-			// must not overwrite the new feed's status.
+			// Verify feed and adapter haven't been edited since the
+			// goroutine was launched. If any field (url, adapter_id,
+			// data, mode_id, enabled, name, or adapter revision)
+			// changed, the error is from a stale sync and must not
+			// overwrite the new feed's status.
 			var currentURL, currentData, currentName string
-			var currentAdapterID, currentModeID int64
+			var currentAdapterID, currentModeID, currentRevision int64
 			var currentEnabled bool
 			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT url, adapter_id, data, mode_id, enabled, name FROM feeds WHERE id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentModeID, &currentEnabled, &currentName)
+				"SELECT f.url, f.adapter_id, f.data, f.mode_id, f.enabled, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData, &currentModeID, &currentEnabled, &currentName, &currentRevision)
 			if checkErr == nil &&
 				currentURL == feed.URL &&
 				currentAdapterID == feed.AdapterID &&
 				currentData == feed.Data &&
 				currentModeID == feed.ModeID &&
 				currentEnabled == feed.Enabled &&
-				currentName == feed.Name {
+				currentName == feed.Name &&
+				currentRevision == executedRevision {
 				s.store.DB.ExecContext(context.Background(),
 					"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
 			}
 		}
 		if err := s.bgp.Reconcile(context.Background()); err != nil {
-			// Re-check guard before writing BGP error: if the feed was
-			// edited between sync and reconcile, the error must not
-			// overwrite the new feed's status.
+			// Re-check guard before writing BGP error: if the feed or
+			// adapter was edited between sync and reconcile, the error
+			// must not overwrite the new feed's status.
 			var currentURL, currentData, currentName string
-			var currentAdapterID, currentModeID int64
+			var currentAdapterID, currentModeID, currentRevision int64
 			var currentEnabled bool
 			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT url, adapter_id, data, mode_id, enabled, name FROM feeds WHERE id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentModeID, &currentEnabled, &currentName)
+				"SELECT f.url, f.adapter_id, f.data, f.mode_id, f.enabled, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData, &currentModeID, &currentEnabled, &currentName, &currentRevision)
 			if checkErr == nil &&
 				currentURL == feed.URL &&
 				currentAdapterID == feed.AdapterID &&
 				currentData == feed.Data &&
 				currentModeID == feed.ModeID &&
 				currentEnabled == feed.Enabled &&
-				currentName == feed.Name {
+				currentName == feed.Name &&
+				currentRevision == executedRevision {
 				msg := "BGP reconcile failed: " + err.Error()
 				if syncErr != nil {
 					msg = syncErr.Error() + "; " + msg

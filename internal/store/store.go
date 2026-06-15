@@ -464,7 +464,7 @@ ALTER TABLE feeds ADD COLUMN data TEXT NOT NULL DEFAULT '';
 INSERT OR IGNORE INTO catalog_modes(key, name, enabled) VALUES ('singbox-srs', 'sing-box SRS', 0);
 UPDATE catalog_modes SET name = 'sing-box SRS' WHERE key = 'singbox-srs';
 INSERT OR IGNORE INTO feed_adapters(key, name) VALUES ('singbox-srs', 'sing-box SRS');
-UPDATE feed_adapters SET name = 'sing-box SRS' WHERE key = 'singbox-srs';
+UPDATE feed_adapters SET name = 'sing-box SRS' WHERE key = 'singbox-srs' AND source = '';
 INSERT OR IGNORE INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval, data)
 SELECT 'Russia GeoIP (SRS)',
        'https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geoip/geoip-ru.srs',

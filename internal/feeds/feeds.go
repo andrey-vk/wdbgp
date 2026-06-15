@@ -93,8 +93,9 @@ func ifZero(val, def int) int {
 	return val
 }
 
-// RemoveFeedLock cleans up the per-feed mutex when a feed is deleted,
-// preventing unbounded growth of the feedLocks map.
+// RemoveFeedLock cleans up the per-feed mutex after feed deletion.
+// Safe because force-sync goroutines hold their mutex pointer directly
+// (via TryLockFeed), not via map lookup. SyncOne is short-lived.
 func (s *Syncer) RemoveFeedLock(feedID int64) {
 	s.feedLocksMu.Lock()
 	delete(s.feedLocks, feedID)
