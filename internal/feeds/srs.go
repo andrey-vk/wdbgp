@@ -133,6 +133,11 @@ func ParseSRS(data []byte, cfgJSON string, maxEntries int) ([]canonicalEntry, er
 		return nil, fmt.Errorf("srs: %d CIDRs exceeds limit of %d", totalCIDRs, maxEntries)
 	}
 
+	// Drain remaining zlib stream to validate checksum and detect truncation
+	if _, err := io.Copy(io.Discard, lr); err != nil {
+		return nil, fmt.Errorf("srs: zlib stream error: %w", err)
+	}
+
 	return entries, nil
 }
 
