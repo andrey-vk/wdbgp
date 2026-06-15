@@ -2236,6 +2236,13 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
+		// NOTE: rapid double-clicks launch two goroutines. The per-feed mutex
+		// in SyncOne serializes them. Second goroutine waits for the first
+		// to finish, then re-checks the feed URL/adapter/data/mode/enabled
+		// guard (below) — if the first sync already succeeded, the guard
+		// sees that data has already been stored and the second sync
+		// results are discarded as stale. The mutex is acquired inside
+		// SyncOne, so the second goroutine blocks until the first completes.
 		var syncErr error
 		if err := s.syncer.SyncOne(context.Background(), feed); err != nil {
 			syncErr = err
@@ -2263,12 +2270,18 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 			// Re-check guard before writing BGP error: if the feed was
 			// edited between sync and reconcile, the error must not
 			// overwrite the new feed's status.
-			var currentURL string
-			var currentAdapterID int64
+			var currentURL, currentData string
+			var currentAdapterID, currentModeID int64
+			var currentEnabled bool
 			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT url, adapter_id FROM feeds WHERE id = ?", id).
-				Scan(&currentURL, &currentAdapterID)
-			if checkErr == nil && currentURL == feed.URL && currentAdapterID == feed.AdapterID {
+				"SELECT url, adapter_id, data, mode_id, enabled FROM feeds WHERE id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData, &currentModeID, &currentEnabled)
+			if checkErr == nil &&
+				currentURL == feed.URL &&
+				currentAdapterID == feed.AdapterID &&
+				currentData == feed.Data &&
+				currentModeID == feed.ModeID &&
+				currentEnabled == feed.Enabled {
 				msg := "BGP reconcile failed: " + err.Error()
 				if syncErr != nil {
 					msg = syncErr.Error() + "; " + msg
