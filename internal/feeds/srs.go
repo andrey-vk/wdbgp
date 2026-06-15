@@ -147,11 +147,6 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 		return nil, fmt.Errorf("srs: zlib stream error: %w", err)
 	}
 
-	// Check if the decompressed stream exceeded the size limit
-	if cr.exceeded {
-		return nil, fmt.Errorf("srs: decompressed size exceeds %d bytes", maxDecompressedSRS)
-	}
-
 	return entries, nil
 }
 
@@ -653,10 +648,14 @@ type countReader struct {
 }
 
 func (c *countReader) Read(p []byte) (int, error) {
+	if c.exceeded {
+		return 0, fmt.Errorf("decompressed size exceeded %d bytes", c.limit)
+	}
 	n, err := c.r.Read(p)
 	c.n += int64(n)
 	if c.n > c.limit {
 		c.exceeded = true
+		return n, fmt.Errorf("decompressed size exceeded %d bytes", c.limit)
 	}
 	return n, err
 }
