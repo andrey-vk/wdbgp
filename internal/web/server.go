@@ -2260,12 +2260,22 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := s.bgp.Reconcile(context.Background()); err != nil {
-			msg := "BGP reconcile failed: " + err.Error()
-			if syncErr != nil {
-				msg = syncErr.Error() + "; " + msg
+			// Re-check guard before writing BGP error: if the feed was
+			// edited between sync and reconcile, the error must not
+			// overwrite the new feed's status.
+			var currentURL string
+			var currentAdapterID int64
+			checkErr := s.store.DB.QueryRowContext(context.Background(),
+				"SELECT url, adapter_id FROM feeds WHERE id = ?", id).
+				Scan(&currentURL, &currentAdapterID)
+			if checkErr == nil && currentURL == feed.URL && currentAdapterID == feed.AdapterID {
+				msg := "BGP reconcile failed: " + err.Error()
+				if syncErr != nil {
+					msg = syncErr.Error() + "; " + msg
+				}
+				s.store.DB.ExecContext(context.Background(),
+					"UPDATE feeds SET last_error = ? WHERE id = ?", msg, id)
 			}
-			s.store.DB.ExecContext(context.Background(),
-				"UPDATE feeds SET last_error = ? WHERE id = ?", msg, id)
 		}
 	}()
 	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
