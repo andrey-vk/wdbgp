@@ -62,16 +62,8 @@ type ParseSRSConfig struct {
 // Logical rules (type 1) are recursively traversed to extract CIDRs.
 // Inverted rules are skipped — their semantics (everything EXCEPT) are opposite of what we want.
 // Supports SRS format versions 1 through 5.
-// maxEntries limits the total number of CIDRs; 0 means no limit.
-// Limit is enforced in two stages:
-//  1. Early range-count check: if the IPSet range count exceeds maxEntries,
-//     parsing aborts before building the IPSet, avoiding the largest allocations.
-//  2. Post-expansion check: after Prefixes() materialises all prefixes, a final
-//     cap is applied. This catches edge cases where few ranges explode into many
-//     prefixes. Full streaming would require a streaming Prefixes() method on
-//     netipx.IPSet which does not exist; as a practical bound, the 64 MiB
-//     decompressed input limit keeps worst-case memory under control.
-func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) ([]canonicalEntry, error) {
+// The 64 MiB decompressed input cap (maxDecompressedSRS) is the only size limit.
+func ParseSRS(ctx context.Context, data []byte, cfgJSON string) ([]canonicalEntry, error) {
 	var cfg ParseSRSConfig
 	if cfgJSON == "" {
 		cfg.CIDRs = true
@@ -106,7 +98,6 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 	}
 
 	var entries []canonicalEntry
-	var totalCIDRs int
 
 	for i := uint64(0); i < ruleCount; i++ {
 		select {
@@ -120,29 +111,23 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 		}
 		switch ruleType {
 		case 0: // default rule
-			cidrs, _, err := parseDefaultRule(ctx, cr, &cfg, maxEntries)
+			cidrs, _, err := parseDefaultRule(ctx, cr, &cfg)
 			if err != nil {
 				return nil, fmt.Errorf("srs: rule[%d]: %w", i, err)
 			}
 			if len(cidrs) > 0 {
 				entries = append(entries, canonicalEntry{CIDRs: cidrs})
-				totalCIDRs += len(cidrs)
 			}
 		case 1: // logical rule
-			cidrs, _, err := parseLogicalRule(ctx, cr, &cfg, 0, maxEntries)
+			cidrs, _, err := parseLogicalRule(ctx, cr, &cfg, 0)
 			if err != nil {
 				return nil, fmt.Errorf("srs: rule[%d] logical: %w", i, err)
 			}
 			if len(cidrs) > 0 {
 				entries = append(entries, canonicalEntry{CIDRs: cidrs})
-				totalCIDRs += len(cidrs)
 			}
 		default:
 			return nil, fmt.Errorf("srs: rule[%d] unknown type %d", i, ruleType)
-		}
-		// Abort early if total CIDRs across all rules exceeds the limit.
-		if maxEntries > 0 && totalCIDRs > maxEntries {
-			return nil, fmt.Errorf("srs: %d CIDRs exceeds limit of %d", totalCIDRs, maxEntries)
 		}
 	}
 
@@ -155,7 +140,7 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) 
 }
 
 // parseDefaultRule loops items until srsItemFinal.
-func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, maxEntries int) ([]string, bool, error) {
+func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]string, bool, error) {
 	var allCIDRs []string
 	var hasConstraint bool
 	for {
@@ -176,7 +161,7 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, max
 			}
 			continue
 		}
-		cidrs, err := readIPSetAsCIDRs(ctx, r, maxEntries)
+		cidrs, err := readIPSetAsCIDRs(ctx, r)
 			if err != nil {
 				return nil, false, err
 			}
@@ -261,12 +246,7 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, max
 }
 
 // readIPSetAsCIDRs reads an IP set from an SRS rule and returns CIDR strings.
-// maxEntries enforces a limit in three stages:
-//  1. Range-count abort: if the raw range count exceeds maxEntries, abort immediately.
-//  2. Conservative estimate: if count*30 > maxEntries, abort before building the IPSet.
-//  3. Post-expansion check: after Prefixes() materialises all prefixes, abort if the
-//     actual count exceeds maxEntries (before allocating the string slice).
-func readIPSetAsCIDRs(ctx context.Context, r io.Reader, maxEntries int) ([]string, error) {
+func readIPSetAsCIDRs(ctx context.Context, r io.Reader) ([]string, error) {
 	ver, err := readByte(r)
 	if err != nil {
 		return nil, fmt.Errorf("ipset version: %w", err)
@@ -278,21 +258,9 @@ func readIPSetAsCIDRs(ctx context.Context, r io.Reader, maxEntries int) ([]strin
 	if err := binary.Read(r, binary.BigEndian, &count); err != nil {
 		return nil, fmt.Errorf("ipset count: %w", err)
 	}
-	if maxEntries > 0 && count > uint64(maxEntries) {
-		return nil, fmt.Errorf("srs: %d IP ranges exceeds limit of %d", count, maxEntries)
-	}
 	if count > maxIPSetRangeCount {
 		return nil, fmt.Errorf("ipset: count %d exceeds max %d", count, maxIPSetRangeCount)
 	}
-	// Conservative overflow estimate: each IP range can produce at most ~30
-	// prefixes (worst-case for a non-aligned IPv4 range). If the estimate
-	// exceeds the limit, the actual expansion almost certainly does too.
-	// Abort early to avoid building and materializing an oversized IPSet.
-	const maxPrefixesPerRange = 30
-	if maxEntries > 0 && int(count)*maxPrefixesPerRange > maxEntries {
-		return nil, fmt.Errorf("srs: %d IP ranges likely expand to >%d prefixes (limit %d)", count, maxEntries, maxEntries)
-	}
-
 	var builder netipx.IPSetBuilder
 	for i := uint64(0); i < count; i++ {
 		select {
@@ -339,19 +307,7 @@ func readIPSetAsCIDRs(ctx context.Context, r io.Reader, maxEntries int) ([]strin
 	if err != nil {
 		return nil, fmt.Errorf("ipset build: %w", err)
 	}
-	// All prefixes are materialised at this point. A true streaming limit would
-	// require a streaming Prefixes() from netipx.IPSet which isn't available.
-	//
-	// Three-stage limit enforcement bounds worst-case allocations:
-	//  1. Range-count early abort (above) — skips entire loop.
-	//  2. Conservative estimate (above) — skips IPSet build for likely overflow.
-	//  3. Exact post-expansion check (here) — catches edge cases that slip
-	//     through the estimate, while still aborting before the string slice
-	//     allocation below.
 	prefixes := ipSet.Prefixes()
-	if maxEntries > 0 && len(prefixes) > maxEntries {
-		return nil, fmt.Errorf("srs: %d expanded prefixes exceeds limit of %d", len(prefixes), maxEntries)
-	}
 	result := make([]string, len(prefixes))
 	for i, p := range prefixes {
 		result[i] = p.String()
@@ -698,7 +654,7 @@ func skipItemPayload(r io.Reader, itemType uint8) error {
 	}
 }
 
-func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, depth int, maxEntries int) ([]string, bool, error) {
+func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, depth int) ([]string, bool, error) {
 	if depth > maxSRSRecursionDepth {
 		return nil, false, fmt.Errorf("srs: logical rule recursion depth %d exceeds limit", depth)
 	}
@@ -722,11 +678,11 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 			}
 			switch rt {
 			case 0:
-				if _, _, err := parseDefaultRule(ctx, r, skipCfg, 0); err != nil {
+				if _, _, err := parseDefaultRule(ctx, r, skipCfg); err != nil {
 					return nil, false, err
 				}
 			case 1:
-				if _, _, err := parseLogicalRule(ctx, r, skipCfg, depth+1, 0); err != nil {
+				if _, _, err := parseLogicalRule(ctx, r, skipCfg, depth+1); err != nil {
 					return nil, false, err
 				}
 			default:
@@ -756,7 +712,7 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 			}
 			switch rt {
 			case 0:
-				cidrs, hasConstraint, err := parseDefaultRule(ctx, r, cfg, maxEntries)
+				cidrs, hasConstraint, err := parseDefaultRule(ctx, r, cfg)
 				if err != nil {
 					return nil, false, err
 				}
@@ -770,11 +726,11 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 						}
 						switch srt {
 						case 0:
-							if _, _, err := parseDefaultRule(ctx, r, skipCfg, 0); err != nil {
+							if _, _, err := parseDefaultRule(ctx, r, skipCfg); err != nil {
 								return nil, false, err
 							}
 						case 1:
-							if _, _, err := parseLogicalRule(ctx, r, skipCfg, depth+1, 0); err != nil {
+							if _, _, err := parseLogicalRule(ctx, r, skipCfg, depth+1); err != nil {
 								return nil, false, err
 							}
 						default:
@@ -789,7 +745,7 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 				}
 				allGroups = append(allGroups, cidrs)
 			case 1:
-				cidrs, hasConstraint, err := parseLogicalRule(ctx, r, cfg, depth+1, maxEntries)
+				cidrs, hasConstraint, err := parseLogicalRule(ctx, r, cfg, depth+1)
 				if err != nil {
 					return nil, false, err
 				}
@@ -803,11 +759,11 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 						}
 						switch srt {
 						case 0:
-							if _, _, err := parseDefaultRule(ctx, r, skipCfg, 0); err != nil {
+							if _, _, err := parseDefaultRule(ctx, r, skipCfg); err != nil {
 								return nil, false, err
 							}
 						case 1:
-							if _, _, err := parseLogicalRule(ctx, r, skipCfg, depth+1, 0); err != nil {
+							if _, _, err := parseLogicalRule(ctx, r, skipCfg, depth+1); err != nil {
 								return nil, false, err
 							}
 						default:
@@ -849,24 +805,18 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 		}
 		switch rt {
 		case 0:
-			cidrs, subConstraint, err := parseDefaultRule(ctx, r, cfg, maxEntries)
+			cidrs, subConstraint, err := parseDefaultRule(ctx, r, cfg)
 			if err != nil {
 				return nil, false, err
-			}
-			if maxEntries > 0 && len(allCIDRs)+len(cidrs) > maxEntries {
-				return nil, false, fmt.Errorf("srs: %d CIDRs exceeds limit of %d", len(allCIDRs)+len(cidrs), maxEntries)
 			}
 			allCIDRs = append(allCIDRs, cidrs...)
 			if subConstraint {
 				hasConstraint = true
 			}
 		case 1:
-			cidrs, subConstraint, err := parseLogicalRule(ctx, r, cfg, depth+1, maxEntries)
+			cidrs, subConstraint, err := parseLogicalRule(ctx, r, cfg, depth+1)
 			if err != nil {
 				return nil, false, err
-			}
-			if maxEntries > 0 && len(allCIDRs)+len(cidrs) > maxEntries {
-				return nil, false, fmt.Errorf("srs: %d CIDRs exceeds limit of %d", len(allCIDRs)+len(cidrs), maxEntries)
 			}
 			allCIDRs = append(allCIDRs, cidrs...)
 			if subConstraint {
