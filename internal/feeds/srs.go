@@ -178,9 +178,12 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, max
 			}
 			hasConstraint = true
 		case srsItemDomain:
-			// Domain matchers use a compact binary format we can't reliably
-			// skip without the sing-box library. Mark the rule constrained
-			// and fast-forward to the end to keep the stream clean.
+			// Domain matchers use a compact binary format. Skip the
+			// matcher payload, mark the rule constrained and fast-forward
+			// to the end to keep the stream clean.
+			if err := skipDomainMatcher(r); err != nil {
+				return nil, false, err
+			}
 			hasConstraint = true
 			if err := skipRemainingItems(r); err != nil {
 				return nil, false, err
@@ -192,7 +195,11 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, max
 			}
 			hasConstraint = true
 		case srsItemAdGuardDomain:
-			// Same as domain — compact binary format we can't reliably skip.
+			// Same as domain — compact binary format. Skip matcher payload,
+			// mark constrained, and fast-forward.
+			if err := skipAdGuardMatcher(r); err != nil {
+				return nil, false, err
+			}
 			hasConstraint = true
 			if err := skipRemainingItems(r); err != nil {
 				return nil, false, err
@@ -607,13 +614,10 @@ func skipItemPayload(r io.Reader, itemType uint8) error {
 	switch itemType {
 	case srsItemIPCIDR, srsItemSourceIPCIDR:
 		return skipIPSet(context.Background(), r)
-	case srsItemDomain, srsItemAdGuardDomain:
-		// Domain matchers can't be reliably skipped. This path should not
-		// normally be reached (skipRemainingItems is only called after
-		// already encountering a domain item), but if it is, read the
-		// version byte to consume something without breaking the stream.
-		_, err := readByte(r)
-		return err
+	case srsItemDomain:
+		return skipDomainMatcher(r)
+	case srsItemAdGuardDomain:
+		return skipAdGuardMatcher(r)
 	case srsItemQueryType, srsItemSourcePort, srsItemPort:
 		return skipUint16Array(r)
 	case srsItemNetwork, srsItemDomainKeyword, srsItemDomainRegex,
