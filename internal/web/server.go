@@ -2219,19 +2219,26 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid feed ID", http.StatusBadRequest)
 		return
 	}
-	if _, err := s.store.DB.ExecContext(r.Context(),
-		"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", id); err != nil {
+	feed, err := s.store.Feed(r.Context(), id)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	feed, err := s.store.Feed(r.Context(), id)
+	if !feed.Enabled {
+		http.Error(w, "feed is disabled", http.StatusBadRequest)
+		return
+	}
+	// Only clear last_error to trigger re-sync; keep last_success
+	_, err = s.store.DB.ExecContext(r.Context(),
+		"UPDATE feeds SET last_error = NULL WHERE id = ?", id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	go func() {
 		if err := s.syncer.SyncOne(context.Background(), feed); err != nil {
-			// errors are logged inside SyncOne
+			s.store.DB.ExecContext(context.Background(),
+				"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
 		}
 		s.bgp.Reconcile(context.Background())
 	}()

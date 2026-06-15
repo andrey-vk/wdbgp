@@ -37,7 +37,8 @@ const (
 	srsItemNetworkIsConstrained   uint8 = 20
 	srsItemNetworkInterfaceAddress uint8 = 21
 	srsItemDefaultInterfaceAddress uint8 = 22
-	srsItemFinal                  uint8 = 0xFF
+	srsItemPackageNameRegex        uint8 = 23
+	srsItemFinal                   uint8 = 0xFF
 )
 
 // maxIPSetRangeCount limits allocations when reading untrusted count values.
@@ -154,7 +155,7 @@ func parseDefaultRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 		case srsItemNetwork, srsItemDomainKeyword, srsItemDomainRegex,
 			srsItemSourcePortRange, srsItemPortRange,
 			srsItemProcessName, srsItemProcessPath, srsItemProcessPathRegex,
-			srsItemPackageName, srsItemWIFISSID, srsItemWIFIBSSID:
+			srsItemPackageName, srsItemPackageNameRegex, srsItemWIFISSID, srsItemWIFIBSSID:
 			if err := skipStringArray(r); err != nil {
 				return nil, err
 			}
