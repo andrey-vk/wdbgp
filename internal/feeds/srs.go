@@ -329,75 +329,11 @@ func skipUint8Array(r io.Reader) error {
 }
 
 func skipDomainMatcher(r io.Reader) error {
-	version, err := readByte(r)
-	if err != nil {
-		return err
-	}
-	br := &byteReader{r: r}
-
-	// prefix list
-	pc, err := binary.ReadUvarint(br)
-	if err != nil {
-		return err
-	}
-	for i := uint64(0); i < pc; i++ {
-		l, err := binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
-		if err := skipBytes(r, int64(l)); err != nil {
-			return err
-		}
-	}
-	// suffix list
-	sc, err := binary.ReadUvarint(br)
-	if err != nil {
-		return err
-	}
-	for i := uint64(0); i < sc; i++ {
-		l, err := binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
-		if err := skipBytes(r, int64(l)); err != nil {
-			return err
-		}
-	}
-	// v2+ has fallback domain list
-	if version >= 2 {
-		fc, err := binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
-		for i := uint64(0); i < fc; i++ {
-			l, err := binary.ReadUvarint(br)
-			if err != nil {
-				return err
-			}
-			if err := skipBytes(r, int64(l)); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return fmt.Errorf("srs: domain items are not supported")
 }
 
 func skipAdGuardMatcher(r io.Reader) error {
-	br := &byteReader{r: r}
-	count, err := binary.ReadUvarint(br)
-	if err != nil {
-		return err
-	}
-	for i := uint64(0); i < count; i++ {
-		l, err := binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
-		if err := skipBytes(r, int64(l)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return fmt.Errorf("srs: adguard domain items are not supported")
 }
 
 func skipPrefixArray(r io.Reader) error {
