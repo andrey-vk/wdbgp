@@ -462,9 +462,7 @@ ALTER TABLE feeds ADD COLUMN data TEXT NOT NULL DEFAULT '';
 		Name:    "add sing-box SRS catalog mode",
 		SQL: `
 INSERT OR IGNORE INTO catalog_modes(key, name, enabled) VALUES ('singbox-srs', 'sing-box SRS', 0);
-INSERT INTO feed_adapters(key, name) VALUES ('singbox-srs', 'sing-box SRS')
-ON CONFLICT(key) DO UPDATE SET name = 'sing-box SRS',
-    source = CASE WHEN feed_adapters.source = '' THEN '' ELSE feed_adapters.source END;
+INSERT OR IGNORE INTO feed_adapters(key, name) VALUES ('singbox-srs', 'sing-box SRS');
 INSERT OR IGNORE INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval, data)
 SELECT 'Russia GeoIP (SRS)',
        'https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geoip/geoip-ru.srs',
@@ -473,7 +471,7 @@ SELECT 'Russia GeoIP (SRS)',
        0, 0,
        '{"category":"Russia","service":"geoip-ru"}'
 WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
-  AND EXISTS (SELECT 1 FROM feed_adapters WHERE key = 'singbox-srs' AND source = '');
+  AND EXISTS (SELECT 1 FROM feed_adapters WHERE key = 'singbox-srs');
 `,
 	},
 }
@@ -2052,9 +2050,10 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		var oldURL string
 		var oldAdapterID int64
 		var oldData string
+		var oldName string
 		if err := tx.QueryRowContext(ctx,
-			"SELECT url, adapter_id, data FROM feeds WHERE id = ?", feed.ID).
-			Scan(&oldURL, &oldAdapterID, &oldData); err != nil {
+			"SELECT url, adapter_id, data, name FROM feeds WHERE id = ?", feed.ID).
+			Scan(&oldURL, &oldAdapterID, &oldData, &oldName); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -2064,7 +2063,7 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
 			return err
 		}
-		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data {
+		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name {
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx,
