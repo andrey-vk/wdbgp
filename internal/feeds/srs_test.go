@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/zlib"
+	"context"
 	"encoding/binary"
 	"net/netip"
 	"os"
@@ -19,7 +20,7 @@ func TestParseSRS_GeoIP_RU(t *testing.T) {
 		t.Skipf("test file not found: %v", err)
 	}
 
-	entries, err := ParseSRS(data, `{"cidrs":true}`, 0)
+	entries, err := ParseSRS(context.Background(), data, `{"cidrs":true}`, 0)
 	if err != nil {
 		t.Fatalf("ParseSRS: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestParseSRS_EmptyConfigDefaultsCIDRs(t *testing.T) {
 	bw.Flush()
 	zw.Close()
 
-	entries, err := ParseSRS(srsBuf.Bytes(), "", 0)
+	entries, err := ParseSRS(context.Background(), srsBuf.Bytes(), "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

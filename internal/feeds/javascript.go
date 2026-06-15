@@ -111,7 +111,7 @@ func (r adapterRunner) run(
 		if requestErr != nil {
 			panic(vm.NewGoError(requestErr))
 		}
-		entries, parseErr := ParseSRS(body, cfgJSON, r.limits.MaxEntries)
+		entries, parseErr := ParseSRS(runCtx, body, cfgJSON, r.limits.MaxEntries)
 		if parseErr != nil {
 			panic(vm.NewGoError(parseErr))
 		}

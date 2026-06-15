@@ -3,6 +3,7 @@ package feeds
 import (
 	"bytes"
 	"compress/zlib"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -47,6 +48,9 @@ const maxIPSetRangeCount = 10_000_000
 // maxDecompressedSRS limits the total decompressed size of SRS rule data.
 const maxDecompressedSRS = 64 << 20 // 64 MiB
 
+// maxSRSRecursionDepth limits recursion depth in logical rule traversal.
+const maxSRSRecursionDepth = 100
+
 // ParseSRSConfig controls what data to extract from SRS files.
 type ParseSRSConfig struct {
 	CIDRs bool `json:"cidrs"` // extract ip_cidr and source_ip_cidr items
@@ -61,7 +65,7 @@ type ParseSRSConfig struct {
 // maxEntries limits the total number of CIDRs across all entries; 0 means no limit.
 // This is enforced during parsing (not just at the end) because ParseSRS runs
 // synchronously and goja's timeout/interrupt cannot interrupt it.
-func ParseSRS(data []byte, cfgJSON string, maxEntries int) ([]canonicalEntry, error) {
+func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) ([]canonicalEntry, error) {
 	var cfg ParseSRSConfig
 	if cfgJSON == "" {
 		cfg.CIDRs = true
@@ -98,13 +102,18 @@ func ParseSRS(data []byte, cfgJSON string, maxEntries int) ([]canonicalEntry, er
 	var entries []canonicalEntry
 
 	for i := uint64(0); i < ruleCount; i++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 		ruleType, err := readByte(lr)
 		if err != nil {
 			return nil, fmt.Errorf("srs: rule[%d] type: %w", i, err)
 		}
 		switch ruleType {
 		case 0: // default rule
-			cidrs, err := parseDefaultRule(lr, &cfg)
+			cidrs, err := parseDefaultRule(ctx, lr, &cfg)
 			if err != nil {
 				return nil, fmt.Errorf("srs: rule[%d]: %w", i, err)
 			}
@@ -112,7 +121,7 @@ func ParseSRS(data []byte, cfgJSON string, maxEntries int) ([]canonicalEntry, er
 				entries = append(entries, canonicalEntry{CIDRs: cidrs})
 			}
 		case 1: // logical rule
-			cidrs, err := parseLogicalRule(lr, &cfg)
+			cidrs, err := parseLogicalRule(ctx, lr, &cfg, 0)
 			if err != nil {
 				return nil, fmt.Errorf("srs: rule[%d] logical: %w", i, err)
 			}
@@ -142,7 +151,7 @@ func ParseSRS(data []byte, cfgJSON string, maxEntries int) ([]canonicalEntry, er
 }
 
 // parseDefaultRule loops items until srsItemFinal.
-func parseDefaultRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
+func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 	var allCIDRs []string
 	for {
 		itemType, err := readByte(r)
@@ -157,7 +166,7 @@ func parseDefaultRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 				}
 				continue
 			}
-			cidrs, err := readIPSetAsCIDRs(r)
+			cidrs, err := readIPSetAsCIDRs(ctx, r)
 			if err != nil {
 				return nil, err
 			}
@@ -215,7 +224,7 @@ func parseDefaultRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 }
 
 // readIPSetAsCIDRs reads an IP set from an SRS rule and returns CIDR strings.
-func readIPSetAsCIDRs(r io.Reader) ([]string, error) {
+func readIPSetAsCIDRs(ctx context.Context, r io.Reader) ([]string, error) {
 	ver, err := readByte(r)
 	if err != nil {
 		return nil, fmt.Errorf("ipset version: %w", err)
@@ -232,6 +241,11 @@ func readIPSetAsCIDRs(r io.Reader) ([]string, error) {
 	}
 	var builder netipx.IPSetBuilder
 	for i := uint64(0); i < count; i++ {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 		fromLen, err := binary.ReadUvarint(&byteReader{r: r})
 		if err != nil {
 			return nil, fmt.Errorf("ipset fromLen: %w", err)
@@ -429,7 +443,10 @@ func skipNetworkInterfaceAddress(r io.Reader) error {
 	return nil
 }
 
-func parseLogicalRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
+func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, depth int) ([]string, error) {
+	if depth > maxSRSRecursionDepth {
+		return nil, fmt.Errorf("srs: logical rule recursion depth %d exceeds limit", depth)
+	}
 	mode, err := readByte(r)
 	if err != nil {
 		return nil, err
@@ -451,11 +468,11 @@ func parseLogicalRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 			}
 			switch rt {
 			case 0:
-				if _, err := parseDefaultRule(r, skipCfg); err != nil {
+				if _, err := parseDefaultRule(ctx, r, skipCfg); err != nil {
 					return nil, err
 				}
 			case 1:
-				if _, err := parseLogicalRule(r, skipCfg); err != nil {
+				if _, err := parseLogicalRule(ctx, r, skipCfg, depth+1); err != nil {
 					return nil, err
 				}
 			default:
@@ -479,13 +496,13 @@ func parseLogicalRule(r io.Reader, cfg *ParseSRSConfig) ([]string, error) {
 		}
 		switch rt {
 		case 0:
-			cidrs, err := parseDefaultRule(r, cfg)
+			cidrs, err := parseDefaultRule(ctx, r, cfg)
 			if err != nil {
 				return nil, err
 			}
 			allCIDRs = append(allCIDRs, cidrs...)
 		case 1:
-			cidrs, err := parseLogicalRule(r, cfg)
+			cidrs, err := parseLogicalRule(ctx, r, cfg, depth+1)
 			if err != nil {
 				return nil, err
 			}
