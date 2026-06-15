@@ -2058,10 +2058,9 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		var oldURL string
 		var oldAdapterID int64
 		var oldData string
-		var oldName string
 		if err := tx.QueryRowContext(ctx,
-			"SELECT url, adapter_id, data, name FROM feeds WHERE id = ?", feed.ID).
-			Scan(&oldURL, &oldAdapterID, &oldData, &oldName); err != nil {
+			"SELECT url, adapter_id, data FROM feeds WHERE id = ?", feed.ID).
+			Scan(&oldURL, &oldAdapterID, &oldData); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -2071,7 +2070,7 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
 			return err
 		}
-		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name {
+		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data {
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx,
