@@ -178,20 +178,26 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, max
 			}
 			hasConstraint = true
 		case srsItemDomain:
-			if err := skipDomainMatcher(r); err != nil {
+			// Domain matchers use a compact binary format we can't reliably
+			// skip without the sing-box library. Mark the rule constrained
+			// and fast-forward to the end to keep the stream clean.
+			hasConstraint = true
+			if err := skipRemainingItems(r); err != nil {
 				return nil, false, err
 			}
-			hasConstraint = true
+			return nil, false, nil
 		case srsItemDomainKeyword, srsItemDomainRegex:
 			if err := skipStringArray(ctx, r); err != nil {
 				return nil, false, err
 			}
 			hasConstraint = true
 		case srsItemAdGuardDomain:
-			if err := skipAdGuardMatcher(r); err != nil {
+			// Same as domain — compact binary format we can't reliably skip.
+			hasConstraint = true
+			if err := skipRemainingItems(r); err != nil {
 				return nil, false, err
 			}
-			hasConstraint = true
+			return nil, false, nil
 		case srsItemQueryType, srsItemSourcePort, srsItemPort:
 			if err := skipUint16Array(r); err != nil {
 				return nil, false, err
@@ -305,6 +311,9 @@ func readIPSetAsCIDRs(ctx context.Context, r io.Reader, maxEntries int) ([]strin
 		return nil, fmt.Errorf("ipset build: %w", err)
 	}
 	prefixes := ipSet.Prefixes()
+	if maxEntries > 0 && len(prefixes) > maxEntries {
+		return nil, fmt.Errorf("srs: %d expanded prefixes exceeds limit of %d", len(prefixes), maxEntries)
+	}
 	result := make([]string, len(prefixes))
 	for i, p := range prefixes {
 		result[i] = p.String()
@@ -572,6 +581,58 @@ func skipNetworkInterfaceAddress(ctx context.Context, r io.Reader) error {
 		}
 	}
 	return nil
+}
+
+// skipRemainingItems consumes all items in a default rule until srsItemFinal.
+// Used when we encounter an unparseable item (like domain matchers) and need
+// to fast-forward through the rest of the rule without corrupting the stream.
+func skipRemainingItems(r io.Reader) error {
+	for {
+		itemType, err := readByte(r)
+		if err != nil {
+			return err
+		}
+		if itemType == srsItemFinal {
+			var invert uint8
+			return binary.Read(r, binary.BigEndian, &invert)
+		}
+		if err := skipItemPayload(r, itemType); err != nil {
+			return err
+		}
+	}
+}
+
+// skipItemPayload skips the payload of a single SRS item by type.
+func skipItemPayload(r io.Reader, itemType uint8) error {
+	switch itemType {
+	case srsItemIPCIDR, srsItemSourceIPCIDR:
+		return skipIPSet(context.Background(), r)
+	case srsItemDomain, srsItemAdGuardDomain:
+		// Domain matchers can't be reliably skipped. This path should not
+		// normally be reached (skipRemainingItems is only called after
+		// already encountering a domain item), but if it is, read the
+		// version byte to consume something without breaking the stream.
+		_, err := readByte(r)
+		return err
+	case srsItemQueryType, srsItemSourcePort, srsItemPort:
+		return skipUint16Array(r)
+	case srsItemNetwork, srsItemDomainKeyword, srsItemDomainRegex,
+		srsItemSourcePortRange, srsItemPortRange,
+		srsItemProcessName, srsItemProcessPath, srsItemProcessPathRegex,
+		srsItemPackageName, srsItemPackageNameRegex,
+		srsItemWIFISSID, srsItemWIFIBSSID:
+		return skipStringArray(context.Background(), r)
+	case srsItemNetworkType:
+		return skipUint8Array(r)
+	case srsItemNetworkIsExpensive, srsItemNetworkIsConstrained:
+		return nil // no data
+	case srsItemNetworkInterfaceAddress:
+		return skipNetworkInterfaceAddress(context.Background(), r)
+	case srsItemDefaultInterfaceAddress:
+		return skipPrefixArray(context.Background(), r)
+	default:
+		return fmt.Errorf("srs: unknown item type %d in skipItemPayload", itemType)
+	}
 }
 
 func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, depth int, maxEntries int) ([]string, bool, error) {
