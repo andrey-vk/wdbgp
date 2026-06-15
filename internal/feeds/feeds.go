@@ -150,14 +150,16 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
 		var currentModeID int64
 		var currentAdapterID int64
 		var currentAdapterRevision int64
+		var currentData string
 		var enabled bool
 		if err := tx.QueryRowContext(ctx,
-			`SELECT f.url, f.mode_id, f.adapter_id, f.enabled, a.revision
+			`SELECT f.url, f.mode_id, f.adapter_id, f.enabled, f.data, a.revision
 			 FROM feeds f
 			 JOIN feed_adapters a ON a.id = f.adapter_id
 			 WHERE f.id = ?`, feed.ID).
 			Scan(
 				&currentURL, &currentModeID, &currentAdapterID, &enabled,
+				&currentData,
 				&currentAdapterRevision,
 			); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -169,6 +171,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) error {
 			currentModeID != feed.ModeID ||
 			currentAdapterID != feed.AdapterID ||
 			currentAdapterRevision != adapter.Revision ||
+			currentData != feed.Data ||
 			!enabled {
 			return errFeedChanged
 		}
