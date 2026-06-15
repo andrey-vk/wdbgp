@@ -172,33 +172,28 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 			}
 			hasConstraint = true
 		case srsItemDomain:
-			// Domain matchers use a compact binary format. Skip the
-			// matcher payload, mark the rule constrained and fast-forward
-			// to the end to keep the stream clean.
+			// Domain matchers use a compact binary format. Domain is OR'd
+			// with CIDRs, not AND'd — just skip the payload and continue.
 			if err := skipDomainMatcher(r); err != nil {
-				return nil, false, err
+				if err := skipRemainingItemsForConstraint(r); err != nil {
+					return nil, false, err
+				}
+				return nil, false, nil
 			}
-			hasConstraint = true
-			if err := skipRemainingItems(r); err != nil {
-				return nil, false, err
-			}
-			return nil, false, nil
 		case srsItemDomainKeyword, srsItemDomainRegex:
 			if err := skipStringArray(ctx, r); err != nil {
 				return nil, false, err
 			}
 			hasConstraint = true
 		case srsItemAdGuardDomain:
-			// Same as domain — compact binary format. Skip matcher payload,
-			// mark constrained, and fast-forward.
+			// Same as domain — compact binary format. Domain is OR'd
+			// with CIDRs — just skip the payload and continue.
 			if err := skipAdGuardMatcher(r); err != nil {
-				return nil, false, err
+				if err := skipRemainingItemsForConstraint(r); err != nil {
+					return nil, false, err
+				}
+				return nil, false, nil
 			}
-			hasConstraint = true
-			if err := skipRemainingItems(r); err != nil {
-				return nil, false, err
-			}
-			return nil, false, nil
 		case srsItemQueryType, srsItemSourcePort, srsItemPort:
 			if err := skipUint16Array(r); err != nil {
 				return nil, false, err
@@ -605,10 +600,10 @@ func skipNetworkInterfaceAddress(ctx context.Context, r io.Reader) error {
 	return nil
 }
 
-// skipRemainingItems consumes all items in a default rule until srsItemFinal.
+// skipRemainingItemsForConstraint consumes all items in a default rule until srsItemFinal.
 // Used when we encounter an unparseable item (like domain matchers) and need
 // to fast-forward through the rest of the rule without corrupting the stream.
-func skipRemainingItems(r io.Reader) error {
+func skipRemainingItemsForConstraint(r io.Reader) error {
 	for {
 		itemType, err := readByte(r)
 		if err != nil {
@@ -795,9 +790,10 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 		return result, false, nil
 	}
 
-	// OR mode (1): collect CIDRs from all sub-rules (union).
+	// OR mode (1): collect CIDRs from unconstrained sub-rules (union).
+	// OR is constrained only if ALL sub-rules are constrained.
 	var allCIDRs []string
-	var hasConstraint bool
+	allConstrained := true
 	for i := uint64(0); i < subCount; i++ {
 		rt, err := readByte(r)
 		if err != nil {
@@ -809,18 +805,18 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 			if err != nil {
 				return nil, false, err
 			}
-			allCIDRs = append(allCIDRs, cidrs...)
-			if subConstraint {
-				hasConstraint = true
+			if !subConstraint {
+				allCIDRs = append(allCIDRs, cidrs...)
+				allConstrained = false
 			}
 		case 1:
 			cidrs, subConstraint, err := parseLogicalRule(ctx, r, cfg, depth+1)
 			if err != nil {
 				return nil, false, err
 			}
-			allCIDRs = append(allCIDRs, cidrs...)
-			if subConstraint {
-				hasConstraint = true
+			if !subConstraint {
+				allCIDRs = append(allCIDRs, cidrs...)
+				allConstrained = false
 			}
 		default:
 			return nil, false, fmt.Errorf("srs: unknown sub-rule type %d", rt)
@@ -833,7 +829,7 @@ func parseLogicalRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, dep
 	if invert != 0 {
 		return nil, true, nil // skip inverted logical rules
 	}
-	return allCIDRs, hasConstraint, nil
+	return allCIDRs, allConstrained, nil
 }
 
 // intersectCIDRs computes the intersection of multiple CIDR groups.
