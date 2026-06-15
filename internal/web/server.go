@@ -2228,11 +2228,6 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "feed is disabled", http.StatusBadRequest)
 		return
 	}
-	adapter, err := s.store.FeedAdapter(r.Context(), feed.AdapterID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	// Only clear last_error to trigger re-sync; keep last_success
 	_, err = s.store.DB.ExecContext(r.Context(),
 		"UPDATE feeds SET last_error = NULL WHERE id = ?", id)
@@ -2241,32 +2236,36 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
+		var syncErr error
 		if err := s.syncer.SyncOne(context.Background(), feed); err != nil {
+			syncErr = err
 			// Verify feed hasn't been edited since the goroutine was launched.
-			// If the feed was edited (url, adapter_id, adapter revision,
-			// or data changed), the error is from a stale sync and must not
+			// If the feed was edited (url, adapter_id, data, mode_id,
+			// or enabled changed), the error is from a stale sync and must not
 			// overwrite the new feed's status.
 			var currentURL, currentData string
-			var currentAdapterID, currentAdapterRevision, currentModeID int64
+			var currentAdapterID, currentModeID int64
 			var currentEnabled bool
 			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT f.url, f.adapter_id, f.data, a.revision, f.mode_id, f.enabled FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentAdapterRevision, &currentModeID, &currentEnabled)
+				"SELECT url, adapter_id, data, mode_id, enabled FROM feeds WHERE id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData, &currentModeID, &currentEnabled)
 			if checkErr == nil &&
 				currentURL == feed.URL &&
 				currentAdapterID == feed.AdapterID &&
 				currentData == feed.Data &&
 				currentModeID == feed.ModeID &&
-				currentEnabled == feed.Enabled &&
-				currentAdapterRevision == adapter.Revision {
+				currentEnabled == feed.Enabled {
 				s.store.DB.ExecContext(context.Background(),
 					"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
 			}
 		}
 		if err := s.bgp.Reconcile(context.Background()); err != nil {
+			msg := "BGP reconcile failed: " + err.Error()
+			if syncErr != nil {
+				msg = syncErr.Error() + "; " + msg
+			}
 			s.store.DB.ExecContext(context.Background(),
-				"UPDATE feeds SET last_error = ? WHERE id = ?",
-				"BGP reconcile failed: "+err.Error(), id)
+				"UPDATE feeds SET last_error = ? WHERE id = ?", msg, id)
 		}
 	}()
 	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
