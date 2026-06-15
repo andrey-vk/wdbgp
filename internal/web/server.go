@@ -2263,7 +2263,11 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 					"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
 			}
 		}
-		s.bgp.Reconcile(context.Background())
+		if err := s.bgp.Reconcile(context.Background()); err != nil {
+			s.store.DB.ExecContext(context.Background(),
+				"UPDATE feeds SET last_error = ? WHERE id = ?",
+				"BGP reconcile failed: "+err.Error(), id)
+		}
 	}()
 	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
 }
