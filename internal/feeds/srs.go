@@ -63,8 +63,14 @@ type ParseSRSConfig struct {
 // Inverted rules are skipped — their semantics (everything EXCEPT) are opposite of what we want.
 // Supports SRS format versions 1 through 5.
 // maxEntries limits the total number of CIDRs; 0 means no limit.
-// Limit is enforced early during IPSet expansion: if range count exceeds maxEntries,
-// parsing aborts before building the IPSet.
+// Limit is enforced in two stages:
+//  1. Early range-count check: if the IPSet range count exceeds maxEntries,
+//     parsing aborts before building the IPSet, avoiding the largest allocations.
+//  2. Post-expansion check: after Prefixes() materialises all prefixes, a final
+//     cap is applied. This catches edge cases where few ranges explode into many
+//     prefixes. Full streaming would require a streaming Prefixes() method on
+//     netipx.IPSet which does not exist; as a practical bound, the 64 MiB
+//     decompressed input limit keeps worst-case memory under control.
 func ParseSRS(ctx context.Context, data []byte, cfgJSON string, maxEntries int) ([]canonicalEntry, error) {
 	var cfg ParseSRSConfig
 	if cfgJSON == "" {
@@ -315,6 +321,10 @@ func readIPSetAsCIDRs(ctx context.Context, r io.Reader, maxEntries int) ([]strin
 	if err != nil {
 		return nil, fmt.Errorf("ipset build: %w", err)
 	}
+	// All prefixes are materialised at this point — a true streaming limit would
+	// require a streaming Prefixes() from netipx.IPSet which isn't available.
+	// The range-count early abort above and the 64 MiB decompressed input limit
+	// bound the worst-case memory for remaining edge cases.
 	prefixes := ipSet.Prefixes()
 	if maxEntries > 0 && len(prefixes) > maxEntries {
 		return nil, fmt.Errorf("srs: %d expanded prefixes exceeds limit of %d", len(prefixes), maxEntries)
@@ -435,51 +445,46 @@ func skipDomainMatcher(r io.Reader) error {
 	}
 	br := &byteReader{r: r}
 
-	// Domain prefixes
+	// Domain matcher uses sing-box's succinct-set binary format:
+	//   version byte + two arrays of big-endian uint64 values + one byte array.
+	// Each array is length-prefixed with a uvarint count.
+	// The version byte is read above; version is unused here (only for skipping).
+
+	// First uint64 array.
 	count, err := binary.ReadUvarint(br)
 	if err != nil {
-		return err
+		return fmt.Errorf("domain matcher: read first array count: %w", err)
 	}
-	for i := uint64(0); i < count; i++ {
-		l, err := binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
-		if err := skipBytes(r, int64(l)); err != nil {
-			return err
-		}
+	if count > maxIPSetRangeCount {
+		return fmt.Errorf("domain matcher: first array count %d exceeds limit", count)
+	}
+	if err := skipBytes(r, int64(count*8)); err != nil {
+		return fmt.Errorf("domain matcher: skip first array: %w", err)
 	}
 
-	// Domain suffixes
+	// Second uint64 array.
 	count, err = binary.ReadUvarint(br)
 	if err != nil {
-		return err
+		return fmt.Errorf("domain matcher: read second array count: %w", err)
 	}
-	for i := uint64(0); i < count; i++ {
-		l, err := binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
-		if err := skipBytes(r, int64(l)); err != nil {
-			return err
-		}
+	if count > maxIPSetRangeCount {
+		return fmt.Errorf("domain matcher: second array count %d exceeds limit", count)
+	}
+	if err := skipBytes(r, int64(count*8)); err != nil {
+		return fmt.Errorf("domain matcher: skip second array: %w", err)
 	}
 
-	// v2+: fallback domains
-	if version >= 2 {
-		count, err = binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
-		for i := uint64(0); i < count; i++ {
-			l, err := binary.ReadUvarint(br)
-			if err != nil {
-				return err
-			}
-			if err := skipBytes(r, int64(l)); err != nil {
-				return err
-			}
-		}
+	// Byte array (present in all versions).
+	_ = version
+	byteLen, err := binary.ReadUvarint(br)
+	if err != nil {
+		return fmt.Errorf("domain matcher: read byte array length: %w", err)
+	}
+	if byteLen > uint64(maxDecompressedSRS) {
+		return fmt.Errorf("domain matcher: byte array length %d exceeds limit", byteLen)
+	}
+	if err := skipBytes(r, int64(byteLen)); err != nil {
+		return fmt.Errorf("domain matcher: skip byte array: %w", err)
 	}
 
 	return nil
@@ -487,19 +492,47 @@ func skipDomainMatcher(r io.Reader) error {
 
 func skipAdGuardMatcher(r io.Reader) error {
 	br := &byteReader{r: r}
+
+	// Same succinct-set binary format as the domain matcher:
+	//   version byte + two arrays of big-endian uint64 values + one byte array.
+	// Each array is length-prefixed with a uvarint count.
+
+	// First uint64 array.
 	count, err := binary.ReadUvarint(br)
 	if err != nil {
-		return err
+		return fmt.Errorf("adguard matcher: read first array count: %w", err)
 	}
-	for i := uint64(0); i < count; i++ {
-		l, err := binary.ReadUvarint(br)
-		if err != nil {
-			return err
-		}
-		if err := skipBytes(r, int64(l)); err != nil {
-			return err
-		}
+	if count > maxIPSetRangeCount {
+		return fmt.Errorf("adguard matcher: first array count %d exceeds limit", count)
 	}
+	if err := skipBytes(r, int64(count*8)); err != nil {
+		return fmt.Errorf("adguard matcher: skip first array: %w", err)
+	}
+
+	// Second uint64 array.
+	count, err = binary.ReadUvarint(br)
+	if err != nil {
+		return fmt.Errorf("adguard matcher: read second array count: %w", err)
+	}
+	if count > maxIPSetRangeCount {
+		return fmt.Errorf("adguard matcher: second array count %d exceeds limit", count)
+	}
+	if err := skipBytes(r, int64(count*8)); err != nil {
+		return fmt.Errorf("adguard matcher: skip second array: %w", err)
+	}
+
+	// Byte array.
+	byteLen, err := binary.ReadUvarint(br)
+	if err != nil {
+		return fmt.Errorf("adguard matcher: read byte array length: %w", err)
+	}
+	if byteLen > uint64(maxDecompressedSRS) {
+		return fmt.Errorf("adguard matcher: byte array length %d exceeds limit", byteLen)
+	}
+	if err := skipBytes(r, int64(byteLen)); err != nil {
+		return fmt.Errorf("adguard matcher: skip byte array: %w", err)
+	}
+
 	return nil
 }
 
