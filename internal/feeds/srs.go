@@ -256,7 +256,11 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig, max
 }
 
 // readIPSetAsCIDRs reads an IP set from an SRS rule and returns CIDR strings.
-// maxEntries causes early abort if the IPSet's range count exceeds the limit.
+// maxEntries enforces a limit in three stages:
+//  1. Range-count abort: if the raw range count exceeds maxEntries, abort immediately.
+//  2. Conservative estimate: if count*30 > maxEntries, abort before building the IPSet.
+//  3. Post-expansion check: after Prefixes() materialises all prefixes, abort if the
+//     actual count exceeds maxEntries (before allocating the string slice).
 func readIPSetAsCIDRs(ctx context.Context, r io.Reader, maxEntries int) ([]string, error) {
 	ver, err := readByte(r)
 	if err != nil {
@@ -275,6 +279,15 @@ func readIPSetAsCIDRs(ctx context.Context, r io.Reader, maxEntries int) ([]strin
 	if count > maxIPSetRangeCount {
 		return nil, fmt.Errorf("ipset: count %d exceeds max %d", count, maxIPSetRangeCount)
 	}
+	// Conservative overflow estimate: each IP range can produce at most ~30
+	// prefixes (worst-case for a non-aligned IPv4 range). If the estimate
+	// exceeds the limit, the actual expansion almost certainly does too.
+	// Abort early to avoid building and materializing an oversized IPSet.
+	const maxPrefixesPerRange = 30
+	if maxEntries > 0 && int(count)*maxPrefixesPerRange > maxEntries {
+		return nil, fmt.Errorf("srs: %d IP ranges likely expand to >%d prefixes (limit %d)", count, maxEntries, maxEntries)
+	}
+
 	var builder netipx.IPSetBuilder
 	for i := uint64(0); i < count; i++ {
 		select {
@@ -321,10 +334,15 @@ func readIPSetAsCIDRs(ctx context.Context, r io.Reader, maxEntries int) ([]strin
 	if err != nil {
 		return nil, fmt.Errorf("ipset build: %w", err)
 	}
-	// All prefixes are materialised at this point — a true streaming limit would
+	// All prefixes are materialised at this point. A true streaming limit would
 	// require a streaming Prefixes() from netipx.IPSet which isn't available.
-	// The range-count early abort above and the 64 MiB decompressed input limit
-	// bound the worst-case memory for remaining edge cases.
+	//
+	// Three-stage limit enforcement bounds worst-case allocations:
+	//  1. Range-count early abort (above) — skips entire loop.
+	//  2. Conservative estimate (above) — skips IPSet build for likely overflow.
+	//  3. Exact post-expansion check (here) — catches edge cases that slip
+	//     through the estimate, while still aborting before the string slice
+	//     allocation below.
 	prefixes := ipSet.Prefixes()
 	if maxEntries > 0 && len(prefixes) > maxEntries {
 		return nil, fmt.Errorf("srs: %d expanded prefixes exceeds limit of %d", len(prefixes), maxEntries)
