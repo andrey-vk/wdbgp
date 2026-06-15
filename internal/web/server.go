@@ -199,6 +199,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("GET /status", server.status)
 	mux.HandleFunc("GET /admin/users", server.requireAdmin(server.usersList))
 	mux.HandleFunc("GET /admin/feeds", server.requireAdmin(server.feedsList))
+	mux.HandleFunc("POST /admin/feeds/{id}/force-sync", server.requireAdmin(server.handleFeedForceSync))
 	mux.HandleFunc("GET /admin/adapters", server.requireAdmin(server.adaptersList))
 	mux.HandleFunc("GET /admin/settings", server.requireAdmin(server.settingsPage))
 	mux.HandleFunc("POST /admin/settings", server.requireAdmin(server.saveSettings))
@@ -882,7 +883,7 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.AddFeedForModeAdapter(
-		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval); err != nil {
+		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1249,10 +1250,15 @@ func parseFeed(r *http.Request, id int64) (store.Feed, error) {
 			return store.Feed{}, fmt.Errorf("invalid adapter id")
 		}
 	}
+	data := strings.TrimSpace(r.FormValue("data"))
+	if data != "" && !json.Valid([]byte(data)) {
+		return store.Feed{}, fmt.Errorf("feed data must be valid JSON")
+	}
 	return store.Feed{
 		ID: id, Name: name, URL: rawURL, ModeID: modeID, AdapterID: adapterID,
 		Enabled:      r.Form.Has("enabled"),
 		SyncInterval: formInt(r, "sync_interval"),
+		Data:         data,
 	}, nil
 }
 
@@ -2205,6 +2211,26 @@ func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
 		"Feeds": rows,
 		"Modes": modes,
 	})
+}
+
+func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid feed ID", http.StatusBadRequest)
+		return
+	}
+	if _, err := s.store.DB.ExecContext(r.Context(),
+		"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Trigger immediate sync
+	go func() {
+		if err := s.syncer.SyncAll(context.Background()); err != nil {
+			// errors are logged inside SyncAll
+		}
+	}()
+	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
 }
 
 func (s *Server) adaptersList(w http.ResponseWriter, r *http.Request) {

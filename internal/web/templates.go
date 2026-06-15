@@ -175,7 +175,7 @@ const adapterTestTemplate = `{{with .Data}}
 </section>{{end}}`
 
 const adapterEditTemplate = `{{with .Data}}
-<header><h1>{{.Adapter.Name}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>
+<header><h1>{{.Adapter.Name}}</h1></header>
 <section class=card>
 <p><code>{{.Adapter.Key}}</code> · rev. {{.Adapter.Revision}}{{if .Adapter.BuiltIn}} · {{tr "adapters.built_in"}}{{end}}</p>
 {{if .Error}}<h2>{{tr "adapters.error"}}</h2><pre class=error-output>{{.Error}}</pre>{{end}}
@@ -389,7 +389,7 @@ document.querySelectorAll('.tab').forEach(function(t){t.addEventListener('click'
 {{end}}`
 
 const communitiesBody = `{{with .Data}}
-<header><h1>{{tr "communities.title"}}</h1><a href="/admin">{{tr "admin.link"}}</a></header>
+<header><h1>{{tr "communities.title"}}</h1></header>
 {{if .Saved}}<p class=ok>{{if eq .Saved "reset"}}All communities reset to auto-generated values.{{else}}{{tr "communities.saved"}}{{end}}</p>{{end}}
 {{if .Error}}<p class=error>{{.Error}}</p>{{end}}
 <section class=card>
@@ -786,7 +786,13 @@ const feedsListTemplate = `{{with .Data}}
 <td>{{.ModeName}}</td>
 <td>{{if .Feed.Enabled}}<span class=ok>enabled</span>{{else}}<span class=error>disabled</span>{{end}}</td>
 <td>{{if .LastSync}}{{.LastSync}}{{else}}—{{end}}</td>
-<td><a href="/admin/feed/{{.Feed.ID}}" class=button>{{tr "common.edit"}}</a></td>
+<td>
+<a href="/admin/feed/{{.Feed.ID}}" class=button>{{tr "common.edit"}}</a>
+<form method=post action="/admin/feeds/{{.Feed.ID}}/force-sync" style=display:inline>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<button title="{{tr "feeds.force_sync"}}">⟳</button>
+</form>
+</td>
 </tr>{{end}}
 </table>
 </div>
@@ -800,8 +806,9 @@ const feedEditTemplate = `{{with .Data}}
 <form method=post action="{{if .IsNew}}/admin/feed{{else}}/admin/feed/{{.Feed.ID}}{{end}}">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <label>{{tr "feeds.name"}} <input name=name value="{{.Feed.Name}}" required></label>
-<label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
-<div class=form-grid>
+	<label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
+<label>{{tr "feeds.data"}} <textarea name=data rows=4 placeholder='{"category": "Russia", "service": "geoip-ru"}' class=mono>{{.Feed.Data}}</textarea></label>
+	<div class=form-grid>
 <label>{{tr "catalog.mode"}}
 <select name=catalog_mode_id>
 {{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.Feed.ModeID}}selected{{end}}>{{.Name}}</option>{{end}}

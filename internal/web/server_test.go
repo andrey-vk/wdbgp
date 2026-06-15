@@ -1055,6 +1055,7 @@ func TestStatusEndpoint(t *testing.T) {
 		1,
 		true,
 		0,
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)

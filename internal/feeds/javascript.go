@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/retry"
 	"github.com/andrey-vk/wdbgp/internal/store"
 	"github.com/dop251/goja"
@@ -100,10 +101,40 @@ func (r adapterRunner) run(
 	}); err != nil {
 		return nil, err
 	}
+	if err := api.Set("srsGet", func(call goja.FunctionCall) goja.Value {
+		rawURL := call.Argument(0).String()
+		cfgJSON := ""
+		if len(call.Arguments) > 1 && !goja.IsUndefined(call.Argument(1)) {
+			cfgJSON = call.Argument(1).String()
+		}
+		body, requestErr := httpAPI.getBytes(rawURL)
+		if requestErr != nil {
+			panic(vm.NewGoError(requestErr))
+		}
+		entries, parseErr := ParseSRS(body, cfgJSON)
+		if parseErr != nil {
+			panic(vm.NewGoError(parseErr))
+		}
+		return vm.ToValue(entries)
+	}); err != nil {
+		return nil, err
+	}
+	if err := api.Set("log", func(call goja.FunctionCall) goja.Value {
+		msg := call.Argument(0).String()
+		logging.FromContext(runCtx).Info("adapter log",
+			"feed", feed.Name,
+			"adapter", adapter.Name,
+			"message", msg,
+		)
+		return goja.Undefined()
+	}); err != nil {
+		return nil, err
+	}
 	feedValue := map[string]any{
 		"id":   feed.ID,
 		"name": feed.Name,
 		"url":  feed.URL,
+		"data": feed.Data,
 	}
 	value, err := syncFunction(
 		goja.Undefined(),
@@ -193,15 +224,15 @@ func (a *adapterHTTP) get(rawURL string) (string, error) {
 	if err := a.validateURL(parsed); err != nil {
 		return "", err
 	}
-	
+
 	// Use retry with exponential backoff for HTTP requests
-	result, err := retry.DoWithResult(a.ctx, retry.HTTPConfig, 
-		func() (string, error) {
+	result, err := retry.DoWithResult(a.ctx, retry.HTTPConfig,
+		func() ([]byte, error) {
 			return a.doHTTPRequest(parsed)
 		},
 		retry.HTTPTransientError,
 	)
-	
+
 	if err != nil {
 		// Check if it's a context error
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -209,22 +240,49 @@ func (a *adapterHTTP) get(rawURL string) (string, error) {
 		}
 		return "", fmt.Errorf("adapter HTTP request failed: %w", err)
 	}
-	
+
+	return string(result), nil
+}
+
+func (a *adapterHTTP) getBytes(rawURL string) ([]byte, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Hostname() == "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, fmt.Errorf("adapter HTTP URL must be absolute HTTP or HTTPS")
+	}
+	if err := a.validateURL(parsed); err != nil {
+		return nil, err
+	}
+
+	result, err := retry.DoWithResult(a.ctx, retry.HTTPConfig,
+		func() ([]byte, error) {
+			return a.doHTTPRequest(parsed)
+		},
+		retry.HTTPTransientError,
+	)
+
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("adapter HTTP request timeout: %w", err)
+		}
+		return nil, fmt.Errorf("adapter HTTP request failed: %w", err)
+	}
+
 	return result, nil
 }
 
-func (a *adapterHTTP) doHTTPRequest(parsed *url.URL) (string, error) {
+func (a *adapterHTTP) doHTTPRequest(parsed *url.URL) ([]byte, error) {
 	if a.requests >= a.limits.MaxRequests {
-		return "", fmt.Errorf("adapter exceeded %d HTTP requests", a.limits.MaxRequests)
+		return nil, fmt.Errorf("adapter exceeded %d HTTP requests", a.limits.MaxRequests)
 	}
 	a.requests++
 
 	request, err := http.NewRequestWithContext(a.ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	request.Header.Set("User-Agent", "wdbgp-go/1.0")
-	
+
 	// Create a copy of the client with custom redirect handling
 	client := *a.client
 	previousRedirect := client.CheckRedirect
@@ -241,32 +299,32 @@ func (a *adapterHTTP) doHTTPRequest(parsed *url.URL) (string, error) {
 		}
 		return nil
 	}
-	
+
 	response, err := client.Do(request)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer response.Body.Close()
-	
+
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("HTTP %s", response.Status)
+		return nil, fmt.Errorf("HTTP %s", response.Status)
 	}
-	
+
 	body, err := io.ReadAll(io.LimitReader(response.Body, int64(a.limits.MaxResponseBytes)+1))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if len(body) > a.limits.MaxResponseBytes {
-		return "", fmt.Errorf("adapter HTTP response exceeds %d bytes", a.limits.MaxResponseBytes)
+		return nil, fmt.Errorf("adapter HTTP response exceeds %d bytes", a.limits.MaxResponseBytes)
 	}
 
 	a.totalBytes += int64(len(body))
 	if a.totalBytes > int64(a.limits.MaxTotalBytes) {
-		return "", fmt.Errorf("adapter HTTP responses exceed %d bytes", a.limits.MaxTotalBytes)
+		return nil, fmt.Errorf("adapter HTTP responses exceed %d bytes", a.limits.MaxTotalBytes)
 	}
-	
-	return string(body), nil
+
+	return body, nil
 }
 
 func (a *adapterHTTP) validateURL(parsed *url.URL) error {

@@ -23,15 +23,15 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(feeds) != 5 {
-		t.Fatalf("feed count = %d, want 5", len(feeds))
+	if len(feeds) != 6 {
+		t.Fatalf("feed count = %d, want 6", len(feeds))
 	}
 	adapters, err := s.FeedAdapters(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(adapters) != 3 {
-		t.Fatalf("adapter count = %d, want 3", len(adapters))
+	if len(adapters) != 4 {
+		t.Fatalf("adapter count = %d, want 4", len(adapters))
 	}
 	for _, adapter := range adapters {
 		if adapter.Source == "" || adapter.Revision != 1 {
@@ -42,6 +42,9 @@ func TestMigrateFreshDatabase(t *testing.T) {
 		wantAdapterID := int64(2)
 		if feed.Name == "ipranges" {
 			wantAdapterID = 3
+		}
+		if feed.Name == "Russia GeoIP (SRS)" {
+			wantAdapterID = 4
 		}
 		if feed.AdapterID != wantAdapterID {
 			t.Fatalf("feed %q adapter = %d, want %d",
@@ -142,8 +145,8 @@ INSERT INTO feeds(name, url) VALUES
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(feeds) != 5 {
-		t.Fatalf("legacy feed count = %d, want 5", len(feeds))
+	if len(feeds) != 6 {
+		t.Fatalf("legacy feed count = %d, want 6", len(feeds))
 	}
 }
 
@@ -643,7 +646,7 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(modes) != 2 || modes[0].Key != "opencck" || modes[1].Key != "ipranges" {
+	if len(modes) != 3 || modes[0].Key != "opencck" || modes[1].Key != "ipranges" || modes[2].Key != "singbox-srs" {
 		t.Fatalf("catalog modes = %#v", modes)
 	}
 	ipranges := modes[1]

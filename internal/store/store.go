@@ -450,6 +450,23 @@ CREATE UNIQUE INDEX idx_user_credentials_login_unique ON user_credentials(login)
 ALTER TABLE feeds ADD COLUMN sync_interval INTEGER NOT NULL DEFAULT 0;
 `,
 	},
+	{
+		Version: 18,
+		Name:    "add data column to feeds",
+		SQL: `
+ALTER TABLE feeds ADD COLUMN data TEXT NOT NULL DEFAULT '';
+`,
+	},
+	{
+		Version: 19,
+		Name:    "add sing-box SRS catalog mode",
+		SQL: `
+INSERT OR IGNORE INTO catalog_modes(id, key, name, enabled) VALUES (3, 'singbox-srs', 'sing-box SRS', 0);
+INSERT OR IGNORE INTO feed_adapters(id, key, name) VALUES (4, 'singbox-srs', 'sing-box SRS');
+INSERT OR IGNORE INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval, data)
+VALUES ('Russia GeoIP (SRS)', 'https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/rule-set-geoip/geoip-ru.srs', 3, 4, 0, 0, '{"category":"Russia","service":"geoip-ru"}');
+`,
+	},
 }
 
 type Store struct {
@@ -464,6 +481,7 @@ type Feed struct {
 	AdapterID    int64
 	Enabled      bool
 	SyncInterval int
+	Data         string // JSON parameterization for adapters
 	LastSuccess  string
 	LastError    string
 }
@@ -497,6 +515,7 @@ type AppSetting struct {
 const (
 	DefaultCatalogModeID  int64 = 1
 	IPRangesCatalogModeID int64 = 2
+	SingboxSRSCatalogModeID int64 = 3
 )
 
 type User struct {
@@ -665,6 +684,7 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	query := `SELECT f.id, f.name, f.url, f.mode_id, f.adapter_id, f.enabled,
 	                 COALESCE(f.sync_interval, 0),
+	                 COALESCE(f.data, ''),
 	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
 	          FROM feeds f
 	          JOIN catalog_modes m ON m.id = f.mode_id
@@ -683,7 +703,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 		var feed Feed
 		if err := rows.Scan(
 			&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
-			&feed.Enabled, &feed.SyncInterval, &feed.LastSuccess, &feed.LastError,
+			&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -697,11 +717,12 @@ func (s *Store) Feed(ctx context.Context, id int64) (Feed, error) {
 	err := s.DB.QueryRowContext(ctx, `
 SELECT id, name, url, mode_id, adapter_id, enabled,
        COALESCE(sync_interval, 0),
+       COALESCE(data, ''),
        COALESCE(last_success, ''), COALESCE(last_error, '')
 FROM feeds
 WHERE id = ?`, id).Scan(
 		&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
-		&feed.Enabled, &feed.SyncInterval, &feed.LastSuccess, &feed.LastError,
+		&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
 	)
 	return feed, err
 }
@@ -1998,7 +2019,7 @@ func (s *Store) AddFeedForMode(
 	enabled bool,
 	syncInterval int,
 ) error {
-	return s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval)
+	return s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval, "")
 }
 
 func (s *Store) AddFeedForModeAdapter(
@@ -2009,10 +2030,11 @@ func (s *Store) AddFeedForModeAdapter(
 	adapterID int64,
 	enabled bool,
 	syncInterval int,
+	data string,
 ) error {
 	_, err := s.DB.ExecContext(ctx,
-		"INSERT INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval) VALUES (?, ?, ?, ?, ?, ?)",
-		name, url, modeID, adapterID, enabled, syncInterval)
+		"INSERT INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval, data) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		name, url, modeID, adapterID, enabled, syncInterval, data)
 	return err
 }
 
@@ -2027,9 +2049,9 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE feeds
-			 SET name = ?, url = ?, mode_id = ?, adapter_id = ?, enabled = ?, sync_interval = ?
+			 SET name = ?, url = ?, mode_id = ?, adapter_id = ?, enabled = ?, sync_interval = ?, data = ?
 			 WHERE id = ?`,
-			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.ID); err != nil {
+			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
 			return err
 		}
 		if oldURL == feed.URL && oldAdapterID == feed.AdapterID {
