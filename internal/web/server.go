@@ -1145,7 +1145,10 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var feedID int64
-	s.store.DB.QueryRowContext(r.Context(), "SELECT id FROM feeds WHERE url = ?", feed.URL).Scan(&feedID)
+	if err := s.store.DB.QueryRowContext(r.Context(), "SELECT last_insert_rowid()").Scan(&feedID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := s.store.SetFeedModes(r.Context(), feedID, modeIDs); err != nil {
 		s.internalError(w, r, err)
 		return
@@ -1614,9 +1617,9 @@ func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
 	}
 	var existingID int64
 	err = s.store.DB.QueryRowContext(r.Context(),
-		"SELECT id FROM users WHERE peer_ip = ? AND peer_asn = ?", user.PeerIP, user.PeerASN).Scan(&existingID)
+		"SELECT id FROM users WHERE peer_ip = ?", user.PeerIP).Scan(&existingID)
 	if err == nil {
-		http.Error(w, "user with this IP and ASN already exists", http.StatusConflict)
+		http.Error(w, "user with this peer IP already exists", http.StatusConflict)
 		return
 	}
 
@@ -1707,10 +1710,10 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 		}
 		var existingID int64
 		err = s.store.DB.QueryRowContext(r.Context(),
-			"SELECT id FROM users WHERE peer_ip = ? AND peer_asn = ? AND id != ?",
-			user.PeerIP, user.PeerASN, id).Scan(&existingID)
+			"SELECT id FROM users WHERE peer_ip = ? AND id != ?",
+			user.PeerIP, id).Scan(&existingID)
 		if err == nil {
-			http.Error(w, "user with this IP and ASN already exists", http.StatusConflict)
+			http.Error(w, "user with this peer IP already exists", http.StatusConflict)
 			return
 		}
 		if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {

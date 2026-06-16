@@ -488,6 +488,11 @@ WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
 
 		ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0;
 
+		-- Detect pre-existing customizations: built-in adapters that were edited
+		UPDATE feed_adapters SET is_customized = 1
+		WHERE key IN ('opencck-main', 'canonical-json', 'ipranges', 'singbox-srs')
+		  AND revision > 1;
+
 		-- Catalog modes M:M with feeds
 CREATE TABLE catalog_mode_feeds (
     mode_id INTEGER NOT NULL REFERENCES catalog_modes(id) ON DELETE CASCADE,
@@ -496,9 +501,9 @@ CREATE TABLE catalog_mode_feeds (
 );
 CREATE INDEX IF NOT EXISTS idx_catalog_mode_feeds_feed ON catalog_mode_feeds(feed_id);
 
--- Migrate existing feed→mode assignments
+-- Migrate existing feed→mode assignments (only enabled feeds)
 INSERT INTO catalog_mode_feeds (mode_id, feed_id)
-SELECT mode_id, id FROM feeds WHERE mode_id IS NOT NULL;
+SELECT mode_id, id FROM feeds WHERE mode_id IS NOT NULL AND enabled = 1;
 
 -- Drop legacy feeds.mode_id column (indexes first)
 DROP INDEX IF EXISTS idx_feeds_mode;
@@ -1420,7 +1425,7 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
       WHERE ce.category = sc.category
         AND NOT EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
                         JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
-                        WHERE cmf2.feed_id = f.id AND m2.enabled = 1)
+                        WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1)
   )
   AND NOT EXISTS (
       SELECT 1
@@ -1429,8 +1434,8 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
       WHERE ce.category = sc.category
         AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
                     JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
-                    WHERE cmf2.feed_id = f.id AND m2.enabled = 1)
-  )`, userID, modeID)
+                    WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1)
+  )`, userID, modeID, modeID)
 	if err != nil {
 		return err
 	}
@@ -1458,7 +1463,7 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
         AND ce.service = ss.service
         AND NOT EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
                         JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
-                        WHERE cmf2.feed_id = f.id AND m2.enabled = 1)
+                        WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1)
   )
   AND NOT EXISTS (
       SELECT 1
@@ -1468,8 +1473,8 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
         AND ce.service = ss.service
         AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
                     JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
-                    WHERE cmf2.feed_id = f.id AND m2.enabled = 1)
-  )`, userID, modeID)
+                    WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1)
+  )`, userID, modeID, modeID)
 	if err != nil {
 		return err
 	}
