@@ -124,6 +124,21 @@ select:disabled,input:disabled{opacity:.5;cursor:not-allowed;background:var(--bg
 .hint-popup code{font-size:.8em;color:var(--muted)}
 [x-cloak]{display:none!important}
 .card form + form{margin-top:1rem}
+.card + .card{margin-top:1rem}
+h3{font-size:1.05em;font-weight:600;margin:1.5rem 0 .75rem}
+h3:first-child{margin-top:0}
+.muted{margin-top:-8px;margin-bottom:12px}
+.hint-inline{font-size:.85em}
+.form-grid{margin-bottom:12px}
+.row-actions{margin-top:.5rem}
+label.checkbox-row{margin-bottom:6px}
+.feed-data-label{display:flex;align-items:center;gap:4px;margin-bottom:4px}
+.hint-popup-inline{position:relative}
+.save-bar-flush{top:0;border-radius:0;margin-bottom:0}
+.input-flex{flex:1}
+.filter-row{grid-column:1/-1;padding:.5rem 0;border-bottom:1px solid var(--border)}
+.filter-row .muted{margin-bottom:.75rem}
+.filter-textarea{min-height:12em}
 `
 
 const pageStart = `<!DOCTYPE html>
@@ -190,7 +205,7 @@ const adapterEditTemplate = `{{with .Data}}
   </select></label>
   <div class=row-actions><button class=primary>{{tr "common.save"}}</button>
   <button type=submit class=secondary formaction="/admin/adapter/{{.Adapter.ID}}/test" id=test-btn disabled>{{tr "adapters.test"}}</button>
-  <span class=muted id=test-hint style=font-size:.85em>{{tr "adapters.select_feed_to_test"}}</span></div>
+  <span class="muted hint-inline" id=test-hint>{{tr "adapters.select_feed_to_test"}}</span></div>
   <script>
   var s=document.getElementById('test-feed-select');
   var b=document.getElementById('test-btn');
@@ -353,7 +368,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <p class=muted>{{tr "users.dynamic_ip_hint"}}</p>
 <div class=form-grid>
 <label>{{tr "users.bgp_password"}} <input type=password name=bgp_password value="{{.User.BGPPassword}}" placeholder="{{tr "users.bgp_password_placeholder"}}"></label>
-<label>{{tr "user.clear_password"}} <input type=checkbox name=clear_bgp_password style=display:inline;width:auto;margin-top:0> </label>
+<label>{{tr "user.clear_password"}} <input type=checkbox name=clear_bgp_password></label>
 </div>
 <script>
 var d=document.getElementById('dynamic-ip');
@@ -431,7 +446,7 @@ const communitiesBody = `{{with .Data}}
 <label>{{tr "catalog.mode"}} <select id=mode-select>
 {{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.Mode.ID}}selected{{end}}>{{.Name}}</option>{{end}}
 </select></label>
-<div class="save-bar" style="top:0;border-radius:0;margin-bottom:0">
+<div class="save-bar save-bar-flush">
   <div><strong>{{tr "communities.title"}}</strong><br>
   <span class=muted id=change-summary>{{tr "communities.no_changes"}}</span></div>
   <button type=submit class=primary id=save-btn disabled form=communities-form>{{tr "communities.apply"}}</button>
@@ -847,7 +862,7 @@ const modesTemplate = `{{with .Data}}
 <form method=post action=/admin/modes>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <div class=save-bar>
-<input name=name required autofocus style=flex:1>
+<input name=name required autofocus class=input-flex>
 <label class=checkbox-row><input type=checkbox name=enabled checked> {{tr "feeds.enabled"}}</label>
 <button class=primary>{{tr "common.add"}}</button>
 </div>
@@ -924,8 +939,8 @@ const feedEditTemplate = `{{with .Data}}
 {{range .Modes}}<label><input type=checkbox name=mode_ids value="{{.ID}}" {{if index $.Data.FeedModeIDs .ID}}checked{{end}}> {{.Name}}</label>{{end}}
 </div>
 <div x-data="{hint:false}">
-  <label style="display:flex;align-items:center;gap:4px;margin-bottom:4px">{{tr "feeds.data"}} <button type=button class=hint-btn @click="hint=!hint">?</button></label>
-  <div class=hint-popup x-show="hint" @click.away="hint=false" x-transition x-cloak style="position:relative">
+  <label class=feed-data-label>{{tr "feeds.data"}} <button type=button class=hint-btn @click="hint=!hint">?</button></label>
+  <div class="hint-popup hint-popup-inline" x-show="hint" @click.away="hint=false" x-transition x-cloak>
     <p>{{tr "feeds.data_hint"}}</p><code>{"category": "Russia", "service": "geoip-ru"}</code>
   </div>
   <textarea name=data class=large>{{.Feed.Data}}</textarea>
@@ -1007,11 +1022,11 @@ const settingsTemplate = `{{with .Data}}
 {{end}}
 {{if .GlobalFilters}}
 <div class=section-head><h2>{{tr "settings.section_filters"}}</h2></div>
-<div style="grid-column:1/-1;padding:.5rem 0;border-bottom:1px solid var(--border)">
-<p class=muted style=margin-bottom:.75rem>{{tr "global_filters.explanation"}}</p>
+<div class=filter-row>
+<p class=muted>{{tr "global_filters.explanation"}}</p>
 <div class=grid>
-<label>{{tr "filters.allow"}} <textarea class=large style=min-height:12em name=filter_allow>{{.GlobalFilters.Allow}}</textarea></label>
-<label>{{tr "filters.deny"}} <textarea class=large style=min-height:12em name=filter_deny>{{.GlobalFilters.Deny}}</textarea></label>
+<label>{{tr "filters.allow"}} <textarea class="large filter-textarea" name=filter_allow>{{.GlobalFilters.Allow}}</textarea></label>
+<label>{{tr "filters.deny"}} <textarea class="large filter-textarea" name=filter_deny>{{.GlobalFilters.Deny}}</textarea></label>
 </div>
 </div>
 {{end}}
