@@ -177,6 +177,8 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /admin/modes", server.requireAdmin(server.addMode))
 	mux.HandleFunc("POST /admin/modes/{id}", server.requireAdmin(server.updateMode))
 	mux.HandleFunc("POST /admin/modes/{id}/delete", server.requireAdmin(server.deleteMode))
+	mux.HandleFunc("GET /admin/mode/{id}", server.requireAdmin(server.modeEditPage))
+	mux.HandleFunc("POST /admin/modes/{id}/feeds", server.requireAdmin(server.modeFeedToggle))
 	mux.HandleFunc("GET /admin/feed", server.requireAdmin(server.feedEditPage))
 	mux.HandleFunc("GET /admin/feed/{id}", server.requireAdmin(server.feedEditPage))
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
@@ -973,6 +975,96 @@ func (s *Server) deleteMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("HX-Redirect", "/admin/modes?saved=1")
+}
+
+func (s *Server) modeEditPage(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	mode, err := s.store.CatalogMode(ctx, id)
+	if store.IsNotFound(err) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+
+	// Count feeds in this mode
+	feedCounts, _ := s.store.ModeFeedCounts(ctx)
+
+	// Get all feeds and check which ones are in this mode
+	allFeeds, err := s.store.Feeds(ctx, false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	modeFeedIDs, _ := s.store.FeedModes(ctx, id)
+	modeFeedSet := make(map[int64]bool, len(modeFeedIDs))
+	for _, fid := range modeFeedIDs {
+		modeFeedSet[fid] = true
+	}
+
+	type feedRow struct {
+		ID     int64
+		Name   string
+		URL    string
+		InMode bool
+	}
+	feedRows := make([]feedRow, 0, len(allFeeds))
+	for _, f := range allFeeds {
+		feedRows = append(feedRows, feedRow{
+			ID:     f.ID,
+			Name:   f.Name,
+			URL:    f.URL,
+			InMode: modeFeedSet[f.ID],
+		})
+	}
+
+	lang, _ := requestLocale(r, s.defaultLang)
+	s.renderAdmin(w, r, http.StatusOK, translate(lang, "catalog.modes"), "modeEdit", map[string]any{
+		"Mode":      mode,
+		"FeedCount": feedCounts[id],
+		"Feeds":     feedRows,
+	})
+}
+
+func (s *Server) modeFeedToggle(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		http.Error(w, "bad mode id", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	feedID, err := strconv.ParseInt(r.FormValue("feed_id"), 10, 64)
+	if err != nil || feedID <= 0 {
+		http.Error(w, "bad feed id", http.StatusBadRequest)
+		return
+	}
+	switch r.FormValue("action") {
+	case "add":
+		if err := s.store.AddFeedToMode(r.Context(), id, feedID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	case "remove":
+		if err := s.store.RemoveFeedFromMode(r.Context(), id, feedID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	default:
+		http.Error(w, "bad action", http.StatusBadRequest)
+		return
+	}
+	_ = s.bgp.Reconcile(r.Context())
+	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
@@ -2125,6 +2217,7 @@ func compileTemplates() map[locale]map[string]*template.Template {
 		"adapters-list": adaptersListTemplate,
 		"settings":     settingsTemplate,
 		"modes":        modesTemplate,
+		"modeEdit":     modeEditTemplate,
 	}
 	result := make(map[locale]map[string]*template.Template, len(translations))
 	for lang := range translations {
@@ -2325,9 +2418,9 @@ func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type feedRow struct {
-		Feed     store.Feed
-		ModeName string
-		LastSync string
+		Feed      store.Feed
+		ModeNames string
+		LastSync  string
 	}
 
 	modeMap := make(map[int64]string)
@@ -2349,7 +2442,7 @@ func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, feedRow{
 			Feed:     f,
-			ModeName: modeNames,
+			ModeNames: modeNames,
 			LastSync: f.LastSuccess,
 		})
 	}

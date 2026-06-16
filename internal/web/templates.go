@@ -784,7 +784,7 @@ const feedsListTemplate = `{{with .Data}}
 {{range .Feeds}}
 <tr>
 <td>{{.Feed.Name}}</td>
-<td>{{.ModeName}}</td>
+<td>{{.ModeNames}}</td>
 <td>{{if .Feed.Enabled}}<span class=ok>enabled</span>{{else}}<span class=error>disabled</span>{{end}}</td>
 <td>{{if .LastSync}}{{.LastSync}}{{else}}—{{end}}</td>
 <td>
@@ -817,7 +817,7 @@ const modesTemplate = `{{with .Data}}
 <tr><th>{{tr "feeds.name"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.heading"}}</th><th></th></tr>
 {{range .Modes}}
 <tr>
-<td>{{.Name}}{{if .IsBuiltin}} <span class=pill>{{tr "adapters.built_in"}}</span>{{end}}</td>
+<td><a href="/admin/mode/{{.ID}}">{{.Name}}</a>{{if .IsBuiltin}} <span class=pill>{{tr "adapters.built_in"}}</span>{{end}}</td>
 <td>{{if .Enabled}}<span class=ok>{{tr "feeds.enabled"}}</span>{{else}}<span class=error>{{tr "catalog.disabled"}}</span>{{end}}</td>
 <td>{{.FeedCount}}</td>
 <td>
@@ -833,6 +833,26 @@ const modesTemplate = `{{with .Data}}
 </div>
 {{end}}`
 
+const modeEditTemplate = `{{with .Data}}
+<a href="/admin/modes" class=back-link>← {{tr "nav.modes"}}</a>
+<h1>{{.Mode.Name}}</h1>
+<p class=muted>{{printf "%d" .FeedCount}} {{tr "feeds.heading"}}</p>
+
+<label class=checkbox-row><input type=checkbox name=enabled hx-post="/admin/modes/{{.Mode.ID}}" hx-trigger=change hx-vals='{"action":"toggle"}' hx-swap=none {{if .Mode.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label>
+
+<div class=card>
+<table>
+<tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "catalog.mode"}}</th></tr>
+{{range .Feeds}}
+<tr>
+<td>{{.Name}}</td>
+<td><code>{{.URL}}</code></td>
+<td><input type=checkbox hx-post="/admin/modes/{{$.Data.Mode.ID}}/feeds" hx-trigger=change hx-swap=none hx-vals='{"feed_id":"{{.ID}}","action":"{{if .InMode}}remove{{else}}add{{end}}"}' {{if .InMode}}checked{{end}}></td>
+</tr>{{end}}
+</table>
+</div>
+{{end}}`
+
 const feedEditTemplate = `{{with .Data}}
 <a href="/admin/feeds" class=back-link>← {{tr "nav.feeds"}}</a>
 <h1>{{if .IsNew}}{{tr "feeds.add"}}{{else}}{{tr "feeds.edit"}}{{end}}</h1>
@@ -840,22 +860,19 @@ const feedEditTemplate = `{{with .Data}}
 <form method=post action="{{if .IsNew}}/admin/feed{{else}}/admin/feed/{{.Feed.ID}}{{end}}">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <label>{{tr "feeds.name"}} <input name=name value="{{.Feed.Name}}" required></label>
-	<label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
+<label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
 <label>{{tr "feeds.data"}} <textarea name=data rows=4 placeholder='{"category": "Russia", "service": "geoip-ru"}' class=mono>{{.Feed.Data}}</textarea></label>
-	<div class=form-grid>
-<label>{{tr "catalog.modes"}}</label>
-	<div class=checkbox-row>
-{{range .Modes}}<label><input type=checkbox name=mode_ids value="{{.ID}}" {{if index $.Data.FeedModeIDs .ID}}checked{{end}}> {{.Name}}{{if not .Enabled}} ({{tr "catalog.disabled"}}){{end}}</label>{{end}}
-	</div>
-	<div class=form-grid>
+<div class=form-grid>
 <label>{{tr "feeds.adapter"}}
 <select name=adapter_id>
 {{range .Adapters}}<option value="{{.ID}}" {{if eq .ID $.Data.Feed.AdapterID}}selected{{end}}>{{.Name}}</option>{{end}}
 </select></label>
-</div>
 <label>{{tr "feeds.sync_interval"}} <input type=number name=sync_interval value="{{.Feed.SyncInterval}}" placeholder="{{tr "feeds.default_interval"}}"></label>
-<div class=checkbox-row><label><input type=checkbox name=enabled {{if .Feed.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label></div>
+</div>
+<label class=checkbox-row><input type=checkbox name=enabled {{if .Feed.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label>
+<div class=row-actions>
 <button type=submit class=primary>{{tr "common.save"}}</button>
+</div>
 </form>
 {{if not .IsNew}}<form method=post action="/admin/feed/{{.Feed.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}')">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button type=submit class=danger>{{tr "common.delete"}}</button></form>{{end}}
