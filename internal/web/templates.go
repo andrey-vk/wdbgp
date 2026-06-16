@@ -157,6 +157,14 @@ body{max-width:1100px;margin:0 auto;padding:1.5rem 1rem 3rem}
 
 const pageEnd = `</body></html>`
 
+// Component templates
+const sectionHeader = `{{define "section-header"}}<h3>{{.}}</h3>{{end}}`
+const backLink = `{{define "back-link"}}<a href="{{.URL}}" class=back-link>← {{.Label}}</a>{{end}}`
+const actionRow = `{{define "action-row"}}<div class=row-actions><button class=primary>{{.SaveLabel}}</button>{{if .DeleteURL}}<form method=post action="{{.DeleteURL}}" style=display:inline onsubmit="return confirm('{{.DeleteConfirm}}')"><input type=hidden name=csrf_token value="{{.CSRFToken}}"><button class=danger>{{.DeleteLabel}}</button></form>{{end}}</div>{{end}}`
+const statusBadge = `{{define "status-badge"}}{{if .}}<span class=ok>active</span>{{else}}<span class=error>inactive</span>{{end}}{{end}}`
+const errorMessage = `{{define "error-message"}}{{if .}}<p class=error>{{.}}</p>{{end}}{{end}}`
+const checkboxRow = `{{define "checkbox-row"}}<label class=checkbox-row><input type=checkbox name="{{.Name}}" {{if .Checked}}checked{{end}} {{if .Disabled}}disabled{{end}}> {{.Label}}</label>{{if .Hint}}<p class=muted>{{.Hint}}</p>{{end}}{{end}}`
+
 const accessDeniedTemplate = `<h1>{{tr "access_denied.heading"}}</h1><p>IP: <code>{{.Data}}</code></p>`
 
 const userLoginTemplate = `{{with .Data}}
@@ -172,7 +180,8 @@ const userLoginTemplate = `{{with .Data}}
 </section>
 {{end}}`
 
-const loginTemplate = `<h1>{{tr "admin.heading"}}</h1>{{if .Data}}<p class=error>{{.Data}}</p>{{end}}
+const loginTemplate = `<h1>{{tr "admin.heading"}}</h1>
+{{template "error-message" .Data}}
 <form method=post><label>{{tr "login.password"}} <input type=password name=password autofocus required></label>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <button class=primary>{{tr "login.submit"}}</button></form>`
@@ -190,29 +199,35 @@ const adapterTestTemplate = `{{with .Data}}
 </section>{{end}}`
 
 const adapterEditTemplate = `{{with .Data}}
+{{template "back-link" dict "URL" "/admin/adapters" "Label" (tr "nav.adapters")}}
 <header><h1>{{.Adapter.Name}}</h1></header>
 <section class=card>
 <p><code>{{.Adapter.Key}}</code> · rev. {{.Adapter.Revision}}{{if .Adapter.BuiltIn}} · {{tr "adapters.built_in"}}{{end}}</p>
+{{template "error-message" .Error}}
 {{if .Error}}<h2>{{tr "adapters.error"}}</h2><pre class=error-output>{{.Error}}</pre>{{end}}
 <form method=post action="{{if .Adapter.ID}}/admin/adapter/{{.Adapter.ID}}{{else}}/admin/adapter{{end}}">
  <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
  <label>{{tr "feeds.name"}} <input name=name value="{{.Adapter.Name}}" required></label>
+ <p class=muted>{{tr "hints.adapter_name"}}</p>
  <label>{{tr "adapters.allowed_hosts"}} <input name=allowed_hosts value="{{.Adapter.AllowedHosts}}"></label>
- <label>{{tr "adapters.source"}} <textarea name=source class=large rows=30 required>{{.Adapter.Source}}</textarea></label>
-  <label>{{tr "adapters.test_feed"}} <select name=feed_id id=test-feed-select>
-  <option value="">{{tr "adapters.select_feed"}}</option>
-  {{range .Feeds}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
-  </select></label>
-  <div class=row-actions><button class=primary>{{tr "common.save"}}</button>
-  <button type=submit class=secondary formaction="/admin/adapter/{{.Adapter.ID}}/test" id=test-btn disabled>{{tr "adapters.test"}}</button>
-  <span class="muted hint-inline" id=test-hint>{{tr "adapters.select_feed_to_test"}}</span></div>
-  <script>
-  var s=document.getElementById('test-feed-select');
-  var b=document.getElementById('test-btn');
-  var h=document.getElementById('test-hint');
-  s.addEventListener('change',function(){var v=!!this.value;b.disabled=!v;h.style.display=v?'none':''});
-  </script>
- </form>
+ <p class=muted>{{tr "hints.adapter_allowed_hosts"}}</p>
+ {{template "section-header" (tr "adapters.source")}}
+ <label><textarea name=source class=large rows=30 required>{{.Adapter.Source}}</textarea></label>
+ <p class=muted>{{tr "hints.adapter_source"}}</p>
+ <label>{{tr "adapters.test_feed"}} <select name=feed_id id=test-feed-select>
+ <option value="">{{tr "adapters.select_feed"}}</option>
+ {{range .Feeds}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+ </select></label>
+ <div class=row-actions><button class=primary>{{tr "common.save"}}</button>
+ <button type=submit class=secondary formaction="/admin/adapter/{{.Adapter.ID}}/test" id=test-btn disabled>{{tr "adapters.test"}}</button>
+ <span class="muted hint-inline" id=test-hint>{{tr "adapters.select_feed_to_test"}}</span></div>
+ <script>
+ var s=document.getElementById('test-feed-select');
+ var b=document.getElementById('test-btn');
+ var h=document.getElementById('test-hint');
+ s.addEventListener('change',function(){var v=!!this.value;b.disabled=!v;h.style.display=v?'none':''});
+ </script>
+</form>
 {{if .Adapter.ID}}{{if .Adapter.BuiltIn}}<form method=post action="/admin/adapter/{{.Adapter.ID}}/reset" onsubmit="return confirm('{{tr "adapters.reset_confirm"}}');">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <button class=danger>{{tr "adapters.reset"}}</button></form>{{end}}
@@ -344,26 +359,30 @@ updateSelectionCounts();
 const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
 const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{with .Data}}
-<header><h1>{{printf (tr "title.user") .User.Name}}</h1></header>
-<a href="/admin/users" class=back-link>← {{tr "nav.users"}}</a>
+<h1>{{printf (tr "title.user") .User.Name}}</h1>
+{{template "back-link" dict "URL" "/admin/users" "Label" (tr "nav.users")}}
 <div class=tab-bar>
   <button class="tab active" data-tab=settings>{{tr "user.settings"}}</button>
   <button class=tab data-tab=selection>{{tr "selection.heading"}}</button>
   <button class=tab data-tab=filters>{{tr "filters.heading"}}</button>
 </div>
 <div class="tab-content tab-settings">
-<section class=card><h2>{{tr "user.settings"}}</h2><form method=post action="{{if .User.ID}}/admin/user/{{.User.ID}}{{else}}/admin/user{{end}}">
+<div class=card>
+{{template "error-message" .Error}}
+<form method=post action="{{if .User.ID}}/admin/user/{{.User.ID}}{{else}}/admin/user{{end}}">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=action value=settings>
 
 <label>{{tr "feeds.name"}} <input name=name value="{{.User.Name}}" required></label>
+<p class=muted>{{tr "hints.user_name"}}</p>
 <label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
+<p class=muted>{{tr "hints.user_networks"}}</p>
 
-<h3>{{tr "users.bgp_section"}}</h3>
-<div class=form-grid>
+{{template "section-header" (tr "users.bgp_section")}}
 <label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" id=peer-ip-input {{if eq .User.PeerIP "0.0.0.0"}}disabled{{end}}></label>
+<p class=muted>{{tr "hints.user_peer_ip"}}</p>
 <label>{{tr "users.peer_asn"}} <input type=number name=peer_asn value="{{.User.PeerASN}}" required></label>
-</div>
+<p class=muted>{{tr "hints.user_peer_asn"}}</p>
 <label class=checkbox-row><input type=checkbox id=dynamic-ip {{if eq .User.PeerIP "0.0.0.0"}}checked{{end}}> {{tr "users.dynamic_ip"}}</label>
 <p class=muted>{{tr "users.dynamic_ip_hint"}}</p>
 <div class=form-grid>
@@ -376,24 +395,23 @@ var i=document.getElementById('peer-ip-input');
 d.addEventListener('change',function(){if(this.checked){i.value='0.0.0.0';i.disabled=true}else{i.disabled=false;if(i.value==='0.0.0.0')i.value=''}});
 </script>
 
-<h3>{{tr "users.access_section"}}</h3>
-<div class=form-grid>
+{{template "section-header" (tr "users.access_section")}}
 <label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Selection.Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.User.CatalogModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
+<p class=muted>{{tr "hints.user_catalog_mode"}}</p>
 <label>{{tr "users.web_auth"}} <select name=web_auth>
 <option value=network {{if eq .User.WebAuth "network"}}selected{{end}}>{{tr "users.web_auth_network"}}</option>
 <option value=login {{if eq .User.WebAuth "login"}}selected{{end}}>{{tr "users.web_auth_login"}}</option>
 <option value=both {{if eq .User.WebAuth "both"}}selected{{end}}>{{tr "users.web_auth_both"}}</option>
 <option value=any {{if eq .User.WebAuth "any"}}selected{{end}}>{{tr "users.web_auth_any"}}</option>
 </select></label>
-</div>
 <p class=muted>{{tr "users.web_auth_hint"}}</p>
 
-<label class=checkbox-row><input type=checkbox name=enabled {{if .User.Enabled}}checked{{end}}> {{tr "user.enabled"}}</label>
+{{template "checkbox-row" dict "Name" "enabled" "Checked" .User.Enabled "Label" (tr "user.enabled")}}
 
-<h3>{{tr "users.permissions_section"}}</h3>
-<label class=checkbox-row><input type=checkbox name=locked {{if .User.SelectionLocked}}checked{{end}}> {{tr "user.lock_selection"}}</label>
-<label class=checkbox-row><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> {{tr "users.allow_filter_editing"}}</label>
-<label class=checkbox-row><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
+{{template "section-header" (tr "users.permissions_section")}}
+{{template "checkbox-row" dict "Name" "locked" "Checked" .User.SelectionLocked "Label" (tr "user.lock_selection")}}
+{{template "checkbox-row" dict "Name" "filter_editable" "Checked" .User.FilterEditable "Label" (tr "users.allow_filter_editing")}}
+{{template "checkbox-row" dict "Name" "catalog_mode_editable" "Checked" .User.CatalogEditable "Label" (tr "users.allow_mode_editing")}}
 <input type=hidden name=filter_mode value="{{.User.FilterMode}}">
 
 {{if .User.ID}}<section class=card id=credentials-section>
@@ -415,7 +433,7 @@ d.addEventListener('change',function(){if(this.checked){i.value='0.0.0.0';i.disa
 <button class=primary>{{tr "user.save"}}</button>
 {{if .User.ID}}</form><form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');" style=display:inline><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form>{{end}}
 </div>
-{{if not .User.ID}}</form>{{end}}</section></div>
+{{if not .User.ID}}</form>{{end}}</div></div>
 {{template "selection" .Selection}}
 <script>
 (function(){
@@ -440,8 +458,8 @@ document.querySelectorAll('.tab').forEach(function(t){t.addEventListener('click'
 
 const communitiesBody = `{{with .Data}}
 <header><h1>{{tr "communities.title"}}</h1></header>
+{{template "error-message" .Error}}
 {{if .Saved}}<p class=ok>{{if eq .Saved "reset"}}All communities reset to auto-generated values.{{else}}{{tr "communities.saved"}}{{end}}</p>{{end}}
-{{if .Error}}<p class=error>{{.Error}}</p>{{end}}
 <section class=card>
 <label>{{tr "catalog.mode"}} <select id=mode-select>
 {{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.Mode.ID}}selected{{end}}>{{.Name}}</option>{{end}}
@@ -856,6 +874,7 @@ const feedsListTemplate = `{{with .Data}}
 
 const modesTemplate = `{{with .Data}}
 <h1>{{tr "catalog.modes"}}</h1>
+{{template "error-message" .Error}}
 {{if eq .Saved "1"}}<p class=ok>{{tr "catalog.modes_saved"}}</p>{{end}}
 <p class=muted>{{tr "catalog.modes_hint"}}</p>
 <div class=card>
@@ -867,6 +886,7 @@ const modesTemplate = `{{with .Data}}
 <button class=primary>{{tr "common.add"}}</button>
 </div>
 </form>
+<p class=muted>{{tr "hints.mode_name"}}</p>
 <table>
 <tr><th>{{tr "feeds.name"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.heading"}}</th><th></th></tr>
 {{range .Modes}}
@@ -896,6 +916,7 @@ const modesTemplate = `{{with .Data}}
 const modeEditTemplate = `{{with .Data}}
 <a href="/admin/modes" class=back-link>← {{tr "nav.modes"}}</a>
 <h1>{{.Mode.Name}}</h1>
+{{template "error-message" .Error}}
 <p class=muted>{{printf "%d" .FeedCount}} {{tr "feeds.heading"}}</p>
 
 <form method=post action="/admin/modes/{{.Mode.ID}}" style=display:inline>
@@ -929,11 +950,15 @@ const modeEditTemplate = `{{with .Data}}
 const feedEditTemplate = `{{with .Data}}
 <a href="/admin/feeds" class=back-link>← {{tr "nav.feeds"}}</a>
 <h1>{{if .IsNew}}{{tr "feeds.add"}}{{else}}{{tr "feeds.edit"}}{{end}}</h1>
+{{template "error-message" .Error}}
 <div class=card>
 <form method=post action="{{if .IsNew}}/admin/feed{{else}}/admin/feed/{{.Feed.ID}}{{end}}">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+{{template "section-header" (tr "feeds.heading")}}
 <label>{{tr "feeds.name"}} <input name=name value="{{.Feed.Name}}" required></label>
+<p class=muted>{{tr "hints.feed_name"}}</p>
 <label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
+<p class=muted>{{tr "hints.feed_url"}}</p>
 <label>{{tr "catalog.modes"}}</label>
 <div class=checkbox-row>
 {{range .Modes}}<label><input type=checkbox name=mode_ids value="{{.ID}}" {{if index $.Data.FeedModeIDs .ID}}checked{{end}}> {{.Name}}</label>{{end}}
@@ -945,13 +970,14 @@ const feedEditTemplate = `{{with .Data}}
   </div>
   <textarea name=data class=large>{{.Feed.Data}}</textarea>
 </div>
-<div class=form-grid>
+{{template "section-header" (tr "feeds.adapter")}}
 <label>{{tr "feeds.adapter"}}
 <select name=adapter_id>
 {{range .Adapters}}<option value="{{.ID}}" {{if eq .ID $.Data.Feed.AdapterID}}selected{{end}}>{{.Name}}</option>{{end}}
 </select></label>
+<p class=muted>{{tr "hints.feed_adapter"}}</p>
 <label>{{tr "feeds.sync_interval"}} <input type=number name=sync_interval value="{{.Feed.SyncInterval}}"></label>
-</div>
+<p class=muted>{{tr "hints.feed_sync_interval"}}</p>
 <div class=row-actions>
 <button type=submit class=primary>{{tr "common.save"}}</button>
 </div>
@@ -984,6 +1010,7 @@ const adaptersListTemplate = `{{with .Data}}
 
 const settingsTemplate = `{{with .Data}}
 <h1>{{tr "nav.settings"}}</h1>
+{{template "error-message" .Error}}
 {{if .Saved}}<p class=ok>{{tr "settings.saved"}}</p>{{end}}
 <form method=post action=/admin/settings>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">

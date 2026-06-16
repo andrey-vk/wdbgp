@@ -130,6 +130,7 @@ type userEditView struct {
 	User        store.User
 	Selection   selectionView
 	Credentials []store.UserCredential
+	Error       string
 }
 
 type filterView struct {
@@ -2310,20 +2311,23 @@ func compileTemplates() map[locale]map[string]*template.Template {
 	}
 	// Fragment templates (body only, no pageStart/pageEnd) for htmx and shell embedding
 	fragments := map[string]string{
-		"debug":        debugTemplate,
-		"dashboard":    dashboardTemplate,
-		"communities":  communitiesTemplate,
-		"adapter-edit": adapterEditTemplate,
-		"adapter-test": adapterTestTemplate,
+		"debug":         debugTemplate,
+		"dashboard":     dashboardTemplate,
+		"communities":   communitiesTemplate,
+		"adapter-edit":  adapterEditTemplate,
+		"adapter-test":  adapterTestTemplate,
 		"user-edit":     userEditTemplate,
 		"users-list":    usersListTemplate,
 		"feeds-list":    feedsListTemplate,
 		"feed-edit":     feedEditTemplate,
 		"adapters-list": adaptersListTemplate,
-		"settings":     settingsTemplate,
-		"modes":        modesTemplate,
-		"modeEdit":     modeEditTemplate,
+		"settings":      settingsTemplate,
+		"modes":         modesTemplate,
+		"modeEdit":      modeEditTemplate,
 	}
+	// Prepend component definitions so page/fragment templates can use them via {{template}}.
+	componentTemplates := sectionHeader + backLink + actionRow + statusBadge + errorMessage + checkboxRow
+
 	result := make(map[locale]map[string]*template.Template, len(translations))
 	for lang := range translations {
 		result[lang] = make(map[string]*template.Template, len(bodies)+len(fragments)+1)
@@ -2341,19 +2345,27 @@ func compileTemplates() map[locale]map[string]*template.Template {
 			"plural": func(count int, oneKey, fewKey, manyKey string) string {
 				return pluralTranslation(lang, count, oneKey, fewKey, manyKey)
 			},
+			"dict": func(values ...interface{}) map[string]interface{} {
+				d := make(map[string]interface{})
+				for i := 0; i < len(values); i += 2 {
+					key := fmt.Sprint(values[i])
+					d[key] = values[i+1]
+				}
+				return d
+			},
 		}
 		for name, body := range bodies {
 			result[lang][name] = template.Must(template.New("page").Funcs(funcs).
-				Parse(pageStart + body + pageEnd))
+				Parse(componentTemplates + pageStart + body + pageEnd))
 		}
 		// Fragment templates for direct htmx rendering
 		for name, body := range fragments {
 			result[lang][name] = template.Must(template.New(name).Funcs(funcs).
-				Parse(body))
+				Parse(componentTemplates + body))
 		}
 		// Admin shell (standalone layout)
 		result[lang]["admin-shell"] = template.Must(template.New("admin-shell").Funcs(funcs).
-			Parse(adminShellTemplate))
+			Parse(componentTemplates + adminShellTemplate))
 	}
 	return result
 }
