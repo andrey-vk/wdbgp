@@ -206,6 +206,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("GET /admin/users", server.requireAdmin(server.usersList))
 	mux.HandleFunc("GET /admin/feeds", server.requireAdmin(server.feedsList))
 	mux.HandleFunc("POST /admin/feeds/{id}/force-sync", server.requireAdmin(server.handleFeedForceSync))
+	mux.HandleFunc("POST /admin/feeds/sync-all", server.requireAdmin(server.handleSyncAll))
 	mux.HandleFunc("GET /admin/adapters", server.requireAdmin(server.adaptersList))
 	mux.HandleFunc("GET /admin/settings", server.requireAdmin(server.settingsPage))
 	mux.HandleFunc("POST /admin/settings", server.requireAdmin(server.saveSettings))
@@ -2609,6 +2610,13 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 					"UPDATE feeds SET last_error = ? WHERE id = ?", msg, id)
 			}
 		}
+	}()
+	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
+}
+
+func (s *Server) handleSyncAll(w http.ResponseWriter, r *http.Request) {
+	go func() {
+		s.syncer.SyncAll(context.Background())
 	}()
 	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
 }

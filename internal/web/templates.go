@@ -778,6 +778,10 @@ const usersListTemplate = `{{with .Data}}
 
 const feedsListTemplate = `{{with .Data}}
 <h1>{{tr "nav.feeds"}}</h1>
+<form method=post action="/admin/feeds/sync-all" style=display:inline>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<button class=primary>⟳ {{tr "feeds.sync_all"}}</button>
+</form>
 <div class=card>
 <table>
 <tr><th>{{tr "feeds.name"}}</th><th>{{tr "catalog.mode"}}</th><th>{{tr "feeds.status"}}</th><th>{{tr "feeds.last_sync"}}</th><th></th></tr>
