@@ -448,7 +448,10 @@ func TestSelectionCountEndpoint(t *testing.T) {
 
 	// Get a feed in mode 1
 	var feedID int64
-	err = db.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").Scan(&feedID)
+	err = db.DB.QueryRow(`
+SELECT f.id FROM feeds f
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1`).Scan(&feedID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +561,10 @@ func adminAuthCookie(t *testing.T, cfg config.Config) *http.Cookie {
 func addCommunityTestData(t *testing.T, db *store.Store) {
 	t.Helper()
 	var feedID int64
-	err := db.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").Scan(&feedID)
+	err := db.DB.QueryRow(`
+SELECT f.id FROM feeds f
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1`).Scan(&feedID)
 	if err != nil {
 		t.Fatal(err)
 	}

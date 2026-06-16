@@ -227,7 +227,7 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 	}
 	ipranges := modes[1]
 	ipranges.Enabled = true
-	if err := db.UpdateCatalogMode(ctx, ipranges); err != nil {
+	if err := db.UpdateCatalogMode(ctx, ipranges.ID, ipranges.Name, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.AddFeedForMode(
@@ -301,7 +301,7 @@ func TestLockedUserCanChangeEditableCatalogMode(t *testing.T) {
 	}
 	ipranges := modes[1]
 	ipranges.Enabled = true
-	if err := db.UpdateCatalogMode(ctx, ipranges); err != nil {
+	if err := db.UpdateCatalogMode(ctx, ipranges.ID, ipranges.Name, true); err != nil {
 		t.Fatal(err)
 	}
 	userID, err := db.AddUser(ctx, store.User{

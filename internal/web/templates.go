@@ -641,6 +641,7 @@ body{display:flex;height:100vh;overflow:hidden}
 <a href=/admin/users hx-get=/admin/users hx-target=#main hx-push-url=true>{{tr "nav.users"}}</a>
 <a href=/admin/feeds hx-get=/admin/feeds hx-target=#main hx-push-url=true>{{tr "nav.feeds"}}</a>
 <a href=/admin/communities hx-get=/admin/communities hx-target=#main hx-push-url=true>{{tr "nav.communities"}}</a>
+<a href=/admin/modes hx-get=/admin/modes hx-target=#main hx-push-url=true>{{tr "nav.modes"}}</a>
 <a href=/admin/adapters hx-get=/admin/adapters hx-target=#main hx-push-url=true>{{tr "nav.adapters"}}</a>
 <a href=/admin/settings hx-get=/admin/settings hx-target=#main hx-push-url=true>{{tr "nav.settings"}}</a>
 <a href=/admin/debug hx-get=/admin/debug hx-target=#main hx-push-url=true class=sidebar-subtle>{{tr "debug.heading"}}</a>
@@ -799,6 +800,39 @@ const feedsListTemplate = `{{with .Data}}
 <p><a href="/admin/feed" class="button primary">{{tr "feeds.add"}}</a></p>
 {{end}}`
 
+const modesTemplate = `{{with .Data}}
+<h1>{{tr "catalog.modes"}}</h1>
+{{if eq .Saved "1"}}<p class=ok>{{tr "catalog.modes_saved"}}</p>{{end}}
+<p class=muted>{{tr "catalog.modes_hint"}}</p>
+<div class=card>
+<form method=post action=/admin/modes>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<div class=save-bar>
+<input name=name placeholder="{{tr "catalog.mode_name_placeholder"}}" required autofocus style=flex:1>
+<label class=checkbox-row><input type=checkbox name=enabled checked> {{tr "feeds.enabled"}}</label>
+<button class=primary>{{tr "common.add"}}</button>
+</div>
+</form>
+<table>
+<tr><th>{{tr "feeds.name"}}</th><th>{{tr "feeds.enabled"}}</th><th>{{tr "feeds.heading"}}</th><th></th></tr>
+{{range .Modes}}
+<tr>
+<td>{{.Name}}{{if .IsBuiltin}} <span class=pill>{{tr "adapters.built_in"}}</span>{{end}}</td>
+<td>{{if .Enabled}}<span class=ok>{{tr "feeds.enabled"}}</span>{{else}}<span class=error>{{tr "catalog.disabled"}}</span>{{end}}</td>
+<td>{{.FeedCount}}</td>
+<td>
+{{if not .IsBuiltin}}
+<form method=post action="/admin/modes/{{.ID}}/delete" style=display:inline onsubmit="return confirm('{{tr "catalog.mode_delete_confirm"}}')">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<button class=danger>{{tr "common.delete"}}</button>
+</form>
+{{end}}
+</td>
+</tr>{{end}}
+</table>
+</div>
+{{end}}`
+
 const feedEditTemplate = `{{with .Data}}
 <a href="/admin/feeds" class=back-link>← {{tr "nav.feeds"}}</a>
 <h1>{{if .IsNew}}{{tr "feeds.add"}}{{else}}{{tr "feeds.edit"}}{{end}}</h1>
@@ -809,10 +843,11 @@ const feedEditTemplate = `{{with .Data}}
 	<label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
 <label>{{tr "feeds.data"}} <textarea name=data rows=4 placeholder='{"category": "Russia", "service": "geoip-ru"}' class=mono>{{.Feed.Data}}</textarea></label>
 	<div class=form-grid>
-<label>{{tr "catalog.mode"}}
-<select name=catalog_mode_id>
-{{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.Feed.ModeID}}selected{{end}}>{{.Name}}</option>{{end}}
-</select></label>
+<label>{{tr "catalog.modes"}}</label>
+	<div class=checkbox-row>
+{{range .Modes}}<label><input type=checkbox name=mode_ids value="{{.ID}}" {{if index $.Data.FeedModeIDs .ID}}checked{{end}}> {{.Name}}{{if not .Enabled}} ({{tr "catalog.disabled"}}){{end}}</label>{{end}}
+	</div>
+	<div class=form-grid>
 <label>{{tr "feeds.adapter"}}
 <select name=adapter_id>
 {{range .Adapters}}<option value="{{.ID}}" {{if eq .ID $.Data.Feed.AdapterID}}selected{{end}}>{{.Name}}</option>{{end}}

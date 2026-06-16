@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -141,35 +142,70 @@ function sync(feed, api) {
 `
 
 type builtInAdapter struct {
-	name         string
-	source       string
-	allowedHosts string
+	name           string
+	source         string
+	allowedHosts   string
+	builtinVersion int
 }
 
 var builtInAdapters = map[string]builtInAdapter{
 	"canonical-json": {
 		name: "Canonical JSON", source: canonicalJSONAdapter,
+		builtinVersion: 1,
 	},
 	"opencck": {
 		name: "OpenCCK", source: openCCKAdapter,
+		builtinVersion: 1,
 	},
 	"ipranges": {
 		name: "IPRanges", source: ipRangesAdapter,
-		allowedHosts: "raw.githubusercontent.com",
+		allowedHosts:   "raw.githubusercontent.com",
+		builtinVersion: 1,
 	},
 	"singbox-srs": {
 		name: "sing-box SRS", source: singboxSRSAdapter,
+		builtinVersion: 1,
 	},
 }
 
 func (s *Store) seedBuiltInAdapters(ctx context.Context) error {
 	for key, adapter := range builtInAdapters {
+		// Try to insert if not exists (handles new built-in adapters).
 		if _, err := s.DB.ExecContext(ctx, `
-UPDATE feed_adapters
-SET source = ?
-WHERE key = ? AND source = ''`,
-			normalizedBuiltInSource(adapter.source), key); err != nil {
+INSERT OR IGNORE INTO feed_adapters(key, name, source, allowed_hosts, builtin_version, is_customized)
+VALUES (?, ?, ?, ?, ?, 0)`,
+			key, adapter.name, normalizedBuiltInSource(adapter.source),
+			adapter.allowedHosts, adapter.builtinVersion); err != nil {
 			return err
+		}
+
+		// Update existing adapters.
+		var isCustomized int
+		err := s.DB.QueryRowContext(ctx,
+			"SELECT is_customized FROM feed_adapters WHERE key = ?", key).Scan(&isCustomized)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return err
+		}
+
+		if isCustomized == 1 {
+			// Only update version — don't overwrite user customizations.
+			if _, err := s.DB.ExecContext(ctx,
+				"UPDATE feed_adapters SET builtin_version = ? WHERE key = ?",
+				adapter.builtinVersion, key); err != nil {
+				return err
+			}
+		} else {
+			if _, err := s.DB.ExecContext(ctx,
+				`UPDATE feed_adapters
+				 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?
+				 WHERE key = ?`,
+				adapter.name, normalizedBuiltInSource(adapter.source),
+				adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

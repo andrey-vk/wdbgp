@@ -547,12 +547,12 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		t.Fatal(err)
 	}
 	defer s.Close()
-	var feedID, modeID, feedCount, entryCount int64
+	var feedID, feedCount, entryCount int64
 	var name, feedURL string
 	if err := s.DB.QueryRow(`
-SELECT id, name, url, mode_id FROM feeds
-WHERE name = 'ipranges' OR url = 'https://github.com/antonme/ipranges'
-`).Scan(&feedID, &name, &feedURL, &modeID); err != nil {
+SELECT f.id, f.name, f.url FROM feeds f
+WHERE f.name = 'ipranges' OR f.url = 'https://github.com/antonme/ipranges'
+`).Scan(&feedID, &name, &feedURL); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DB.QueryRow(`
@@ -568,12 +568,17 @@ WHERE name = 'ipranges'
 		Scan(&entryCount); err != nil {
 		t.Fatal(err)
 	}
+	// Verify via junction table that the feed belongs to IPRanges mode
+	modes, err := s.FeedModes(context.Background(), feedID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if feedID != 20 || name != "ipranges" ||
 		feedURL != "https://github.com/antonme/ipranges" ||
-		modeID != IPRangesCatalogModeID ||
+		len(modes) != 1 || modes[0] != IPRangesCatalogModeID ||
 		feedCount != 1 || entryCount != 0 {
-		t.Fatalf("feed=%d name=%q url=%q mode=%d feeds=%d entries=%d",
-			feedID, name, feedURL, modeID, feedCount, entryCount)
+		t.Fatalf("feed=%d name=%q url=%q modes=%v feeds=%d entries=%d",
+			feedID, name, feedURL, modes, feedCount, entryCount)
 	}
 }
 
@@ -651,16 +656,22 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	}
 	ipranges := modes[1]
 	ipranges.Enabled = true
-	if err := s.UpdateCatalogMode(ctx, ipranges); err != nil {
+	if err := s.UpdateCatalogMode(ctx, ipranges.ID, ipranges.Name, true); err != nil {
 		t.Fatal(err)
 	}
 
 	var openCCKFeedID, ipRangesFeedID int64
-	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").
+	if err := s.DB.QueryRow(`
+SELECT f.id FROM feeds f
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1`).
 		Scan(&openCCKFeedID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = ?", ipranges.ID).
+	if err := s.DB.QueryRow(`
+SELECT f.id FROM feeds f
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = ? ORDER BY f.id LIMIT 1`, ipranges.ID).
 		Scan(&ipRangesFeedID); err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +717,7 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	}
 
 	ipranges.Enabled = false
-	if err := s.UpdateCatalogMode(ctx, ipranges); err != nil {
+	if err := s.UpdateCatalogMode(ctx, ipranges.ID, ipranges.Name, false); err != nil {
 		t.Fatal(err)
 	}
 	prefixes, _, err = s.DesiredPrefixes(ctx)
@@ -734,7 +745,7 @@ func TestUserCannotChangeCatalogModeWithoutPermission(t *testing.T) {
 	}
 	ipranges := modes[1]
 	ipranges.Enabled = true
-	if err := s.UpdateCatalogMode(ctx, ipranges); err != nil {
+	if err := s.UpdateCatalogMode(ctx, ipranges.ID, ipranges.Name, true); err != nil {
 		t.Fatal(err)
 	}
 	userID, err := s.AddUser(ctx, User{
@@ -1149,7 +1160,10 @@ func TestCountSelectionPrefixes(t *testing.T) {
 
 	// Get a feed ID for mode 1 (opencck, already enabled)
 	var feedID int64
-	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").Scan(&feedID); err != nil {
+	if err := s.DB.QueryRow(`
+SELECT f.id FROM feeds f
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1`).Scan(&feedID); err != nil {
 		t.Fatal(err)
 	}
 

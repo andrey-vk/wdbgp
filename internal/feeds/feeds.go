@@ -160,15 +160,15 @@ func (s *Syncer) SyncAll(ctx context.Context) []error {
 			if executedRevision > 0 {
 				_, _ = s.Store.DB.ExecContext(ctx,
 					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
-					 AND data = ? AND mode_id = ? AND adapter_id = ? AND name = ?
+					 AND data = ? AND adapter_id = ? AND name = ?
 					 AND adapter_id IN (SELECT id FROM feed_adapters WHERE id = ? AND revision = ?)`,
-					err.Error(), feed.ID, feed.URL, feed.Data, feed.ModeID, feed.AdapterID, feed.Name,
+					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name,
 					feed.AdapterID, executedRevision)
 			} else {
 				_, _ = s.Store.DB.ExecContext(ctx,
 					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
-					 AND data = ? AND mode_id = ? AND adapter_id = ? AND name = ?`,
-					err.Error(), feed.ID, feed.URL, feed.Data, feed.ModeID, feed.AdapterID, feed.Name)
+					 AND data = ? AND adapter_id = ? AND name = ?`,
+					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name)
 			}
 		} else {
 			logger.Info("feed synced successfully", "name", feed.Name, "feed_id", feed.ID)
@@ -233,19 +233,18 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	logger.Debug("adapter executed successfully", "feed", feed.Name, "entry_count", len(entries))
 	err = s.Store.Transaction(ctx, func(tx *sql.Tx) error {
 		var currentURL string
-		var currentModeID int64
 		var currentAdapterID int64
 		var currentAdapterRevision int64
 		var currentData string
 		var currentName string
 		var enabled bool
 		if err := tx.QueryRowContext(ctx,
-			`SELECT f.url, f.mode_id, f.adapter_id, f.enabled, f.data, f.name, a.revision
+			`SELECT f.url, f.adapter_id, f.enabled, f.data, f.name, a.revision
 			 FROM feeds f
 			 JOIN feed_adapters a ON a.id = f.adapter_id
 			 WHERE f.id = ?`, feed.ID).
 			Scan(
-				&currentURL, &currentModeID, &currentAdapterID, &enabled,
+				&currentURL, &currentAdapterID, &enabled,
 				&currentData, &currentName,
 				&currentAdapterRevision,
 			); err != nil {
@@ -255,7 +254,6 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 			return err
 		}
 		if currentURL != feed.URL ||
-			currentModeID != feed.ModeID ||
 			currentAdapterID != feed.AdapterID ||
 			currentAdapterRevision != adapter.Revision ||
 			currentData != feed.Data ||
@@ -289,9 +287,16 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	if err != nil {
 		return adapter.Revision, err
 	}
-	// Generate communities for newly added categories/services.
-	if _, genErr := s.Store.GenerateCommunities(ctx, feed.ModeID); genErr != nil {
-		logger.Warn("failed to generate communities after sync", "mode_id", feed.ModeID, "error", genErr)
+	// Generate communities for newly added categories/services across all modes.
+	modeIDs, modeErr := s.Store.FeedModes(ctx, feed.ID)
+	if modeErr != nil {
+		logger.Warn("failed to get feed modes after sync", "feed_id", feed.ID, "error", modeErr)
+	} else {
+		for _, modeID := range modeIDs {
+			if _, genErr := s.Store.GenerateCommunities(ctx, modeID); genErr != nil {
+				logger.Warn("failed to generate communities after sync", "mode_id", modeID, "error", genErr)
+			}
+		}
 	}
 	return adapter.Revision, nil
 }
@@ -302,7 +307,9 @@ func (s *Syncer) categoryLookup(ctx context.Context, feed store.Feed) (map[strin
 SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE ce.feed_id != ? AND f.enabled = 1 AND f.mode_id = ?`, feed.ID, feed.ModeID)
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE ce.feed_id != ?1 AND f.enabled = 1
+  AND cmf.mode_id IN (SELECT mode_id FROM catalog_mode_feeds WHERE feed_id = ?1)`, feed.ID)
 	if err != nil {
 		return nil, err
 	}

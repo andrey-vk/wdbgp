@@ -25,6 +25,7 @@ type Migration struct {
 	Name    string
 	SQL     string
 	Go      func(*sql.Tx) error // optional post-SQL migration function
+	NoTxSQL string              // optional SQL that runs outside a transaction after commit
 }
 
 var migrations = []Migration{
@@ -476,6 +477,57 @@ WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
   AND EXISTS (SELECT 1 FROM feed_adapters WHERE key = 'singbox-srs');
 `,
 	},
+	{
+		Version: 20,
+		Name:    "add adapter upgrade support, catalog mode M:M, drop peer_ip unique",
+		SQL: `
+-- Adapter upgrade support
+ALTER TABLE feed_adapters ADD COLUMN builtin_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0;
+
+-- Catalog modes M:M with feeds
+CREATE TABLE catalog_mode_feeds (
+    mode_id INTEGER NOT NULL REFERENCES catalog_modes(id) ON DELETE CASCADE,
+    feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+    PRIMARY KEY (mode_id, feed_id)
+);
+
+-- Migrate existing feed→mode assignments
+INSERT INTO catalog_mode_feeds (mode_id, feed_id)
+SELECT mode_id, id FROM feeds WHERE mode_id IS NOT NULL;
+
+-- Drop legacy feeds.mode_id column (indexes first)
+DROP INDEX IF EXISTS idx_feeds_mode;
+DROP INDEX IF EXISTS idx_feeds_enabled_mode;
+ALTER TABLE feeds DROP COLUMN mode_id;
+`,
+		NoTxSQL: `
+-- Remove UNIQUE constraint on peer_ip (issue #17)
+-- PRAGMA foreign_keys = OFF is a no-op inside a transaction, so this
+-- must run outside the migration transaction.
+CREATE TABLE users_new (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    peer_ip TEXT NOT NULL,
+    peer_asn INTEGER NOT NULL,
+    next_hop TEXT,
+    bgp_password TEXT,
+    selection_locked INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+    filter_editable INTEGER NOT NULL DEFAULT 0,
+    filter_mode TEXT NOT NULL DEFAULT 'global',
+    catalog_mode_id INTEGER REFERENCES catalog_modes(id),
+    catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
+    web_auth TEXT NOT NULL DEFAULT 'network'
+);
+INSERT INTO users_new SELECT * FROM users;
+PRAGMA foreign_keys = OFF;
+DROP TABLE users;
+ALTER TABLE users_new RENAME TO users;
+PRAGMA foreign_keys = ON;
+`,
+	},
 }
 
 type Store struct {
@@ -486,7 +538,6 @@ type Feed struct {
 	ID           int64
 	Name         string
 	URL          string
-	ModeID       int64
 	AdapterID    int64
 	Enabled      bool
 	SyncInterval int
@@ -660,6 +711,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+		if migration.NoTxSQL != "" {
+			if _, err := s.DB.ExecContext(ctx, migration.NoTxSQL); err != nil {
+				return fmt.Errorf("migration %d non-transactional (%s): %w", migration.Version, migration.Name, err)
+			}
+		}
 	}
 	return s.seedBuiltInAdapters(ctx)
 }
@@ -691,15 +747,16 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 }
 
 func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
-	query := `SELECT f.id, f.name, f.url, f.mode_id, f.adapter_id, f.enabled,
+	query := `SELECT f.id, f.name, f.url, f.adapter_id, f.enabled,
 	                 COALESCE(f.sync_interval, 0),
 	                 COALESCE(f.data, ''),
 	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
-	          FROM feeds f
-	          JOIN catalog_modes m ON m.id = f.mode_id
-	          JOIN feed_adapters a ON a.id = f.adapter_id`
+	          FROM feeds f`
 	if enabledOnly {
-		query += " WHERE f.enabled = 1 AND m.enabled = 1"
+		query += ` WHERE f.enabled = 1
+		AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
+		            JOIN catalog_modes m ON m.id = cmf.mode_id
+		            WHERE cmf.feed_id = f.id AND m.enabled = 1)`
 	}
 	query += " ORDER BY f.id"
 	rows, err := s.DB.QueryContext(ctx, query)
@@ -711,7 +768,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	for rows.Next() {
 		var feed Feed
 		if err := rows.Scan(
-			&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
+			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
 			&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
 		); err != nil {
 			return nil, err
@@ -724,16 +781,64 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 func (s *Store) Feed(ctx context.Context, id int64) (Feed, error) {
 	var feed Feed
 	err := s.DB.QueryRowContext(ctx, `
-SELECT id, name, url, mode_id, adapter_id, enabled,
+SELECT id, name, url, adapter_id, enabled,
        COALESCE(sync_interval, 0),
        COALESCE(data, ''),
        COALESCE(last_success, ''), COALESCE(last_error, '')
 FROM feeds
 WHERE id = ?`, id).Scan(
-		&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
+		&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
 		&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
 	)
 	return feed, err
+}
+
+// FeedModes returns all mode IDs associated with a feed via the junction table.
+func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT mode_id FROM catalog_mode_feeds WHERE feed_id = ?", feedID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ModeFeeds returns all feeds assigned to a catalog mode.
+func (s *Store) ModeFeeds(ctx context.Context, modeID int64) ([]Feed, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT f.id, f.name, f.url, f.adapter_id, f.enabled,
+       COALESCE(f.sync_interval, 0),
+       COALESCE(f.data, ''),
+       COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
+FROM feeds f
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = ?
+ORDER BY f.id`, modeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var feeds []Feed
+	for rows.Next() {
+		var feed Feed
+		if err := rows.Scan(
+			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
+			&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
+		); err != nil {
+			return nil, err
+		}
+		feeds = append(feeds, feed)
+	}
+	return feeds, rows.Err()
 }
 
 func (s *Store) FeedAdapters(ctx context.Context) ([]FeedAdapter, error) {
@@ -805,10 +910,10 @@ func (s *Store) CatalogMode(ctx context.Context, id int64) (CatalogMode, error) 
 	return mode, err
 }
 
-func (s *Store) UpdateCatalogMode(ctx context.Context, mode CatalogMode) error {
+func (s *Store) UpdateCatalogMode(ctx context.Context, id int64, name string, enabled bool) error {
 	result, err := s.DB.ExecContext(ctx,
 		"UPDATE catalog_modes SET name = ?, enabled = ? WHERE id = ?",
-		mode.Name, mode.Enabled, mode.ID)
+		name, enabled, id)
 	if err != nil {
 		return err
 	}
@@ -816,6 +921,73 @@ func (s *Store) UpdateCatalogMode(ctx context.Context, mode CatalogMode) error {
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+func (s *Store) AddCatalogMode(ctx context.Context, name string, enabled bool) error {
+	_, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_modes(key, name, enabled) VALUES (?, ?, ?)",
+		strings.ToLower(strings.ReplaceAll(name, " ", "-")), name, enabled)
+	return err
+}
+
+func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if id <= 3 {
+			var name string
+			if err := tx.QueryRowContext(ctx, "SELECT name FROM catalog_modes WHERE id = ?", id).Scan(&name); err != nil {
+				return err
+			}
+			return fmt.Errorf("cannot delete built-in mode %q", name)
+		}
+		_, err := tx.ExecContext(ctx, "DELETE FROM catalog_modes WHERE id = ?", id)
+		return err
+	})
+}
+
+func (s *Store) ModeFeedCounts(ctx context.Context) (map[int64]int, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT mode_id, COUNT(*) FROM catalog_mode_feeds GROUP BY mode_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := make(map[int64]int)
+	for rows.Next() {
+		var modeID int64
+		var count int
+		if err := rows.Scan(&modeID, &count); err != nil {
+			return nil, err
+		}
+		counts[modeID] = count
+	}
+	return counts, rows.Err()
+}
+
+func (s *Store) AddFeedToMode(ctx context.Context, modeID, feedID int64) error {
+	_, err := s.DB.ExecContext(ctx,
+		"INSERT OR IGNORE INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID)
+	return err
+}
+
+func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) error {
+	_, err := s.DB.ExecContext(ctx,
+		"DELETE FROM catalog_mode_feeds WHERE mode_id = ? AND feed_id = ?", modeID, feedID)
+	return err
+}
+
+func (s *Store) SetFeedModes(ctx context.Context, feedID int64, modeIDs []int64) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_mode_feeds WHERE feed_id = ?", feedID); err != nil {
+			return err
+		}
+		for _, mid := range modeIDs {
+			if _, err := tx.ExecContext(ctx,
+				"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", mid, feedID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
@@ -955,7 +1127,8 @@ func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisable
 SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE (f.enabled = 1 OR ? = 1) AND f.mode_id = ?
+WHERE (f.enabled = 1 OR ? = 1)
+  AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf WHERE cmf.feed_id = f.id AND cmf.mode_id = ?)
 ORDER BY ce.category, ce.service`, includeDisabledInt, modeID)
 	if err != nil {
 		return nil, err
@@ -977,8 +1150,9 @@ func (s *Store) EnabledCatalogPrefixes(ctx context.Context, modeID int64) ([]Cat
 SELECT DISTINCT ce.category, ce.service, ce.cidr
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-JOIN catalog_modes m ON m.id = f.mode_id
-WHERE f.enabled = 1 AND m.enabled = 1 AND f.mode_id = ?
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+JOIN catalog_modes m ON m.id = cmf.mode_id
+WHERE f.enabled = 1 AND m.enabled = 1 AND cmf.mode_id = ?
 ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 	if err != nil {
 		return nil, err
@@ -1000,7 +1174,8 @@ func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (v4 map[
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT ce.category, ce.cidr
 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
-WHERE f.mode_id = ? AND f.enabled = 1
+WHERE EXISTS (SELECT 1 FROM catalog_mode_feeds cmf WHERE cmf.feed_id = f.id AND cmf.mode_id = ?)
+  AND f.enabled = 1
 GROUP BY ce.category, ce.cidr
 ORDER BY ce.category`, modeID)
 	if err != nil {
@@ -1041,7 +1216,8 @@ func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (v4 map[string]m
 SELECT ce.category, ce.service, ce.cidr
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE f.mode_id = ? AND f.enabled = 1
+WHERE EXISTS (SELECT 1 FROM catalog_mode_feeds cmf WHERE cmf.feed_id = f.id AND cmf.mode_id = ?)
+  AND f.enabled = 1
 GROUP BY ce.category, ce.service, ce.cidr
 ORDER BY ce.category, ce.service`, modeID)
 	if err != nil {
@@ -1200,13 +1376,15 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
-      WHERE ce.category = sc.category AND f.mode_id = sc.mode_id AND f.enabled = 0
+      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = sc.mode_id
+      WHERE ce.category = sc.category AND f.enabled = 0
   )
   AND NOT EXISTS (
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
-      WHERE ce.category = sc.category AND f.mode_id = sc.mode_id AND f.enabled = 1
+      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = sc.mode_id
+      WHERE ce.category = sc.category AND f.enabled = 1
   )`, userID, modeID)
 	if err != nil {
 		return err
@@ -1231,18 +1409,18 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
+      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = ss.mode_id
       WHERE ce.category = ss.category
         AND ce.service = ss.service
-        AND f.mode_id = ss.mode_id
         AND f.enabled = 0
   )
   AND NOT EXISTS (
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
+      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = ss.mode_id
       WHERE ce.category = ss.category
         AND ce.service = ss.service
-        AND f.mode_id = ss.mode_id
         AND f.enabled = 1
   )`, userID, modeID)
 	if err != nil {
@@ -1340,9 +1518,10 @@ func (s *Store) CountPrefixes(ctx context.Context, modeID int64, categories []st
 		queryParts = append(queryParts, fmt.Sprintf(`
 SELECT DISTINCT ce.cidr
 FROM feeds f
-JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
-WHERE f.mode_id = ?1
+WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
   AND ce.category IN (%s)`, strings.Join(placeholders, ", ")))
@@ -1357,9 +1536,10 @@ WHERE f.mode_id = ?1
 		queryParts = append(queryParts, fmt.Sprintf(`
 SELECT DISTINCT ce.cidr
 FROM feeds f
-JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
-WHERE f.mode_id = ?1
+WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
   AND (ce.category, ce.service) IN (%s)`, strings.Join(pairs, ", ")))
@@ -1458,9 +1638,10 @@ func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64) (v4, v
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT DISTINCT ce.cidr
 FROM feeds f
-JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
-WHERE f.mode_id = ?1
+WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
   AND EXISTS (
@@ -1472,9 +1653,10 @@ WHERE f.mode_id = ?1
 UNION
 SELECT DISTINCT ce.cidr
 FROM feeds f
-JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
-WHERE f.mode_id = ?1
+WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
   AND EXISTS (
@@ -1556,10 +1738,11 @@ func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, map[st
 	rows, err := s.DB.QueryContext(ctx, `
 -- Simpler UNION-based approach without CTEs
 SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
-       ce.category, ce.service, f.mode_id
+       ce.category, ce.service, cmf.mode_id
 FROM users u
-JOIN feeds f ON f.mode_id = u.catalog_mode_id
-JOIN catalog_modes m ON m.id = f.mode_id  
+JOIN catalog_mode_feeds cmf ON cmf.mode_id = u.catalog_mode_id
+JOIN feeds f ON f.id = cmf.feed_id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE u.enabled = 1
   AND f.enabled = 1
@@ -1572,10 +1755,11 @@ WHERE u.enabled = 1
   )
 UNION
 SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
-       ce.category, ce.service, f.mode_id
+       ce.category, ce.service, cmf.mode_id
 FROM users u
-JOIN feeds f ON f.mode_id = u.catalog_mode_id
-JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_mode_feeds cmf ON cmf.mode_id = u.catalog_mode_id
+JOIN feeds f ON f.id = cmf.feed_id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE u.enabled = 1
   AND f.enabled = 1
@@ -2041,10 +2225,22 @@ func (s *Store) AddFeedForModeAdapter(
 	syncInterval int,
 	data string,
 ) error {
-	_, err := s.DB.ExecContext(ctx,
-		"INSERT INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval, data) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		name, url, modeID, adapterID, enabled, syncInterval, data)
-	return err
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx,
+			"INSERT INTO feeds(name, url, adapter_id, enabled, sync_interval, data) VALUES (?, ?, ?, ?, ?, ?)",
+			name, url, adapterID, enabled, syncInterval, data)
+		if err != nil {
+			return err
+		}
+		feedID, err := result.LastInsertId()
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx,
+			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
+			modeID, feedID)
+		return err
+	})
 }
 
 func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
@@ -2060,9 +2256,9 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE feeds
-			 SET name = ?, url = ?, mode_id = ?, adapter_id = ?, enabled = ?, sync_interval = ?, data = ?
+			 SET name = ?, url = ?, adapter_id = ?, enabled = ?, sync_interval = ?, data = ?
 			 WHERE id = ?`,
-			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
+			feed.Name, feed.URL, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
 			return err
 		}
 		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name {
@@ -2094,19 +2290,21 @@ func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
 		if _, err := tx.ExecContext(ctx, `
 DELETE FROM selected_categories
 WHERE NOT EXISTS (
-    SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
+    SELECT 1 FROM catalog_entries ce
+    JOIN feeds f ON f.id = ce.feed_id
+    JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = selected_categories.mode_id
     WHERE ce.category = selected_categories.category
-      AND f.mode_id = selected_categories.mode_id
 )`); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `
 DELETE FROM selected_services
 WHERE NOT EXISTS (
-    SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
+    SELECT 1 FROM catalog_entries ce
+    JOIN feeds f ON f.id = ce.feed_id
+    JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = selected_services.mode_id
     WHERE ce.category = selected_services.category
       AND ce.service = selected_services.service
-      AND f.mode_id = selected_services.mode_id
 )`)
 		return err
 	})
@@ -2357,14 +2555,16 @@ func AutoCommunity(groupIndex int, serviceIndex int) uint32 {
 // autoGenerateCommunities is the migration 13 post-SQL function that fills
 // communities for all existing catalog data.
 func autoGenerateCommunities(tx *sql.Tx) error {
-	_, err := genCommunities(tx, nil, 0)
+	_, err := genCommunities(tx, nil, 0, false)
 	return err
 }
 
 // genCommunities generates communities for categories and services that don't have one yet.
 // If existing is non-nil, it's used as the set of already-assigned keys to skip.
 // If modeID is 0, generates for all modes; otherwise only for the specified mode.
-func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, error) {
+// useJunction controls whether to look up categories via catalog_mode_feeds (true)
+// or the legacy feeds.mode_id column (false, used during migration 13).
+func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64, useJunction bool) (int, error) {
 	var modeIDs []int64
 	if modeID > 0 {
 		modeIDs = []int64{modeID}
@@ -2415,12 +2615,23 @@ func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, er
 		commRows.Close()
 
 		// Get categories in alphabetical order.
-		catRows, err := tx.Query(`
+		var catRows *sql.Rows
+		if useJunction {
+			catRows, err = tx.Query(`
+SELECT DISTINCT ce.category
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = ?
+ORDER BY ce.category`, mid)
+		} else {
+			catRows, err = tx.Query(`
 SELECT DISTINCT ce.category
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
 WHERE f.mode_id = ?
 ORDER BY ce.category`, mid)
+		}
 		if err != nil {
 			return 0, err
 		}
@@ -2462,12 +2673,23 @@ ORDER BY ce.category`, mid)
 			}
 
 			// Get services in alphabetical order.
-			svcRows, err := tx.Query(`
+			var svcRows *sql.Rows
+			if useJunction {
+				svcRows, err = tx.Query(`
+SELECT DISTINCT ce.service
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = ? AND ce.category = ?
+ORDER BY ce.service`, mid, category)
+			} else {
+				svcRows, err = tx.Query(`
 SELECT DISTINCT ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
 WHERE f.mode_id = ? AND ce.category = ?
 ORDER BY ce.service`, mid, category)
+			}
 			if err != nil {
 				return generated, err
 			}
@@ -2587,7 +2809,7 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, err
 		}
 
 		var err2 error
-		count, err2 = genCommunities(tx, existing, modeID)
+		count, err2 = genCommunities(tx, existing, modeID, true)
 		return err2
 	})
 	return count, err

@@ -555,11 +555,14 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	mode.Enabled = true
-	if err := db.UpdateCatalogMode(ctx, mode); err != nil {
+	if err := db.UpdateCatalogMode(ctx, mode.ID, mode.Name, mode.Enabled); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.DB.Exec(
-		"UPDATE feeds SET enabled = CASE WHEN mode_id = ? THEN 1 ELSE 0 END",
+		`UPDATE feeds SET enabled = CASE WHEN EXISTS (
+			SELECT 1 FROM catalog_mode_feeds cmf
+			WHERE cmf.feed_id = feeds.id AND cmf.mode_id = ?
+		) THEN 1 ELSE 0 END`,
 		store.IPRangesCatalogModeID); err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +601,10 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	if err := db.DB.QueryRow(`
 SELECT COUNT(*)
 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
-WHERE f.mode_id != ? AND ce.cidr IN ('203.0.113.0/24', '2001:db8::/32')`,
+WHERE NOT EXISTS (
+	SELECT 1 FROM catalog_mode_feeds cmf
+	WHERE cmf.feed_id = f.id AND cmf.mode_id = ?
+) AND ce.cidr IN ('203.0.113.0/24', '2001:db8::/32')`,
 		store.IPRangesCatalogModeID).Scan(&wrongModeEntries); err != nil {
 		t.Fatal(err)
 	}

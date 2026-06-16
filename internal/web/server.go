@@ -173,6 +173,10 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("GET /admin/debug/cidr", server.requireAdmin(server.debugCIDRHandler))
 	mux.HandleFunc("GET /admin/debug", server.requireAdmin(server.debugPage))
 	mux.HandleFunc("POST /admin/mode/{id}", server.requireAdmin(server.updateCatalogMode))
+	mux.HandleFunc("GET /admin/modes", server.requireAdmin(server.modesPage))
+	mux.HandleFunc("POST /admin/modes", server.requireAdmin(server.addMode))
+	mux.HandleFunc("POST /admin/modes/{id}", server.requireAdmin(server.updateMode))
+	mux.HandleFunc("POST /admin/modes/{id}/delete", server.requireAdmin(server.deleteMode))
 	mux.HandleFunc("GET /admin/feed", server.requireAdmin(server.feedEditPage))
 	mux.HandleFunc("GET /admin/feed/{id}", server.requireAdmin(server.feedEditPage))
 	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
@@ -863,9 +867,7 @@ func (s *Server) updateCatalogMode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "mode name is required", http.StatusBadRequest)
 		return
 	}
-	if err := s.store.UpdateCatalogMode(r.Context(), store.CatalogMode{
-		ID: id, Name: name, Enabled: r.Form.Has("enabled"),
-	}); err != nil {
+	if err := s.store.UpdateCatalogMode(r.Context(), id, name, r.Form.Has("enabled")); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
@@ -876,15 +878,122 @@ func (s *Server) updateCatalogMode(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
+func (s *Server) modesPage(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	modes, err := s.store.CatalogModes(ctx, false)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	feedCounts, err := s.store.ModeFeedCounts(ctx)
+	if err != nil {
+		feedCounts = make(map[int64]int)
+	}
+	type modeRow struct {
+		store.CatalogMode
+		FeedCount int
+		IsBuiltin bool
+	}
+	rows := make([]modeRow, 0, len(modes))
+	for _, m := range modes {
+		rows = append(rows, modeRow{
+			CatalogMode: m,
+			FeedCount:   feedCounts[m.ID],
+			IsBuiltin:   m.ID <= 3,
+		})
+	}
+	lang, _ := requestLocale(r, s.defaultLang)
+	s.renderAdmin(w, r, http.StatusOK, translate(lang, "catalog.modes"), "modes", map[string]any{
+		"Modes": rows,
+		"Saved": r.URL.Query().Get("saved"),
+	})
+}
+
+func (s *Server) addMode(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	enabled := r.Form.Has("enabled")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.AddCatalogMode(r.Context(), name, enabled); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	w.Header().Set("HX-Redirect", "/admin/modes?saved=1")
+}
+
+func (s *Server) updateMode(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	enabled := r.Form.Has("enabled")
+	if name == "" {
+		http.Error(w, "name required", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateCatalogMode(r.Context(), id, name, enabled); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	w.Header().Set("HX-Redirect", "/admin/modes?saved=1")
+}
+
+func (s *Server) deleteMode(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.DeleteCatalogMode(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	w.Header().Set("HX-Redirect", "/admin/modes?saved=1")
+}
+
 func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
-	feed, err := parseFeed(r, 0)
+	feed, modeIDs, err := parseFeed(r, 0)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if len(modeIDs) == 0 {
+		http.Error(w, "at least one catalog mode is required", http.StatusBadRequest)
+		return
+	}
 	if err := s.store.AddFeedForModeAdapter(
-		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data); err != nil {
+		r.Context(), feed.Name, feed.URL, modeIDs[0], feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var feedID int64
+	s.store.DB.QueryRowContext(r.Context(), "SELECT id FROM feeds WHERE url = ?", feed.URL).Scan(&feedID)
+	if err := s.store.SetFeedModes(r.Context(), feedID, modeIDs); err != nil {
+		s.internalError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
@@ -894,6 +1003,7 @@ func (s *Server) feedEditPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var feed store.Feed
 	isNew := true
+	var feedModeIDs []int64
 
 	if rawID := r.PathValue("id"); rawID != "" {
 		id, err := strconv.ParseInt(rawID, 10, 64)
@@ -911,6 +1021,13 @@ func (s *Server) feedEditPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		isNew = false
+		feedModeIDs, _ = s.store.FeedModes(ctx, feed.ID)
+	}
+
+	// Build a set for template checkboxes
+	modeSet := make(map[int64]bool, len(feedModeIDs))
+	for _, mid := range feedModeIDs {
+		modeSet[mid] = true
 	}
 
 	modes, _ := s.store.CatalogModes(ctx, false)
@@ -924,6 +1041,7 @@ func (s *Server) feedEditPage(w http.ResponseWriter, r *http.Request) {
 
 	s.renderAdmin(w, r, http.StatusOK, title, "feed-edit", map[string]any{
 		"Feed": feed, "IsNew": isNew, "Modes": modes, "Adapters": adapters,
+		"FeedModeIDs": modeSet,
 	})
 }
 
@@ -1172,7 +1290,7 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, r, "error.bad_feed_id", http.StatusBadRequest)
 		return
 	}
-	feed, err := parseFeed(r, id)
+	feed, modeIDs, err := parseFeed(r, id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1184,6 +1302,12 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
 		return
+	}
+	if len(modeIDs) > 0 {
+		if err := s.store.SetFeedModes(r.Context(), id, modeIDs); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
 	}
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
 		s.internalError(w, r, err)
@@ -1226,41 +1350,52 @@ func (s *Server) syncFeeds(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
-func parseFeed(r *http.Request, id int64) (store.Feed, error) {
+func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
 	if err := r.ParseForm(); err != nil {
-		return store.Feed{}, err
+		return store.Feed{}, nil, err
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	if name == "" {
-		return store.Feed{}, fmt.Errorf("feed name is required")
+		return store.Feed{}, nil, fmt.Errorf("feed name is required")
 	}
 	rawURL := strings.TrimSpace(r.FormValue("url"))
 	parsedURL, err := url.ParseRequestURI(rawURL)
 	if err != nil || parsedURL.Host == "" ||
 		(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
-		return store.Feed{}, fmt.Errorf("feed URL must be an absolute HTTP or HTTPS URL")
+		return store.Feed{}, nil, fmt.Errorf("feed URL must be an absolute HTTP or HTTPS URL")
 	}
-	modeID, err := formModeID(r, store.DefaultCatalogModeID)
-	if err != nil {
-		return store.Feed{}, err
+	// Parse mode checkboxes (multi-select). Falls back to single catalog_mode_id for backward compat.
+	var modeIDs []int64
+	if rawModes := r.Form["mode_ids"]; len(rawModes) > 0 {
+		for _, raw := range rawModes {
+			if mid, parseErr := strconv.ParseInt(strings.TrimSpace(raw), 10, 64); parseErr == nil && mid > 0 {
+				modeIDs = append(modeIDs, mid)
+			}
+		}
+	} else {
+		mid, ferr := formModeID(r, store.DefaultCatalogModeID)
+		if ferr != nil {
+			return store.Feed{}, nil, ferr
+		}
+		modeIDs = []int64{mid}
 	}
 	adapterID := int64(1)
 	if rawAdapterID := strings.TrimSpace(r.FormValue("adapter_id")); rawAdapterID != "" {
 		adapterID, err = strconv.ParseInt(rawAdapterID, 10, 64)
 		if err != nil || adapterID <= 0 {
-			return store.Feed{}, fmt.Errorf("invalid adapter id")
+			return store.Feed{}, nil, fmt.Errorf("invalid adapter id")
 		}
 	}
 	data := strings.TrimSpace(r.FormValue("data"))
 	if data != "" && !json.Valid([]byte(data)) {
-		return store.Feed{}, fmt.Errorf("feed data must be valid JSON")
+		return store.Feed{}, nil, fmt.Errorf("feed data must be valid JSON")
 	}
 	return store.Feed{
-		ID: id, Name: name, URL: rawURL, ModeID: modeID, AdapterID: adapterID,
+		ID: id, Name: name, URL: rawURL, AdapterID: adapterID,
 		Enabled:      r.Form.Has("enabled"),
 		SyncInterval: formInt(r, "sync_interval"),
 		Data:         data,
-	}, nil
+	}, modeIDs, nil
 }
 
 func maxSource(configured int) int {
@@ -1989,6 +2124,7 @@ func compileTemplates() map[locale]map[string]*template.Template {
 		"feed-edit":     feedEditTemplate,
 		"adapters-list": adaptersListTemplate,
 		"settings":     settingsTemplate,
+		"modes":        modesTemplate,
 	}
 	result := make(map[locale]map[string]*template.Template, len(translations))
 	for lang := range translations {
@@ -2201,9 +2337,19 @@ func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]feedRow, 0, len(feeds))
 	for _, f := range feeds {
+		modeNames := ""
+		modeIDs, _ := s.store.FeedModes(ctx, f.ID)
+		for i, mid := range modeIDs {
+			if i > 0 {
+				modeNames += ", "
+			}
+			if name, ok := modeMap[mid]; ok {
+				modeNames += name
+			}
+		}
 		rows = append(rows, feedRow{
 			Feed:     f,
-			ModeName: modeMap[f.ModeID],
+			ModeName: modeNames,
 			LastSync: f.LastSuccess,
 		})
 	}
@@ -2260,20 +2406,19 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 			syncErr = err
 			// Verify feed and adapter haven't been edited since the
 			// goroutine was launched. If any field (url, adapter_id,
-			// data, mode_id, enabled, name, or adapter revision)
+			// data, enabled, name, or adapter revision)
 			// changed, the error is from a stale sync and must not
 			// overwrite the new feed's status.
 			var currentURL, currentData, currentName string
-			var currentAdapterID, currentModeID, currentRevision int64
+			var currentAdapterID, currentRevision int64
 			var currentEnabled bool
 			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT f.url, f.adapter_id, f.data, f.mode_id, f.enabled, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentModeID, &currentEnabled, &currentName, &currentRevision)
+				"SELECT f.url, f.adapter_id, f.data, f.enabled, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData, &currentEnabled, &currentName, &currentRevision)
 			if checkErr == nil &&
 				currentURL == feed.URL &&
 				currentAdapterID == feed.AdapterID &&
 				currentData == feed.Data &&
-				currentModeID == feed.ModeID &&
 				currentEnabled == feed.Enabled &&
 				currentName == feed.Name &&
 				currentRevision == executedRevision {
@@ -2286,16 +2431,15 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 			// adapter was edited between sync and reconcile, the error
 			// must not overwrite the new feed's status.
 			var currentURL, currentData, currentName string
-			var currentAdapterID, currentModeID, currentRevision int64
+			var currentAdapterID, currentRevision int64
 			var currentEnabled bool
 			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT f.url, f.adapter_id, f.data, f.mode_id, f.enabled, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentModeID, &currentEnabled, &currentName, &currentRevision)
+				"SELECT f.url, f.adapter_id, f.data, f.enabled, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData, &currentEnabled, &currentName, &currentRevision)
 			if checkErr == nil &&
 				currentURL == feed.URL &&
 				currentAdapterID == feed.AdapterID &&
 				currentData == feed.Data &&
-				currentModeID == feed.ModeID &&
 				currentEnabled == feed.Enabled &&
 				currentName == feed.Name &&
 				currentRevision == executedRevision {
