@@ -20,7 +20,7 @@ td{padding:8px;border-bottom:1px solid var(--border)}
 tr:hover td:not(.group-row td){background:var(--group-row-bg)}
 
 label{display:block;margin-bottom:12px;font-weight:500}
-label input,label select{margin-top:4px;display:block;width:100%}
+label input,label select,label textarea{margin-top:4px;display:block;width:100%}
 label input[type=checkbox]{display:inline;width:auto;margin-top:0;margin-right:6px}
 input,select,textarea{padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--card-bg);color:var(--text);font-size:.9em;font-family:inherit}
 input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 30%,transparent)}
@@ -91,7 +91,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .language-switcher{display:flex;justify-content:flex-end;gap:.5rem;margin-bottom:.75rem}
 .language-switcher a[aria-current=page]{font-weight:700;text-decoration:none;color:var(--text)}
 
-textarea.large{width:100%;min-height:6em;font-family:ui-monospace,monospace;font-size:.85em;padding:8px;resize:vertical}
+textarea.large{width:100%;min-height:10em;max-width:100%;font-family:ui-monospace,monospace;font-size:.85em;padding:8px;resize:vertical}
 
 .back-link{display:inline-block;color:var(--muted);text-decoration:none;margin-bottom:.75rem;font-size:.9em}
 .back-link:hover{color:var(--accent)}
@@ -639,9 +639,9 @@ body{display:flex;height:100vh;overflow:hidden}
 <h2>wdbgp</h2>
 <a href=/admin/dashboard hx-get=/admin/dashboard hx-target=#main hx-push-url=true class=active>{{tr "nav.dashboard"}}</a>
 <a href=/admin/users hx-get=/admin/users hx-target=#main hx-push-url=true>{{tr "nav.users"}}</a>
-<a href=/admin/feeds hx-get=/admin/feeds hx-target=#main hx-push-url=true>{{tr "nav.feeds"}}</a>
-<a href=/admin/communities hx-get=/admin/communities hx-target=#main hx-push-url=true>{{tr "nav.communities"}}</a>
 <a href=/admin/modes hx-get=/admin/modes hx-target=#main hx-push-url=true>{{tr "nav.modes"}}</a>
+<a href=/admin/communities hx-get=/admin/communities hx-target=#main hx-push-url=true>{{tr "nav.communities"}}</a>
+<a href=/admin/feeds hx-get=/admin/feeds hx-target=#main hx-push-url=true>{{tr "nav.feeds"}}</a>
 <a href=/admin/adapters hx-get=/admin/adapters hx-target=#main hx-push-url=true>{{tr "nav.adapters"}}</a>
 <a href=/admin/settings hx-get=/admin/settings hx-target=#main hx-push-url=true>{{tr "nav.settings"}}</a>
 <a href=/admin/debug hx-get=/admin/debug hx-target=#main hx-push-url=true class=sidebar-subtle>{{tr "debug.heading"}}</a>
@@ -690,7 +690,7 @@ const debugTemplate = `{{with .Data}}
 
 <form method=get action=/admin/debug class=card>
 <div class=form-grid>
-<label>{{tr "debug.input"}} <input name=cidr value="{{.CIDR}}" placeholder="8.8.8.8 or 10.0.0.0/8" autofocus></label>
+<label>{{tr "debug.input"}} <input name=cidr value="{{.CIDR}}" autofocus></label>
 <label>{{tr "catalog.mode"}}
 <select name=mode>
 {{range .Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.ModeID}}selected{{end}}>{{.Name}}{{if not .Enabled}} ({{tr "catalog.disabled"}}){{end}}</option>{{end}}
@@ -808,7 +808,7 @@ const modesTemplate = `{{with .Data}}
 <form method=post action=/admin/modes>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <div class=save-bar>
-<input name=name placeholder="{{tr "catalog.mode_name_placeholder"}}" required autofocus style=flex:1>
+<input name=name required autofocus style=flex:1>
 <label class=checkbox-row><input type=checkbox name=enabled checked> {{tr "feeds.enabled"}}</label>
 <button class=primary>{{tr "common.add"}}</button>
 </div>
@@ -861,13 +861,17 @@ const feedEditTemplate = `{{with .Data}}
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <label>{{tr "feeds.name"}} <input name=name value="{{.Feed.Name}}" required></label>
 <label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
-<label>{{tr "feeds.data"}} <textarea name=data rows=4 placeholder='{"category": "Russia", "service": "geoip-ru"}' class=mono>{{.Feed.Data}}</textarea></label>
+<label x-data="{hint:false}">{{tr "feeds.data"}} <button type=button class=hint-btn @click="hint=!hint" :aria-expanded="hint">?</button>
+<div class=hint-popup x-show="hint" @click.away="hint=false" x-transition x-cloak>
+<p>{{tr "feeds.data_hint"}}</p><code>{"category": "Russia", "service": "geoip-ru"}</code>
+</div>
+<textarea name=data class=large>{{.Feed.Data}}</textarea></label>
 <div class=form-grid>
 <label>{{tr "feeds.adapter"}}
 <select name=adapter_id>
 {{range .Adapters}}<option value="{{.ID}}" {{if eq .ID $.Data.Feed.AdapterID}}selected{{end}}>{{.Name}}</option>{{end}}
 </select></label>
-<label>{{tr "feeds.sync_interval"}} <input type=number name=sync_interval value="{{.Feed.SyncInterval}}" placeholder="{{tr "feeds.default_interval"}}"></label>
+<label>{{tr "feeds.sync_interval"}} <input type=number name=sync_interval value="{{.Feed.SyncInterval}}"></label>
 </div>
 <label class=checkbox-row><input type=checkbox name=enabled {{if .Feed.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label>
 <div class=row-actions>
@@ -939,8 +943,8 @@ const settingsTemplate = `{{with .Data}}
 <div style="grid-column:1/-1;padding:.5rem 0;border-bottom:1px solid var(--border)">
 <p class=muted style=margin-bottom:.75rem>{{tr "global_filters.explanation"}}</p>
 <div class=grid>
-<label>{{tr "filters.allow"}} <textarea class=large style=min-height:12em name=filter_allow placeholder="{{tr "filters.allow_placeholder"}}">{{.GlobalFilters.Allow}}</textarea></label>
-<label>{{tr "filters.deny"}} <textarea class=large style=min-height:12em name=filter_deny placeholder="0.0.0.0/0">{{.GlobalFilters.Deny}}</textarea></label>
+<label>{{tr "filters.allow"}} <textarea class=large style=min-height:12em name=filter_allow>{{.GlobalFilters.Allow}}</textarea></label>
+<label>{{tr "filters.deny"}} <textarea class=large style=min-height:12em name=filter_deny>{{.GlobalFilters.Deny}}</textarea></label>
 </div>
 </div>
 {{end}}
