@@ -838,7 +838,12 @@ const modeEditTemplate = `{{with .Data}}
 <h1>{{.Mode.Name}}</h1>
 <p class=muted>{{printf "%d" .FeedCount}} {{tr "feeds.heading"}}</p>
 
-<p class=muted>{{if .Mode.Enabled}}{{tr "feeds.enabled"}}{{else}}{{tr "catalog.disabled"}}{{end}}</p>
+<form method=post action="/admin/modes/{{.Mode.ID}}" style=display:inline>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<input type=hidden name=action value=toggle>
+<input type=hidden name=name value="{{.Mode.Name}}">
+<button type=submit class=button>{{if .Mode.Enabled}}{{tr "common.disable"}}{{else}}{{tr "common.enable"}}{{end}}</button>
+</form>
 
 <form method=post action="/admin/modes/{{.Mode.ID}}/feeds">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
@@ -927,7 +932,6 @@ const settingsTemplate = `{{with .Data}}
 <div class=setting-row x-data="{hint:false}">
   <div class=setting-label><label for="s_{{.Key}}">{{tr .Name}}</label>
   {{if .EnvOverride}}<span class="pill muted" title="{{tr "settings.env_override_hint"}}">{{tr "settings.env_override"}}</span>{{end}}
-  <button type=button class="hint-btn" @click="hint=!hint" :aria-expanded="hint" aria-label="{{tr "settings.help"}}">?</button>
   </div>
   <div class=setting-field>
   {{if eq .Type "select"}}
@@ -943,6 +947,7 @@ const settingsTemplate = `{{with .Data}}
     <input type="{{.Type}}" name="{{.Key}}" id="s_{{.Key}}" value="{{.Value}}" {{if .EnvOverride}}disabled title="{{tr "settings.env_override_hint"}}"{{end}} {{if .Placeholder}}placeholder="{{tr .Placeholder}}"{{end}}>
   {{end}}
   {{if .Restart}}<span class=muted> ({{tr "settings.requires_restart"}})</span>{{end}}
+  <button type=button class="hint-btn" @click="hint=!hint" :aria-expanded="hint" aria-label="{{tr "settings.help"}}">?</button>
   <div class=hint-popup x-show="hint" @click.away="hint=false" x-transition x-cloak>
     <p>{{tr (printf "settings.%s_hint" .Key)}}</p>
     <code>{{.EnvVar}}</code>

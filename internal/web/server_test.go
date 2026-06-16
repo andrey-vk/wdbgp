@@ -1203,8 +1203,8 @@ func TestModeEditPageShowsFeedsWithCorrectCheckboxes(t *testing.T) {
 		}
 	}
 
-	// Verify the mode enabled status is shown as plain text (not a checkbox).
-	if !strings.Contains(body, "Enabled") && !strings.Contains(body, "enabled") && !strings.Contains(body, "Включён") {
-		t.Errorf("mode enabled status not found in page")
+	// Verify the mode enabled toggle button is present.
+	if !strings.Contains(body, "Disable") && !strings.Contains(body, "Enable") && !strings.Contains(body, "Включить") && !strings.Contains(body, "Отключить") {
+		t.Errorf("mode enable/disable toggle button not found in page")
 	}
 }

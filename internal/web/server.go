@@ -948,6 +948,14 @@ func (s *Server) updateMode(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
 	enabled := r.Form.Has("enabled")
+	if r.FormValue("action") == "toggle" {
+		mode, err := s.store.CatalogMode(r.Context(), id)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		enabled = !mode.Enabled
+	}
 	if name == "" {
 		http.Error(w, "name required", http.StatusBadRequest)
 		return
