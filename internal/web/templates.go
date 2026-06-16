@@ -840,17 +840,25 @@ const modeEditTemplate = `{{with .Data}}
 
 <label class=checkbox-row><input type=checkbox name=enabled hx-post="/admin/modes/{{.Mode.ID}}" hx-trigger=change hx-vals='{"action":"toggle"}' hx-swap=none {{if .Mode.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label>
 
+<form method=post action="/admin/modes/{{.Mode.ID}}/feeds">
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<input type=hidden name=action value=apply>
+<div class=save-bar>
+<span id=change-count>0 changes</span>
+<button type=submit class=primary>{{tr "common.save"}}</button>
+</div>
 <div class=card>
 <table>
-<tr><th>{{tr "feeds.name"}}</th><th>URL</th><th>{{tr "catalog.mode"}}</th></tr>
+<tr>	<th>{{tr "feeds.name"}}</th><th>URL</th><th>✓</th></tr>
 {{range .Feeds}}
 <tr>
 <td>{{.Name}}</td>
 <td><code>{{.URL}}</code></td>
-<td><input type=checkbox hx-post="/admin/modes/{{$.Data.Mode.ID}}/feeds" hx-trigger=change hx-swap=none hx-vals='{"feed_id":"{{.ID}}","action":"{{if .InMode}}remove{{else}}add{{end}}"}' {{if .InMode}}checked{{end}}></td>
+<td><input type=checkbox name=feed_ids value="{{.ID}}" {{if .InMode}}checked{{end}}></td>
 </tr>{{end}}
 </table>
 </div>
+</form>
 {{end}}`
 
 const feedEditTemplate = `{{with .Data}}

@@ -416,9 +416,10 @@ func TestAdminCanManageFeeds(t *testing.T) {
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 
 	addForm := url.Values{
-		"name":    {"custom"},
-		"url":     {"https://example.test/feed.json"},
-		"enabled": {"on"},
+		"name":     {"custom"},
+		"url":      {"https://example.test/feed.json"},
+		"enabled":  {"on"},
+		"mode_ids": {"1"},
 	}
 	request := httptest.NewRequest(http.MethodPost, "/admin/feed", strings.NewReader(addForm.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")

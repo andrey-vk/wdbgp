@@ -931,6 +931,9 @@ func (s *Server) addMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("HX-Redirect", "/admin/modes?saved=1")
+	if r.Header.Get("HX-Request") == "" {
+		http.Redirect(w, r, "/admin/modes?saved=1", http.StatusSeeOther)
+	}
 }
 
 func (s *Server) updateMode(w http.ResponseWriter, r *http.Request) {
@@ -958,6 +961,9 @@ func (s *Server) updateMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("HX-Redirect", "/admin/modes?saved=1")
+	if r.Header.Get("HX-Request") == "" {
+		http.Redirect(w, r, "/admin/modes?saved=1", http.StatusSeeOther)
+	}
 }
 
 func (s *Server) deleteMode(w http.ResponseWriter, r *http.Request) {
@@ -975,6 +981,9 @@ func (s *Server) deleteMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("HX-Redirect", "/admin/modes?saved=1")
+	if r.Header.Get("HX-Request") == "" {
+		http.Redirect(w, r, "/admin/modes?saved=1", http.StatusSeeOther)
+	}
 }
 
 func (s *Server) modeEditPage(w http.ResponseWriter, r *http.Request) {
@@ -1043,28 +1052,58 @@ func (s *Server) modeFeedToggle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	feedID, err := strconv.ParseInt(r.FormValue("feed_id"), 10, 64)
-	if err != nil || feedID <= 0 {
-		http.Error(w, "bad feed id", http.StatusBadRequest)
-		return
-	}
-	switch r.FormValue("action") {
-	case "add":
-		if err := s.store.AddFeedToMode(r.Context(), id, feedID); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	case "remove":
-		if err := s.store.RemoveFeedFromMode(r.Context(), id, feedID); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	default:
+
+	if r.FormValue("action") != "apply" {
 		http.Error(w, "bad action", http.StatusBadRequest)
 		return
 	}
+
+	// Build the desired set of feed IDs from checkboxes.
+	desired := make(map[int64]bool)
+	for _, v := range r.Form["feed_ids"] {
+		fid, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || fid <= 0 {
+			continue
+		}
+		desired[fid] = true
+	}
+
+	// Get current feed assignments for this mode.
+	current, err := s.store.ModeFeeds(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	currentSet := make(map[int64]bool, len(current))
+	for _, f := range current {
+		currentSet[f.ID] = true
+	}
+
+	// Compute adds and removes.
+	for fid := range desired {
+		if !currentSet[fid] {
+			if err := s.store.AddFeedToMode(r.Context(), id, fid); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+	}
+	for fid := range currentSet {
+		if !desired[fid] {
+			if err := s.store.RemoveFeedFromMode(r.Context(), id, fid); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+	}
+
+	if _, err := s.store.GenerateCommunities(r.Context(), id); err != nil {
+		logger := logging.FromContext(r.Context())
+		logger.Warn("failed to generate communities after mode feed toggle", "error", err)
+	}
+
 	_ = s.bgp.Reconcile(r.Context())
-	w.WriteHeader(http.StatusOK)
+	http.Redirect(w, r, fmt.Sprintf("/admin/mode/%d", id), http.StatusSeeOther)
 }
 
 func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
@@ -1464,7 +1503,7 @@ func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
 				modeIDs = append(modeIDs, mid)
 			}
 		}
-	} else {
+	} else if r.FormValue("catalog_mode_id") != "" {
 		mid, ferr := formModeID(r, store.DefaultCatalogModeID)
 		if ferr != nil {
 			return store.Feed{}, nil, ferr
@@ -1544,6 +1583,14 @@ func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	var existingID int64
+	err = s.store.DB.QueryRowContext(r.Context(),
+		"SELECT id FROM users WHERE peer_ip = ? AND peer_asn = ?", user.PeerIP, user.PeerASN).Scan(&existingID)
+	if err == nil {
+		http.Error(w, "user with this IP and ASN already exists", http.StatusConflict)
+		return
+	}
+
 	userID, err := s.store.AddUser(r.Context(), user)
 	if err != nil {
 		s.internalError(w, r, err)

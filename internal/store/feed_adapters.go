@@ -275,7 +275,7 @@ func (s *Store) DeleteFeedAdapter(ctx context.Context, id int64) error {
 func (s *Store) UpdateFeedAdapter(ctx context.Context, adapter FeedAdapter) error {
 	result, err := s.DB.ExecContext(ctx, `
 UPDATE feed_adapters
-SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1
+SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1, is_customized = 1
 WHERE id = ?`,
 		adapter.Name, adapter.Source, adapter.AllowedHosts, adapter.ID)
 	if err != nil {

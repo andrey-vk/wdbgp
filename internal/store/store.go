@@ -491,6 +491,7 @@ CREATE TABLE catalog_mode_feeds (
     feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
     PRIMARY KEY (mode_id, feed_id)
 );
+CREATE INDEX IF NOT EXISTS idx_catalog_mode_feeds_feed ON catalog_mode_feeds(feed_id);
 
 -- Migrate existing feed→mode assignments
 INSERT INTO catalog_mode_feeds (mode_id, feed_id)
@@ -698,12 +699,6 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if _, err = tx.ExecContext(ctx, migration.SQL); err == nil && migration.Go != nil {
 			err = migration.Go(tx)
 		}
-		if err == nil {
-			_, err = tx.ExecContext(ctx,
-				"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
-				migration.Version, migration.Name, time.Now().UTC().Format(time.RFC3339Nano),
-			)
-		}
 		if err != nil {
 			tx.Rollback()
 			return fmt.Errorf("migration %d (%s): %w", migration.Version, migration.Name, err)
@@ -715,6 +710,13 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			if _, err := s.DB.ExecContext(ctx, migration.NoTxSQL); err != nil {
 				return fmt.Errorf("migration %d non-transactional (%s): %w", migration.Version, migration.Name, err)
 			}
+		}
+		// Record migration version only after all steps (including NoTxSQL) succeeded.
+		if _, err := s.DB.ExecContext(ctx,
+			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+			migration.Version, migration.Name, time.Now().UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			return err
 		}
 	}
 	return s.seedBuiltInAdapters(ctx)
