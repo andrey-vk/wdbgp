@@ -490,7 +490,7 @@ WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
 
 		-- Detect pre-existing customizations: built-in adapters that were edited
 		UPDATE feed_adapters SET is_customized = 1
-		WHERE key IN ('opencck-main', 'canonical-json', 'ipranges', 'singbox-srs')
+		WHERE key IN ('opencck', 'opencck-main', 'canonical-json', 'ipranges', 'singbox-srs')
 		  AND revision > 1;
 
 		-- Catalog modes M:M with feeds

@@ -576,11 +576,56 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		}
 	}
 
-	// Use retry for BGP operations
+	// Merge desired by actual prefix (not compound key) so that identical
+	// prefixes from different modes share one NLRI with merged communities.
+	type mergedRoute struct {
+		userIDs  []int64
+		comms    map[string]uint32
+		category string
+		service  string
+	}
+	perPrefix := map[string]*mergedRoute{}
+
+	for rawPrefix, users := range desired {
+		actualPrefix := splitCompoundKey(rawPrefix)
+		mr, ok := perPrefix[actualPrefix]
+		if !ok {
+			mr = &mergedRoute{comms: map[string]uint32{}}
+			perPrefix[actualPrefix] = mr
+		}
+		// Deduplicate user IDs across modes.
+		seen := map[int64]bool{}
+		for _, u := range mr.userIDs {
+			seen[u] = true
+		}
+		for _, u := range users {
+			if !seen[u] {
+				mr.userIDs = append(mr.userIDs, u)
+				seen[u] = true
+			}
+		}
+		// Merge communities from this mode's modeID.
+		if meta, hasMeta := prefixMeta[rawPrefix]; hasMeta {
+			if modeComms, ok := modeCommunities[meta.ModeID]; ok {
+				for k, v := range modeComms {
+					mr.comms[k] = v
+				}
+			}
+			if mr.category == "" && meta.Category != "" {
+				mr.category = meta.Category
+				mr.service = meta.Service
+			}
+		}
+	}
+
+	// Use retry for BGP operations — withdraw stale entries.
 	for prefix, installed := range m.installed {
-		users, exists := desired[prefix]
-		signature := signature(users)
-		if exists && signature == installed.Signature {
+		mr, exists := perPrefix[prefix]
+		sig := ""
+		if exists {
+			sig = signature(mr.userIDs)
+		}
+		if exists && sig == installed.Signature {
 			continue
 		}
 
@@ -600,20 +645,14 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		delete(m.installed, prefix)
 	}
 
-	for rawPrefix, users := range desired {
-		sig := signature(users)
-		if installed, ok := m.installed[rawPrefix]; ok && installed.Signature == sig {
+	// Announce one NLRI per unique prefix with merged communities.
+	for actualPrefix, mr := range perPrefix {
+		sig := signature(mr.userIDs)
+		if installed, ok := m.installed[actualPrefix]; ok && installed.Signature == sig {
 			continue
 		}
 
-		meta, hasMeta := prefixMeta[rawPrefix]
-		comms := map[string]uint32{}
-		if hasMeta {
-			comms = modeCommunities[meta.ModeID]
-		}
-		// The key is "prefix\x00modeID"; extract the actual prefix for NLRI.
-		announcePrefix := splitCompoundKey(rawPrefix)
-		path, err := m.path(announcePrefix, users, meta.Category, meta.Service, comms)
+		path, err := m.path(actualPrefix, mr.userIDs, mr.category, mr.service, mr.comms)
 		if err != nil {
 			return err
 		}
@@ -629,9 +668,9 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		)
 
 		if err != nil {
-			return fmt.Errorf("announce %s: %w", rawPrefix, err)
+			return fmt.Errorf("announce %s: %w", actualPrefix, err)
 		}
-		m.installed[rawPrefix] = installedPath{UUID: response.Uuid, Signature: sig}
+		m.installed[actualPrefix] = installedPath{UUID: response.Uuid, Signature: sig}
 	}
 	return nil
 }

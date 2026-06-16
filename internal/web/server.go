@@ -1129,21 +1129,13 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 	if modeIDs == nil {
 		modeIDs = []int64{}
 	}
-	if len(modeIDs) == 0 {
-		// Allow feeds without modes — admin assigns later from mode page.
-		_, err = s.store.DB.ExecContext(r.Context(),
-			"INSERT INTO feeds(name, url, adapter_id, sync_interval, data) VALUES (?, ?, ?, ?, ?)",
-			feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	} else {
-		if err := s.store.AddFeedForModeAdapter(
-			r.Context(), feed.Name, feed.URL, modeIDs[0], feed.AdapterID, feed.SyncInterval, feed.Data); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+	// Insert feed first, capture rowid immediately — before any junction inserts.
+	_, err = s.store.DB.ExecContext(r.Context(),
+		"INSERT INTO feeds(name, url, adapter_id, sync_interval, data) VALUES (?, ?, ?, ?, ?)",
+		feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 	var feedID int64
 	if err := s.store.DB.QueryRowContext(r.Context(), "SELECT last_insert_rowid()").Scan(&feedID); err != nil {
