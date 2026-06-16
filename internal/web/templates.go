@@ -117,7 +117,7 @@ header{display:flex;gap:1rem;justify-content:space-between;align-items:center;ma
 .setting-field input[type=checkbox]{width:auto}
 select:disabled,input:disabled{opacity:.5;cursor:not-allowed;background:var(--bg)}
 .setting-row:last-of-type .setting-label,.setting-row:last-of-type .setting-field{border-bottom:none}
-.hint-btn{background:var(--border);border:none;border-radius:50%;width:20px;height:20px;line-height:1;font-size:.75em;font-weight:700;cursor:pointer;color:var(--muted);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;vertical-align:middle;margin-left:4px}
+.hint-btn{background:var(--border);border:none;border-radius:50%;width:20px;height:20px;line-height:1;font-size:.75em;font-weight:700;cursor:pointer;color:var(--muted);display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;margin-left:6px;float:right}
 .hint-btn:hover{background:var(--accent);color:#fff}
 .hint-popup{position:absolute;left:0;top:100%;z-index:20;background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:.75rem 1rem;box-shadow:0 4px 16px #00000030;max-width:420px;font-size:.85em;line-height:1.5;margin-top:4px}
 .hint-popup p{margin:0 0 .5rem}
@@ -672,7 +672,7 @@ document.querySelectorAll('.sidebar a').forEach(function(a){a.addEventListener('
 function setActiveNav(){var p=window.location.pathname;document.querySelectorAll('.sidebar a').forEach(function(a){var href=a.getAttribute('href');if(href===p||(p.startsWith('/admin/user/')&&href==='/admin/users')||(p.startsWith('/admin/adapter/')&&href==='/admin/adapters')){a.classList.add('active')}else{a.classList.remove('active')}})}
 setActiveNav();
 // htmx after-swap: update active nav
-document.body.addEventListener('htmx:afterSettle',function(evt){if(!evt.detail || !evt.detail.requestConfig)return;var path=evt.detail.requestConfig.path;document.querySelectorAll('.sidebar a').forEach(function(a){var href=a.getAttribute('href');if(href===path){a.classList.add('active')}else{a.classList.remove('active')}})});
+document.body.addEventListener('htmx:afterSettle',function(evt){if(!evt.detail || !evt.detail.requestConfig)return;var path=evt.detail.requestConfig.path;document.querySelectorAll('.sidebar a').forEach(function(a){var href=a.getAttribute('href');if(href===path){a.classList.add('active')}else{a.classList.remove('active')}});if(window.Alpine){var el=document.getElementById('main');if(el)Alpine.initTree(el)}});
 function switchLang(lang) {
   var search = window.location.search.replace(/[?&]lang=[^&]*/g, '');
   search = search ? search + '&' : '?';
@@ -869,11 +869,13 @@ const feedEditTemplate = `{{with .Data}}
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <label>{{tr "feeds.name"}} <input name=name value="{{.Feed.Name}}" required></label>
 <label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
-<label x-data="{hint:false}">{{tr "feeds.data"}} <button type=button class=hint-btn @click="hint=!hint" :aria-expanded="hint">?</button>
-<div class=hint-popup x-show="hint" @click.away="hint=false" x-transition x-cloak>
-<p>{{tr "feeds.data_hint"}}</p><code>{"category": "Russia", "service": "geoip-ru"}</code>
+<div x-data="{hint:false}">
+  <label style="display:flex;align-items:center;gap:4px;margin-bottom:4px">{{tr "feeds.data"}} <button type=button class=hint-btn @click="hint=!hint">?</button></label>
+  <div class=hint-popup x-show="hint" @click.away="hint=false" x-transition x-cloak style="position:relative">
+    <p>{{tr "feeds.data_hint"}}</p><code>{"category": "Russia", "service": "geoip-ru"}</code>
+  </div>
+  <textarea name=data class=large>{{.Feed.Data}}</textarea>
 </div>
-<textarea name=data class=large>{{.Feed.Data}}</textarea></label>
 <div class=form-grid>
 <label>{{tr "feeds.adapter"}}
 <select name=adapter_id>
@@ -881,9 +883,12 @@ const feedEditTemplate = `{{with .Data}}
 </select></label>
 <label>{{tr "feeds.sync_interval"}} <input type=number name=sync_interval value="{{.Feed.SyncInterval}}"></label>
 </div>
-<label class=checkbox-row><input type=checkbox name=enabled {{if .Feed.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label>
 <div class=row-actions>
 <button type=submit class=primary>{{tr "common.save"}}</button>
+{{if not .IsNew}}<form method=post action="/admin/feeds/{{.Feed.ID}}/force-sync" style=display:inline>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<button class=secondary>⟳ {{tr "feeds.force_sync"}}</button>
+</form>{{end}}
 </div>
 </form>
 {{if not .IsNew}}<form method=post action="/admin/feed/{{.Feed.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}')">

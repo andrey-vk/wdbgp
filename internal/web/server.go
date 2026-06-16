@@ -1533,7 +1533,7 @@ func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
 	}
 	return store.Feed{
 		ID: id, Name: name, URL: rawURL, AdapterID: adapterID,
-		Enabled:      r.Form.Has("enabled"),
+		Enabled:      true,
 		SyncInterval: formInt(r, "sync_interval"),
 		Data:         data,
 	}, modeIDs, nil

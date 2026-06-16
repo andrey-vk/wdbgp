@@ -462,7 +462,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	feed = feedList[len(feedList)-1]
-	if feed.Name != "custom" || feed.Enabled {
+	if feed.Name != "custom" || !feed.Enabled {
 		t.Fatalf("updated feed = %#v", feed)
 	}
 	var entries int
@@ -471,7 +471,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	if entries != 1 {
-		t.Fatalf("disabled feed snapshot entries = %d, want 1", entries)
+		t.Fatalf("feed snapshot entries after update = %d, want 1", entries)
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/admin", nil)
