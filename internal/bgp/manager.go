@@ -215,17 +215,17 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 	}})
 }
 
-func (m *Manager) deletePeerLocked(ctx context.Context, peerIP string) error {
-	// Find user by peerIP
+func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP string) error {
+	// Find user by userID AND peerIP
 	var user store.User
 	for _, u := range m.peerConfigs {
-		if u.PeerIP == peerIP {
+		if u.ID == userID && u.PeerIP == peerIP {
 			user = u
 			break
 		}
 	}
 	if user.ID == 0 {
-		return fmt.Errorf("user not found for peer %s", peerIP)
+		return fmt.Errorf("user %d not found for peer %s", userID, peerIP)
 	}
 	// Delete defined sets
 	communitySetName := userCommunitySetName(user.ID)
@@ -354,7 +354,7 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	// If peer IP changed, we need to delete old peer and add new one
 	if oldUser.PeerIP != user.PeerIP {
 		// Delete old peer
-		if err := m.deletePeerLocked(ctx, oldUser.PeerIP); err != nil {
+		if err := m.deletePeerLocked(ctx, oldUser.ID, oldUser.PeerIP); err != nil {
 			return fmt.Errorf("delete old peer %s: %w", oldUser.PeerIP, err)
 		}
 		// Remove old user from slice
@@ -491,7 +491,7 @@ func (m *Manager) DeletePeer(ctx context.Context, userID int64, peerIP string) e
 		return fmt.Errorf("peer %s (user %d) does not exist", peerIP, userID)
 	}
 	// Delete the peer
-	if err := m.deletePeerLocked(ctx, peerIP); err != nil {
+	if err := m.deletePeerLocked(ctx, userID, peerIP); err != nil {
 		return err
 	}
 	// Remove from configs — match by userID+peerIP

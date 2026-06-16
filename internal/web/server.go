@@ -1112,8 +1112,8 @@ func (s *Server) modeFeedToggle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		logger := logging.FromContext(r.Context())
-		logger.Warn("reconcile failed after mode feed change", "error", err)
+		http.Error(w, "BGP reconcile failed: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/mode/%d", id), http.StatusSeeOther)
 }
@@ -1693,6 +1693,14 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 		case "network", "login", "both", "any":
 		default:
 			http.Error(w, `web_auth must be "network", "login", "both", or "any"`, http.StatusBadRequest)
+			return
+		}
+		var existingID int64
+		err = s.store.DB.QueryRowContext(r.Context(),
+			"SELECT id FROM users WHERE peer_ip = ? AND peer_asn = ? AND id != ?",
+			user.PeerIP, user.PeerASN, id).Scan(&existingID)
+		if err == nil {
+			http.Error(w, "user with this IP and ASN already exists", http.StatusConflict)
 			return
 		}
 		if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {

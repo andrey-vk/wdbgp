@@ -482,11 +482,16 @@ WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
 		Version: 20,
 		Name:    "add adapter upgrade support, catalog mode M:M, drop peer_ip unique",
 		SQL: `
--- Adapter upgrade support
-ALTER TABLE feed_adapters ADD COLUMN builtin_version INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0;
+		-- Adapter upgrade support
+		ALTER TABLE feed_adapters ADD COLUMN builtin_version INTEGER NOT NULL DEFAULT 0;
+		ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0;
 
--- Catalog modes M:M with feeds
+		-- Detect adapters that were already customized (source differs from empty/built-in)
+		UPDATE feed_adapters SET is_customized = 1
+		WHERE key IN ('opencck-main', 'canonical-json', 'ipranges', 'singbox-srs')
+		AND source != '';
+
+		-- Catalog modes M:M with feeds
 CREATE TABLE catalog_mode_feeds (
     mode_id INTEGER NOT NULL REFERENCES catalog_modes(id) ON DELETE CASCADE,
     feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
@@ -527,8 +532,11 @@ INSERT INTO users_new SELECT * FROM users;
 PRAGMA foreign_keys = OFF;
 DROP TABLE users;
 ALTER TABLE users_new RENAME TO users;
-PRAGMA foreign_keys = ON;
-`,
+		PRAGMA foreign_keys = ON;
+
+		-- Recreate index dropped by table rebuild (migration 12)
+		CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id);
+	`,
 	},
 }
 

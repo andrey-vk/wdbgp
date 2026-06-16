@@ -825,6 +825,12 @@ const modesTemplate = `{{with .Data}}
 <td>{{if .Enabled}}<span class=ok>{{tr "feeds.enabled"}}</span>{{else}}<span class=error>{{tr "catalog.disabled"}}</span>{{end}}</td>
 <td>{{.FeedCount}}</td>
 <td>
+<form method=post action="/admin/modes/{{.ID}}" style=display:inline>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<input type=hidden name=action value=toggle>
+<input type=hidden name=name value="{{.Name}}">
+<button class=button>{{if .Enabled}}{{tr "common.disable"}}{{else}}{{tr "common.enable"}}{{end}}</button>
+</form>
 {{if not .IsBuiltin}}
 <form method=post action="/admin/modes/{{.ID}}/delete" style=display:inline onsubmit="return confirm('{{tr "catalog.mode_delete_confirm"}}')">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
@@ -878,6 +884,10 @@ const feedEditTemplate = `{{with .Data}}
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <label>{{tr "feeds.name"}} <input name=name value="{{.Feed.Name}}" required></label>
 <label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
+<label>{{tr "catalog.modes"}}</label>
+<div class=checkbox-row>
+{{range .Modes}}<label><input type=checkbox name=mode_ids value="{{.ID}}" {{if index $.Data.FeedModeIDs .ID}}checked{{end}}> {{.Name}}</label>{{end}}
+</div>
 <div x-data="{hint:false}">
   <label style="display:flex;align-items:center;gap:4px;margin-bottom:4px">{{tr "feeds.data"}} <button type=button class=hint-btn @click="hint=!hint">?</button></label>
   <div class=hint-popup x-show="hint" @click.away="hint=false" x-transition x-cloak style="position:relative">
