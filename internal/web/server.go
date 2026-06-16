@@ -1615,11 +1615,21 @@ func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	var existingID int64
+	// Check for conflicting (ip, asn, password) combination
+	var conflictID int64
+	var conflictName, conflictPass string
 	err = s.store.DB.QueryRowContext(r.Context(),
-		"SELECT id FROM users WHERE peer_ip = ?", user.PeerIP).Scan(&existingID)
+		"SELECT id, name, COALESCE(bgp_password, '') FROM users WHERE peer_ip = ? AND peer_asn = ? AND COALESCE(bgp_password, '') = COALESCE(?, '')",
+		user.PeerIP, user.PeerASN, user.BGPPassword).Scan(&conflictID, &conflictName, &conflictPass)
 	if err == nil {
-		http.Error(w, "user with this peer IP already exists", http.StatusConflict)
+		// Conflict found
+		var msg string
+		if conflictPass == "" {
+			msg = fmt.Sprintf("User '%s' already uses IP %s with ASN %d without a BGP password. Set a password on either user to distinguish them, or change the IP/ASN.", conflictName, user.PeerIP, user.PeerASN)
+		} else {
+			msg = fmt.Sprintf("User '%s' already uses this IP, ASN, and password combination. Use a different password or change IP/ASN.", conflictName)
+		}
+		http.Error(w, msg, http.StatusConflict)
 		return
 	}
 
@@ -1708,12 +1718,21 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `web_auth must be "network", "login", "both", or "any"`, http.StatusBadRequest)
 			return
 		}
-		var existingID int64
+		// Check for conflicting (ip, asn, password) combination
+		var conflictID int64
+		var conflictName, conflictPass string
 		err = s.store.DB.QueryRowContext(r.Context(),
-			"SELECT id FROM users WHERE peer_ip = ? AND id != ?",
-			user.PeerIP, id).Scan(&existingID)
+			"SELECT id, name, COALESCE(bgp_password, '') FROM users WHERE peer_ip = ? AND peer_asn = ? AND COALESCE(bgp_password, '') = COALESCE(?, '') AND id != ?",
+			user.PeerIP, user.PeerASN, user.BGPPassword, id).Scan(&conflictID, &conflictName, &conflictPass)
 		if err == nil {
-			http.Error(w, "user with this peer IP already exists", http.StatusConflict)
+			// Conflict found
+			var msg string
+			if conflictPass == "" {
+				msg = fmt.Sprintf("User '%s' already uses IP %s with ASN %d without a BGP password. Set a password on either user to distinguish them, or change the IP/ASN.", conflictName, user.PeerIP, user.PeerASN)
+			} else {
+				msg = fmt.Sprintf("User '%s' already uses this IP, ASN, and password combination. Use a different password or change IP/ASN.", conflictName)
+			}
+			http.Error(w, msg, http.StatusConflict)
 			return
 		}
 		if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {

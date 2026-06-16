@@ -341,8 +341,19 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=action value=settings><div class=grid>
 <label>{{tr "feeds.name"}} <input name=name value="{{.User.Name}}" required></label><label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
-<label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" required></label><label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn value="{{.User.PeerASN}}" required></label>
-<label>{{tr "users.next_hop"}} <input name=next_hop value="{{.User.NextHop}}"></label><label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{if .User.BGPPassword}}{{tr "user.password_set"}}{{else}}{{tr "user.password_not_set"}}{{end}}"></label></div>
+<div class=form-grid>
+<label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" id=peer-ip-input {{if eq .User.PeerIP "0.0.0.0"}}disabled{{end}}></label>
+<label>{{tr "users.peer_asn"}} <input type=number name=peer_asn value="{{.User.PeerASN}}" required></label>
+</div>
+<label class=checkbox-row><input type=checkbox id=dynamic-ip {{if eq .User.PeerIP "0.0.0.0"}}checked{{end}}> {{tr "users.dynamic_ip"}}</label>
+<p class=muted>{{tr "users.dynamic_ip_hint"}}</p>
+<label>{{tr "users.bgp_password"}} <input type=password name=bgp_password value="{{.User.BGPPassword}}" placeholder="{{tr "users.bgp_password_placeholder"}}"></label>
+<script>
+var d=document.getElementById('dynamic-ip');
+var i=document.getElementById('peer-ip-input');
+d.addEventListener('change',function(){if(this.checked){i.value='0.0.0.0';i.disabled=true}else{i.disabled=false;if(i.value==='0.0.0.0')i.value=''}});
+</script>
+</div>
 <label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Selection.Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.User.CatalogModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
 <label><input type=checkbox name=clear_bgp_password> {{tr "user.clear_password"}}</label>
 <label><input type=checkbox name=enabled {{if .User.Enabled}}checked{{end}}> {{tr "user.enabled"}}</label>
