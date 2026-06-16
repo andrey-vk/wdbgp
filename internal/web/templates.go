@@ -184,12 +184,19 @@ const adapterEditTemplate = `{{with .Data}}
  <label>{{tr "feeds.name"}} <input name=name value="{{.Adapter.Name}}" required></label>
  <label>{{tr "adapters.allowed_hosts"}} <input name=allowed_hosts value="{{.Adapter.AllowedHosts}}"></label>
  <label>{{tr "adapters.source"}} <textarea name=source class=large rows=30 required>{{.Adapter.Source}}</textarea></label>
- <label>{{tr "adapters.test_feed"}} <select name=feed_id>
- <option value="">{{tr "adapters.select_feed"}}</option>
- {{range .Feeds}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
- </select></label>
- <div class=row-actions><button class=primary>{{tr "common.save"}}</button>
- <button type=submit class=secondary formaction="/admin/adapter/{{.Adapter.ID}}/test">{{tr "adapters.test"}}</button></div>
+  <label>{{tr "adapters.test_feed"}} <select name=feed_id id=test-feed-select>
+  <option value="">{{tr "adapters.select_feed"}}</option>
+  {{range .Feeds}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+  </select></label>
+  <div class=row-actions><button class=primary>{{tr "common.save"}}</button>
+  <button type=submit class=secondary formaction="/admin/adapter/{{.Adapter.ID}}/test" id=test-btn disabled>{{tr "adapters.test"}}</button>
+  <span class=muted id=test-hint style=font-size:.85em>{{tr "adapters.select_feed_to_test"}}</span></div>
+  <script>
+  var s=document.getElementById('test-feed-select');
+  var b=document.getElementById('test-btn');
+  var h=document.getElementById('test-hint');
+  s.addEventListener('change',function(){var v=!!this.value;b.disabled=!v;h.style.display=v?'none':''});
+  </script>
  </form>
 {{if .Adapter.ID}}{{if .Adapter.BuiltIn}}<form method=post action="/admin/adapter/{{.Adapter.ID}}/reset" onsubmit="return confirm('{{tr "adapters.reset_confirm"}}');">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
