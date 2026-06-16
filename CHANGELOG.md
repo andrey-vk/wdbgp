@@ -8,21 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [v0.13.0-alpha] — Unreleased
 
 ### Added
-- **Catalog modes v2**: admin CRUD for creating/editing/deleting modes
-- Feeds belong to multiple modes via `catalog_mode_feeds` junction table
-- Mode management UI with built-in badges and delete protection
-- Feed edit: multi-select mode checkboxes
-- Adapter upgrade safety: `builtin_version` + `is_customized` columns
-- `seedBuiltInAdapters` preserves user customizations on upgrade
-
-### Changed
-- `feeds.mode_id` column dropped — migrated to junction table
-- `peer_ip` UNIQUE constraint removed (fixes #17)
-- Users can share same peer_ip with different auth methods
-
-## [v0.12.7-alpha] — 2026-06-16
-
-### Added
 - **sing-box SRS binary format support**: parse `.srs` files (v1-5), zlib decompression, CIDR extraction
 - `api.srsGet(url, cfg)` — JS adapter API for downloading and parsing SRS files
 - `api.log(msg)` — adapter debugging via wdbgp logger
@@ -31,11 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default disabled Russia geoip feed example
 - Force re-download button in feed list
 - Feed data textarea with JSON validation
+- **Catalog modes v2**: admin CRUD for creating/editing/deleting modes
+- Feeds belong to multiple modes via `catalog_mode_feeds` junction table
+- Mode management UI with built-in badges and delete protection
+- Feed edit: multi-select mode checkboxes
+- Adapter upgrade safety: `builtin_version` + `is_customized` columns
+- `seedBuiltInAdapters` preserves user customizations on upgrade
 - Adapter source backup on edit/delete/reset (configurable dir + max copies)
 
 ### Changed
 - Adapter docs split to `docs/adapters.md` (EN/RU)
 - Removed redundant admin back-links (sidebar covers navigation)
+- `feeds.mode_id` column dropped — migrated to junction table
+- `peer_ip` UNIQUE constraint removed (fixes #17)
+- Users can share same peer_ip with different auth methods
 
 ### Fixed
 - DNS safeguard for localhost on BGP reconcile
