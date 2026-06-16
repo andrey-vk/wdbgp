@@ -181,10 +181,11 @@ func parseDefaultRule(ctx context.Context, r io.Reader, cfg *ParseSRSConfig) ([]
 				return nil, false, nil
 			}
 		case srsItemDomainKeyword, srsItemDomainRegex:
+			// DomainKeyword/DomainRegex are OR'd with CIDRs like srsItemDomain,
+			// not AND'd — skip the payload without setting a constraint.
 			if err := skipStringArray(ctx, r); err != nil {
 				return nil, false, err
 			}
-			hasConstraint = true
 		case srsItemAdGuardDomain:
 			// Same as domain — compact binary format. Domain is OR'd
 			// with CIDRs — just skip the payload and continue.
@@ -295,6 +296,9 @@ func readIPSetAsCIDRs(ctx context.Context, r io.Reader) ([]string, error) {
 		toAddr, ok := netip.AddrFromSlice(to)
 		if !ok {
 			return nil, fmt.Errorf("ipset: invalid to addr len %d", toLen)
+		}
+		if fromAddr.Compare(toAddr) > 0 {
+			return nil, fmt.Errorf("srs: invalid IP range: %s > %s", fromAddr.String(), toAddr.String())
 		}
 		builder.AddRange(netipx.IPRangeFrom(fromAddr, toAddr))
 	}
