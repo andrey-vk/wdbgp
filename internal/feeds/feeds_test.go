@@ -1,7 +1,11 @@
 package feeds
 
 import (
+	"bufio"
+	"bytes"
+	"compress/zlib"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -97,6 +101,105 @@ function sync(feed, api) {
 	}
 	if len(entries) != 1 || entries[0].CIDR != "149.154.160.0/20" {
 		t.Fatalf("entries = %#v", entries)
+	}
+}
+
+func TestJavaScriptAdapterSRSGet(t *testing.T) {
+	// Build a tiny valid SRS binary in memory and serve it via mock HTTP.
+	// The SRS v1 format: header (SRS+version) + zlib-compressed body.
+	// Body: rule_count(uvarint=1), rule_type(0), item_type(6=ip_cidr),
+	//       IPSet(version=1, range_count=2, ranges), item_type(0xFF), invert(0)
+
+	// We'll generate a tiny SRS with two IPv4 CIDRs: 10.0.0.0/8 and 192.168.0.0/16
+
+	var srsBuf bytes.Buffer
+	srsBuf.Write([]byte{0x53, 0x52, 0x53, 0x01}) // SRS v1
+
+	zw := zlib.NewWriter(&srsBuf)
+	bw := bufio.NewWriter(zw)
+
+	// rule_count = 1
+	uvbuf := make([]byte, binary.MaxVarintLen64)
+	n := binary.PutUvarint(uvbuf, 1)
+	bw.Write(uvbuf[:n])
+
+	// rule_type = 0 (default)
+	bw.WriteByte(0)
+
+	// item_type = 6 (ip_cidr)
+	bw.WriteByte(6)
+
+	// IPSet: version=1
+	bw.WriteByte(1)
+	// range_count = 2
+	binary.Write(bw, binary.BigEndian, uint64(2))
+
+	// Range 1: 10.0.0.0 -> 10.255.255.255 (/8)
+	from1 := netip.MustParseAddr("10.0.0.0").AsSlice()
+	to1 := netip.MustParseAddr("10.255.255.255").AsSlice()
+	n1 := binary.PutUvarint(uvbuf, uint64(len(from1)))
+	bw.Write(uvbuf[:n1])
+	bw.Write(from1)
+	n1 = binary.PutUvarint(uvbuf, uint64(len(to1)))
+	bw.Write(uvbuf[:n1])
+	bw.Write(to1)
+
+	// Range 2: 192.168.0.0 -> 192.168.255.255 (/16)
+	from2 := netip.MustParseAddr("192.168.0.0").AsSlice()
+	to2 := netip.MustParseAddr("192.168.255.255").AsSlice()
+	n2 := binary.PutUvarint(uvbuf, uint64(len(from2)))
+	bw.Write(uvbuf[:n2])
+	bw.Write(from2)
+	n2 = binary.PutUvarint(uvbuf, uint64(len(to2)))
+	bw.Write(uvbuf[:n2])
+	bw.Write(to2)
+
+	// item_type = 0xFF (final), invert = 0
+	bw.WriteByte(0xFF)
+	bw.WriteByte(0)
+
+	bw.Flush()
+	zw.Close()
+
+	srsData := srsBuf.Bytes()
+
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != "https://example.test/feed.srs" {
+			t.Fatalf("request URL = %q", request.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(srsData)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+
+	entries, err := (adapterRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
+		context.Background(),
+		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed.srs"},
+		store.FeedAdapter{
+			Key: "test-srs", APIVersion: 1, Source: `
+function sync(feed, api) {
+    var entries = api.srsGet(feed.url, JSON.stringify({cidrs: true}));
+    return entries.map(function(e) {
+        return { category: "Test", service: "test-srs", cidrs: e.cidrs };
+    });
+}`,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// We expect CIDRs: 10.0.0.0/8 and 192.168.0.0/16
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d: %#v", len(entries), entries)
+	}
+	expected := map[string]bool{"10.0.0.0/8": true, "192.168.0.0/16": true}
+	for _, e := range entries {
+		if !expected[e.CIDR] {
+			t.Errorf("unexpected CIDR: %s", e.CIDR)
+		}
 	}
 }
 
@@ -479,7 +582,7 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})}
-	if err := syncer.syncOne(ctx, feedList[0]); err != nil {
+	if _, err := syncer.SyncOne(ctx, feedList[0]); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := db.CatalogForMode(ctx, store.IPRangesCatalogModeID, false)

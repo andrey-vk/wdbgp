@@ -44,6 +44,12 @@ data, ASN-derived ranges, and DNS-resolved service addresses, so list scope
 varies by service. The mode is initially disabled; enable it and run a feed
 sync before configuring users.
 
+The `sing-box SRS` mode provides support for sing-box rule-set binary format
+(`.srs` files). These files contain IP CIDR ranges compiled from geoip or
+custom rule-set sources. The distribution includes a built-in adapter that
+downloads and decompresses SRS files, extracting all CIDRs. A default disabled
+feed for Russia geoip (`geoip-ru.srs`) is included as an example.
+
 ## Network model
 
 The container is an independent BGP speaker with its own `veth` address. It
@@ -76,19 +82,8 @@ first synchronization starts immediately; later runs use
 `WDBGP_SYNC_INTERVAL`. A failed download does not replace the last successful
 snapshot.
 
-Canonical custom feed format:
-
-```json
-{
-  "entries": [
-    {
-      "category": "ai",
-      "service": "openai",
-      "cidrs": ["104.18.0.0/16", "172.64.0.0/13"]
-    }
-  ]
-}
-```
+See [Feed Adapters](docs/adapters.md) for adapter API, built-in adapters, and
+feed format documentation.
 
 A single entry object and a top-level entry array are also accepted. Prefixes
 are normalized and deduplicated. Selecting a category also includes services
@@ -99,43 +94,6 @@ Disabling a feed keeps its last downloaded snapshot and user selections in the
 database, but excludes its services and prefixes from the catalog and BGP
 announcements. Re-enabling it restores that snapshot until the next sync.
 Changing a feed URL clears the old snapshot; deleting a feed removes it.
-
-Feed adapters are JavaScript programs stored in the database and editable from
-the admin UI. The distribution includes adapters for canonical JSON, OpenCCK,
-and IPRanges. A feed selects one adapter. An adapter must define:
-
-```javascript
-function sync(feed, api) {
-    const data = JSON.parse(api.httpGet(feed.url));
-    return data.entries;
-}
-```
-
-The function returns objects with `category`, `service`, and `cidrs` fields.
-The runtime exposes only `api.httpGet()`. Requests are limited by host, count,
-response size, total downloaded size, and execution timeout. The feed host is
-always allowed; adapters may declare additional hosts in the admin UI. The Go
-application validates and normalizes every returned CIDR before atomically
-replacing the previous snapshot. Invalid scripts and failed synchronizations
-leave the last successful snapshot in place.
-
-An existing adapter can be tested against one of its feeds from the admin UI.
-The test uses the source currently shown in the editor, including unsaved
-changes, and previews up to 100 normalized CIDRs without modifying the catalog,
-feed status, adapter revision, or BGP state.
-
-Each adapter has a separate editor page. Syntax and runtime failures are shown
-there with JavaScript source locations and stack traces while preserving the
-submitted source. Built-in adapters can also be reset to the distribution
-version; reset restores their original name, source, and allowed hosts and
-increments the revision.
-
-When an adapter's source is updated or the adapter is deleted, the previous
-source is backed up to `WDBGP_ADAPTER_BACKUP_DIR` (default
-`<db_dir>/backup/adapters`). The directory is created automatically. Set
-`WDBGP_ADAPTER_BACKUP_DIR` to an empty string to disable backups.
-`WDBGP_ADAPTER_BACKUP_MAX` (default 10) controls how many backup copies are
-kept per adapter; oldest files are deleted first. 0 means unlimited retention.
 
 The admin UI also includes CIDR diagnostics. Enter an IP address or subnet to
 see full and partial service coverage, combined coverage across services, and

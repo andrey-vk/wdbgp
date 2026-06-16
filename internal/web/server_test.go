@@ -443,7 +443,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 	}
 
 	updateForm := url.Values{
-		"name": {"custom-renamed"},
+		"name": {"custom"},
 		"url":  {feed.URL},
 	}
 	request = httptest.NewRequest(http.MethodPost,
@@ -461,7 +461,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	feed = feedList[len(feedList)-1]
-	if feed.Name != "custom-renamed" || feed.Enabled {
+	if feed.Name != "custom" || feed.Enabled {
 		t.Fatalf("updated feed = %#v", feed)
 	}
 	var entries int
@@ -1055,6 +1055,7 @@ func TestStatusEndpoint(t *testing.T) {
 		1,
 		true,
 		0,
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)

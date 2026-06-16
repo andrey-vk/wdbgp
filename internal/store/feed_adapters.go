@@ -52,6 +52,16 @@ function sync(feed, api) {
 }
 `
 
+const singboxSRSAdapter = `function sync(feed, api) {
+    var cfg = (feed.data && JSON.parse(feed.data)) || {};
+    var entries = api.srsGet(feed.url, JSON.stringify({cidrs: cfg.cidrs !== false}));
+    var cat = cfg.category || feed.name || "srs";
+    var svc = cfg.service || "srs";
+    return entries.map(function(e) {
+        return { category: cat, service: svc, cidrs: e.cidrs };
+    });
+}`
+
 const ipRangesAdapter = `
 var services = [
     ["M247", "Infrastructure", "M247", true],
@@ -146,6 +156,9 @@ var builtInAdapters = map[string]builtInAdapter{
 	"ipranges": {
 		name: "IPRanges", source: ipRangesAdapter,
 		allowedHosts: "raw.githubusercontent.com",
+	},
+	"singbox-srs": {
+		name: "sing-box SRS", source: singboxSRSAdapter,
 	},
 }
 
