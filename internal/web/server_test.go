@@ -1125,3 +1125,87 @@ func TestStatusEndpoint(t *testing.T) {
 		t.Error("database should show as connected")
 	}
 }
+
+func TestModeEditPageShowsFeedsWithCorrectCheckboxes(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create a custom mode
+	if err := db.AddCatalogMode(ctx, "test-mode", true); err != nil {
+		t.Fatal(err)
+	}
+	modes, err := db.CatalogModes(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modeID int64
+	for _, m := range modes {
+		if m.Name == "test-mode" {
+			modeID = m.ID
+			break
+		}
+	}
+	if modeID == 0 {
+		t.Fatal("mode not found")
+	}
+
+	// Create 3 feeds and add all to the mode
+	feedNames := []string{"feed-a", "feed-b", "feed-c"}
+	for _, name := range feedNames {
+		if err := db.AddFeed(ctx, name, "https://example.test/"+name, true, 0); err != nil {
+			t.Fatal(err)
+		}
+		var feedID int64
+		if err := db.DB.QueryRow("SELECT id FROM feeds WHERE name = ?", name).Scan(&feedID); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.AddFeedToMode(ctx, modeID, feedID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Fetch the mode edit page as admin
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/mode/"+strconv.FormatInt(modeID, 10), nil)
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+
+	// All 3 feeds should appear with checked checkboxes
+	for _, name := range feedNames {
+		if !strings.Contains(body, name) {
+			t.Errorf("feed %s: name not found in mode edit page", name)
+			continue
+		}
+		// Find the feed's ID from the DB
+		var feedID int64
+		if err := db.DB.QueryRow("SELECT id FROM feeds WHERE name = ?", name).Scan(&feedID); err != nil {
+			t.Fatal(err)
+		}
+		// Each feed row should contain checked checkbox with its ID
+		want := `value="` + strconv.FormatInt(feedID, 10) + `" checked`
+		if !strings.Contains(body, want) {
+			t.Errorf("feed %s (id=%d): expected checked checkbox, not found\nbody: %s", name, feedID, body)
+		}
+	}
+
+	// Verify the mode enabled checkbox is also present (one more "checked")
+	enabledWant := `name=enabled` 
+	if !strings.Contains(body, enabledWant) {
+		t.Errorf("mode enabled checkbox not found in page")
+	}
+}

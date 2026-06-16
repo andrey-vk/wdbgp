@@ -1012,10 +1012,10 @@ func (s *Server) modeEditPage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	modeFeedIDs, _ := s.store.FeedModes(ctx, id)
-	modeFeedSet := make(map[int64]bool, len(modeFeedIDs))
-	for _, fid := range modeFeedIDs {
-		modeFeedSet[fid] = true
+	modeFeeds, _ := s.store.ModeFeeds(ctx, id)
+	modeFeedSet := make(map[int64]bool, len(modeFeeds))
+	for _, f := range modeFeeds {
+		modeFeedSet[f.ID] = true
 	}
 
 	type feedRow struct {
