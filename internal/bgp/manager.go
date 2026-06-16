@@ -473,30 +473,30 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	return m.configureGlobalPolicyLocked(ctx, users)
 }
 
-func (m *Manager) DeletePeer(ctx context.Context, peerIP string) error {
+func (m *Manager) DeletePeer(ctx context.Context, userID int64, peerIP string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.server == nil {
 		return fmt.Errorf("BGP server is not running")
 	}
-	// Check if peer exists
+	// Check if peer exists — match by userID+peerIP
 	found := false
 	for _, u := range m.peerConfigs {
-		if u.PeerIP == peerIP {
+		if u.ID == userID && u.PeerIP == peerIP {
 			found = true
 			break
 		}
 	}
 	if !found {
-		return fmt.Errorf("peer %s does not exist", peerIP)
+		return fmt.Errorf("peer %s (user %d) does not exist", peerIP, userID)
 	}
 	// Delete the peer
 	if err := m.deletePeerLocked(ctx, peerIP); err != nil {
 		return err
 	}
-	// Remove from configs
+	// Remove from configs — match by userID+peerIP
 	for i, u := range m.peerConfigs {
-		if u.PeerIP == peerIP {
+		if u.ID == userID && u.PeerIP == peerIP {
 			m.peerConfigs = append(m.peerConfigs[:i], m.peerConfigs[i+1:]...)
 			break
 		}
@@ -558,7 +558,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		return err
 	}
 	for rawPrefix := range desired {
-		prefix, err := netip.ParsePrefix(rawPrefix)
+		prefix, err := netip.ParsePrefix(splitCompoundKey(rawPrefix))
 		if err != nil {
 			return fmt.Errorf("parse desired prefix %q: %w", rawPrefix, err)
 		}
@@ -600,18 +600,20 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		delete(m.installed, prefix)
 	}
 
-	for prefix, users := range desired {
+	for rawPrefix, users := range desired {
 		sig := signature(users)
-		if installed, ok := m.installed[prefix]; ok && installed.Signature == sig {
+		if installed, ok := m.installed[rawPrefix]; ok && installed.Signature == sig {
 			continue
 		}
 
-		meta, hasMeta := prefixMeta[prefix]
+		meta, hasMeta := prefixMeta[rawPrefix]
 		comms := map[string]uint32{}
 		if hasMeta {
 			comms = modeCommunities[meta.ModeID]
 		}
-		path, err := m.path(prefix, users, meta.Category, meta.Service, comms)
+		// The key is "prefix\x00modeID"; extract the actual prefix for NLRI.
+		announcePrefix := splitCompoundKey(rawPrefix)
+		path, err := m.path(announcePrefix, users, meta.Category, meta.Service, comms)
 		if err != nil {
 			return err
 		}
@@ -627,9 +629,9 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		)
 
 		if err != nil {
-			return fmt.Errorf("announce %s: %w", prefix, err)
+			return fmt.Errorf("announce %s: %w", rawPrefix, err)
 		}
-		m.installed[prefix] = installedPath{UUID: response.Uuid, Signature: sig}
+		m.installed[rawPrefix] = installedPath{UUID: response.Uuid, Signature: sig}
 	}
 	return nil
 }
@@ -770,6 +772,18 @@ func signature(userIDs []int64) string {
 		parts[i] = strconv.FormatInt(id, 10)
 	}
 	return strings.Join(parts, ",")
+}
+
+// splitCompoundKey extracts the prefix from a "prefix\x00modeID" compound key.
+func splitCompoundKey(key string) string {
+	if idx := strings.IndexByte(key, 0); idx >= 0 {
+		return key[:idx]
+	}
+	return key
+}
+
+func buildCompoundKey(prefix string, modeID int64) string {
+	return prefix + "\x00" + strconv.FormatInt(modeID, 10)
 }
 
 func ipv4Family() *api.Family {

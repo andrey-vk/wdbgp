@@ -112,10 +112,10 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	if len(manager.installed) != 1 {
 		t.Fatalf("installed paths = %#v, want only IPv4", manager.installed)
 	}
-	if _, ok := manager.installed["8.8.8.0/24"]; !ok {
+	if _, ok := manager.installed[buildCompoundKey("8.8.8.0/24", 1)]; !ok {
 		t.Fatalf("IPv4 path was not installed: %#v", manager.installed)
 	}
-	if _, ok := manager.installed["2606:4700::/32"]; ok {
+	if _, ok := manager.installed[buildCompoundKey("2606:4700::/32", 1)]; ok {
 		t.Fatalf("IPv6 path installed without a local IPv6 address: %#v", manager.installed)
 	}
 }

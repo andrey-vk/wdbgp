@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -646,6 +647,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := s.seedBuiltInAdapters(context.Background()); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -703,6 +708,16 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			tx.Rollback()
 			return fmt.Errorf("migration %d (%s): %w", migration.Version, migration.Name, err)
 		}
+		if migration.NoTxSQL == "" {
+			// Inside transaction: INSERT version BEFORE commit.
+			if _, err := tx.ExecContext(ctx,
+				"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+				migration.Version, migration.Name, time.Now().UTC().Format(time.RFC3339Nano),
+			); err != nil {
+				tx.Rollback()
+				return err
+			}
+		}
 		if err := tx.Commit(); err != nil {
 			return err
 		}
@@ -710,16 +725,16 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			if _, err := s.DB.ExecContext(ctx, migration.NoTxSQL); err != nil {
 				return fmt.Errorf("migration %d non-transactional (%s): %w", migration.Version, migration.Name, err)
 			}
-		}
-		// Record migration version only after all steps (including NoTxSQL) succeeded.
-		if _, err := s.DB.ExecContext(ctx,
-			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
-			migration.Version, migration.Name, time.Now().UTC().Format(time.RFC3339Nano),
-		); err != nil {
-			return err
+			// For NoTxSQL migrations, record version after NoTxSQL succeeds.
+			if _, err := s.DB.ExecContext(ctx,
+				"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+				migration.Version, migration.Name, time.Now().UTC().Format(time.RFC3339Nano),
+			); err != nil {
+				return err
+			}
 		}
 	}
-	return s.seedBuiltInAdapters(ctx)
+	return nil
 }
 
 func NormalizePrefix(value string) (string, error) {
@@ -1862,18 +1877,19 @@ ORDER BY 1, 2`)
 		}
 		
 		for _, prefix := range filtered {
-			key := prefix.String()
+			modeID, cat, svc, ok := findBestMatch(prefix, selUser.routes)
+			if !ok {
+				continue
+			}
+			key := prefix.String() + "\x00" + strconv.FormatInt(modeID, 10)
 			result[key] = append(result[key], userID)
 			if len(result) > prefixfilter.DefaultMaxPrefixes {
 				return nil, nil, fmt.Errorf("route filters produced more than %d unique routes",
 					prefixfilter.DefaultMaxPrefixes)
 			}
-			// Carry mode/category/service through the filter — find the best matching
-			// original route so that communities can be loaded from the correct mode.
+			// Carry mode/category/service through the filter.
 			if _, exists := prefixMeta[key]; !exists {
-				if modeID, cat, svc, ok := findBestMatch(prefix, selUser.routes); ok {
-					prefixMeta[key] = PrefixRouteInfo{ModeID: modeID, Category: cat, Service: svc}
-				}
+				prefixMeta[key] = PrefixRouteInfo{ModeID: modeID, Category: cat, Service: svc}
 			}
 		}
 	}

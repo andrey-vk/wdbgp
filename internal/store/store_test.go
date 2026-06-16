@@ -5,10 +5,25 @@ import (
 	"database/sql"
 	"net/netip"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
 )
+
+// compoundKey builds a "prefix\x00modeID" key for DesiredPrefixes result validation.
+func compoundKey(prefix string, modeID int64) string {
+	return prefix + "\x00" + strconv.FormatInt(modeID, 10)
+}
+
+// splitCompoundKey extracts the prefix from a "prefix\x00modeID" key.
+func splitCompoundKeyTest(key string) string {
+	if idx := strings.IndexByte(key, 0); idx >= 0 {
+		return key[:idx]
+	}
+	return key
+}
 
 func TestMigrateFreshDatabase(t *testing.T) {
 	s := openTestStore(t)
@@ -702,7 +717,7 @@ WHERE cmf.mode_id = ? ORDER BY f.id LIMIT 1`, ipranges.ID).
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prefixes) != 1 || len(prefixes["8.8.0.0/16"]) != 1 {
+	if len(prefixes) != 1 || len(prefixes[compoundKey("8.8.0.0/16", 1)]) != 1 {
 		t.Fatalf("OpenCCK prefixes = %#v", prefixes)
 	}
 	if err := s.SetUserCatalogMode(ctx, userID, ipranges.ID, true); err != nil {
@@ -712,7 +727,7 @@ WHERE cmf.mode_id = ? ORDER BY f.id LIMIT 1`, ipranges.ID).
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prefixes) != 1 || len(prefixes["8.8.8.0/24"]) != 1 {
+	if len(prefixes) != 1 || len(prefixes[compoundKey("8.8.8.0/24", 2)]) != 1 {
 		t.Fatalf("IPRanges prefixes = %#v", prefixes)
 	}
 
@@ -802,7 +817,7 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prefixes["8.8.8.0/24"]) != 1 {
+	if len(prefixes[compoundKey("8.8.8.0/24", 1)]) != 1 {
 		t.Fatalf("enabled feed prefix missing: %#v", prefixes)
 	}
 
@@ -841,7 +856,7 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prefixes["8.8.8.0/24"]) != 1 {
+	if len(prefixes[compoundKey("8.8.8.0/24", 1)]) != 1 {
 		t.Fatalf("re-enabled feed prefix missing: %#v", prefixes)
 	}
 }
@@ -1023,7 +1038,7 @@ func TestDesiredPrefixesSubtractsGlobalDeny(t *testing.T) {
 		t.Fatalf("prefix count = %d, want 24", len(prefixes))
 	}
 	for rawPrefix, users := range prefixes {
-		prefix := netip.MustParsePrefix(rawPrefix)
+		prefix := netip.MustParsePrefix(splitCompoundKeyTest(rawPrefix))
 		if prefix.Contains(netip.MustParseAddr("1.1.1.1")) {
 			t.Fatalf("denied address remains covered by %s", prefix)
 		}
@@ -1051,7 +1066,7 @@ func TestDesiredPrefixesUsesUserOverride(t *testing.T) {
 	if len(prefixes) != 1 {
 		t.Fatalf("prefixes = %v, want one user override prefix", prefixes)
 	}
-	if users := prefixes["1.1.0.0/16"]; len(users) != 1 || users[0] != userID {
+	if users := prefixes[compoundKey("1.1.0.0/16", 1)]; len(users) != 1 || users[0] != userID {
 		t.Fatalf("override prefix users = %v", users)
 	}
 }
@@ -1076,7 +1091,7 @@ func TestDesiredPrefixesExtendsGlobalFilters(t *testing.T) {
 		t.Fatal(err)
 	}
 	for rawPrefix, users := range prefixes {
-		prefix := netip.MustParsePrefix(rawPrefix)
+		prefix := netip.MustParsePrefix(splitCompoundKeyTest(rawPrefix))
 		if !prefixContains(netip.MustParsePrefix("1.1.0.0/16"), prefix) {
 			t.Fatalf("extended allow leaked prefix %s", rawPrefix)
 		}
@@ -1123,7 +1138,7 @@ func TestDesiredPrefixesDropsFeedDefaultRoute(t *testing.T) {
 	if len(prefixes) != 1 {
 		t.Fatalf("prefixes = %v, want only the non-default route", prefixes)
 	}
-	if users := prefixes["8.8.8.0/24"]; len(users) != 1 || users[0] != userID {
+	if users := prefixes[compoundKey("8.8.8.0/24", 1)]; len(users) != 1 || users[0] != userID {
 		t.Fatalf("public prefix users = %v", users)
 	}
 }

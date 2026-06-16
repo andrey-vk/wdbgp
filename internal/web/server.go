@@ -35,7 +35,7 @@ type BGP interface {
 	PeerStates(context.Context) (map[string]string, error)
 	AddPeer(context.Context, store.User) error
 	UpdatePeer(context.Context, store.User) error
-	DeletePeer(context.Context, string) error
+	DeletePeer(context.Context, int64, string) error
 }
 
 type Server struct {
@@ -1102,7 +1102,10 @@ func (s *Server) modeFeedToggle(w http.ResponseWriter, r *http.Request) {
 		logger.Warn("failed to generate communities after mode feed toggle", "error", err)
 	}
 
-	_ = s.bgp.Reconcile(r.Context())
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		logger := logging.FromContext(r.Context())
+		logger.Warn("reconcile failed after mode feed change", "error", err)
+	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/mode/%d", id), http.StatusSeeOther)
 }
 
@@ -1113,19 +1116,26 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(modeIDs) == 0 {
-		http.Error(w, "at least one catalog mode is required", http.StatusBadRequest)
-		return
-	}
-	if err := s.store.AddFeedForModeAdapter(
-		r.Context(), feed.Name, feed.URL, modeIDs[0], feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	var feedID int64
-	s.store.DB.QueryRowContext(r.Context(), "SELECT id FROM feeds WHERE url = ?", feed.URL).Scan(&feedID)
-	if err := s.store.SetFeedModes(r.Context(), feedID, modeIDs); err != nil {
-		s.internalError(w, r, err)
-		return
+		// Allow feeds without modes — admin assigns later from mode page.
+		_, err = s.store.DB.ExecContext(r.Context(),
+			"INSERT INTO feeds(name, url, adapter_id, enabled, sync_interval, data) VALUES (?, ?, ?, ?, ?, ?)",
+			feed.Name, feed.URL, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else {
+		if err := s.store.AddFeedForModeAdapter(
+			r.Context(), feed.Name, feed.URL, modeIDs[0], feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var feedID int64
+		s.store.DB.QueryRowContext(r.Context(), "SELECT id FROM feeds WHERE url = ?", feed.URL).Scan(&feedID)
+		if err := s.store.SetFeedModes(r.Context(), feedID, modeIDs); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
@@ -1707,7 +1717,7 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !user.Enabled {
-			err = s.bgp.DeletePeer(r.Context(), user.PeerIP)
+			err = s.bgp.DeletePeer(r.Context(), user.ID, user.PeerIP)
 		} else {
 			// Reload user to get correct BGPPassword preserved by store when field was empty.
 			user, err = s.store.User(r.Context(), id)
@@ -1777,7 +1787,7 @@ func (s *Server) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only delete peer if user exists (not already deleted)
 	if err == nil {
-		if err := s.bgp.DeletePeer(r.Context(), user.PeerIP); err != nil {
+		if err := s.bgp.DeletePeer(r.Context(), user.ID, user.PeerIP); err != nil {
 			s.internalError(w, r, err)
 			return
 		}

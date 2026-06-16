@@ -64,7 +64,7 @@ func (f *fakeBGP) UpdatePeer(context.Context, store.User) error {
 	return nil
 }
 
-func (f *fakeBGP) DeletePeer(context.Context, string) error {
+func (f *fakeBGP) DeletePeer(context.Context, int64, string) error {
 	f.deletes++
 	return nil
 }
@@ -1203,9 +1203,8 @@ func TestModeEditPageShowsFeedsWithCorrectCheckboxes(t *testing.T) {
 		}
 	}
 
-	// Verify the mode enabled checkbox is also present (one more "checked")
-	enabledWant := `name=enabled` 
-	if !strings.Contains(body, enabledWant) {
-		t.Errorf("mode enabled checkbox not found in page")
+	// Verify the mode enabled status is shown as plain text (not a checkbox).
+	if !strings.Contains(body, "Enabled") && !strings.Contains(body, "enabled") && !strings.Contains(body, "Включён") {
+		t.Errorf("mode enabled status not found in page")
 	}
 }

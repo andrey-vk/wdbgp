@@ -838,7 +838,7 @@ const modeEditTemplate = `{{with .Data}}
 <h1>{{.Mode.Name}}</h1>
 <p class=muted>{{printf "%d" .FeedCount}} {{tr "feeds.heading"}}</p>
 
-<label class=checkbox-row><input type=checkbox name=enabled hx-post="/admin/modes/{{.Mode.ID}}" hx-trigger=change hx-vals='{"action":"toggle"}' hx-swap=none {{if .Mode.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label>
+<p class=muted>{{if .Mode.Enabled}}{{tr "feeds.enabled"}}{{else}}{{tr "catalog.disabled"}}{{end}}</p>
 
 <form method=post action="/admin/modes/{{.Mode.ID}}/feeds">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
