@@ -339,31 +339,48 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <div class="tab-content tab-settings">
 <section class=card><h2>{{tr "user.settings"}}</h2><form method=post action="{{if .User.ID}}/admin/user/{{.User.ID}}{{else}}/admin/user{{end}}">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
-<input type=hidden name=action value=settings><div class=grid>
-<label>{{tr "feeds.name"}} <input name=name value="{{.User.Name}}" required></label><label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
+<input type=hidden name=action value=settings>
+
+<label>{{tr "feeds.name"}} <input name=name value="{{.User.Name}}" required></label>
+<label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
+
+<h3>{{tr "users.bgp_section"}}</h3>
 <div class=form-grid>
 <label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" id=peer-ip-input {{if eq .User.PeerIP "0.0.0.0"}}disabled{{end}}></label>
 <label>{{tr "users.peer_asn"}} <input type=number name=peer_asn value="{{.User.PeerASN}}" required></label>
 </div>
 <label class=checkbox-row><input type=checkbox id=dynamic-ip {{if eq .User.PeerIP "0.0.0.0"}}checked{{end}}> {{tr "users.dynamic_ip"}}</label>
 <p class=muted>{{tr "users.dynamic_ip_hint"}}</p>
+<div class=form-grid>
 <label>{{tr "users.bgp_password"}} <input type=password name=bgp_password value="{{.User.BGPPassword}}" placeholder="{{tr "users.bgp_password_placeholder"}}"></label>
+<label>{{tr "user.clear_password"}} <input type=checkbox name=clear_bgp_password style=display:inline;width:auto;margin-top:0> </label>
+</div>
 <script>
 var d=document.getElementById('dynamic-ip');
 var i=document.getElementById('peer-ip-input');
 d.addEventListener('change',function(){if(this.checked){i.value='0.0.0.0';i.disabled=true}else{i.disabled=false;if(i.value==='0.0.0.0')i.value=''}});
 </script>
-</div>
+
+<h3>{{tr "users.access_section"}}</h3>
+<div class=form-grid>
 <label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Selection.Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.User.CatalogModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
-<label><input type=checkbox name=clear_bgp_password> {{tr "user.clear_password"}}</label>
-<label><input type=checkbox name=enabled {{if .User.Enabled}}checked{{end}}> {{tr "user.enabled"}}</label>
 <label>{{tr "users.web_auth"}} <select name=web_auth>
 <option value=network {{if eq .User.WebAuth "network"}}selected{{end}}>{{tr "users.web_auth_network"}}</option>
 <option value=login {{if eq .User.WebAuth "login"}}selected{{end}}>{{tr "users.web_auth_login"}}</option>
 <option value=both {{if eq .User.WebAuth "both"}}selected{{end}}>{{tr "users.web_auth_both"}}</option>
 <option value=any {{if eq .User.WebAuth "any"}}selected{{end}}>{{tr "users.web_auth_any"}}</option>
 </select></label>
+</div>
 <p class=muted>{{tr "users.web_auth_hint"}}</p>
+
+<label class=checkbox-row><input type=checkbox name=enabled {{if .User.Enabled}}checked{{end}}> {{tr "user.enabled"}}</label>
+
+<h3>{{tr "users.permissions_section"}}</h3>
+<label class=checkbox-row><input type=checkbox name=locked {{if .User.SelectionLocked}}checked{{end}}> {{tr "user.lock_selection"}}</label>
+<label class=checkbox-row><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> {{tr "users.allow_filter_editing"}}</label>
+<label class=checkbox-row><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
+<input type=hidden name=filter_mode value="{{.User.FilterMode}}">
+
 {{if .User.ID}}<section class=card id=credentials-section>
 <h2>{{tr "users.credentials"}}</h2>
 {{range $i, $cred := .Credentials}}
@@ -378,12 +395,12 @@ d.addEventListener('change',function(){if(this.checked){i.value='0.0.0.0';i.disa
 <label>{{tr "user.password"}} <input type=password name=cred_password_new></label>
 </div>
 </section>{{end}}
-<label><input type=checkbox name=locked {{if .User.SelectionLocked}}checked{{end}}> {{tr "user.lock_selection"}}</label>
-<label><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> {{tr "users.allow_filter_editing"}}</label>
-<label><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
-<input type=hidden name=filter_mode value="{{.User.FilterMode}}">
-<button class=primary>{{tr "user.save"}}</button></form>
-{{if .User.ID}}<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form>{{end}}</section></div>
+
+<div class=row-actions>
+<button class=primary>{{tr "user.save"}}</button>
+{{if .User.ID}}</form><form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');" style=display:inline><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form>{{end}}
+</div>
+{{if not .User.ID}}</form>{{end}}</section></div>
 {{template "selection" .Selection}}
 <script>
 (function(){
