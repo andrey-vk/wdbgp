@@ -796,7 +796,7 @@ const feedsListTemplate = `{{with .Data}}
 <tr>
 <td>{{.Feed.Name}}</td>
 <td>{{.ModeNames}}</td>
-<td>{{if .Feed.Enabled}}<span class=ok>enabled</span>{{else}}<span class=error>disabled</span>{{end}}</td>
+<td>{{if .Active}}<span class=ok>{{tr "feeds.active"}}</span>{{else}}<span class=muted title="{{tr "feeds.inactive_hint"}}">{{tr "feeds.inactive"}}</span>{{end}}</td>
 <td>{{if .LastSync}}{{.LastSync}}{{else}}—{{end}}</td>
 <td>
 <a href="/admin/feed/{{.Feed.ID}}" class=button>{{tr "common.edit"}}</a>
@@ -911,12 +911,12 @@ const feedEditTemplate = `{{with .Data}}
 </div>
 <div class=row-actions>
 <button type=submit class=primary>{{tr "common.save"}}</button>
+</div>
+</form>
 {{if not .IsNew}}<form method=post action="/admin/feeds/{{.Feed.ID}}/force-sync" style=display:inline>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <button class=secondary>⟳ {{tr "feeds.force_sync"}}</button>
 </form>{{end}}
-</div>
-</form>
 {{if not .IsNew}}<form method=post action="/admin/feed/{{.Feed.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}')">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button type=submit class=danger>{{tr "common.delete"}}</button></form>{{end}}
 </div>

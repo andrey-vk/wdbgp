@@ -781,7 +781,7 @@ func TestUserCannotChangeCatalogModeWithoutPermission(t *testing.T) {
 func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if err := s.AddFeed(ctx, "custom", "https://example.test/feed.json", true, 0); err != nil {
+	if err := s.AddFeed(ctx, "custom", "https://example.test/feed.json", 0); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)
@@ -821,8 +821,7 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 		t.Fatalf("enabled feed prefix missing: %#v", prefixes)
 	}
 
-	feed.Enabled = false
-	if err := s.UpdateFeed(ctx, feed); err != nil {
+	if err := s.RemoveFeedFromMode(ctx, DefaultCatalogModeID, feed.ID); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err = s.Catalog(ctx)
@@ -848,8 +847,7 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 		t.Fatalf("disabled feed snapshot entries = %d, want 1", entries)
 	}
 
-	feed.Enabled = true
-	if err := s.UpdateFeed(ctx, feed); err != nil {
+	if err := s.AddFeedToMode(ctx, DefaultCatalogModeID, feed.ID); err != nil {
 		t.Fatal(err)
 	}
 	prefixes, _, err = s.DesiredPrefixes(ctx)
@@ -864,28 +862,40 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if _, err := s.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+	// Remove all built-in feeds from mode 1 so only our test feeds matter
+	if _, err := s.DB.Exec("DELETE FROM catalog_mode_feeds"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddFeed(ctx, "enabled", "https://example.test/enabled", true, 0); err != nil {
+	if err := s.AddFeed(ctx, "feed-a", "https://example.test/feed-a", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddFeed(ctx, "disabled", "https://example.test/disabled", false, 0); err != nil {
+	if err := s.AddFeed(ctx, "feed-b", "https://example.test/feed-b", 0); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var enabledID, disabledID int64
+	var idA, idB int64
 	for _, feed := range feeds {
 		switch feed.Name {
-		case "enabled":
-			enabledID = feed.ID
-		case "disabled":
-			disabledID = feed.ID
+		case "feed-a":
+			idA = feed.ID
+		case "feed-b":
+			idB = feed.ID
 		}
 	}
+	// Put feed-b in a disabled mode (mode 3 = singbox-srs, disabled by default).
+	// feed-a stays in mode 1 (enabled).
+	// Remove feed-b from mode 1 so it has no enabled modes.
+	if err := s.AddFeedToMode(ctx, SingboxSRSCatalogModeID, idB); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveFeedFromMode(ctx, DefaultCatalogModeID, idB); err != nil {
+		t.Fatal(err)
+	}
+	// Insert catalog entries. feed-a has entries in enabled mode 1,
+	// feed-b has entries visible through NO enabled modes (only disabled mode 3).
 	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		(?, 'Visible', 'Keep', '8.8.8.0/24'),
 		(?, 'Visible', 'Remove', '8.8.4.0/24'),
@@ -893,7 +903,7 @@ func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 		(?, 'HiddenCategory', 'Any', '1.1.1.0/24'),
 		(?, 'HiddenServices', 'Hidden', '1.0.0.0/24'),
 		(?, 'Shared', 'Service', '2.2.2.0/24')`,
-		enabledID, enabledID, enabledID, disabledID, disabledID, disabledID); err != nil {
+		idA, idA, idA, idB, idB, idB); err != nil {
 		t.Fatal(err)
 	}
 	userID, err := s.AddUser(ctx, User{
@@ -914,6 +924,9 @@ func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// SetVisibleUserSelection should preserve HiddenCategory (from feed-b,
+	// which has no enabled modes) and HiddenServices+Hidden (also from feed-b).
+	// The explicitly passed Visible+Keep is also kept.
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return SetVisibleUserSelection(ctx, tx, userID, nil,
 			[]ServiceKey{{Category: "Visible", Service: "Keep"}})
@@ -945,7 +958,7 @@ func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if err := s.AddFeed(ctx, "custom", "https://example.test/old.json", true, 0); err != nil {
+	if err := s.AddFeed(ctx, "custom", "https://example.test/old.json", 0); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)

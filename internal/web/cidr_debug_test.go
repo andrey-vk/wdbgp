@@ -18,8 +18,12 @@ import (
 func TestCIDRDebugCoverageByServiceAndUser(t *testing.T) {
 	db := debugTestStore(t)
 	ctx := context.Background()
-	feedID := addDebugFeed(t, db, "enabled", true)
-	disabledID := addDebugFeed(t, db, "disabled", false)
+	feedID := addDebugFeed(t, db, "enabled")
+	disabledID := addDebugFeed(t, db, "disabled")
+	// Remove "disabled" feed from mode 1 so its entries are excluded
+	if err := db.RemoveFeedFromMode(ctx, store.DefaultCatalogModeID, disabledID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		(?, 'Full', 'Whole', '10.0.0.0/24'),
 		(?, 'Parts', 'First half', '10.0.0.0/25'),
@@ -105,7 +109,7 @@ func TestCIDRDebugCoverageByServiceAndUser(t *testing.T) {
 
 func TestCIDRDebugCombinedCoverageFromMultipleServices(t *testing.T) {
 	db := debugTestStore(t)
-	feedID := addDebugFeed(t, db, "enabled", true)
+	feedID := addDebugFeed(t, db, "enabled")
 	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		(?, 'Parts', 'First half', '10.0.0.0/25'),
 		(?, 'Parts', 'Second half', '10.0.0.128/25')`, feedID, feedID); err != nil {
@@ -136,7 +140,7 @@ func TestCIDRDebugUsesSelectedModeAndMatchingUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.AddFeedForMode(
-		ctx, "precise", "https://example.test/precise", ipranges.ID, true, 0); err != nil {
+		ctx, "precise", "https://example.test/precise", ipranges.ID, 0); err != nil {
 		t.Fatal(err)
 	}
 	var preciseFeedID int64
@@ -182,7 +186,7 @@ func TestCIDRDebugUsesSelectedModeAndMatchingUsers(t *testing.T) {
 
 func TestCIDRDebugEndpointRequiresAdminAndReturnsJSON(t *testing.T) {
 	db := debugTestStore(t)
-	feedID := addDebugFeed(t, db, "enabled", true)
+	feedID := addDebugFeed(t, db, "enabled")
 	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr)
 		VALUES (?, 'DNS', 'Resolver', '8.8.8.0/24')`, feedID); err != nil {
 		t.Fatal(err)
@@ -241,15 +245,16 @@ func debugTestStore(t *testing.T) *store.Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+	// Remove all feeds from enabled modes (feeds are added back per-test via addDebugFeed)
+	if _, err := db.DB.Exec("DELETE FROM catalog_mode_feeds"); err != nil {
 		t.Fatal(err)
 	}
 	return db
 }
 
-func addDebugFeed(t *testing.T, db *store.Store, name string, enabled bool) int64 {
+func addDebugFeed(t *testing.T, db *store.Store, name string) int64 {
 	t.Helper()
-	if err := db.AddFeed(context.Background(), name, "https://example.test/"+name, enabled, 0); err != nil {
+	if err := db.AddFeed(context.Background(), name, "https://example.test/"+name, 0); err != nil {
 		t.Fatal(err)
 	}
 	var id int64

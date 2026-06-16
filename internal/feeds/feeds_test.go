@@ -397,14 +397,27 @@ func TestSyncAllSkipsDisabledFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+	// Remove all built-in feeds from enabled modes
+	if _, err := db.DB.Exec("DELETE FROM catalog_mode_feeds"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", true, 0); err != nil {
+	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", false, 0); err != nil {
+	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", 0); err != nil {
 		t.Fatal(err)
+	}
+	// Remove "disabled" feed from default enabled mode
+	// Both "enabled" and "disabled" feeds are added to mode 1 by AddFeed.
+	// Remove "disabled" from mode 1.
+	allFeeds, _ := db.Feeds(context.Background(), false)
+	for _, f := range allFeeds {
+		if f.Name == "disabled" {
+			if err := db.RemoveFeedFromMode(context.Background(), store.DefaultCatalogModeID, f.ID); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
 	}
 
 	syncer := NewSyncer(db, config.Config{})
@@ -438,12 +451,13 @@ func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+	// Remove all feeds from enabled modes so only the new custom feed is active
+	if _, err := db.DB.Exec("DELETE FROM catalog_mode_feeds"); err != nil {
 		t.Fatal(err)
 	}
 	const oldURL = "https://example.test/old"
 	const newURL = "https://example.test/new"
-	if err := db.AddFeed(ctx, "custom", oldURL, true, 0); err != nil {
+	if err := db.AddFeed(ctx, "custom", oldURL, 0); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(ctx, true)
@@ -499,10 +513,11 @@ func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+	// Remove all built-in feeds from enabled modes
+	if _, err := db.DB.Exec("DELETE FROM catalog_mode_feeds"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(ctx, "custom", "https://example.test/feed", true, 0); err != nil {
+	if err := db.AddFeed(ctx, "custom", "https://example.test/feed", 0); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(ctx, true)
@@ -558,12 +573,17 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	if err := db.UpdateCatalogMode(ctx, mode.ID, mode.Name, mode.Enabled); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.DB.Exec(
-		`UPDATE feeds SET enabled = CASE WHEN EXISTS (
-			SELECT 1 FROM catalog_mode_feeds cmf
-			WHERE cmf.feed_id = feeds.id AND cmf.mode_id = ?
-		) THEN 1 ELSE 0 END`,
-		store.IPRangesCatalogModeID); err != nil {
+	// Remove all feeds from enabled modes, then ensure IPRanges feed is in mode 2
+	if _, err := db.DB.Exec("DELETE FROM catalog_mode_feeds"); err != nil {
+		t.Fatal(err)
+	}
+	// Find IPRanges feed and add it to mode 2
+	var iprangesFeedID int64
+	if err := db.DB.QueryRow("SELECT id FROM feeds WHERE url = ?", ipRangesURL).
+		Scan(&iprangesFeedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddFeedToMode(ctx, store.IPRangesCatalogModeID, iprangesFeedID); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(ctx, true)

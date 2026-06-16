@@ -484,12 +484,9 @@ WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
 		SQL: `
 		-- Adapter upgrade support
 		ALTER TABLE feed_adapters ADD COLUMN builtin_version INTEGER NOT NULL DEFAULT 0;
-		ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0;
+		
 
-		-- Detect adapters that were already customized (source differs from empty/built-in)
-		UPDATE feed_adapters SET is_customized = 1
-		WHERE key IN ('opencck-main', 'canonical-json', 'ipranges', 'singbox-srs')
-		AND source != '';
+		ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0;
 
 		-- Catalog modes M:M with feeds
 CREATE TABLE catalog_mode_feeds (
@@ -538,6 +535,14 @@ ALTER TABLE users_new RENAME TO users;
 		CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id);
 	`,
 	},
+	{
+		Version: 21,
+		Name:    "drop feeds.enabled column",
+		SQL: `
+DROP INDEX IF EXISTS idx_feeds_enabled_mode;
+ALTER TABLE feeds DROP COLUMN enabled;
+`,
+	},
 }
 
 type Store struct {
@@ -549,7 +554,6 @@ type Feed struct {
 	Name         string
 	URL          string
 	AdapterID    int64
-	Enabled      bool
 	SyncInterval int
 	Data         string // JSON parameterization for adapters
 	LastSuccess  string
@@ -772,14 +776,13 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 }
 
 func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
-	query := `SELECT f.id, f.name, f.url, f.adapter_id, f.enabled,
+	query := `SELECT f.id, f.name, f.url, f.adapter_id,
 	                 COALESCE(f.sync_interval, 0),
 	                 COALESCE(f.data, ''),
 	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
 	          FROM feeds f`
 	if enabledOnly {
-		query += ` WHERE f.enabled = 1
-		AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
+		query += ` WHERE EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
 		            JOIN catalog_modes m ON m.id = cmf.mode_id
 		            WHERE cmf.feed_id = f.id AND m.enabled = 1)`
 	}
@@ -794,7 +797,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 		var feed Feed
 		if err := rows.Scan(
 			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
-			&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
+			&feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -806,14 +809,14 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 func (s *Store) Feed(ctx context.Context, id int64) (Feed, error) {
 	var feed Feed
 	err := s.DB.QueryRowContext(ctx, `
-SELECT id, name, url, adapter_id, enabled,
+SELECT id, name, url, adapter_id,
        COALESCE(sync_interval, 0),
        COALESCE(data, ''),
        COALESCE(last_success, ''), COALESCE(last_error, '')
 FROM feeds
 WHERE id = ?`, id).Scan(
 		&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
-		&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
+		&feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
 	)
 	return feed, err
 }
@@ -840,7 +843,7 @@ func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {
 // ModeFeeds returns all feeds assigned to a catalog mode.
 func (s *Store) ModeFeeds(ctx context.Context, modeID int64) ([]Feed, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT f.id, f.name, f.url, f.adapter_id, f.enabled,
+SELECT f.id, f.name, f.url, f.adapter_id,
        COALESCE(f.sync_interval, 0),
        COALESCE(f.data, ''),
        COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
@@ -857,7 +860,7 @@ ORDER BY f.id`, modeID)
 		var feed Feed
 		if err := rows.Scan(
 			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
-			&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
+			&feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -957,6 +960,12 @@ func (s *Store) AddCatalogMode(ctx context.Context, name string, enabled bool) e
 
 func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		// Reassign users of this mode to default
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE users SET catalog_mode_id = ? WHERE catalog_mode_id = ?",
+			DefaultCatalogModeID, id); err != nil {
+			return err
+		}
 		if id <= 3 {
 			var name string
 			if err := tx.QueryRowContext(ctx, "SELECT name FROM catalog_modes WHERE id = ?", id).Scan(&name); err != nil {
@@ -1152,7 +1161,10 @@ func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisable
 SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE (f.enabled = 1 OR ? = 1)
+WHERE (EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
+              JOIN catalog_modes m ON m.id = cmf.mode_id
+              WHERE cmf.feed_id = f.id AND m.enabled = 1)
+       OR ? = 1)
   AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf WHERE cmf.feed_id = f.id AND cmf.mode_id = ?)
 ORDER BY ce.category, ce.service`, includeDisabledInt, modeID)
 	if err != nil {
@@ -1177,7 +1189,7 @@ FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
-WHERE f.enabled = 1 AND m.enabled = 1 AND cmf.mode_id = ?
+WHERE m.enabled = 1 AND cmf.mode_id = ?
 ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 	if err != nil {
 		return nil, err
@@ -1199,8 +1211,10 @@ func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (v4 map[
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT ce.category, ce.cidr
 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
-WHERE EXISTS (SELECT 1 FROM catalog_mode_feeds cmf WHERE cmf.feed_id = f.id AND cmf.mode_id = ?)
-  AND f.enabled = 1
+WHERE EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
+              JOIN catalog_modes m ON m.id = cmf.mode_id
+              WHERE cmf.feed_id = f.id AND cmf.mode_id = ?
+                AND m.enabled = 1)
 GROUP BY ce.category, ce.cidr
 ORDER BY ce.category`, modeID)
 	if err != nil {
@@ -1241,8 +1255,10 @@ func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (v4 map[string]m
 SELECT ce.category, ce.service, ce.cidr
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE EXISTS (SELECT 1 FROM catalog_mode_feeds cmf WHERE cmf.feed_id = f.id AND cmf.mode_id = ?)
-  AND f.enabled = 1
+WHERE EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
+              JOIN catalog_modes m ON m.id = cmf.mode_id
+              WHERE cmf.feed_id = f.id AND cmf.mode_id = ?
+                AND m.enabled = 1)
 GROUP BY ce.category, ce.service, ce.cidr
 ORDER BY ce.category, ce.service`, modeID)
 	if err != nil {
@@ -1401,15 +1417,19 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
-      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = sc.mode_id
-      WHERE ce.category = sc.category AND f.enabled = 0
+      WHERE ce.category = sc.category
+        AND NOT EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
+                        JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
+                        WHERE cmf2.feed_id = f.id AND m2.enabled = 1)
   )
   AND NOT EXISTS (
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
-      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = sc.mode_id
-      WHERE ce.category = sc.category AND f.enabled = 1
+      WHERE ce.category = sc.category
+        AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
+                    JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
+                    WHERE cmf2.feed_id = f.id AND m2.enabled = 1)
   )`, userID, modeID)
 	if err != nil {
 		return err
@@ -1434,19 +1454,21 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
-      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = ss.mode_id
       WHERE ce.category = ss.category
         AND ce.service = ss.service
-        AND f.enabled = 0
+        AND NOT EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
+                        JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
+                        WHERE cmf2.feed_id = f.id AND m2.enabled = 1)
   )
   AND NOT EXISTS (
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
-      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = ss.mode_id
       WHERE ce.category = ss.category
         AND ce.service = ss.service
-        AND f.enabled = 1
+        AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
+                    JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
+                    WHERE cmf2.feed_id = f.id AND m2.enabled = 1)
   )`, userID, modeID)
 	if err != nil {
 		return err
@@ -1547,7 +1569,6 @@ JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE cmf.mode_id = ?1
-  AND f.enabled = 1
   AND m.enabled = 1
   AND ce.category IN (%s)`, strings.Join(placeholders, ", ")))
 	}
@@ -1565,7 +1586,6 @@ JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE cmf.mode_id = ?1
-  AND f.enabled = 1
   AND m.enabled = 1
   AND (ce.category, ce.service) IN (%s)`, strings.Join(pairs, ", ")))
 	}
@@ -1667,7 +1687,6 @@ JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE cmf.mode_id = ?1
-  AND f.enabled = 1
   AND m.enabled = 1
   AND EXISTS (
       SELECT 1 FROM selected_categories sc
@@ -1682,7 +1701,6 @@ JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE cmf.mode_id = ?1
-  AND f.enabled = 1
   AND m.enabled = 1
   AND EXISTS (
       SELECT 1 FROM selected_services ss
@@ -1770,7 +1788,6 @@ JOIN feeds f ON f.id = cmf.feed_id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE u.enabled = 1
-  AND f.enabled = 1
   AND m.enabled = 1
   AND EXISTS (
       SELECT 1 FROM selected_categories sc
@@ -1787,7 +1804,6 @@ JOIN feeds f ON f.id = cmf.feed_id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE u.enabled = 1
-  AND f.enabled = 1
   AND m.enabled = 1
   AND EXISTS (
       SELECT 1 FROM selected_services ss
@@ -2226,8 +2242,8 @@ func parseRouteFilters(filters RouteFilters) (prefixfilter.Lists, error) {
 	return prefixfilter.Lists{Allow: allow, Deny: deny}, nil
 }
 
-func (s *Store) AddFeed(ctx context.Context, name, url string, enabled bool, syncInterval int) error {
-	return s.AddFeedForMode(ctx, name, url, DefaultCatalogModeID, enabled, syncInterval)
+func (s *Store) AddFeed(ctx context.Context, name, url string, syncInterval int) error {
+	return s.AddFeedForMode(ctx, name, url, DefaultCatalogModeID, syncInterval)
 }
 
 func (s *Store) AddFeedForMode(
@@ -2235,10 +2251,9 @@ func (s *Store) AddFeedForMode(
 	name string,
 	url string,
 	modeID int64,
-	enabled bool,
 	syncInterval int,
 ) error {
-	return s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval, "")
+	return s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, syncInterval, "")
 }
 
 func (s *Store) AddFeedForModeAdapter(
@@ -2247,14 +2262,13 @@ func (s *Store) AddFeedForModeAdapter(
 	url string,
 	modeID int64,
 	adapterID int64,
-	enabled bool,
 	syncInterval int,
 	data string,
 ) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx,
-			"INSERT INTO feeds(name, url, adapter_id, enabled, sync_interval, data) VALUES (?, ?, ?, ?, ?, ?)",
-			name, url, adapterID, enabled, syncInterval, data)
+			"INSERT INTO feeds(name, url, adapter_id, sync_interval, data) VALUES (?, ?, ?, ?, ?)",
+			name, url, adapterID, syncInterval, data)
 		if err != nil {
 			return err
 		}
@@ -2282,9 +2296,9 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE feeds
-			 SET name = ?, url = ?, adapter_id = ?, enabled = ?, sync_interval = ?, data = ?
+			 SET name = ?, url = ?, adapter_id = ?, sync_interval = ?, data = ?
 			 WHERE id = ?`,
-			feed.Name, feed.URL, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
+			feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data, feed.ID); err != nil {
 			return err
 		}
 		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name {

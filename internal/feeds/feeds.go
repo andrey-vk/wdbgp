@@ -159,14 +159,14 @@ func (s *Syncer) SyncAll(ctx context.Context) []error {
 			// and must not overwrite the new feed status.
 			if executedRevision > 0 {
 				_, _ = s.Store.DB.ExecContext(ctx,
-					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
+					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ?
 					 AND data = ? AND adapter_id = ? AND name = ?
 					 AND adapter_id IN (SELECT id FROM feed_adapters WHERE id = ? AND revision = ?)`,
 					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name,
 					feed.AdapterID, executedRevision)
 			} else {
 				_, _ = s.Store.DB.ExecContext(ctx,
-					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
+					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ?
 					 AND data = ? AND adapter_id = ? AND name = ?`,
 					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name)
 			}
@@ -237,14 +237,13 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		var currentAdapterRevision int64
 		var currentData string
 		var currentName string
-		var enabled bool
 		if err := tx.QueryRowContext(ctx,
-			`SELECT f.url, f.adapter_id, f.enabled, f.data, f.name, a.revision
+			`SELECT f.url, f.adapter_id, f.data, f.name, a.revision
 			 FROM feeds f
 			 JOIN feed_adapters a ON a.id = f.adapter_id
 			 WHERE f.id = ?`, feed.ID).
 			Scan(
-				&currentURL, &currentAdapterID, &enabled,
+				&currentURL, &currentAdapterID,
 				&currentData, &currentName,
 				&currentAdapterRevision,
 			); err != nil {
@@ -257,8 +256,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 			currentAdapterID != feed.AdapterID ||
 			currentAdapterRevision != adapter.Revision ||
 			currentData != feed.Data ||
-			currentName != feed.Name ||
-			!enabled {
+			currentName != feed.Name {
 			return errFeedChanged
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
@@ -277,7 +275,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 			}
 		}
 		_, err = tx.ExecContext(ctx,
-			"UPDATE feeds SET last_success = ?, last_error = NULL WHERE id = ? AND url = ? AND enabled = 1",
+			"UPDATE feeds SET last_success = ?, last_error = NULL WHERE id = ? AND url = ?",
 			time.Now().UTC().Format(time.RFC3339Nano), feed.ID, feed.URL)
 		return err
 	})
@@ -308,8 +306,11 @@ SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-WHERE ce.feed_id != ?1 AND f.enabled = 1
-  AND cmf.mode_id IN (SELECT mode_id FROM catalog_mode_feeds WHERE feed_id = ?1)`, feed.ID)
+WHERE ce.feed_id != ?1
+  AND cmf.mode_id IN (SELECT mode_id FROM catalog_mode_feeds WHERE feed_id = ?1)
+  AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
+              JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
+              WHERE cmf2.feed_id = f.id AND m2.enabled = 1)`, feed.ID)
 	if err != nil {
 		return nil, err
 	}

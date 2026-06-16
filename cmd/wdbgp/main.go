@@ -199,7 +199,6 @@ func printStats(ctx context.Context, db *store.Store) error {
 		logger.Info("feed status",
 			"name", feed.Name,
 			"status", status,
-			"enabled", feed.Enabled,
 		)
 	}
 	return nil

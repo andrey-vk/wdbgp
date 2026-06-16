@@ -955,6 +955,7 @@ func (s *Server) updateMode(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, r, err)
 			return
 		}
+		name = mode.Name
 		enabled = !mode.Enabled
 	}
 	if name == "" {
@@ -1124,27 +1125,30 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if modeIDs == nil {
+		modeIDs = []int64{}
+	}
 	if len(modeIDs) == 0 {
 		// Allow feeds without modes — admin assigns later from mode page.
 		_, err = s.store.DB.ExecContext(r.Context(),
-			"INSERT INTO feeds(name, url, adapter_id, enabled, sync_interval, data) VALUES (?, ?, ?, ?, ?, ?)",
-			feed.Name, feed.URL, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data)
+			"INSERT INTO feeds(name, url, adapter_id, sync_interval, data) VALUES (?, ?, ?, ?, ?)",
+			feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 	} else {
 		if err := s.store.AddFeedForModeAdapter(
-			r.Context(), feed.Name, feed.URL, modeIDs[0], feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data); err != nil {
+			r.Context(), feed.Name, feed.URL, modeIDs[0], feed.AdapterID, feed.SyncInterval, feed.Data); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		var feedID int64
-		s.store.DB.QueryRowContext(r.Context(), "SELECT id FROM feeds WHERE url = ?", feed.URL).Scan(&feedID)
-		if err := s.store.SetFeedModes(r.Context(), feedID, modeIDs); err != nil {
-			s.internalError(w, r, err)
-			return
-		}
+	}
+	var feedID int64
+	s.store.DB.QueryRowContext(r.Context(), "SELECT id FROM feeds WHERE url = ?", feed.URL).Scan(&feedID)
+	if err := s.store.SetFeedModes(r.Context(), feedID, modeIDs); err != nil {
+		s.internalError(w, r, err)
+		return
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
@@ -1453,10 +1457,17 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if len(modeIDs) > 0 {
-		if err := s.store.SetFeedModes(r.Context(), id, modeIDs); err != nil {
-			s.internalError(w, r, err)
-			return
+	if modeIDs == nil {
+		modeIDs = []int64{}
+	}
+	if err := s.store.SetFeedModes(r.Context(), id, modeIDs); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	for _, mid := range modeIDs {
+		if _, err := s.store.GenerateCommunities(r.Context(), mid); err != nil {
+			logger := logging.FromContext(r.Context())
+			logger.Warn("failed to generate communities after feed update", "mode_id", mid, "error", err)
 		}
 	}
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
@@ -1542,7 +1553,6 @@ func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
 	}
 	return store.Feed{
 		ID: id, Name: name, URL: rawURL, AdapterID: adapterID,
-		Enabled:      true,
 		SyncInterval: formInt(r, "sync_interval"),
 		Data:         data,
 	}, modeIDs, nil
@@ -1883,7 +1893,6 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	for _, feed := range feeds {
 		status := map[string]any{
 			"name": feed.Name,
-			"enabled": feed.Enabled,
 			"url": feed.URL,
 		}
 		
@@ -1931,7 +1940,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		},
 		"feeds": map[string]any{
 			"total": len(feeds),
-			"enabled": countEnabledFeeds(feeds),
+			"enabled": s.countEnabledFeeds(ctx),
 			"successful_syncs": successfulSyncs,
 			"failed_syncs": failedSyncs,
 			"last_sync": lastSyncTime,
@@ -2422,12 +2431,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	feeds, _ := s.store.Feeds(ctx, false)
-	enabledFeeds := 0
-	for _, f := range feeds {
-		if f.Enabled {
-			enabledFeeds++
-		}
-	}
+	enabledFeeds, _ := s.store.Feeds(ctx, true)
 	users, _ := s.store.Users(ctx, false)
 
 	data := map[string]any{
@@ -2436,7 +2440,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		"TotalPrefixes":  totalPrefixes,
 		"ConnectedPeers": connectedPeers,
 		"TotalPeers":     len(peerStates),
-		"EnabledFeeds":   enabledFeeds,
+		"EnabledFeeds":   len(enabledFeeds),
 		"TotalFeeds":     len(feeds),
 		"TotalUsers":     len(users),
 	}
@@ -2495,6 +2499,7 @@ func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
 		Feed      store.Feed
 		ModeNames string
 		LastSync  string
+		Active    bool // derived: feed has at least one enabled mode
 	}
 
 	modeMap := make(map[int64]string)
@@ -2506,6 +2511,7 @@ func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
 	for _, f := range feeds {
 		modeNames := ""
 		modeIDs, _ := s.store.FeedModes(ctx, f.ID)
+		active := false
 		for i, mid := range modeIDs {
 			if i > 0 {
 				modeNames += ", "
@@ -2513,11 +2519,18 @@ func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
 			if name, ok := modeMap[mid]; ok {
 				modeNames += name
 			}
+			for _, m := range modes {
+				if m.ID == mid && m.Enabled {
+					active = true
+					break
+				}
+			}
 		}
 		rows = append(rows, feedRow{
-			Feed:     f,
+			Feed:      f,
 			ModeNames: modeNames,
-			LastSync: f.LastSuccess,
+			LastSync:  f.LastSuccess,
+			Active:    active,
 		})
 	}
 
@@ -2540,10 +2553,6 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		} else {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
-		return
-	}
-	if !feed.Enabled {
-		http.Error(w, "feed is disabled", http.StatusBadRequest)
 		return
 	}
 
@@ -2578,15 +2587,13 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 			// overwrite the new feed's status.
 			var currentURL, currentData, currentName string
 			var currentAdapterID, currentRevision int64
-			var currentEnabled bool
 			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT f.url, f.adapter_id, f.data, f.enabled, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentEnabled, &currentName, &currentRevision)
+				"SELECT f.url, f.adapter_id, f.data, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData, &currentName, &currentRevision)
 			if checkErr == nil &&
 				currentURL == feed.URL &&
 				currentAdapterID == feed.AdapterID &&
 				currentData == feed.Data &&
-				currentEnabled == feed.Enabled &&
 				currentName == feed.Name &&
 				currentRevision == executedRevision {
 				s.store.DB.ExecContext(context.Background(),
@@ -2599,15 +2606,13 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 			// must not overwrite the new feed's status.
 			var currentURL, currentData, currentName string
 			var currentAdapterID, currentRevision int64
-			var currentEnabled bool
 			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT f.url, f.adapter_id, f.data, f.enabled, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentEnabled, &currentName, &currentRevision)
+				"SELECT f.url, f.adapter_id, f.data, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData, &currentName, &currentRevision)
 			if checkErr == nil &&
 				currentURL == feed.URL &&
 				currentAdapterID == feed.AdapterID &&
 				currentData == feed.Data &&
-				currentEnabled == feed.Enabled &&
 				currentName == feed.Name &&
 				currentRevision == executedRevision {
 				msg := "BGP reconcile failed: " + err.Error()
@@ -2624,7 +2629,12 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSyncAll(w http.ResponseWriter, r *http.Request) {
 	go func() {
-		s.syncer.SyncAll(context.Background())
+		if err := s.syncer.SyncAll(context.Background()); err != nil {
+			// logged inside
+		}
+		if err := s.bgp.Reconcile(context.Background()); err != nil {
+			// logged inside Reconcile
+		}
 	}()
 	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
 }
@@ -3039,14 +3049,9 @@ func (s *Server) adminRateLimitMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func countEnabledFeeds(feeds []store.Feed) int {
-	count := 0
-	for _, feed := range feeds {
-		if feed.Enabled {
-			count++
-		}
-	}
-	return count
+func (s *Server) countEnabledFeeds(ctx context.Context) int {
+	enabled, _ := s.store.Feeds(ctx, true)
+	return len(enabled)
 }
 
 // --- Settings page ---

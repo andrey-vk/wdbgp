@@ -231,7 +231,7 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.AddFeedForMode(
-		ctx, "precise", "https://example.test/precise", ipranges.ID, true, 0); err != nil {
+		ctx, "precise", "https://example.test/precise", ipranges.ID, 0); err != nil {
 		t.Fatal(err)
 	}
 	var feedID int64
@@ -435,7 +435,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	feed := feedList[len(feedList)-1]
-	if feed.Name != "custom" || !feed.Enabled {
+	if feed.Name != "custom" {
 		t.Fatalf("added feed = %#v", feed)
 	}
 	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr)
@@ -462,7 +462,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	feed = feedList[len(feedList)-1]
-	if feed.Name != "custom" || !feed.Enabled {
+	if feed.Name != "custom" {
 		t.Fatalf("updated feed = %#v", feed)
 	}
 	var entries int
@@ -597,11 +597,8 @@ func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
-		t.Fatal(err)
-	}
 	if err := db.AddFeed(context.Background(), "preview",
-		"https://example.test/feed", false, 0); err != nil {
+		"https://example.test/feed", 0); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(context.Background(), false)
@@ -689,14 +686,21 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", true, 0); err != nil {
+	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", false, 0); err != nil {
-		t.Fatal(err)
+	// Remove "disabled" feed from default enabled mode
+	allFeeds, _ := db.Feeds(context.Background(), false)
+	for _, f := range allFeeds {
+		if f.Name == "disabled" {
+			if err := db.RemoveFeedFromMode(context.Background(), store.DefaultCatalogModeID, f.ID); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
 	}
 	feedList, err := db.Feeds(context.Background(), false)
 	if err != nil {
@@ -1054,7 +1058,6 @@ func TestStatusEndpoint(t *testing.T) {
 		"http://example.com/feed.json",
 		1,
 		1,
-		true,
 		0,
 		"",
 	)
@@ -1157,7 +1160,7 @@ func TestModeEditPageShowsFeedsWithCorrectCheckboxes(t *testing.T) {
 	// Create 3 feeds and add all to the mode
 	feedNames := []string{"feed-a", "feed-b", "feed-c"}
 	for _, name := range feedNames {
-		if err := db.AddFeed(ctx, name, "https://example.test/"+name, true, 0); err != nil {
+		if err := db.AddFeed(ctx, name, "https://example.test/"+name, 0); err != nil {
 			t.Fatal(err)
 		}
 		var feedID int64
