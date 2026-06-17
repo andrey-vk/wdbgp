@@ -1253,6 +1253,103 @@ func TestHasPeerGroupPolicyAfterSharedPeerDeleted(t *testing.T) {
 	}
 }
 
+func TestPeerGroupPolicyRebuildUpdatesRemoveList(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Phase 1: Add user A at a unique IP — static peer, no peer-group policy yet.
+	userAID, err := s.AddUser(ctx, store.User{
+		Name: "user-a", PeerIP: "192.0.2.50", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, store.User{
+		ID: userAID, Name: "user-a", PeerIP: "192.0.2.50", PeerASN: 65001,
+		Enabled: true, Networks: []string{"198.51.100.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 2: Add user B at the same IP. This triggers upgrade of user A
+	// from static peer to peer-group, and then configureGlobalPolicyLocked
+	// calls rebuildPeerGroupPolicyLocked for A. The REMOVE list must include
+	// both A's and B's communities. Currently, if GoBGP returns "already
+	// defined", rebuildPeerGroupPolicyLocked silently returns nil, keeping
+	// the stale REMOVE list (or no policy at all after DeletePolicy).
+	userBID, err := s.AddUser(ctx, store.User{
+		Name: "user-b", PeerIP: "192.0.2.50", PeerASN: 65002, Enabled: true,
+		Networks: []string{"198.51.101.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, store.User{
+		ID: userBID, Name: "user-b", PeerIP: "192.0.2.50", PeerASN: 65002,
+		Enabled: true, Networks: []string{"198.51.101.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// User A should now have a peer-group policy.
+	userA := store.User{ID: userAID, PeerIP: "192.0.2.50", PeerASN: 65001}
+	if !manager.hasPeerGroupPolicy(ctx, userA) {
+		t.Fatal("user A should have peer group policy after B's arrival")
+	}
+
+	// The REMOVE list in user A's peer-group policy should contain both
+	// user A's and user B's user-ID communities.
+	communityA := fmt.Sprintf("^%d:%d:0$", manager.cfg.LocalASN, userAID)
+	communityB := fmt.Sprintf("^%d:%d:0$", manager.cfg.LocalASN, userBID)
+	expected := []string{communityA, communityB}
+	assertPolicyRemoveCommunities(t, manager, fmt.Sprintf("user_%d_policy", userAID), expected)
+}
+
+// assertPolicyRemoveCommunities checks that policy `name` has a REMOVE community
+// list matching `expected` (order-independent).
+func assertPolicyRemoveCommunities(t *testing.T, manager *Manager, name string, expected []string) {
+	t.Helper()
+	var got []string
+	err := manager.server.ListPolicy(context.Background(), &api.ListPolicyRequest{
+		Name: name,
+	}, func(policy *api.Policy) {
+		for _, stmt := range policy.Statements {
+			if stmt.Actions != nil && stmt.Actions.LargeCommunity != nil {
+				got = stmt.Actions.LargeCommunity.Communities
+				return
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(got)
+	want := append([]string(nil), expected...)
+	sort.Strings(want)
+	if len(got) != len(want) {
+		t.Fatalf("policy %q REMOVE communities = %v, want %v", name, got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("policy %q REMOVE communities = %v, want %v", name, got, want)
+		}
+	}
+}
+
 // assertExportStatementCount checks that the wdbgp_export policy has exactly n statements.
 func assertExportStatementCount(t *testing.T, manager *Manager, want int) {
 	t.Helper()

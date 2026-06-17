@@ -369,43 +369,24 @@ func (m *Manager) hasPeerGroup(ctx context.Context, user store.User) bool {
 // addPeerGroupForUserLocked creates a per-peer-group export policy, AddPeerGroup,
 // and AddDynamicNeighbor for a given user. The caller must have already created
 // the user's defined sets (community, neighbor).
+// All peer-group lifecycle is delegated to rebuildPeerGroupPolicyLocked.
 func (m *Manager) addPeerGroupForUserLocked(ctx context.Context, user store.User, allUserComms []string, localAddress string) error {
-	policyName := fmt.Sprintf("user_%d_policy", user.ID)
-	if err := m.rebuildPeerGroupPolicyLocked(ctx, user, allUserComms); err != nil {
-		return err
-	}
+	return m.rebuildPeerGroupPolicyLocked(ctx, user, allUserComms)
+}
 
+// rebuildPeerGroupPolicyLocked tears down the per-peer-group policy (dynamic
+// neighbor + peer group + policy), creates a new policy with a fresh REMOVE
+// list, and recreates the peer group + dynamic neighbor.  The tear-down is
+// necessary because GoBGP v4 does not clean up statement names unless the
+// policy is fully unreferenced — the peer group must be deleted first.  Any
+// "not found" errors during tear-down are ignored (first-time or already-
+// cleaned-up cases).  This follows the same unassign-delete-add-reassign
+// pattern as configureGlobalPolicyLocked.
+func (m *Manager) rebuildPeerGroupPolicyLocked(ctx context.Context, user store.User, allUserComms []string) error {
+	policyName := fmt.Sprintf("user_%d_policy", user.ID)
 	pgName := fmt.Sprintf("user_%d_pg", user.ID)
-	conf := &api.PeerGroupConf{
-		PeerGroupName: pgName,
-		PeerAsn:       uint32(user.PeerASN),
-	}
-	if user.BGPPassword != "" {
-		conf.AuthPassword = user.BGPPassword
-	}
-	if err := m.server.AddPeerGroup(ctx, &api.AddPeerGroupRequest{
-		PeerGroup: &api.PeerGroup{
-			Conf: conf,
-			Transport: &api.Transport{LocalAddress: localAddress},
-			EbgpMultihop: &api.EbgpMultihop{Enabled: true, MultihopTtl: 64},
-			AfiSafis: []*api.AfiSafi{
-				{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
-				{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
-			},
-			ApplyPolicy: &api.ApplyPolicy{
-				ExportPolicy: &api.PolicyAssignment{
-					Name:      fmt.Sprintf("export_peer_%d", user.ID),
-					Direction: api.PolicyDirection_POLICY_DIRECTION_EXPORT,
-					Policies: []*api.Policy{{
-						Name: policyName,
-					}},
-					DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT,
-				},
-			},
-		},
-	}); err != nil {
-		return fmt.Errorf("add peer group for user %d: %w", user.ID, err)
-	}
+
+	// Compute dynamic neighbor prefix (needed for both tear-down and recreation).
 	mask := "/32"
 	if addr, err := netip.ParseAddr(user.PeerIP); err == nil && addr.Is6() {
 		mask = "/128"
@@ -414,33 +395,41 @@ func (m *Manager) addPeerGroupForUserLocked(ctx context.Context, user store.User
 	if user.PeerIP == "0.0.0.0" {
 		dynPrefix = "0.0.0.0/0"
 	}
-	if err := m.server.AddDynamicNeighbor(ctx, &api.AddDynamicNeighborRequest{
-		DynamicNeighbor: &api.DynamicNeighbor{
+
+	// Tear down existing resources when doing an update (peer group already exists).
+	// On the first call the peer group does not exist yet, so we skip the
+	// dynamic-neighbor and peer-group deletion to avoid GoBGP internal panics.
+	// Use a direct ListPeerGroup check — hasPeerGroup short-circuits to true
+	// for 0.0.0.0 peers which may not have a peer group yet on first call.
+	pgExists := false
+	m.server.ListPeerGroup(ctx, &api.ListPeerGroupRequest{}, func(pg *api.PeerGroup) {
+		if pg.Conf != nil && pg.Conf.PeerGroupName == pgName {
+			pgExists = true
+		}
+	})
+	if pgExists {
+		if err := m.server.DeleteDynamicNeighbor(ctx, &api.DeleteDynamicNeighborRequest{
 			Prefix:    dynPrefix,
 			PeerGroup: pgName,
-		},
-	}); err != nil {
-		return fmt.Errorf("add dynamic neighbor for user %d: %w", user.ID, err)
+		}); err != nil && !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("delete old dynamic neighbor for user %d: %w", user.ID, err)
+		}
+		if err := m.server.DeletePeerGroup(ctx, &api.DeletePeerGroupRequest{
+			Name: pgName,
+		}); err != nil && !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("delete old peer group for user %d: %w", user.ID, err)
+		}
 	}
-	return nil
-}
-
-// rebuildPeerGroupPolicyLocked deletes the old per-peer-group policy (ignoring
-// "not found") and creates a new one with a fresh REMOVE list of all user-ID
-// communities. The peer-group's export policy assignment stays intact — it
-// references the policy by name.
-func (m *Manager) rebuildPeerGroupPolicyLocked(ctx context.Context, user store.User, allUserComms []string) error {
-	policyName := fmt.Sprintf("user_%d_policy", user.ID)
 
 	// Delete old policy; ignore "not found" errors.
 	if err := m.server.DeletePolicy(ctx, &api.DeletePolicyRequest{
 		Policy: &api.Policy{Name: policyName},
-	}); err != nil {
-		if !strings.Contains(err.Error(), "not found") {
-			return fmt.Errorf("delete old policy %s: %w", policyName, err)
-		}
+		All:    true,
+	}); err != nil && !strings.Contains(err.Error(), "not found") {
+		return fmt.Errorf("delete old policy %s: %w", policyName, err)
 	}
 
+	// Build new policy with fresh REMOVE lists.
 	nextHopV4, err := nextHopAction(user, api.Family_AFI_IP)
 	if err != nil {
 		return err
@@ -491,16 +480,77 @@ func (m *Manager) rebuildPeerGroupPolicyLocked(ctx context.Context, user store.U
 			},
 		},
 	}); err != nil {
-		if strings.Contains(err.Error(), "already defined") {
-			// Policy already exists with these statements (GoBGP v4 quirk:
-			// DeletePolicy doesn't always clean up statement names globally).
-			// The REMOVE lists are already correct from addPeerLocked.
-			return nil
-		}
 		return fmt.Errorf("add policy for peer group: %w", err)
 	}
 
+	// Recreate peer group with the new policy assigned.
+	conf := m.peerGroupConfig(user, policyName, true)
+	if err := m.server.AddPeerGroup(ctx, &api.AddPeerGroupRequest{
+		PeerGroup: conf,
+	}); err != nil {
+		return fmt.Errorf("add peer group for user %d: %w", user.ID, err)
+	}
+
+	// Recreate dynamic neighbor.
+	if err := m.server.AddDynamicNeighbor(ctx, &api.AddDynamicNeighborRequest{
+		DynamicNeighbor: &api.DynamicNeighbor{
+			Prefix:    dynPrefix,
+			PeerGroup: pgName,
+		},
+	}); err != nil {
+		return fmt.Errorf("add dynamic neighbor for user %d: %w", user.ID, err)
+	}
+
 	return nil
+}
+
+// peerGroupConfig builds a PeerGroup configuration for a user.
+// When withPolicy is false, the ApplyPolicy is left nil so the peer-group
+// "unassigns" the policy before deletion. When withPolicy is true, the
+// full export policy assignment is included.
+func (m *Manager) peerGroupConfig(user store.User, policyName string, withPolicy bool) *api.PeerGroup {
+	pgName := fmt.Sprintf("user_%d_pg", user.ID)
+	conf := &api.PeerGroupConf{
+		PeerGroupName: pgName,
+		PeerAsn:       uint32(user.PeerASN),
+	}
+	if user.BGPPassword != "" {
+		conf.AuthPassword = user.BGPPassword
+	}
+
+	peerAddr, err := netip.ParseAddr(user.PeerIP)
+	localAddress := m.cfg.LocalAddressV4
+	if err == nil && peerAddr.Is6() {
+		localAddress = m.cfg.LocalAddressV6
+	}
+	if localAddress == "" {
+		localAddress = m.cfg.LocalAddressV4
+	}
+
+	pg := &api.PeerGroup{
+		Conf: conf,
+		Transport:    &api.Transport{LocalAddress: localAddress},
+		EbgpMultihop: &api.EbgpMultihop{Enabled: true, MultihopTtl: 64},
+		AfiSafis: []*api.AfiSafi{
+			{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
+			{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
+		},
+	}
+
+	if withPolicy {
+		pg.ApplyPolicy = &api.ApplyPolicy{
+			ExportPolicy: &api.PolicyAssignment{
+				Name:      fmt.Sprintf("export_peer_%d", user.ID),
+				Direction: api.PolicyDirection_POLICY_DIRECTION_EXPORT,
+				Policies: []*api.Policy{{
+					Name: policyName,
+				}},
+				DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT,
+			},
+		}
+	}
+
+	return pg
 }
 
 func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store.User) error {
