@@ -1770,8 +1770,19 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 			CatalogModeID: store.DefaultCatalogModeID,
 			Enabled:       true,
 		}
+		modes, err := s.store.CatalogModes(r.Context(), false)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		sel := selectionView{Modes: modes}
+		csrfToken := ""
+		if tokenVal := r.Context().Value("csrf_token"); tokenVal != nil {
+			csrfToken = tokenVal.(string)
+		}
+		sel.CSRFToken = csrfToken
 		s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), translate(lang, "common.add")), "user-edit",
-			userEditView{User: emptyUser, RequirePasswordForNonUniqueIP: s.cfg.RequirePasswordForNonUniqueIP})
+			userEditView{User: emptyUser, Selection: sel, RequirePasswordForNonUniqueIP: s.cfg.RequirePasswordForNonUniqueIP})
 		return
 	}
 	user, err := s.store.User(r.Context(), id)

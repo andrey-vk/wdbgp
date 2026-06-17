@@ -379,17 +379,19 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <p class=muted>{{tr "hints.user_networks"}}</p>
 
 {{template "section-header" (tr "users.bgp_section")}}
+<div class=form-grid>
 <label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" id=peer-ip-input {{if eq .User.PeerIP "0.0.0.0"}}readonly{{end}}></label>
+<label class=checkbox-row><input type=checkbox id=dynamic-ip {{if eq .User.PeerIP "0.0.0.0"}}checked{{end}}> {{tr "users.dynamic_ip"}}</label>
+</div>
 <p class=muted>{{tr "hints.user_peer_ip"}}</p>
+<p class=muted>{{tr "users.dynamic_ip_hint"}}</p>
 <label>{{tr "users.peer_asn"}} <input type=number name=peer_asn value="{{.User.PeerASN}}" required></label>
 <p class=muted>{{tr "hints.user_peer_asn"}}</p>
 <label>{{tr "users.next_hop"}} <input name=next_hop value="{{.User.NextHop}}" placeholder="auto"></label>
 <p class=muted>Override the BGP next-hop address (optional, leave empty for auto).</p>
-<label class=checkbox-row><input type=checkbox id=dynamic-ip {{if eq .User.PeerIP "0.0.0.0"}}checked{{end}}> {{tr "users.dynamic_ip"}}</label>
-<p class=muted>{{tr "users.dynamic_ip_hint"}}</p>
 <div class=form-grid>
 <label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{tr "users.bgp_password_placeholder"}}"></label>
-<label>{{tr "user.clear_password"}} <input type=checkbox name=clear_bgp_password></label>
+<label class=checkbox-row><input type=checkbox name=clear_bgp_password> {{tr "user.clear_password"}}</label>
 </div>
 {{if .RequirePasswordForNonUniqueIP}}<p class=muted>{{tr "hints.user_peer_password_required"}}</p>{{end}}
 <script>
