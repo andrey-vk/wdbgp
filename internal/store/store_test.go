@@ -1267,13 +1267,13 @@ func TestMigration20IsReentrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := db.ExecContext(context.Background(),
-		"DELETE FROM schema_migrations WHERE version = 20")
+		"DELETE FROM schema_migrations WHERE version IN (20, 21)")
 	if err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
 	deleted, _ := result.RowsAffected()
-	if deleted != 1 {
+	if deleted != 2 {
 		db.Close()
 		t.Fatalf("expected to delete 1 schema_migrations row, deleted %d", deleted)
 	}

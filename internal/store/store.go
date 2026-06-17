@@ -572,6 +572,11 @@ PRAGMA foreign_keys = ON;
 CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id);
 	`,
 	},
+	{
+		Version: 21,
+		Name:    "placeholder (migrations 21-22 removed, feed state tracked via enabled column)",
+		SQL:     `SELECT 1`,
+	},
 }
 
 type Store struct {
