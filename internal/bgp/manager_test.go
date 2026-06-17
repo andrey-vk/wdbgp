@@ -364,6 +364,261 @@ func receivedPrefixes(t *testing.T, bgpServer *server.BgpServer) []string {
 	return prefixes
 }
 
+func TestExportCommunitiesStripOtherUsers(t *testing.T) {
+	if !canBindLoopback(t, "127.0.0.2") || !canBindLoopback(t, "127.0.0.3") {
+		t.Skip("multiple loopback addresses are not available")
+	}
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Insert catalog entry and community mappings for 8.8.8.0/24.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
+		(feed_id, category, service, cidr) VALUES
+		(1, 'video', 'youtube', '8.8.8.0/24')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_communities
+		(mode_id, category, service, community) VALUES
+		(1, 'video', '', 10000),
+		(1, 'video', 'youtube', 10001)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create user A (will get ID=1).
+	userAID, err := s.AddUser(ctx, store.User{
+		Name: "user-a", PeerIP: "127.0.0.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create user B (will get ID=2).
+	userBID, err := s.AddUser(ctx, store.User{
+		Name: "user-b", PeerIP: "127.0.0.3", PeerASN: 65002, Enabled: true,
+		Networks: []string{"198.51.101.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both users select category 'video' so they both get 8.8.8.0/24.
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		if err := store.SetUserSelection(ctx, tx, userAID, []string{"video"}, nil); err != nil {
+			return err
+		}
+		return store.SetUserSelection(ctx, tx, userBID, []string{"video"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	port := freeTCPPort(t)
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: int32(port),
+		LocalAddressV4: "127.0.0.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Both peers connect.
+	clientA := startTestPeer(t, "127.0.0.2", 65001, "192.0.2.11", port)
+	defer clientA.StopBgp(ctx, &api.StopBgpRequest{})
+	clientB := startTestPeer(t, "127.0.0.3", 65002, "192.0.2.12", port)
+	defer clientB.StopBgp(ctx, &api.StopBgpRequest{})
+
+	// Both should receive the shared prefix.
+	waitForPrefixes(t, clientA, []string{"8.8.8.0/24"})
+	waitForPrefixes(t, clientB, []string{"8.8.8.0/24"})
+
+	// Check that ID 1 and 2 match expectations.
+	if userAID != 1 || userBID != 2 {
+		t.Fatalf("user IDs: A=%d B=%d, want A=1 B=2", userAID, userBID)
+	}
+
+	// Verify from User A's perspective: should NOT have {64512:2:0}.
+	commsA := getLargeCommunities(t, clientA)
+	for _, c := range commsA {
+		if c.ASN == 64512 && c.LocalData1 == 2 && c.LocalData2 == 0 {
+			t.Fatalf("User A received User B's community {64512:2:0}: %#v", c)
+		}
+	}
+
+	// Category/service communities should survive on export to User A.
+	nonUserCount := 0
+	for _, c := range commsA {
+		if c.ASN == 64512 && c.LocalData1 == 0 && c.LocalData2 != 0 {
+			nonUserCount++
+		}
+	}
+	if nonUserCount == 0 {
+		t.Fatalf("no category/service communities survived on export to User A: %#v", commsA)
+	}
+
+	// Verify from User B's perspective too: should NOT have {64512:1:0}.
+	commsB := getLargeCommunities(t, clientB)
+	for _, c := range commsB {
+		if c.ASN == 64512 && c.LocalData1 == 1 && c.LocalData2 == 0 {
+			t.Fatalf("User B received User A's community {64512:1:0}: %#v", c)
+		}
+	}
+	nonUserCount = 0
+	for _, c := range commsB {
+		if c.ASN == 64512 && c.LocalData1 == 0 && c.LocalData2 != 0 {
+			nonUserCount++
+		}
+	}
+	if nonUserCount == 0 {
+		t.Fatalf("no category/service communities survived on export to User B: %#v", commsB)
+	}
+}
+
+func TestCommunityFilterUpdatesOnUserChange(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Insert catalog entry so routes can be reconciled.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
+		(feed_id, category, service, cidr) VALUES
+		(1, 'chat', 'telegram', '149.154.160.0/20')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create user A only.
+	userAID, err := s.AddUser(ctx, store.User{
+		Name: "user-a", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, userAID, []string{"chat"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 1: Start manager with only user A in store.
+	// REMOVE list should contain only {64512:1:0}.
+	manager1 := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager1.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertRemoveCommunities(t, manager1, []string{"^64512:1:0$"})
+	if err := manager1.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 2: Add user B to store, start new manager.
+	// REMOVE list should contain both communities.
+	userBID, err := s.AddUser(ctx, store.User{
+		Name: "user-b", PeerIP: "192.0.2.3", PeerASN: 65002, Enabled: true,
+		Networks: []string{"198.51.101.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, userBID, []string{"chat"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager2 := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager2.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertRemoveCommunities(t, manager2, []string{"^64512:1:0$", "^64512:2:0$"})
+	if err := manager2.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 3: Disable user B, start new manager.
+	// REMOVE list should be back to only {64512:1:0}.
+	if _, err := s.DB.ExecContext(ctx, `UPDATE users SET enabled = 0 WHERE id = ?`, userBID); err != nil {
+		t.Fatal(err)
+	}
+	manager3 := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager3.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	assertRemoveCommunities(t, manager3, []string{"^64512:1:0$"})
+	if err := manager3.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// getLargeCommunities extracts all large community values from a peer's
+// BgpServer global table.
+func getLargeCommunities(t *testing.T, bgpServer *server.BgpServer) []*bgp.LargeCommunity {
+	t.Helper()
+	var allComms []*bgp.LargeCommunity
+	err := bgpServer.ListPath(apiutil.ListPathRequest{
+		TableType: api.TableType_TABLE_TYPE_GLOBAL,
+		Family:    bgp.RF_IPv4_UC,
+	}, func(prefix bgp.NLRI, paths []*apiutil.Path) {
+		for _, path := range paths {
+			for _, attr := range path.Attrs {
+				if lc, ok := attr.(*bgp.PathAttributeLargeCommunities); ok {
+					allComms = append(allComms, lc.Values...)
+				}
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return allComms
+}
+
+// assertRemoveCommunities checks that the export policy's REMOVE community list
+// matches the expected set (order-independent).
+func assertRemoveCommunities(t *testing.T, manager *Manager, expected []string) {
+	t.Helper()
+	var got []string
+	err := manager.server.ListPolicy(context.Background(), &api.ListPolicyRequest{
+		Name: exportPolicyName,
+	}, func(policy *api.Policy) {
+		for _, stmt := range policy.Statements {
+			if stmt.Actions != nil && stmt.Actions.LargeCommunity != nil {
+				got = stmt.Actions.LargeCommunity.Communities
+				return
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(got)
+	want := append([]string(nil), expected...)
+	sort.Strings(want)
+	if len(got) != len(want) {
+		t.Fatalf("REMOVE communities = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("REMOVE communities = %v, want %v", got, want)
+		}
+	}
+}
+
 func equalStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
