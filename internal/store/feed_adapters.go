@@ -224,7 +224,35 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 				}
 			}
 		} else {
-			if currentSource == normalized || currentSource == "" {
+			// is_customized == 0
+			if currentBuiltinVersion == 0 {
+				// Version zero means built-in version was not tracked before
+				// the v20 migration. Source may have been customized by the
+				// user even though is_customized is 0 (the flag didn't exist
+				// in older versions). Don't use the version-comparison path
+				// because 0 < anything is always true.
+				if currentSource != "" && currentSource != normalized {
+					// Source differs from built-in — legacy customization.
+					// Preserve the custom source, mark as customized.
+					if _, err := s.DB.ExecContext(ctx,
+						`UPDATE feed_adapters
+						 SET name = ?, allowed_hosts = ?, builtin_version = ?, is_customized = 1
+						 WHERE key = ?`,
+						adapter.name, adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+						return err
+					}
+				} else {
+					// Source matches built-in or is empty — normal upgrade.
+					if _, err := s.DB.ExecContext(ctx,
+						`UPDATE feed_adapters
+						 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?
+						 WHERE key = ?`,
+						adapter.name, normalized,
+						adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+						return err
+					}
+				}
+			} else if currentSource == normalized || currentSource == "" {
 				// Source matches built-in or is empty (never seeded) — populate.
 				if _, err := s.DB.ExecContext(ctx,
 					`UPDATE feed_adapters
@@ -262,7 +290,7 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 					}
 				}
 			}
-	}
+		}
 	}
 return nil
 }

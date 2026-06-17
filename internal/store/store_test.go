@@ -1408,17 +1408,16 @@ func TestBuiltInAdapterUpgradeOnSourceChange(t *testing.T) {
 	}
 	t.Logf("initial source length=%d version=%d customized=%d", len(currentSource), currentVersion, currentCustomized)
 
-	// Simulate an old version with a different source (built-in was upgraded in a new
-	// release). The user has NOT customized the adapter — is_customized=0, but the
-	// stored source differs from the current built-in because the previous version had
-	// a different implementation.
+	// Simulate a migration state where the adapter source is empty (adapter was
+	// created by v17 migration but never seeded). builtin_version=0 means the
+	// version was not tracked before v20. The user has NOT customized the
+	// adapter. After seeding, the source should be populated with the built-in.
 	if _, err := s.DB.Exec(
-		"UPDATE feed_adapters SET builtin_version = 0, source = ?, is_customized = 0 WHERE key='canonical-json'",
-		"function sync(feed, api) { return []; }"); err != nil {
+		"UPDATE feed_adapters SET builtin_version = 0, source = '', is_customized = 0 WHERE key='canonical-json'"); err != nil {
 		t.Fatal(err)
 	}
 
-	// Re-run the built-in adapter seeding (simulating an upgrade after a new release).
+	// Re-run the built-in adapter seeding (simulating startup after migration).
 	if err := s.seedBuiltInAdapters(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1446,6 +1445,50 @@ func TestBuiltInAdapterUpgradeOnSourceChange(t *testing.T) {
 	}
 	if newSource != expectedSource {
 		t.Errorf("source was not upgraded to current built-in:\n  got  length=%d\n  want length=%d", len(newSource), len(expectedSource))
+	}
+}
+
+func TestSeedPreservesLegacyCustomizedAdapters(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	customSource := `function sync(feed, api) { return ["10.0.0.0/24"]; }`
+
+	// Simulate a v20 migration state: builtin_version = 0, is_customized = 0,
+	// but the source differs from the built-in — this was a legacy customization.
+	if _, err := s.DB.Exec(
+		`UPDATE feed_adapters SET builtin_version = 0, source = ?, is_customized = 0 WHERE key='canonical-json'`,
+		customSource); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run seedBuiltInAdapters — simulating startup after migration.
+	if err := s.seedBuiltInAdapters(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var newSource string
+	var newCustomized int
+	var newVersion int
+	if err := s.DB.QueryRow(
+		"SELECT source, is_customized, builtin_version FROM feed_adapters WHERE key='canonical-json'",
+	).Scan(&newSource, &newCustomized, &newVersion); err != nil {
+		t.Fatal(err)
+	}
+
+	// The custom source must be PRESERVED — not overwritten with the built-in.
+	if newSource != customSource {
+		t.Errorf("source was overwritten:\n  got  %q\n  want %q (custom source must be preserved)", newSource, customSource)
+	}
+
+	// is_customized should be 1 to protect the custom source from future upgrades.
+	if newCustomized != 1 {
+		t.Errorf("is_customized = %d, want 1 (legacy customization must be detected and protected)", newCustomized)
+	}
+
+	// builtin_version should be updated to the current version.
+	if newVersion != 1 {
+		t.Errorf("builtin_version = %d, want 1 (version should be bumped even when preserving custom source)", newVersion)
 	}
 }
 
