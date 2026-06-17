@@ -570,12 +570,52 @@ PRAGMA foreign_keys = ON;
 
 -- Recreate index dropped by table rebuild (migration 12)
 CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id);
+
+-- Rebuild feeds to ensure the enabled column is preserved.
+-- Idempotent: skip if feeds_new already exists from a previous partial run.
+CREATE TABLE IF NOT EXISTS feeds_new (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    url TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_success TEXT,
+    last_error TEXT,
+    adapter_id INTEGER REFERENCES feed_adapters(id),
+    sync_interval INTEGER NOT NULL DEFAULT 0,
+    data TEXT NOT NULL DEFAULT ''
+);
+
+-- Only copy data if feeds_new is empty (first attempt).
+INSERT INTO feeds_new SELECT * FROM feeds
+WHERE NOT EXISTS (SELECT 1 FROM feeds_new LIMIT 1);
+
+PRAGMA foreign_keys = OFF;
+DROP TABLE IF EXISTS feeds;
+ALTER TABLE feeds_new RENAME TO feeds;
+PRAGMA foreign_keys = ON;
+
+-- Recreate indexes that were on the original feeds table.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_feeds_url ON feeds(url);
 	`,
 	},
 	{
 		Version: 21,
-		Name:    "placeholder (migrations 21-22 removed, feed state tracked via enabled column)",
-		SQL:     `SELECT 1`,
+		Name:    "restore feeds.enabled column for DBs that went through old drop migration",
+		SQL:     "",
+		Go: func(tx *sql.Tx) error {
+			// Only add the column if it doesn't exist (migration 20 NoTxSQL
+			// may have already rebuilt feeds with it).
+			var cnt int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name = 'enabled'").Scan(&cnt); err != nil {
+				return err
+			}
+			if cnt == 0 {
+				if _, err := tx.Exec("ALTER TABLE feeds ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 	},
 }
 
@@ -1206,7 +1246,8 @@ func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisable
 SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE (EXISTS (SELECT 1 FROM catalog_modes m
+WHERE f.enabled = 1
+  AND (EXISTS (SELECT 1 FROM catalog_modes m
               WHERE m.id = ? AND m.enabled = 1)
        OR ? = 1)
   AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf WHERE cmf.feed_id = f.id AND cmf.mode_id = ?)

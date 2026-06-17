@@ -1615,6 +1615,61 @@ func TestDesiredPrefixesExcludesDisabledFeeds(t *testing.T) {
 	}
 }
 
+func TestCatalogForModeExcludesDisabledFeeds(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Use mode 1 (opencck) — enabled by default per migration seed data.
+	mode, err := s.CatalogMode(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mode.Enabled {
+		t.Fatalf("mode 1 (opencck) should be enabled by default, got %#v", mode)
+	}
+
+	// Create an enabled feed linked to the enabled mode.
+	if err := s.AddFeedForMode(ctx, "test-feed", "https://example.test/feed.json", mode.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	feeds, err := s.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID := feeds[len(feeds)-1].ID
+
+	// Insert a catalog entry for the feed.
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'EnabledCat', 'EnabledSvc', '10.0.0.0/24')`, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// CatalogForMode should return the entry (feed is enabled, mode is enabled).
+	catalog, err := s.CatalogForMode(ctx, mode.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svcs, ok := catalog["EnabledCat"]; !ok || len(svcs) != 1 || svcs[0] != "EnabledSvc" {
+		t.Fatalf("CatalogForMode(enabled mode, false) = %#v, want {EnabledCat:[EnabledSvc]}", catalog)
+	}
+
+	// Disable the feed.
+	if _, err := s.DB.Exec(`UPDATE feeds SET enabled = 0 WHERE id = ?`, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// CatalogForMode should NOT return the entry (feed is disabled).
+	// BUG: currently returns it because CatalogForMode doesn't filter by f.enabled.
+	catalog, err = s.CatalogForMode(ctx, mode.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 0 {
+		t.Fatalf("BUG: CatalogForMode(enabled mode, false) with disabled feed = %#v, want empty", catalog)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
