@@ -1741,6 +1741,11 @@ func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
 				user.PeerIP, conflictName), http.StatusBadRequest)
 			return
 		}
+		if s.cfg.RequirePasswordForNonUniqueIP && conflictPass == "" {
+			http.Error(w, fmt.Sprintf("IP %s is already used by '%s' with a different ASN. The existing peer needs a BGP password first.",
+				user.PeerIP, conflictName), http.StatusBadRequest)
+			return
+		}
 	}
 
 	userID, err := s.store.AddUser(r.Context(), user)
@@ -1899,6 +1904,11 @@ func (s *Server) saveUserSettings(w http.ResponseWriter, r *http.Request, id int
 		user.PeerIP, user.PeerASN, id).Scan(&conflictID, &conflictName, &conflictPass); err == nil {
 		if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
 			http.Error(w, fmt.Sprintf("IP %s is already used by '%s' with a different ASN. A non-empty BGP password is required when sharing an IP with different ASNs.",
+				user.PeerIP, conflictName), http.StatusBadRequest)
+			return nil
+		}
+		if s.cfg.RequirePasswordForNonUniqueIP && conflictPass == "" {
+			http.Error(w, fmt.Sprintf("IP %s is already used by '%s' with a different ASN. The existing peer needs a BGP password first.",
 				user.PeerIP, conflictName), http.StatusBadRequest)
 			return nil
 		}
