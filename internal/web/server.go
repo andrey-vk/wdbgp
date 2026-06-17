@@ -1147,8 +1147,8 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(r.Context(),
-		"INSERT INTO feeds(name, url, adapter_id, sync_interval, data, enabled) VALUES (?, ?, ?, ?, ?, 1)",
-		feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data)
+		"INSERT INTO feeds(name, url, adapter_id, sync_interval, data, enabled) VALUES (?, ?, ?, ?, ?, ?)",
+		feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data, feed.Enabled)
 	if err != nil {
 		s.internalError(w, r, err)
 		return

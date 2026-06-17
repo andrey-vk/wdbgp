@@ -1427,6 +1427,60 @@ func TestUpdateFeedCanDisableFeed(t *testing.T) {
 	}
 }
 
+func TestAddFeedCanCreateDisabledFeed(t *testing.T) {
+	// Bug: addFeed handler hard-codes enabled=1 in INSERT.
+	// Admin can't create a disabled feed from the new form.
+	// When the form submits enabled=off (unchecked checkbox),
+	// parseFeed correctly sets feed.Enabled=false via formBool,
+	// but the INSERT ignores it and writes 1.
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	bgp := &fakeBGP{}
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Step 1: POST to add feed with enabled=off (unchecked checkbox).
+	addForm := url.Values{
+		"name":     {"disabled-feed"},
+		"url":      {"https://example.test/disabled-feed.json"},
+		"enabled":  {"off"},
+		"mode_ids": {"1"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/feed", strings.NewReader(addForm.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("add feed: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	// Step 2: Verify the feed was created with Enabled=false.
+	feedList, err := db.Feeds(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, f := range feedList {
+		if f.Name == "disabled-feed" {
+			found = true
+			if f.Enabled {
+				t.Errorf("new feed should have Enabled=false when created with enabled=off, but Enabled is true")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("created feed not found in feed list")
+	}
+}
+
 func TestUpdateFeedEnabledCheckboxWorks(t *testing.T) {
 	// Bug: feed edit template has hidden <input name=enabled value=off>
 	// AND checkbox <input type=checkbox name=enabled value=on>.
