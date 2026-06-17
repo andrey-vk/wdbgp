@@ -1194,6 +1194,9 @@ func (s *Server) feedEditPage(w http.ResponseWriter, r *http.Request) {
 	for _, mid := range feedModeIDs {
 		modeSet[mid] = true
 	}
+	if isNew {
+		modeSet[store.DefaultCatalogModeID] = true
+	}
 
 	modes, _ := s.store.CatalogModes(ctx, false)
 	adapters, _ := s.store.FeedAdapters(ctx)
