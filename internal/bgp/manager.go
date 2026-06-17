@@ -878,6 +878,10 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		if meta, hasMeta := prefixMeta[rawPrefix]; hasMeta {
 			if modeComms, ok := modeCommunities[meta.ModeID]; ok {
 				for k, v := range modeComms {
+					// Only include communities matching this prefix's category/service.
+					if k != meta.Category && k != meta.Category+"|"+meta.Service {
+						continue
+					}
 					mr.comms[k] = v
 					// Also store mode-specific key to prevent cross-mode overwrite.
 					mr.comms[fmt.Sprintf("%d|%s", meta.ModeID, k)] = v
@@ -990,9 +994,12 @@ func (m *Manager) path(rawPrefix string, userIDs []int64, category, service stri
 		idx := strings.IndexByte(key, '|')
 		if idx > 0 {
 			if _, err := strconv.ParseInt(key[:idx], 10, 64); err == nil {
-				comms = append(comms, &bgp.LargeCommunity{
-					ASN: m.cfg.LocalASN, LocalData1: 0, LocalData2: val,
-				})
+				rest := key[idx+1:]
+				if rest == category || rest == category+"|"+service {
+					comms = append(comms, &bgp.LargeCommunity{
+						ASN: m.cfg.LocalASN, LocalData1: 0, LocalData2: val,
+					})
+				}
 			}
 		}
 	}

@@ -689,6 +689,56 @@ func TestPathPreservesPerModeCommunities(t *testing.T) {
 	}
 }
 
+func TestPathFiltersUnmatchedModeScopedCommunities(t *testing.T) {
+	// Communities map for mode 1 with two different categories.
+	// reconcileLocked() stores both plain and mode-scoped keys.
+	// Here we simulate the mode-scoped portion that path() iterates.
+	comms := map[string]uint32{
+		"1|video": 10000,
+		"1|chat":  20000,
+	}
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
+	}, nil)
+
+	// path() with category="video" should emit 10000 but NOT 20000 (chat).
+	path, err := manager.path("10.0.0.0/24", []int64{1}, "video", "", comms)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var communities *bgp.PathAttributeLargeCommunities
+	found := false
+	for _, attr := range path.Attrs {
+		if lc, ok := attr.(*bgp.PathAttributeLargeCommunities); ok {
+			communities = lc
+			found = true
+			break
+		}
+	}
+	if !found || len(communities.Values) == 0 {
+		t.Fatalf("large communities not found: %#v", path.Attrs)
+	}
+
+	var hasVideo, hasChat bool
+	for _, c := range communities.Values {
+		if c.LocalData1 == 0 && c.LocalData2 == 10000 {
+			hasVideo = true
+		}
+		if c.LocalData1 == 0 && c.LocalData2 == 20000 {
+			hasChat = true
+		}
+	}
+
+	if !hasVideo {
+		t.Fatalf("missing 'video' category community (10000): %#v", communities.Values)
+	}
+	if hasChat {
+		t.Fatalf("BUG: 'chat' community (20000) leaked from unrelated category: %#v", communities.Values)
+	}
+}
+
 func TestDynamicNeighborSameIPDifferentASN(t *testing.T) {
 	ctx := context.Background()
 	levelVar := &slog.LevelVar{}
