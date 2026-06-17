@@ -1738,137 +1738,151 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
 		return
 	}
-	if r.FormValue("action") == "settings" {
-		user, clearPassword, err := parseUserForm(r, id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		switch user.WebAuth {
-		case "network", "login", "both", "any":
-		default:
-			http.Error(w, `web_auth must be "network", "login", "both", or "any"`, http.StatusBadRequest)
-			return
-		}
-		// Step A: Same IP + same ASN → reject unconditionally.
-		// GoBGP's neighborMap is keyed by NeighborAddress; same IP+ASN is a single
-		// peer slot. A second AddPeer call would overwrite the first.
-		var conflictID int64
-		var conflictName, conflictIP, conflictPass string
-		if err := s.store.DB.QueryRowContext(r.Context(),
-			"SELECT id, name FROM users WHERE peer_ip = ? AND peer_asn = ? AND id != ?",
-			user.PeerIP, user.PeerASN, id).Scan(&conflictID, &conflictName); err == nil {
-			http.Error(w, fmt.Sprintf("User '%s' already uses IP %s with ASN %d. Same IP+ASN cannot be reused.",
-				conflictName, user.PeerIP, user.PeerASN), http.StatusConflict)
-			return
-		}
-
-		// Step B: Dynamic peers require a password and globally unique ASN.
-		if user.PeerIP == "0.0.0.0" {
-			if user.BGPPassword == "" {
-				http.Error(w, "Dynamic peers require a BGP password.", http.StatusBadRequest)
-				return
-			}
-			if err := s.store.DB.QueryRowContext(r.Context(),
-				"SELECT id, name, peer_ip FROM users WHERE peer_asn = ? AND id != ?",
-				user.PeerASN, id).Scan(&conflictID, &conflictName, &conflictIP); err == nil {
-				http.Error(w, fmt.Sprintf("ASN %d is already used by '%s' (IP %s). Dynamic peer ASNs must be unique across all users.",
-					user.PeerASN, conflictName, conflictIP), http.StatusConflict)
-				return
-			}
-		}
-
-		// Step C: Shared IP with different ASN requires password when setting is ON.
-		if err := s.store.DB.QueryRowContext(r.Context(),
-			"SELECT id, name, COALESCE(bgp_password, '') FROM users WHERE peer_ip = ? AND peer_asn != ? AND id != ?",
-			user.PeerIP, user.PeerASN, id).Scan(&conflictID, &conflictName, &conflictPass); err == nil {
-			if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
-				http.Error(w, fmt.Sprintf("IP %s is already used by '%s' with a different ASN. A non-empty BGP password is required when sharing an IP with different ASNs.",
-					user.PeerIP, conflictName), http.StatusBadRequest)
-				return
-			}
-		}
-		if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-
-		// Process existing credentials
-		for i := 0; ; i++ {
-			loginKey := fmt.Sprintf("cred_login_%d", i)
-			deleteKey := fmt.Sprintf("cred_delete_%d", i)
-			passwordKey := fmt.Sprintf("cred_password_%d", i)
-
-			login := r.FormValue(loginKey)
-			if login == "" {
-				break
-			}
-
-			if r.FormValue(deleteKey) == "on" {
-				s.store.SetUserCredential(r.Context(), id, login, "")
-			} else if pw := r.FormValue(passwordKey); pw != "" {
-				s.store.SetUserCredential(r.Context(), id, login, pw)
-			}
-		}
-
-		// Process new credential
-		if newLogin := r.FormValue("cred_login_new"); newLogin != "" {
-			if newPassword := r.FormValue("cred_password_new"); newPassword != "" {
-				s.store.SetUserCredential(r.Context(), id, newLogin, newPassword)
-			}
-		}
-
-		if !user.Enabled {
-			err = s.bgp.DeletePeer(r.Context(), user.ID, user.PeerIP)
-		} else {
-			// Reload user to get correct BGPPassword preserved by store when field was empty.
-			user, err = s.store.User(r.Context(), id)
-			if err != nil {
-				s.internalError(w, r, err)
-				return
-			}
-			err = s.bgp.UpdatePeer(r.Context(), user)
-		}
-		if err == nil {
-			err = s.bgp.Reconcile(r.Context())
-		}
-	} else if r.FormValue("action") == "filters" {
-		filters, parseErr := routeFiltersFromForm(r)
-		if parseErr != nil {
-			http.Error(w, parseErr.Error(), http.StatusBadRequest)
-			return
-		}
-		err = s.store.SetUserRouteFilterConfig(r.Context(), id, r.FormValue("filter_mode"), filters)
-		if err == nil {
-			err = s.bgp.Reconcile(r.Context())
-		}
-	} else {
-		categories, services, parseErr := selectionFromValues(r.Form)
-		if parseErr != nil {
-			http.Error(w, parseErr.Error(), http.StatusBadRequest)
-			return
-		}
-		currentUser, userErr := s.store.User(r.Context(), id)
-		if userErr != nil {
-			s.internalError(w, r, userErr)
-			return
-		}
-		modeID, modeErr := formModeID(r, currentUser.CatalogModeID)
-		if modeErr != nil {
-			http.Error(w, modeErr.Error(), http.StatusBadRequest)
-			return
-		}
-		err = s.store.SetUserCatalogModeSelection(
-			r.Context(), id, modeID, false, categories, services)
-		if err == nil {
-			err = s.bgp.Reconcile(r.Context())
-		}
+	var actionErr error
+	switch r.FormValue("action") {
+	case "settings":
+		actionErr = s.saveUserSettings(w, r, id)
+	case "filters":
+		actionErr = s.saveUserFilters(w, r, id)
+	default:
+		actionErr = s.saveUserSelection(w, r, id)
 	}
-	if err != nil {
-		s.internalError(w, r, err)
+	if actionErr != nil {
+		s.internalError(w, r, actionErr)
 		return
 	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/user/%d", id), http.StatusSeeOther)
+}
+
+func (s *Server) saveUserSettings(w http.ResponseWriter, r *http.Request, id int64) error {
+	user, clearPassword, err := parseUserForm(r, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return nil
+	}
+	switch user.WebAuth {
+	case "network", "login", "both", "any":
+	default:
+		http.Error(w, `web_auth must be "network", "login", "both", or "any"`, http.StatusBadRequest)
+		return nil
+	}
+	// Step A: Same IP + same ASN → reject unconditionally.
+	// GoBGP's neighborMap is keyed by NeighborAddress; same IP+ASN is a single
+	// peer slot. A second AddPeer call would overwrite the first.
+	var conflictID int64
+	var conflictName, conflictIP, conflictPass string
+	if err := s.store.DB.QueryRowContext(r.Context(),
+		"SELECT id, name FROM users WHERE peer_ip = ? AND peer_asn = ? AND id != ?",
+		user.PeerIP, user.PeerASN, id).Scan(&conflictID, &conflictName); err == nil {
+		http.Error(w, fmt.Sprintf("User '%s' already uses IP %s with ASN %d. Same IP+ASN cannot be reused.",
+			conflictName, user.PeerIP, user.PeerASN), http.StatusConflict)
+		return nil
+	}
+
+	// Step B: Dynamic peers require a password and globally unique ASN.
+	if user.PeerIP == "0.0.0.0" {
+		if user.BGPPassword == "" {
+			http.Error(w, "Dynamic peers require a BGP password.", http.StatusBadRequest)
+			return nil
+		}
+		if err := s.store.DB.QueryRowContext(r.Context(),
+			"SELECT id, name, peer_ip FROM users WHERE peer_asn = ? AND id != ?",
+			user.PeerASN, id).Scan(&conflictID, &conflictName, &conflictIP); err == nil {
+			http.Error(w, fmt.Sprintf("ASN %d is already used by '%s' (IP %s). Dynamic peer ASNs must be unique across all users.",
+				user.PeerASN, conflictName, conflictIP), http.StatusConflict)
+			return nil
+		}
+	}
+
+	// Step C: Shared IP with different ASN requires password when setting is ON.
+	if err := s.store.DB.QueryRowContext(r.Context(),
+		"SELECT id, name, COALESCE(bgp_password, '') FROM users WHERE peer_ip = ? AND peer_asn != ? AND id != ?",
+		user.PeerIP, user.PeerASN, id).Scan(&conflictID, &conflictName, &conflictPass); err == nil {
+		if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
+			http.Error(w, fmt.Sprintf("IP %s is already used by '%s' with a different ASN. A non-empty BGP password is required when sharing an IP with different ASNs.",
+				user.PeerIP, conflictName), http.StatusBadRequest)
+			return nil
+		}
+	}
+	if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {
+		return err
+	}
+
+	// Process existing credentials
+	for i := 0; ; i++ {
+		loginKey := fmt.Sprintf("cred_login_%d", i)
+		deleteKey := fmt.Sprintf("cred_delete_%d", i)
+		passwordKey := fmt.Sprintf("cred_password_%d", i)
+
+		login := r.FormValue(loginKey)
+		if login == "" {
+			break
+		}
+
+		if r.FormValue(deleteKey) == "on" {
+			s.store.SetUserCredential(r.Context(), id, login, "")
+		} else if pw := r.FormValue(passwordKey); pw != "" {
+			s.store.SetUserCredential(r.Context(), id, login, pw)
+		}
+	}
+
+	// Process new credential
+	if newLogin := r.FormValue("cred_login_new"); newLogin != "" {
+		if newPassword := r.FormValue("cred_password_new"); newPassword != "" {
+			s.store.SetUserCredential(r.Context(), id, newLogin, newPassword)
+		}
+	}
+
+	if !user.Enabled {
+		err = s.bgp.DeletePeer(r.Context(), user.ID, user.PeerIP)
+	} else {
+		// Reload user to get correct BGPPassword preserved by store when field was empty.
+		user, err = s.store.User(r.Context(), id)
+		if err != nil {
+			return err
+		}
+		err = s.bgp.UpdatePeer(r.Context(), user)
+	}
+	if err == nil {
+		err = s.bgp.Reconcile(r.Context())
+	}
+	return err
+}
+
+func (s *Server) saveUserFilters(w http.ResponseWriter, r *http.Request, id int64) error {
+	filters, parseErr := routeFiltersFromForm(r)
+	if parseErr != nil {
+		http.Error(w, parseErr.Error(), http.StatusBadRequest)
+		return nil
+	}
+	err := s.store.SetUserRouteFilterConfig(r.Context(), id, r.FormValue("filter_mode"), filters)
+	if err == nil {
+		err = s.bgp.Reconcile(r.Context())
+	}
+	return err
+}
+
+func (s *Server) saveUserSelection(w http.ResponseWriter, r *http.Request, id int64) error {
+	categories, services, parseErr := selectionFromValues(r.Form)
+	if parseErr != nil {
+		http.Error(w, parseErr.Error(), http.StatusBadRequest)
+		return nil
+	}
+	currentUser, userErr := s.store.User(r.Context(), id)
+	if userErr != nil {
+		return userErr
+	}
+	modeID, modeErr := formModeID(r, currentUser.CatalogModeID)
+	if modeErr != nil {
+		http.Error(w, modeErr.Error(), http.StatusBadRequest)
+		return nil
+	}
+	err := s.store.SetUserCatalogModeSelection(
+		r.Context(), id, modeID, false, categories, services)
+	if err == nil {
+		err = s.bgp.Reconcile(r.Context())
+	}
+	return err
 }
 
 func (s *Server) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
