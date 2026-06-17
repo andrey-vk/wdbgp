@@ -660,17 +660,10 @@ func (m *Manager) DeletePeer(ctx context.Context, userID int64, peerIP string) e
 	if !found {
 		return fmt.Errorf("peer %s (user %d) does not exist", peerIP, userID)
 	}
-	// Remove from config list
-	for i, u := range m.peerConfigs {
-		if u.ID == userID && u.PeerIP == peerIP {
-			m.peerConfigs = append(m.peerConfigs[:i], m.peerConfigs[i+1:]...)
-			break
-		}
-	}
 	// Check if any other enabled user shares this IP
 	var otherUserHasIP bool
 	for _, u := range m.peerConfigs {
-		if u.Enabled && u.PeerIP == peerIP {
+		if u.Enabled && u.PeerIP == peerIP && u.ID != userID {
 			otherUserHasIP = true
 			break
 		}
@@ -678,6 +671,13 @@ func (m *Manager) DeletePeer(ctx context.Context, userID int64, peerIP string) e
 	if !otherUserHasIP || peerIP == "0.0.0.0" {
 		if err := m.deletePeerLocked(ctx, userID, peerIP); err != nil {
 			return err
+		}
+	}
+	// Remove from config list (after successful teardown, so error path preserves config)
+	for i, u := range m.peerConfigs {
+		if u.ID == userID && u.PeerIP == peerIP {
+			m.peerConfigs = append(m.peerConfigs[:i], m.peerConfigs[i+1:]...)
+			break
 		}
 	}
 	return m.configureGlobalPolicyLocked(ctx, m.peerConfigs)
