@@ -1472,8 +1472,7 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	currentFeed, err := s.store.Feed(r.Context(), id)
-	if err != nil {
+	if _, err := s.store.Feed(r.Context(), id); err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
 		} else {
@@ -1481,7 +1480,6 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	feed.Enabled = currentFeed.Enabled
 	if err := s.store.UpdateFeed(r.Context(), feed); err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
@@ -1588,7 +1586,6 @@ func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
 		ID: id, Name: name, URL: rawURL, AdapterID: adapterID,
 		SyncInterval: formInt(r, "sync_interval"),
 		Data:         data,
-		Enabled:      formBool(r, "enabled"),
 	}, modeIDs, nil
 }
 

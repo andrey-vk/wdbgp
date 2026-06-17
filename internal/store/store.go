@@ -550,21 +550,6 @@ PRAGMA foreign_keys = ON;
 CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id);
 	`,
 	},
-	{
-		Version: 21,
-		Name:    "drop feeds.enabled column",
-		SQL: `
-DROP INDEX IF EXISTS idx_feeds_enabled_mode;
-ALTER TABLE feeds DROP COLUMN enabled;
-`,
-	},
-	{
-		Version: 22,
-		Name:    "add feeds.enabled column back",
-		SQL: `
-ALTER TABLE feeds ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
-`,
-	},
 }
 
 type Store struct {
@@ -578,7 +563,6 @@ type Feed struct {
 	AdapterID    int64
 	SyncInterval int
 	Data         string // JSON parameterization for adapters
-	Enabled      bool
 	LastSuccess  string
 	LastError    string
 }
@@ -802,11 +786,10 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	query := `SELECT f.id, f.name, f.url, f.adapter_id,
 	                 COALESCE(f.sync_interval, 0),
 	                 COALESCE(f.data, ''),
-	                 f.enabled,
 	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
 	          FROM feeds f`
 	if enabledOnly {
-		query += ` WHERE f.enabled = 1 AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
+		query += ` WHERE EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
 		            JOIN catalog_modes m ON m.id = cmf.mode_id
 		            WHERE cmf.feed_id = f.id AND m.enabled = 1)`
 	}
@@ -821,7 +804,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 		var feed Feed
 		if err := rows.Scan(
 			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
-			&feed.SyncInterval, &feed.Data, &feed.Enabled,
+			&feed.SyncInterval, &feed.Data,
 			&feed.LastSuccess, &feed.LastError,
 		); err != nil {
 			return nil, err
@@ -837,12 +820,11 @@ func (s *Store) Feed(ctx context.Context, id int64) (Feed, error) {
 SELECT id, name, url, adapter_id,
        COALESCE(sync_interval, 0),
        COALESCE(data, ''),
-       enabled,
        COALESCE(last_success, ''), COALESCE(last_error, '')
 FROM feeds
 WHERE id = ?`, id).Scan(
 		&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
-		&feed.SyncInterval, &feed.Data, &feed.Enabled,
+		&feed.SyncInterval, &feed.Data,
 		&feed.LastSuccess, &feed.LastError,
 	)
 	return feed, err
@@ -873,7 +855,6 @@ func (s *Store) ModeFeeds(ctx context.Context, modeID int64) ([]Feed, error) {
 SELECT f.id, f.name, f.url, f.adapter_id,
        COALESCE(f.sync_interval, 0),
        COALESCE(f.data, ''),
-       f.enabled,
        COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
 FROM feeds f
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
@@ -888,7 +869,7 @@ ORDER BY f.id`, modeID)
 		var feed Feed
 		if err := rows.Scan(
 			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
-			&feed.SyncInterval, &feed.Data, &feed.Enabled,
+			&feed.SyncInterval, &feed.Data,
 			&feed.LastSuccess, &feed.LastError,
 		); err != nil {
 			return nil, err
@@ -2325,9 +2306,9 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE feeds
-			 SET name = ?, url = ?, adapter_id = ?, sync_interval = ?, data = ?, enabled = ?
+			 SET name = ?, url = ?, adapter_id = ?, sync_interval = ?, data = ?
 			 WHERE id = ?`,
-			feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data, feed.Enabled, feed.ID); err != nil {
+			feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data, feed.ID); err != nil {
 			return err
 		}
 		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name {
