@@ -213,7 +213,7 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 		}
 	}
 
-	if !otherUsesIP {
+	if !otherUsesIP && user.PeerIP != "0.0.0.0" {
 		return m.server.AddPeer(ctx, &api.AddPeerRequest{Peer: &api.Peer{
 			Conf: &api.PeerConf{
 				NeighborAddress: user.PeerIP,
@@ -298,12 +298,16 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 	}
 
 	pgName := fmt.Sprintf("user_%d_pg", user.ID)
+	conf := &api.PeerGroupConf{
+		PeerGroupName: pgName,
+		PeerAsn:       uint32(user.PeerASN),
+	}
+	if user.PeerIP == "0.0.0.0" {
+		conf.AuthPassword = user.BGPPassword
+	}
 	if err := m.server.AddPeerGroup(ctx, &api.AddPeerGroupRequest{
 		PeerGroup: &api.PeerGroup{
-			Conf: &api.PeerGroupConf{
-				PeerGroupName: pgName,
-				PeerAsn:       uint32(user.PeerASN),
-			},
+			Conf: conf,
 			Transport: &api.Transport{LocalAddress: localAddress},
 			EbgpMultihop: &api.EbgpMultihop{Enabled: true, MultihopTtl: 64},
 			AfiSafis: []*api.AfiSafi{
@@ -324,9 +328,13 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 	}); err != nil {
 		return fmt.Errorf("add peer group for dynamic neighbor: %w", err)
 	}
+	dynPrefix := fmt.Sprintf("%s/32", user.PeerIP)
+	if user.PeerIP == "0.0.0.0" {
+		dynPrefix = "0.0.0.0/0"
+	}
 	if err := m.server.AddDynamicNeighbor(ctx, &api.AddDynamicNeighborRequest{
 		DynamicNeighbor: &api.DynamicNeighbor{
-			Prefix:    fmt.Sprintf("%s/32", user.PeerIP),
+			Prefix:    dynPrefix,
 			PeerGroup: pgName,
 		},
 	}); err != nil {
@@ -376,7 +384,7 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 			break
 		}
 	}
-	if !otherUsesIP {
+	if !otherUsesIP && peerIP != "0.0.0.0" {
 		// Delete the static peer
 		return m.server.DeletePeer(ctx, &api.DeletePeerRequest{
 			Address: peerIP,
@@ -384,8 +392,12 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 	}
 	// Clean up dynamic neighbor if this peer shared its IP
 	pgName := fmt.Sprintf("user_%d_pg", user.ID)
+	dynPrefix := fmt.Sprintf("%s/32", peerIP)
+	if peerIP == "0.0.0.0" {
+		dynPrefix = "0.0.0.0/0"
+	}
 	if err := m.server.DeleteDynamicNeighbor(ctx, &api.DeleteDynamicNeighborRequest{
-		Prefix:    fmt.Sprintf("%s/32", peerIP),
+		Prefix:    dynPrefix,
 		PeerGroup: pgName,
 	}); err != nil {
 		return err
@@ -663,7 +675,7 @@ func (m *Manager) DeletePeer(ctx context.Context, userID int64, peerIP string) e
 			break
 		}
 	}
-	if !otherUserHasIP {
+	if !otherUserHasIP || peerIP == "0.0.0.0" {
 		if err := m.deletePeerLocked(ctx, userID, peerIP); err != nil {
 			return err
 		}
