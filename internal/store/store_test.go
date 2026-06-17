@@ -1968,6 +1968,59 @@ func TestEnabledCatalogPrefixesExcludesDisabledFeeds(t *testing.T) {
 	}
 }
 
+func TestDeleteBuiltInModeDoesNotMoveUsers(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Create a non-built-in mode (id > 3, since 1-3 are built-in)
+	if err := s.AddCatalogMode(ctx, "custom-mode", true); err != nil {
+		t.Fatal(err)
+	}
+	modes, err := s.CatalogModes(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var customModeID int64
+	for _, m := range modes {
+		if m.Key == "custom-mode" {
+			customModeID = m.ID
+			break
+		}
+	}
+	if customModeID <= 3 {
+		t.Fatalf("expected custom-mode id > 3, got %d", customModeID)
+	}
+
+	// Assign a user to the custom (non-built-in) mode
+	userID, err := s.AddUser(ctx, User{
+		Name:          "test-delete-user",
+		PeerIP:        "10.10.0.1",
+		PeerASN:       65001,
+		Enabled:       true,
+		CatalogModeID: customModeID,
+		Networks:      []string{"10.10.0.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to delete a built-in mode (id=1) — this must fail
+	err = s.DeleteCatalogMode(ctx, 1)
+	if err == nil {
+		t.Fatal("expected error when deleting built-in mode 1, got nil")
+	}
+
+	// The user's catalog_mode_id must be UNCHANGED — still customModeID
+	user, err := s.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.CatalogModeID != customModeID {
+		t.Fatalf("BUG: user catalog_mode_id changed from %d to %d after failed built-in mode delete",
+			customModeID, user.CatalogModeID)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))

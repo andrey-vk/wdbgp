@@ -1140,18 +1140,19 @@ func (s *Store) AddCatalogMode(ctx context.Context, name string, enabled bool) e
 
 func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
-		// Reassign users of this mode to default
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE users SET catalog_mode_id = ? WHERE catalog_mode_id = ?",
-			DefaultCatalogModeID, id); err != nil {
-			return err
-		}
+		// Guard: built-in modes cannot be deleted
 		if id <= 3 {
 			var name string
 			if err := tx.QueryRowContext(ctx, "SELECT name FROM catalog_modes WHERE id = ?", id).Scan(&name); err != nil {
 				return err
 			}
 			return fmt.Errorf("cannot delete built-in mode %q", name)
+		}
+		// Reassign users of this mode to default
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE users SET catalog_mode_id = ? WHERE catalog_mode_id = ?",
+			DefaultCatalogModeID, id); err != nil {
+			return err
 		}
 		_, err := tx.ExecContext(ctx, "DELETE FROM catalog_modes WHERE id = ?", id)
 		return err
