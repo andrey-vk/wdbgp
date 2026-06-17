@@ -962,6 +962,8 @@ const feedEditTemplate = `{{with .Data}}
 <p class=muted>{{tr "hints.feed_name"}}</p>
 <label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
 <p class=muted>{{tr "hints.feed_url"}}</p>
+<input type=hidden name=enabled value=off>
+<label class=checkbox-row><input type=checkbox name=enabled value=on {{if or .IsNew .Feed.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label>
 <label>{{tr "catalog.modes"}}</label>
 <div class=checkbox-row>
 {{range .Modes}}<label><input type=checkbox name=mode_ids value="{{.ID}}" {{if index $.Data.FeedModeIDs .ID}}checked{{end}}> {{.Name}}</label>{{end}}

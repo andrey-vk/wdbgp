@@ -2901,7 +2901,11 @@ func formBool(r *http.Request, key string) bool {
 	if r.Form == nil {
 		return false
 	}
-	return r.Form.Has(key)
+	if !r.Form.Has(key) {
+		return false
+	}
+	val := r.FormValue(key)
+	return val == "on" || val == "true" || val == "1"
 }
 
 func sessionToken(secret string) string {
