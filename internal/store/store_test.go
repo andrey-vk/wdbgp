@@ -2199,3 +2199,92 @@ func openTestStore(t *testing.T) *Store {
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
+
+func TestPrefixCountsExcludesDisabledFeeds(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Create an enabled feed linked to mode 1 (enabled by default).
+	if err := s.AddFeed(ctx, "pct-disabled-test", "https://example.test/pct.json", 0); err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := s.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feedID int64
+	for _, f := range feeds {
+		if f.Name == "pct-disabled-test" {
+			feedID = f.ID
+			break
+		}
+	}
+	if feedID == 0 {
+		t.Fatal("created feed not found")
+	}
+
+	// Insert catalog entries.
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'PrefixBug', 'SvcA', '10.0.0.0/24'),
+		(?, 'PrefixBug', 'SvcA', '2001:db8:b::/48'),
+		(?, 'PrefixBug', 'SvcB', '10.1.0.0/24')`,
+		feedID, feedID, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// --- Verify PrefixCounts with enabled feed ---
+	v4, v6, err := s.PrefixCounts(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v4["PrefixBug"]["SvcA"] != 1 {
+		t.Fatalf("PrefixCounts v4[PrefixBug][SvcA] (enabled) = %d, want 1", v4["PrefixBug"]["SvcA"])
+	}
+	if v4["PrefixBug"]["SvcB"] != 1 {
+		t.Fatalf("PrefixCounts v4[PrefixBug][SvcB] (enabled) = %d, want 1", v4["PrefixBug"]["SvcB"])
+	}
+	if v6["PrefixBug"]["SvcA"] != 1 {
+		t.Fatalf("PrefixCounts v6[PrefixBug][SvcA] (enabled) = %d, want 1", v6["PrefixBug"]["SvcA"])
+	}
+
+	// --- Verify CategoryPrefixCounts with enabled feed ---
+	catV4, catV6, err := s.CategoryPrefixCounts(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catV4["PrefixBug"] != 2 {
+		t.Fatalf("CategoryPrefixCounts v4[PrefixBug] (enabled) = %d, want 2", catV4["PrefixBug"])
+	}
+	if catV6["PrefixBug"] != 1 {
+		t.Fatalf("CategoryPrefixCounts v6[PrefixBug] (enabled) = %d, want 1", catV6["PrefixBug"])
+	}
+
+	// --- Disable the feed ---
+	if _, err := s.DB.Exec(`UPDATE feeds SET enabled = 0 WHERE id = ?`, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// --- After disabling, PrefixCounts should be zero ---
+	v4, v6, err = s.PrefixCounts(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v4) != 0 {
+		t.Fatalf("BUG: PrefixCounts v4 (disabled feed) = %#v, want empty", v4)
+	}
+	if len(v6) != 0 {
+		t.Fatalf("BUG: PrefixCounts v6 (disabled feed) = %#v, want empty", v6)
+	}
+
+	// --- After disabling, CategoryPrefixCounts should be zero ---
+	catV4, catV6, err = s.CategoryPrefixCounts(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catV4) != 0 {
+		t.Fatalf("BUG: CategoryPrefixCounts v4 (disabled feed) = %#v, want empty", catV4)
+	}
+	if len(catV6) != 0 {
+		t.Fatalf("BUG: CategoryPrefixCounts v6 (disabled feed) = %#v, want empty", catV6)
+	}
+}

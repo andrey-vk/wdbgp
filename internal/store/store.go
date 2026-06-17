@@ -1392,7 +1392,8 @@ func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (v4 map[
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT ce.category, ce.cidr
 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
-WHERE EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
+WHERE f.enabled = 1
+  AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
               JOIN catalog_modes m ON m.id = cmf.mode_id
               WHERE cmf.feed_id = f.id AND cmf.mode_id = ?
                 AND m.enabled = 1)
@@ -1436,7 +1437,8 @@ func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (v4 map[string]m
 SELECT ce.category, ce.service, ce.cidr
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
+WHERE f.enabled = 1
+  AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
               JOIN catalog_modes m ON m.id = cmf.mode_id
               WHERE cmf.feed_id = f.id AND cmf.mode_id = ?
                 AND m.enabled = 1)
