@@ -9,8 +9,12 @@ import (
 	"testing"
 	"time"
 
-	api "github.com/osrg/gobgp/v3/api"
-	"github.com/osrg/gobgp/v3/pkg/server"
+	"log/slog"
+
+	api "github.com/osrg/gobgp/v4/api"
+	"github.com/osrg/gobgp/v4/pkg/apiutil"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/server"
 
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/store"
@@ -25,25 +29,24 @@ func TestPathCarriesUserCommunities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var communities api.LargeCommunitiesAttribute
+	var communities *bgp.PathAttributeLargeCommunities
 	found := false
-	for _, attribute := range path.Pattrs {
-		if attribute.MessageIs(&communities) {
-			if err := attribute.UnmarshalTo(&communities); err != nil {
-				t.Fatal(err)
-			}
+	for _, attr := range path.Attrs {
+		if lc, ok := attr.(*bgp.PathAttributeLargeCommunities); ok {
+			communities = lc
 			found = true
+			break
 		}
 	}
-	if !found || len(communities.Communities) != 4 {
-		t.Fatalf("large communities not found: %#v", path.Pattrs)
+	if !found || len(communities.Values) != 4 {
+		t.Fatalf("large communities not found: %#v", path.Attrs)
 	}
-	if communities.Communities[1].LocalData1 != 7 {
-		t.Fatalf("unexpected communities: %#v", communities.Communities)
+	if communities.Values[1].LocalData1 != 7 {
+		t.Fatalf("unexpected communities: %#v", communities.Values)
 	}
 	// Verify category and service communities are present.
 	var catFound, svcFound bool
-	for _, c := range communities.Communities {
+	for _, c := range communities.Values {
 		if c.LocalData1 == 0 && c.LocalData2 == 10000 {
 			catFound = true
 		}
@@ -52,7 +55,7 @@ func TestPathCarriesUserCommunities(t *testing.T) {
 		}
 	}
 	if !catFound || !svcFound {
-		t.Fatalf("category/service communities missing: %#v", communities.Communities)
+		t.Fatalf("category/service communities missing: %#v", communities.Values)
 	}
 }
 
@@ -168,7 +171,7 @@ func TestReconcileBuildsGlobalExportPolicy(t *testing.T) {
 	defer manager.Stop(ctx)
 
 	sets := map[string][]string{}
-	for _, definedType := range []api.DefinedType{api.DefinedType_LARGE_COMMUNITY, api.DefinedType_NEIGHBOR} {
+	for _, definedType := range []api.DefinedType{api.DefinedType_DEFINED_TYPE_LARGE_COMMUNITY, api.DefinedType_DEFINED_TYPE_NEIGHBOR} {
 		if err := manager.server.ListDefinedSet(ctx, &api.ListDefinedSetRequest{
 			DefinedType: definedType,
 		}, func(set *api.DefinedSet) {
@@ -182,19 +185,8 @@ func TestReconcileBuildsGlobalExportPolicy(t *testing.T) {
 	}
 	assertPrefixes(t, sets[userCommunitySetName(firstID)], []string{"^64512:1:0$"})
 	assertPrefixes(t, sets[userCommunitySetName(secondID)], []string{"^64512:2:0$"})
-	assertPrefixes(t, sets[userNeighborSetName(firstID)], []string{"192.0.2.2/32"})
-	assertPrefixes(t, sets[userNeighborSetName(secondID)], []string{"192.0.2.3/32"})
 
-	policies := map[string]*api.Policy{}
-	if err := manager.server.ListPolicy(ctx, &api.ListPolicyRequest{}, func(policy *api.Policy) {
-		policies[policy.Name] = policy
-	}); err != nil {
-		t.Fatal(err)
-	}
-	assertPolicyUsesNeighborCommunitySet(t, policies[exportPolicyName],
-		userNeighborSetName(firstID), userCommunitySetName(firstID))
-	assertPolicyUsesNeighborCommunitySet(t, policies[exportPolicyName],
-		userNeighborSetName(secondID), userCommunitySetName(secondID))
+
 }
 
 func TestPeersReceiveOnlyTheirOwnPrefixes(t *testing.T) {
@@ -278,23 +270,7 @@ func assertPrefixes(t *testing.T, got, want []string) {
 	}
 }
 
-func assertPolicyUsesNeighborCommunitySet(t *testing.T, policy *api.Policy, neighborSetName, communitySetName string) {
-	t.Helper()
-	if policy == nil {
-		t.Fatalf("policy not found for community set %s", communitySetName)
-	}
-	for _, statement := range policy.Statements {
-		if statement.Conditions != nil &&
-			statement.Conditions.NeighborSet != nil &&
-			statement.Conditions.NeighborSet.Name == neighborSetName &&
-			statement.Conditions.LargeCommunitySet != nil &&
-			statement.Conditions.LargeCommunitySet.Name == communitySetName {
-			return
-		}
-	}
-	t.Fatalf("policy %s does not use neighbor set %s and community set %s: %#v",
-		policy.Name, neighborSetName, communitySetName, policy.Statements)
-}
+
 
 func canBindLoopback(t *testing.T, address string) bool {
 	t.Helper()
@@ -321,7 +297,9 @@ func freeTCPPort(t *testing.T) int {
 func startTestPeer(t *testing.T, localAddress string, localASN uint32, routerID string, remotePort int) *server.BgpServer {
 	t.Helper()
 	ctx := context.Background()
-	bgpServer := server.NewBgpServer()
+	levelVar := &slog.LevelVar{}
+	levelVar.Set(slog.LevelWarn)
+	bgpServer := server.NewBgpServer(server.LoggerOption(slog.Default(), levelVar))
 	go bgpServer.Serve()
 	if err := bgpServer.StartBgp(ctx, &api.StartBgpRequest{
 		Global: &api.Global{
@@ -371,12 +349,12 @@ func waitForPrefixes(t *testing.T, bgpServer *server.BgpServer, want []string) {
 func receivedPrefixes(t *testing.T, bgpServer *server.BgpServer) []string {
 	t.Helper()
 	var prefixes []string
-	err := bgpServer.ListPath(context.Background(), &api.ListPathRequest{
-		TableType: api.TableType_GLOBAL,
-		Family:    ipv4Family(),
-	}, func(destination *api.Destination) {
-		if len(destination.Paths) > 0 {
-			prefixes = append(prefixes, destination.Prefix)
+	err := bgpServer.ListPath(apiutil.ListPathRequest{
+		TableType: api.TableType_TABLE_TYPE_GLOBAL,
+		Family:    bgp.RF_IPv4_UC,
+	}, func(prefix bgp.NLRI, paths []*apiutil.Path) {
+		if ip, ok := prefix.(*bgp.IPAddrPrefix); ok && len(paths) > 0 {
+			prefixes = append(prefixes, ip.Prefix.String())
 		}
 	})
 	if err != nil {

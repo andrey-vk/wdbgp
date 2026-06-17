@@ -127,10 +127,11 @@ type communityServiceView struct {
 }
 
 type userEditView struct {
-	User        store.User
-	Selection   selectionView
-	Credentials []store.UserCredential
-	Error       string
+	User                          store.User
+	Selection                     selectionView
+	Credentials                   []store.UserCredential
+	Error                         string
+	RequirePasswordForNonUniqueIP bool
 }
 
 type filterView struct {
@@ -1608,22 +1609,43 @@ func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Check for conflicting (ip, asn, password) combination
+	// Step A: Same IP + same ASN → reject unconditionally.
+	// GoBGP's neighborMap is keyed by NeighborAddress; same IP+ASN is a single
+	// peer slot. A second AddPeer call would overwrite the first.
 	var conflictID int64
-	var conflictName, conflictPass string
-	err = s.store.DB.QueryRowContext(r.Context(),
-		"SELECT id, name, COALESCE(bgp_password, '') FROM users WHERE peer_ip = ? AND peer_asn = ? AND COALESCE(bgp_password, '') = COALESCE(?, '')",
-		user.PeerIP, user.PeerASN, user.BGPPassword).Scan(&conflictID, &conflictName, &conflictPass)
-	if err == nil {
-		// Conflict found
-		var msg string
-		if conflictPass == "" {
-			msg = fmt.Sprintf("User '%s' already uses IP %s with ASN %d without a BGP password. Set a password on either user to distinguish them, or change the IP/ASN.", conflictName, user.PeerIP, user.PeerASN)
-		} else {
-			msg = fmt.Sprintf("User '%s' already uses this IP, ASN, and password combination. Use a different password or change IP/ASN.", conflictName)
-		}
-		http.Error(w, msg, http.StatusConflict)
+	var conflictName, conflictIP, conflictPass string
+	if err := s.store.DB.QueryRowContext(r.Context(),
+		"SELECT id, name FROM users WHERE peer_ip = ? AND peer_asn = ?",
+		user.PeerIP, user.PeerASN).Scan(&conflictID, &conflictName); err == nil {
+		http.Error(w, fmt.Sprintf("User '%s' already uses IP %s with ASN %d. Same IP+ASN cannot be reused.",
+			conflictName, user.PeerIP, user.PeerASN), http.StatusConflict)
 		return
+	}
+
+	// Step B: Dynamic peers require a password and globally unique ASN.
+	if user.PeerIP == "0.0.0.0" {
+		if user.BGPPassword == "" {
+			http.Error(w, "Dynamic peers require a BGP password.", http.StatusBadRequest)
+			return
+		}
+		if err := s.store.DB.QueryRowContext(r.Context(),
+			"SELECT id, name, peer_ip FROM users WHERE peer_asn = ?",
+			user.PeerASN).Scan(&conflictID, &conflictName, &conflictIP); err == nil {
+			http.Error(w, fmt.Sprintf("ASN %d is already used by '%s' (IP %s). Dynamic peer ASNs must be unique across all users.",
+				user.PeerASN, conflictName, conflictIP), http.StatusConflict)
+			return
+		}
+	}
+
+	// Step C: Shared IP with different ASN requires password when setting is ON.
+	if err := s.store.DB.QueryRowContext(r.Context(),
+		"SELECT id, name, COALESCE(bgp_password, '') FROM users WHERE peer_ip = ? AND peer_asn != ?",
+		user.PeerIP, user.PeerASN).Scan(&conflictID, &conflictName, &conflictPass); err == nil {
+		if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
+			http.Error(w, fmt.Sprintf("IP %s is already used by '%s' with a different ASN. A non-empty BGP password is required when sharing an IP with different ASNs.",
+				user.PeerIP, conflictName), http.StatusBadRequest)
+			return
+		}
 	}
 
 	userID, err := s.store.AddUser(r.Context(), user)
@@ -1654,7 +1676,7 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 			Enabled:       true,
 		}
 		s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), translate(lang, "common.add")), "user-edit",
-			userEditView{User: emptyUser})
+			userEditView{User: emptyUser, RequirePasswordForNonUniqueIP: s.cfg.RequirePasswordForNonUniqueIP})
 		return
 	}
 	user, err := s.store.User(r.Context(), id)
@@ -1686,7 +1708,7 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	credentials, _ := s.store.GetUserCredentials(r.Context(), id)
 	lang, _ := requestLocale(r, s.defaultLang)
 	s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
-		userEditView{User: user, Selection: selection, Credentials: credentials})
+		userEditView{User: user, Selection: selection, Credentials: credentials, RequirePasswordForNonUniqueIP: s.cfg.RequirePasswordForNonUniqueIP})
 }
 
 func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
@@ -1711,22 +1733,43 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `web_auth must be "network", "login", "both", or "any"`, http.StatusBadRequest)
 			return
 		}
-		// Check for conflicting (ip, asn, password) combination
+		// Step A: Same IP + same ASN → reject unconditionally.
+		// GoBGP's neighborMap is keyed by NeighborAddress; same IP+ASN is a single
+		// peer slot. A second AddPeer call would overwrite the first.
 		var conflictID int64
-		var conflictName, conflictPass string
-		err = s.store.DB.QueryRowContext(r.Context(),
-			"SELECT id, name, COALESCE(bgp_password, '') FROM users WHERE peer_ip = ? AND peer_asn = ? AND COALESCE(bgp_password, '') = COALESCE(?, '') AND id != ?",
-			user.PeerIP, user.PeerASN, user.BGPPassword, id).Scan(&conflictID, &conflictName, &conflictPass)
-		if err == nil {
-			// Conflict found
-			var msg string
-			if conflictPass == "" {
-				msg = fmt.Sprintf("User '%s' already uses IP %s with ASN %d without a BGP password. Set a password on either user to distinguish them, or change the IP/ASN.", conflictName, user.PeerIP, user.PeerASN)
-			} else {
-				msg = fmt.Sprintf("User '%s' already uses this IP, ASN, and password combination. Use a different password or change IP/ASN.", conflictName)
-			}
-			http.Error(w, msg, http.StatusConflict)
+		var conflictName, conflictIP, conflictPass string
+		if err := s.store.DB.QueryRowContext(r.Context(),
+			"SELECT id, name FROM users WHERE peer_ip = ? AND peer_asn = ? AND id != ?",
+			user.PeerIP, user.PeerASN, id).Scan(&conflictID, &conflictName); err == nil {
+			http.Error(w, fmt.Sprintf("User '%s' already uses IP %s with ASN %d. Same IP+ASN cannot be reused.",
+				conflictName, user.PeerIP, user.PeerASN), http.StatusConflict)
 			return
+		}
+
+		// Step B: Dynamic peers require a password and globally unique ASN.
+		if user.PeerIP == "0.0.0.0" {
+			if user.BGPPassword == "" {
+				http.Error(w, "Dynamic peers require a BGP password.", http.StatusBadRequest)
+				return
+			}
+			if err := s.store.DB.QueryRowContext(r.Context(),
+				"SELECT id, name, peer_ip FROM users WHERE peer_asn = ? AND id != ?",
+				user.PeerASN, id).Scan(&conflictID, &conflictName, &conflictIP); err == nil {
+				http.Error(w, fmt.Sprintf("ASN %d is already used by '%s' (IP %s). Dynamic peer ASNs must be unique across all users.",
+					user.PeerASN, conflictName, conflictIP), http.StatusConflict)
+				return
+			}
+		}
+
+		// Step C: Shared IP with different ASN requires password when setting is ON.
+		if err := s.store.DB.QueryRowContext(r.Context(),
+			"SELECT id, name, COALESCE(bgp_password, '') FROM users WHERE peer_ip = ? AND peer_asn != ? AND id != ?",
+			user.PeerIP, user.PeerASN, id).Scan(&conflictID, &conflictName, &conflictPass); err == nil {
+			if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
+				http.Error(w, fmt.Sprintf("IP %s is already used by '%s' with a different ASN. A non-empty BGP password is required when sharing an IP with different ASNs.",
+					user.PeerIP, conflictName), http.StatusBadRequest)
+				return
+			}
 		}
 		if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {
 			s.internalError(w, r, err)

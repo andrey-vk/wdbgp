@@ -9,9 +9,14 @@ import (
 	"strings"
 	"sync"
 
-	api "github.com/osrg/gobgp/v3/api"
-	"github.com/osrg/gobgp/v3/pkg/server"
-	"google.golang.org/protobuf/types/known/anypb"
+	"log/slog"
+
+	"github.com/google/uuid"
+
+	api "github.com/osrg/gobgp/v4/api"
+	"github.com/osrg/gobgp/v4/pkg/apiutil"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/server"
 
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/logging"
@@ -20,7 +25,7 @@ import (
 )
 
 type installedPath struct {
-	UUID      []byte
+	UUID      uuid.UUID
 	Signature string
 }
 
@@ -103,7 +108,9 @@ func (m *Manager) ReloadPeers(ctx context.Context) error {
 func (m *Manager) startLocked(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
 	
-	bgpServer := server.NewBgpServer()
+	levelVar := &slog.LevelVar{}
+	levelVar.Set(slog.LevelInfo)
+	bgpServer := server.NewBgpServer(server.LoggerOption(slog.Default(), levelVar))
 	go bgpServer.Serve()
 	if err := bgpServer.StartBgp(ctx, &api.StartBgpRequest{
 		Global: &api.Global{
@@ -166,7 +173,7 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 	community := largeCommunity(m.cfg.LocalASN, user.ID)
 	if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
 		DefinedSet: &api.DefinedSet{
-			DefinedType: api.DefinedType_LARGE_COMMUNITY,
+			DefinedType: api.DefinedType_DEFINED_TYPE_LARGE_COMMUNITY,
 			Name:        communitySetName,
 			List:        []string{community},
 		},
@@ -184,7 +191,6 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 	}); err != nil {
 		return err
 	}
-
 	peerAddress, err := netip.ParseAddr(user.PeerIP)
 	if err != nil {
 		return err
@@ -231,7 +237,7 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 	communitySetName := userCommunitySetName(user.ID)
 	if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
 		DefinedSet: &api.DefinedSet{
-			DefinedType: api.DefinedType_LARGE_COMMUNITY,
+			DefinedType: api.DefinedType_DEFINED_TYPE_LARGE_COMMUNITY,
 			Name:        communitySetName,
 		},
 	}); err != nil {
@@ -240,7 +246,7 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 	neighborSetName := userNeighborSetName(user.ID)
 	if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
 		DefinedSet: &api.DefinedSet{
-			DefinedType: api.DefinedType_NEIGHBOR,
+			DefinedType: api.DefinedType_DEFINED_TYPE_NEIGHBOR,
 			Name:        neighborSetName,
 		},
 	}); err != nil {
@@ -265,16 +271,20 @@ func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store
 				Conditions: &api.Conditions{
 					NeighborSet: &api.MatchSet{
 						Name: userNeighborSetName(user.ID),
-						Type: api.MatchSet_ANY,
+						Type: api.MatchSet_TYPE_ANY,
 					},
 					LargeCommunitySet: &api.MatchSet{
 						Name: userCommunitySetName(user.ID),
-						Type: api.MatchSet_ANY,
+						Type: api.MatchSet_TYPE_ANY,
 					},
 				},
 				Actions: &api.Actions{
-					RouteAction: api.RouteAction_ACCEPT,
-					Nexthop:     nextHop,
+					RouteAction: api.RouteAction_ROUTE_ACTION_ACCEPT,
+					LargeCommunity: &api.CommunityAction{
+						Type:        api.CommunityAction_TYPE_REPLACE,
+						Communities: []string{largeCommunity(m.cfg.LocalASN, user.ID)},
+					},
+					Nexthop: nextHop,
 				},
 			})
 		}
@@ -284,17 +294,14 @@ func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store
 	}); err != nil {
 		return err
 	}
-	if err := m.server.SetPolicyAssignment(ctx, &api.SetPolicyAssignmentRequest{
+	return m.server.SetPolicyAssignment(ctx, &api.SetPolicyAssignmentRequest{
 		Assignment: &api.PolicyAssignment{
 			Name:          globalPolicyTable,
-			Direction:     api.PolicyDirection_EXPORT,
+			Direction:     api.PolicyDirection_POLICY_DIRECTION_EXPORT,
 			Policies:      []*api.Policy{{Name: exportPolicyName}},
-			DefaultAction: api.RouteAction_REJECT,
+			DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT,
 		},
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 func (m *Manager) Reconcile(ctx context.Context) error {
@@ -415,7 +422,7 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 			// Delete old community set
 			if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
 				DefinedSet: &api.DefinedSet{
-					DefinedType: api.DefinedType_LARGE_COMMUNITY,
+					DefinedType: api.DefinedType_DEFINED_TYPE_LARGE_COMMUNITY,
 					Name:        oldCommunitySetName,
 				},
 			}); err != nil {
@@ -425,7 +432,7 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 			// Add new community set
 			if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
 				DefinedSet: &api.DefinedSet{
-					DefinedType: api.DefinedType_LARGE_COMMUNITY,
+					DefinedType: api.DefinedType_DEFINED_TYPE_LARGE_COMMUNITY,
 					Name:        newCommunitySetName,
 					List:        []string{newCommunity},
 				},
@@ -433,7 +440,7 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 			}); err != nil {
 				return err
 			}
-			
+
 			// Update neighbor set
 			oldNeighborSetName := userNeighborSetName(oldUser.ID)
 			newNeighborSetName := userNeighborSetName(user.ID)
@@ -441,17 +448,17 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 			if err != nil {
 				return err
 			}
-			
+
 			// Delete old neighbor set
 			if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
 				DefinedSet: &api.DefinedSet{
-					DefinedType: api.DefinedType_NEIGHBOR,
+					DefinedType: api.DefinedType_DEFINED_TYPE_NEIGHBOR,
 					Name:        oldNeighborSetName,
 				},
 			}); err != nil {
 				return err
 			}
-			
+
 			// Add new neighbor set
 			if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
 				DefinedSet: newNeighborSet,
@@ -631,10 +638,9 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 
 		err := retry.Do(ctx, retry.BGPConfig,
 			func() error {
-				return m.server.DeletePath(ctx, &api.DeletePathRequest{
-					TableType: api.TableType_GLOBAL,
-					Uuid:      installed.UUID,
-				})
+			return m.server.DeletePath(apiutil.DeletePathRequest{
+				UUIDs: []uuid.UUID{installed.UUID},
+			})
 			},
 			retry.TransientError,
 		)
@@ -657,12 +663,11 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			return err
 		}
 
-		response, err := retry.DoWithResult(ctx, retry.BGPConfig,
-			func() (*api.AddPathResponse, error) {
-				return m.server.AddPath(ctx, &api.AddPathRequest{
-					TableType: api.TableType_GLOBAL,
-					Path:      path,
-				})
+		responses, err := retry.DoWithResult(ctx, retry.BGPConfig,
+			func() ([]apiutil.AddPathResponse, error) {
+			return m.server.AddPath(apiutil.AddPathRequest{
+				Paths: []*apiutil.Path{path},
+			})
 			},
 			retry.TransientError,
 		)
@@ -670,77 +675,73 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("announce %s: %w", actualPrefix, err)
 		}
-		m.installed[actualPrefix] = installedPath{UUID: response.Uuid, Signature: sig}
+		if len(responses) == 0 || responses[0].UUID == uuid.Nil {
+			return fmt.Errorf("announce %s: no UUID returned", actualPrefix)
+		}
+		m.installed[actualPrefix] = installedPath{UUID: responses[0].UUID, Signature: sig}
 	}
 	return nil
 }
 
-func (m *Manager) path(rawPrefix string, userIDs []int64, category, service string, communities map[string]uint32) (*api.Path, error) {
+func (m *Manager) path(rawPrefix string, userIDs []int64, category, service string, communities map[string]uint32) (*apiutil.Path, error) {
 	prefix, err := netip.ParsePrefix(rawPrefix)
 	if err != nil {
 		return nil, err
 	}
-	nlri, err := anypb.New(&api.IPAddressPrefix{
-		Prefix:    prefix.Addr().String(),
-		PrefixLen: uint32(prefix.Bits()),
-	})
+	nlri, err := bgp.NewIPAddrPrefix(prefix)
 	if err != nil {
 		return nil, err
 	}
-	origin, _ := anypb.New(&api.OriginAttribute{Origin: 0})
-	comms := make([]*api.LargeCommunity, 0, len(userIDs)+2)
+	origin := bgp.NewPathAttributeOrigin(0)
+	comms := make([]*bgp.LargeCommunity, 0, len(userIDs)+2)
 	for _, userID := range userIDs {
 		if userID < 0 || userID > int64(^uint32(0)) {
 			return nil, fmt.Errorf("user id %d is outside large community range", userID)
 		}
-		comms = append(comms, &api.LargeCommunity{
-			GlobalAdmin: m.cfg.LocalASN,
-			LocalData1:  uint32(userID),
-			LocalData2:  0,
+		comms = append(comms, &bgp.LargeCommunity{
+			ASN:        m.cfg.LocalASN,
+			LocalData1: uint32(userID),
+			LocalData2: 0,
 		})
 	}
 	// Attach category and service communities if available.
 	if category != "" {
 		if c, ok := communities[category]; ok {
-			comms = append(comms, &api.LargeCommunity{
-				GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
+			comms = append(comms, &bgp.LargeCommunity{
+				ASN: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
 			})
 		}
 		if service != "" {
 			if c, ok := communities[category+"|"+service]; ok {
-				comms = append(comms, &api.LargeCommunity{
-					GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
+				comms = append(comms, &bgp.LargeCommunity{
+					ASN: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
 				})
 			}
 		}
 	}
-	communityAttribute, _ := anypb.New(&api.LargeCommunitiesAttribute{Communities: comms})
+	communityAttribute := bgp.NewPathAttributeLargeCommunities(comms)
 	if prefix.Addr().Is4() {
-		nextHop, err := anypb.New(&api.NextHopAttribute{NextHop: m.cfg.LocalAddressV4})
+		nextHop, err := bgp.NewPathAttributeNextHop(netip.MustParseAddr(m.cfg.LocalAddressV4))
 		if err != nil {
 			return nil, err
 		}
-		return &api.Path{
-			Family: ipv4Family(),
+		return &apiutil.Path{
 			Nlri:   nlri,
-			Pattrs: []*anypb.Any{origin, nextHop, communityAttribute},
+			Family: bgp.RF_IPv4_UC,
+			Attrs:  []bgp.PathAttributeInterface{origin, nextHop, communityAttribute},
 		}, nil
 	}
 	if m.cfg.LocalAddressV6 == "" {
 		return nil, fmt.Errorf("cannot announce IPv6 prefix %s without WDBGP_BGP_LOCAL_ADDRESS_V6", rawPrefix)
 	}
-	mpReach, err := anypb.New(&api.MpReachNLRIAttribute{
-		Family:   ipv6Family(),
-		NextHops: []string{m.cfg.LocalAddressV6},
-		Nlris:    []*anypb.Any{nlri},
-	})
+	mpReach, err := bgp.NewPathAttributeMpReachNLRI(bgp.RF_IPv6_UC, []bgp.PathNLRI{{NLRI: nlri}}, netip.MustParseAddr(m.cfg.LocalAddressV6))
 	if err != nil {
 		return nil, err
 	}
-	return &api.Path{
-		Family: ipv6Family(),
+	return &apiutil.Path{
 		Nlri:   nlri,
-		Pattrs: []*anypb.Any{origin, mpReach, communityAttribute},
+		Family: bgp.RF_IPv6_UC,
+		Attrs:  []bgp.PathAttributeInterface{origin, mpReach, communityAttribute},
 	}, nil
 }
 
@@ -797,7 +798,7 @@ func neighborDefinedSet(name, rawAddress string) (*api.DefinedSet, error) {
 		mask = 128
 	}
 	return &api.DefinedSet{
-		DefinedType: api.DefinedType_NEIGHBOR,
+		DefinedType: api.DefinedType_DEFINED_TYPE_NEIGHBOR,
 		Name:        name,
 		List:        []string{fmt.Sprintf("%s/%d", address, mask)},
 	}, nil
