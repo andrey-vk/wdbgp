@@ -1905,6 +1905,62 @@ func TestCatalogForModeExcludesDisabledFeeds(t *testing.T) {
 	}
 }
 
+func TestCatalogForModeHonorsIncludeDisabled(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Use mode 1 (opencck) — enabled by default per migration seed data.
+	mode, err := s.CatalogMode(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mode.Enabled {
+		t.Fatalf("mode 1 (opencck) should be enabled by default, got %#v", mode)
+	}
+
+	// Create an enabled feed linked to the enabled mode.
+	if err := s.AddFeedForMode(ctx, "test-feed-dis", "https://example.test/feed.json", mode.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	feeds, err := s.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID := feeds[len(feeds)-1].ID
+
+	// Insert a catalog entry for the feed.
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'DisabledCat', 'DisabledSvc', '10.0.0.0/24')`, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Disable the feed.
+	if _, err := s.DB.Exec(`UPDATE feeds SET enabled = 0 WHERE id = ?`, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// CatalogForMode(mode, true) should return the entry even though the feed is disabled,
+	// because includeDisabled=true means "show me everything".
+	// BUG: unconditional f.enabled = 1 in CatalogForMode blocks this.
+	catalog, err := s.CatalogForMode(ctx, mode.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svcs, ok := catalog["DisabledCat"]; !ok || len(svcs) != 1 || svcs[0] != "DisabledSvc" {
+		t.Fatalf("CatalogForMode(enabled mode, true) with disabled feed = %#v, want {DisabledCat:[DisabledSvc]}", catalog)
+	}
+
+	// CatalogForMode(mode, false) should still exclude the disabled feed.
+	catalog, err = s.CatalogForMode(ctx, mode.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 0 {
+		t.Fatalf("CatalogForMode(enabled mode, false) with disabled feed = %#v, want empty", catalog)
+	}
+}
+
 func TestEnabledCatalogPrefixesExcludesDisabledFeeds(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
