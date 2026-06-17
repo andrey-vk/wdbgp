@@ -897,10 +897,8 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	// Merge desired by actual prefix (not compound key) so that identical
 	// prefixes from different modes share one NLRI with merged communities.
 	type mergedRoute struct {
-		userIDs  []int64
-		comms    map[string]uint32
-		category string
-		service  string
+		userIDs []int64
+		comms   map[string]uint32
 	}
 	perPrefix := map[string]*mergedRoute{}
 
@@ -935,10 +933,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 					mr.comms[fmt.Sprintf("%d|%s", meta.ModeID, k)] = v
 				}
 			}
-			if mr.category == "" && meta.Category != "" {
-				mr.category = meta.Category
-				mr.service = meta.Service
-			}
+
 		}
 	}
 
@@ -975,7 +970,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			continue
 		}
 
-		path, err := m.path(actualPrefix, mr.userIDs, mr.category, mr.service, mr.comms)
+		path, err := m.path(actualPrefix, mr.userIDs, mr.comms)
 		if err != nil {
 			return err
 		}
@@ -1000,7 +995,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) path(rawPrefix string, userIDs []int64, category, service string, communities map[string]uint32) (*apiutil.Path, error) {
+func (m *Manager) path(rawPrefix string, userIDs []int64, communities map[string]uint32) (*apiutil.Path, error) {
 	prefix, err := netip.ParsePrefix(rawPrefix)
 	if err != nil {
 		return nil, err
@@ -1010,7 +1005,7 @@ func (m *Manager) path(rawPrefix string, userIDs []int64, category, service stri
 		return nil, err
 	}
 	origin := bgp.NewPathAttributeOrigin(0)
-	comms := make([]*bgp.LargeCommunity, 0, len(userIDs)+2)
+	comms := make([]*bgp.LargeCommunity, 0, len(userIDs)+len(communities))
 	for _, userID := range userIDs {
 		if userID < 0 || userID > int64(^uint32(0)) {
 			return nil, fmt.Errorf("user id %d is outside large community range", userID)
@@ -1021,35 +1016,13 @@ func (m *Manager) path(rawPrefix string, userIDs []int64, category, service stri
 			LocalData2: 0,
 		})
 	}
-	// Attach category and service communities if available.
-	if category != "" {
-		if c, ok := communities[category]; ok {
-			comms = append(comms, &bgp.LargeCommunity{
-				ASN: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
-			})
-		}
-		if service != "" {
-			if c, ok := communities[category+"|"+service]; ok {
-				comms = append(comms, &bgp.LargeCommunity{
-					ASN: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
-				})
-			}
-		}
-	}
-	// Attach per-mode metadata communities (mode-scoped keys like "1|key" or "2|key|subkey").
-	for key, val := range communities {
-		// Mode-scoped keys have format "<modeID>|<rest>" where modeID is numeric.
-		idx := strings.IndexByte(key, '|')
-		if idx > 0 {
-			if _, err := strconv.ParseInt(key[:idx], 10, 64); err == nil {
-				rest := key[idx+1:]
-				if rest == category || rest == category+"|"+service {
-					comms = append(comms, &bgp.LargeCommunity{
-						ASN: m.cfg.LocalASN, LocalData1: 0, LocalData2: val,
-					})
-				}
-			}
-		}
+	// Emit all mode metadata communities (per-mode category/service).
+	// Filtering of unrelated modes' communities is already done by
+	// reconcileLocked when it builds the communities map.
+	for _, val := range communities {
+		comms = append(comms, &bgp.LargeCommunity{
+			ASN: m.cfg.LocalASN, LocalData1: 0, LocalData2: val,
+		})
 	}
 	communityAttribute := bgp.NewPathAttributeLargeCommunities(comms)
 	if prefix.Addr().Is4() {

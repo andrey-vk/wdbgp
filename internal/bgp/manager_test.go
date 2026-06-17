@@ -22,12 +22,90 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
+func TestMergePreservesAllModeMetadata(t *testing.T) {
+	// Simulate reconcileLocked output when the same prefix "10.0.0.0/24"
+	// is selected in mode 1 (category=video, service=youtube) AND
+	// mode 2 (category=chat, service=telegram).
+	//
+	// reconcileLocked sets mr.category = first mode's category (video).
+	// path() then filters mode-scoped communities by that single category,
+	// dropping mode 2's chat communities.
+	manager := NewManager(config.Config{
+		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
+	}, nil)
+
+	// Communities map as built by reconcileLocked — mr.comms after merging.
+	// Non-scoped keys (last-write-wins across modes):
+	//   "video"=10000, "video|youtube"=10001, "chat"=20000, "chat|telegram"=20001
+	// Mode-scoped keys (one per mode, unique):
+	//   "1|video"=10000, "1|video|youtube"=10001, "2|chat"=20000, "2|chat|telegram"=20001
+	comms := map[string]uint32{
+		"video":            10000,
+		"video|youtube":    10001,
+		"chat":             20000,
+		"chat|telegram":    20001,
+		"1|video":          10000,
+		"1|video|youtube":  10001,
+		"2|chat":           20000,
+		"2|chat|telegram":  20001,
+	}
+
+	path, err := manager.path("10.0.0.0/24", []int64{1, 2}, comms)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var communities *bgp.PathAttributeLargeCommunities
+	found := false
+	for _, attr := range path.Attrs {
+		if lc, ok := attr.(*bgp.PathAttributeLargeCommunities); ok {
+			communities = lc
+			found = true
+			break
+		}
+	}
+	if !found || len(communities.Values) == 0 {
+		t.Fatalf("large communities not found: %#v", path.Attrs)
+	}
+
+	// The path should carry communities from BOTH modes.
+	var hasMode1, hasMode2 bool
+	var hasMode1Svc, hasMode2Svc bool
+	for _, c := range communities.Values {
+		if c.LocalData1 == 0 && c.LocalData2 == 10000 {
+			hasMode1 = true
+		}
+		if c.LocalData1 == 0 && c.LocalData2 == 20000 {
+			hasMode2 = true
+		}
+		if c.LocalData1 == 0 && c.LocalData2 == 10001 {
+			hasMode1Svc = true
+		}
+		if c.LocalData1 == 0 && c.LocalData2 == 20001 {
+			hasMode2Svc = true
+		}
+	}
+
+	if !hasMode1 {
+		t.Fatalf("missing mode 1 category community (10000): %#v", communities.Values)
+	}
+	if !hasMode2 {
+		t.Fatalf("BUG: missing mode 2 category community (20000) — path() filters by mr.category='video' and drops mode 2's 'chat': %#v", communities.Values)
+	}
+	if !hasMode1Svc {
+		t.Fatalf("missing mode 1 service community (10001): %#v", communities.Values)
+	}
+	if !hasMode2Svc {
+		t.Fatalf("BUG: missing mode 2 service community (20001) — path() filters by mr.category='video'/'youtube' and drops mode 2's 'chat'/'telegram': %#v", communities.Values)
+	}
+}
+
 func TestPathCarriesUserCommunities(t *testing.T) {
 	manager := NewManager(config.Config{
 		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
 	}, nil)
 	comms := map[string]uint32{"testcat": 10000, "testcat|testsvc": 10001}
-	path, err := manager.path("149.154.160.0/20", []int64{2, 7}, "testcat", "testsvc", comms)
+	path, err := manager.path("149.154.160.0/20", []int64{2, 7}, comms)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,7 +730,7 @@ func TestPathPreservesPerModeCommunities(t *testing.T) {
 		"video|youtube":    10001, // non-scoped service fallback
 	}
 
-	path, err := manager.path("10.0.0.0/24", []int64{1, 2}, "video", "youtube", comms)
+	path, err := manager.path("10.0.0.0/24", []int64{1, 2}, comms)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,8 +793,9 @@ func TestPathFiltersUnmatchedModeScopedCommunities(t *testing.T) {
 		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
 	}, nil)
 
-	// path() with category="video" should emit 10000 but NOT 20000 (chat).
-	path, err := manager.path("10.0.0.0/24", []int64{1}, "video", "", comms)
+	// path() emits ALL communities from the map — per-mode filtering
+	// is now done at the reconcileLocked level, not in path().
+	path, err := manager.path("10.0.0.0/24", []int64{1}, comms)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -747,8 +826,8 @@ func TestPathFiltersUnmatchedModeScopedCommunities(t *testing.T) {
 	if !hasVideo {
 		t.Fatalf("missing 'video' category community (10000): %#v", communities.Values)
 	}
-	if hasChat {
-		t.Fatalf("BUG: 'chat' community (20000) leaked from unrelated category: %#v", communities.Values)
+	if !hasChat {
+		t.Fatalf("missing 'chat' category community (20000): path() should emit all communities, filtering is done in reconcileLocked: %#v", communities.Values)
 	}
 }
 
