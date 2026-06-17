@@ -233,17 +233,6 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 		}})
 	}
 
-	// Shared IP: use dynamic neighbor via peer group.
-	// Compute next hop actions for per-peer-group policy.
-	nextHopV4, err := nextHopAction(user, api.Family_AFI_IP)
-	if err != nil {
-		return err
-	}
-	nextHopV6, err := nextHopAction(user, api.Family_AFI_IP6)
-	if err != nil {
-		return err
-	}
-
 	// Compute all user communities for REMOVE action in per-peer-group policy.
 	allUserComms := make([]string, 0, len(m.peerConfigs)+1)
 	for _, u := range m.peerConfigs {
@@ -253,48 +242,8 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 
 	// Create the export policy for this peer group (includes REMOVE to strip other users' communities).
 	policyName := fmt.Sprintf("user_%d_policy", user.ID)
-	if err := m.server.AddPolicy(ctx, &api.AddPolicyRequest{
-		Policy: &api.Policy{
-			Name: policyName,
-			Statements: []*api.Statement{
-				{
-					Name: fmt.Sprintf("user_%d_v4", user.ID),
-					Conditions: &api.Conditions{
-						LargeCommunitySet: &api.MatchSet{
-							Name: userCommunitySetName(user.ID),
-							Type: api.MatchSet_TYPE_ANY,
-						},
-					},
-					Actions: &api.Actions{
-						RouteAction: api.RouteAction_ROUTE_ACTION_ACCEPT,
-						LargeCommunity: &api.CommunityAction{
-							Type:        api.CommunityAction_TYPE_REMOVE,
-							Communities: allUserComms,
-						},
-						Nexthop: nextHopV4,
-					},
-				},
-				{
-					Name: fmt.Sprintf("user_%d_v6", user.ID),
-					Conditions: &api.Conditions{
-						LargeCommunitySet: &api.MatchSet{
-							Name: userCommunitySetName(user.ID),
-							Type: api.MatchSet_TYPE_ANY,
-						},
-					},
-					Actions: &api.Actions{
-						RouteAction: api.RouteAction_ROUTE_ACTION_ACCEPT,
-						LargeCommunity: &api.CommunityAction{
-							Type:        api.CommunityAction_TYPE_REMOVE,
-							Communities: allUserComms,
-						},
-						Nexthop: nextHopV6,
-					},
-				},
-			},
-		},
-	}); err != nil {
-		return fmt.Errorf("add policy for peer group: %w", err)
+	if err := m.rebuildPeerGroupPolicyLocked(ctx, user, allUserComms); err != nil {
+		return err
 	}
 
 	pgName := fmt.Sprintf("user_%d_pg", user.ID)
@@ -417,6 +366,93 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 	return nil
 }
 
+// hasPeerGroupPolicy reports whether a user has a per-peer-group export policy.
+// True for dynamic peers (0.0.0.0) and for peers that share an IP with another
+// enabled peer (served via dynamic neighbors).
+func (m *Manager) hasPeerGroupPolicy(user store.User) bool {
+	if user.PeerIP == "0.0.0.0" {
+		return true
+	}
+	for _, u := range m.peerConfigs {
+		if u.Enabled && u.PeerIP == user.PeerIP && u.ID != user.ID {
+			return true
+		}
+	}
+	return false
+}
+
+// rebuildPeerGroupPolicyLocked deletes the old per-peer-group policy (ignoring
+// "not found") and creates a new one with a fresh REMOVE list of all user-ID
+// communities. The peer-group's export policy assignment stays intact — it
+// references the policy by name.
+func (m *Manager) rebuildPeerGroupPolicyLocked(ctx context.Context, user store.User, allUserComms []string) error {
+	policyName := fmt.Sprintf("user_%d_policy", user.ID)
+
+	// Delete old policy; ignore "not found" errors.
+	if err := m.server.DeletePolicy(ctx, &api.DeletePolicyRequest{
+		Policy: &api.Policy{Name: policyName},
+	}); err != nil {
+		if !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("delete old policy %s: %w", policyName, err)
+		}
+	}
+
+	nextHopV4, err := nextHopAction(user, api.Family_AFI_IP)
+	if err != nil {
+		return err
+	}
+	nextHopV6, err := nextHopAction(user, api.Family_AFI_IP6)
+	if err != nil {
+		return err
+	}
+
+	if err := m.server.AddPolicy(ctx, &api.AddPolicyRequest{
+		Policy: &api.Policy{
+			Name: policyName,
+			Statements: []*api.Statement{
+				{
+					Name: fmt.Sprintf("user_%d_v4", user.ID),
+					Conditions: &api.Conditions{
+						LargeCommunitySet: &api.MatchSet{
+							Name: userCommunitySetName(user.ID),
+							Type: api.MatchSet_TYPE_ANY,
+						},
+					},
+					Actions: &api.Actions{
+						RouteAction: api.RouteAction_ROUTE_ACTION_ACCEPT,
+						LargeCommunity: &api.CommunityAction{
+							Type:        api.CommunityAction_TYPE_REMOVE,
+							Communities: allUserComms,
+						},
+						Nexthop: nextHopV4,
+					},
+				},
+				{
+					Name: fmt.Sprintf("user_%d_v6", user.ID),
+					Conditions: &api.Conditions{
+						LargeCommunitySet: &api.MatchSet{
+							Name: userCommunitySetName(user.ID),
+							Type: api.MatchSet_TYPE_ANY,
+						},
+					},
+					Actions: &api.Actions{
+						RouteAction: api.RouteAction_ROUTE_ACTION_ACCEPT,
+						LargeCommunity: &api.CommunityAction{
+							Type:        api.CommunityAction_TYPE_REMOVE,
+							Communities: allUserComms,
+						},
+						Nexthop: nextHopV6,
+					},
+				},
+			},
+		},
+	}); err != nil {
+		return fmt.Errorf("add policy for peer group: %w", err)
+	}
+
+	return nil
+}
+
 func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store.User) error {
 	statements := make([]*api.Statement, 0, len(users)*2)
 	allUserComms := make([]string, 0, len(users))
@@ -457,14 +493,26 @@ func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store
 	}); err != nil {
 		return err
 	}
-	return m.server.SetPolicyAssignment(ctx, &api.SetPolicyAssignmentRequest{
+	if err := m.server.SetPolicyAssignment(ctx, &api.SetPolicyAssignmentRequest{
 		Assignment: &api.PolicyAssignment{
 			Name:          globalPolicyTable,
 			Direction:     api.PolicyDirection_POLICY_DIRECTION_EXPORT,
 			Policies:      []*api.Policy{{Name: exportPolicyName}},
 			DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT,
 		},
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Rebuild per-peer-group policies for all users to keep REMOVE lists fresh.
+	for _, user := range users {
+		if m.hasPeerGroupPolicy(user) {
+			if err := m.rebuildPeerGroupPolicyLocked(ctx, user, allUserComms); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (m *Manager) Reconcile(ctx context.Context) error {
