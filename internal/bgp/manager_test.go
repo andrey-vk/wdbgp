@@ -7,6 +7,7 @@ import (
 	"net"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -1016,6 +1017,74 @@ func TestExportPolicyRebuildIncludesNewUsers(t *testing.T) {
 	// The fix ensures configureGlobalPolicyLocked unassigns, deletes, and recreates the
 	// global export policy so that new users' statements are always installed.
 	assertExportStatementCount(t, manager, 4)
+}
+
+func TestDynamicNeighborPrefixIPv6(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+		LocalAddressV6: "fd00::1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Add first peer with IPv6 address (static, since no other peer shares this IP).
+	user1ID, err := s.AddUser(ctx, store.User{
+		Name: "ipv6-user1", PeerIP: "fd00::2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, store.User{
+		ID: user1ID, Name: "ipv6-user1", PeerIP: "fd00::2", PeerASN: 65001,
+		Enabled: true, Networks: []string{"198.51.100.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add second peer with same IPv6 address, different ASN.
+	// This triggers dynamic neighbor + peer-group for both peers.
+	user2ID, err := s.AddUser(ctx, store.User{
+		Name: "ipv6-user2", PeerIP: "fd00::2", PeerASN: 65002, Enabled: true,
+		Networks: []string{"198.51.101.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, store.User{
+		ID: user2ID, Name: "ipv6-user2", PeerIP: "fd00::2", PeerASN: 65002,
+		Enabled: true, Networks: []string{"198.51.101.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify dynamic neighbors have /128 prefix, not /32.
+	var prefixes []string
+	manager.server.ListDynamicNeighbor(ctx, &api.ListDynamicNeighborRequest{},
+		func(dn *api.DynamicNeighbor) {
+			prefixes = append(prefixes, dn.Prefix)
+		})
+	sort.Strings(prefixes)
+
+	if len(prefixes) != 2 {
+		t.Fatalf("expected 2 dynamic neighbors, got %d: %v", len(prefixes), prefixes)
+	}
+
+	for _, p := range prefixes {
+		if !strings.HasSuffix(p, "/128") {
+			t.Fatalf("IPv6 dynamic neighbor prefix should be /128, got %q", p)
+		}
+	}
 }
 
 // assertExportStatementCount checks that the wdbgp_export policy has exactly n statements.

@@ -299,7 +299,11 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 	// peer-group + dynamic neighbor.  We always try peer-group cleanup first
 	// and fall back to static DeletePeer when the dynamic neighbor is not found.
 	pgName := fmt.Sprintf("user_%d_pg", user.ID)
-	dynPrefix := fmt.Sprintf("%s/32", peerIP)
+	mask := "/32"
+	if addr, err := netip.ParseAddr(peerIP); err == nil && addr.Is6() {
+		mask = "/128"
+	}
+	dynPrefix := peerIP + mask
 	if peerIP == "0.0.0.0" {
 		dynPrefix = "0.0.0.0/0"
 	}
@@ -404,7 +408,11 @@ func (m *Manager) addPeerGroupForUserLocked(ctx context.Context, user store.User
 	}); err != nil {
 		return fmt.Errorf("add peer group for user %d: %w", user.ID, err)
 	}
-	dynPrefix := fmt.Sprintf("%s/32", user.PeerIP)
+	mask := "/32"
+	if addr, err := netip.ParseAddr(user.PeerIP); err == nil && addr.Is6() {
+		mask = "/128"
+	}
+	dynPrefix := user.PeerIP + mask
 	if user.PeerIP == "0.0.0.0" {
 		dynPrefix = "0.0.0.0/0"
 	}
