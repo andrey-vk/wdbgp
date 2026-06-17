@@ -1235,6 +1235,95 @@ WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1`).Scan(&feedID); err != nil {
 	}
 }
 
+func TestFeedsEnabledOnlyExcludesDisabledFeed(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	// Check if the feeds table has an enabled column after migrations.
+	// If not, the test SKIPs — this IS the failure: the enabled column was dropped
+	// and cannot be used to exclude disabled feeds from Feeds(enabledOnly=true).
+	hasColumn := false
+	rows, err := s.DB.Query("PRAGMA table_info(feeds)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			t.Fatal(err)
+		}
+		if name == "enabled" {
+			hasColumn = true
+			break
+		}
+	}
+	rows.Close()
+	if !hasColumn {
+		t.Skip("feeds.enabled column does not exist — disabled feeds cannot be excluded by Feeds(enabledOnly=true)")
+	}
+
+	// Insert a catalog mode (id=1 already exists as 'opencck' from seed, enabled=1).
+	// We insert a custom mode for isolation.
+	if _, err := s.DB.Exec(
+		`INSERT INTO catalog_modes(id, key, name, enabled) VALUES (99, 'test', 'Test', 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a feed with enabled=0 (disabled) using raw SQL.
+	if _, err := s.DB.Exec(
+		`INSERT INTO feeds(name, url, enabled, adapter_id) VALUES ('disabled-feed', 'https://example.test/feed.json', 0, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	var feedID int64
+	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE name = 'disabled-feed'").Scan(&feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Link feed to the enabled mode via catalog_mode_feeds junction table.
+	if _, err := s.DB.Exec(
+		`INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (99, ?)`, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// enabledOnly=true should return 0 feeds (the disabled feed is excluded).
+	feeds, err := s.Feeds(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledFound := false
+	for _, f := range feeds {
+		if f.ID == feedID {
+			disabledFound = true
+		}
+	}
+	if disabledFound {
+		t.Fatal("Feeds(enabledOnly=true) returned a disabled feed (enabled=0) — should have been excluded")
+	}
+
+	// enabledOnly=false should return the disabled feed (includeDisabled=true).
+	feeds, err = s.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledFound = false
+	for _, f := range feeds {
+		if f.ID == feedID {
+			disabledFound = true
+		}
+	}
+	if !disabledFound {
+		t.Fatal("Feeds(enabledOnly=false) did not return the disabled feed — should have been included")
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))

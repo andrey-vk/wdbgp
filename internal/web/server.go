@@ -1147,7 +1147,7 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(r.Context(),
-		"INSERT INTO feeds(name, url, adapter_id, sync_interval, data) VALUES (?, ?, ?, ?, ?)",
+		"INSERT INTO feeds(name, url, adapter_id, sync_interval, data, enabled) VALUES (?, ?, ?, ?, ?, 1)",
 		feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data)
 	if err != nil {
 		s.internalError(w, r, err)
@@ -1586,6 +1586,7 @@ func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
 		ID: id, Name: name, URL: rawURL, AdapterID: adapterID,
 		SyncInterval: formInt(r, "sync_interval"),
 		Data:         data,
+		Enabled:      formBool(r, "enabled"),
 	}, modeIDs, nil
 }
 
