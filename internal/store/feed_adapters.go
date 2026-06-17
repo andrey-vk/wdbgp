@@ -202,6 +202,12 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 		).Scan(&currentBuiltinVersion); err != nil {
 			return err
 		}
+		var currentAllowedHosts string
+		if err := s.DB.QueryRowContext(ctx,
+			"SELECT COALESCE(allowed_hosts, '') FROM feed_adapters WHERE key = ?", key,
+		).Scan(&currentAllowedHosts); err != nil {
+			return err
+		}
 		normalized := normalizedBuiltInSource(adapter.source)
 
 		if isCustomized == 1 {
@@ -233,12 +239,12 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 				// because 0 < anything is always true.
 				if currentSource != "" && currentSource != normalized {
 					// Source differs from built-in — legacy customization.
-					// Preserve the custom source, mark as customized.
+					// Preserve the custom source and allowed_hosts, mark as customized.
 					if _, err := s.DB.ExecContext(ctx,
 						`UPDATE feed_adapters
 						 SET name = ?, allowed_hosts = ?, builtin_version = ?, is_customized = 1
 						 WHERE key = ?`,
-						adapter.name, adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+						adapter.name, currentAllowedHosts, adapter.builtinVersion, key); err != nil {
 						return err
 					}
 				} else {

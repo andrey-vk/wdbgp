@@ -1695,12 +1695,13 @@ func TestSeedPreservesLegacyCustomizedAdapters(t *testing.T) {
 	ctx := context.Background()
 
 	customSource := `function sync(feed, api) { return ["10.0.0.0/24"]; }`
+	customHosts := "example.com,example.org"
 
 	// Simulate a v20 migration state: builtin_version = 0, is_customized = 0,
-	// but the source differs from the built-in — this was a legacy customization.
+	// but the source and allowed_hosts differ from the built-in — this was a legacy customization.
 	if _, err := s.DB.Exec(
-		`UPDATE feed_adapters SET builtin_version = 0, source = ?, is_customized = 0 WHERE key='canonical-json'`,
-		customSource); err != nil {
+		`UPDATE feed_adapters SET builtin_version = 0, source = ?, allowed_hosts = ?, is_customized = 0 WHERE key='canonical-json'`,
+		customSource, customHosts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1712,9 +1713,10 @@ func TestSeedPreservesLegacyCustomizedAdapters(t *testing.T) {
 	var newSource string
 	var newCustomized int
 	var newVersion int
+	var newHosts string
 	if err := s.DB.QueryRow(
-		"SELECT source, is_customized, builtin_version FROM feed_adapters WHERE key='canonical-json'",
-	).Scan(&newSource, &newCustomized, &newVersion); err != nil {
+		"SELECT source, is_customized, builtin_version, allowed_hosts FROM feed_adapters WHERE key='canonical-json'",
+	).Scan(&newSource, &newCustomized, &newVersion, &newHosts); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1731,6 +1733,11 @@ func TestSeedPreservesLegacyCustomizedAdapters(t *testing.T) {
 	// builtin_version should be updated to the current version.
 	if newVersion != 1 {
 		t.Errorf("builtin_version = %d, want 1 (version should be bumped even when preserving custom source)", newVersion)
+	}
+
+	// Allowed hosts must be PRESERVED — not overwritten with the built-in default.
+	if newHosts != customHosts {
+		t.Errorf("allowed_hosts was overwritten:\n  got  %q\n  want %q (custom allowed_hosts must be preserved)", newHosts, customHosts)
 	}
 }
 
