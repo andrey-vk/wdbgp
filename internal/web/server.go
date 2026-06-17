@@ -1480,21 +1480,75 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if err := s.store.UpdateFeed(r.Context(), feed); err != nil {
-		if store.IsNotFound(err) {
-			http.NotFound(w, r)
-		} else {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		}
-		return
-	}
 	if modeIDs == nil {
 		modeIDs = []int64{}
 	}
-	if err := s.store.SetFeedModes(r.Context(), id, modeIDs); err != nil {
+
+	// Wrap feed update + mode assignment in a single transaction so that
+	// a failure in SetFeedModes (e.g. FK violation on invalid mode ID)
+	// rolls back the feed data changes as well.
+	tx, err := s.store.DB.BeginTx(r.Context(), nil)
+	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
+	defer tx.Rollback()
+
+	// ----- Inline UpdateFeed -----
+	var oldURL string
+	var oldAdapterID int64
+	var oldData string
+	var oldName string
+	if err := tx.QueryRowContext(r.Context(),
+		"SELECT url, adapter_id, data, name FROM feeds WHERE id = ?", feed.ID).
+		Scan(&oldURL, &oldAdapterID, &oldData, &oldName); err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			s.internalError(w, r, err)
+		}
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(),
+		`UPDATE feeds
+		 SET name = ?, url = ?, adapter_id = ?, sync_interval = ?, data = ?, enabled = ?
+		 WHERE id = ?`,
+		feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data, feed.Enabled, feed.ID); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	if oldURL != feed.URL || oldAdapterID != feed.AdapterID || oldData != feed.Data || oldName != feed.Name {
+		if _, err := tx.ExecContext(r.Context(),
+			"DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+		if _, err := tx.ExecContext(r.Context(),
+			"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", feed.ID); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+	}
+
+	// ----- Inline SetFeedModes -----
+	if _, err := tx.ExecContext(r.Context(),
+		"DELETE FROM catalog_mode_feeds WHERE feed_id = ?", id); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	for _, mid := range modeIDs {
+		if _, err := tx.ExecContext(r.Context(),
+			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", mid, id); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+
 	for _, mid := range modeIDs {
 		if _, err := s.store.GenerateCommunities(r.Context(), mid); err != nil {
 			logger := logging.FromContext(r.Context())

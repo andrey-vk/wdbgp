@@ -1211,3 +1211,79 @@ func TestModeEditPageShowsFeedsWithCorrectCheckboxes(t *testing.T) {
 		t.Errorf("mode enable/disable toggle button not found in page")
 	}
 }
+
+func TestUpdateFeedAtomicWithModeAssignment(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create a feed with known name and URL.
+	if err := db.AddFeed(ctx, "original-name", "https://original.example/feed.json", 0); err != nil {
+		t.Fatal(err)
+	}
+	// Get feed ID.
+	var feedID int64
+	if err := db.DB.QueryRow("SELECT id FROM feeds WHERE name = ?", "original-name").Scan(&feedID); err != nil {
+		t.Fatal(err)
+	}
+	// Verify it has mode 1 assigned (default from AddFeed).
+	var modeCount int
+	if err := db.DB.QueryRow("SELECT COUNT(*) FROM catalog_mode_feeds WHERE feed_id = ?", feedID).Scan(&modeCount); err != nil {
+		t.Fatal(err)
+	}
+	if modeCount != 1 {
+		t.Fatalf("expected 1 mode assignment, got %d", modeCount)
+	}
+
+	bgp := &fakeBGP{}
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Try to update feed with a non-existent mode ID (99999) to trigger FK violation.
+	changedName := "changed-name"
+	changedURL := "https://changed.example/feed.json"
+	updateForm := url.Values{
+		"name":     {changedName},
+		"url":      {changedURL},
+		"mode_ids": {"99999"},
+	}
+	req := httptest.NewRequest(http.MethodPost,
+		"/admin/feed/"+strconv.FormatInt(feedID, 10),
+		strings.NewReader(updateForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// The request should fail (internal error, not redirect).
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 for FK violation, got %d: body=%s", w.Code, w.Body.String())
+	}
+
+	// Verify feed data is unchanged — name/URL must be original, not changed.
+	var actualName, actualURL string
+	if err := db.DB.QueryRow("SELECT name, url FROM feeds WHERE id = ?", feedID).
+		Scan(&actualName, &actualURL); err != nil {
+		t.Fatal(err)
+	}
+	if actualName != "original-name" {
+		t.Errorf("BUG: feed name changed to %q, expected %q (partial update)", actualName, "original-name")
+	}
+	if actualURL != "https://original.example/feed.json" {
+		t.Errorf("BUG: feed URL changed to %q, expected original (partial update)", actualURL)
+	}
+
+	// Verify mode assignments are unchanged (still mode 1).
+	if err := db.DB.QueryRow("SELECT COUNT(*) FROM catalog_mode_feeds WHERE feed_id = ?", feedID).
+		Scan(&modeCount); err != nil {
+		t.Fatal(err)
+	}
+	if modeCount != 1 {
+		t.Errorf("mode assignments changed: got %d, expected 1 (partial update)", modeCount)
+	}
+}
