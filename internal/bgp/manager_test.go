@@ -333,6 +333,18 @@ func startTestPeer(t *testing.T, localAddress string, localASN uint32, routerID 
 	return bgpServer
 }
 
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range want {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func waitForPrefixes(t *testing.T, bgpServer *server.BgpServer, want []string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -787,18 +799,6 @@ func TestDynamicNeighborSameIPDifferentASN(t *testing.T) {
 	})
 }
 
-func equalStrings(got, want []string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for index := range want {
-		if got[index] != want[index] {
-			return false
-		}
-	}
-	return true
-}
-
 func TestDeletePeerCleansUpSharedIPPeerGroup(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
@@ -850,8 +850,8 @@ func TestDeletePeerCleansUpSharedIPPeerGroup(t *testing.T) {
 	pgName1 := fmt.Sprintf("user_%d_pg", user1ID)
 	pgName2 := fmt.Sprintf("user_%d_pg", user2ID)
 
-	// user1 was added first → static peer (no peer group).
-	// user2 was added second with same IP → peer group + dynamic neighbor.
+	// After the fix, user1 was upgraded to a peer-group when user2 was added.
+	// Both peers now have peer-groups.
 	var pg1Found, pg2Found bool
 	manager.server.ListPeerGroup(ctx, &api.ListPeerGroupRequest{}, func(pg *api.PeerGroup) {
 		if pg.Conf.PeerGroupName == pgName1 {
@@ -861,8 +861,8 @@ func TestDeletePeerCleansUpSharedIPPeerGroup(t *testing.T) {
 			pg2Found = true
 		}
 	})
-	if pg1Found {
-		t.Fatal("user1 should be a static peer, not a peer group")
+	if !pg1Found {
+		t.Fatal("user1 should have a peer group (upgraded from static when user2 shared IP)")
 	}
 	if !pg2Found {
 		t.Fatal("user2 should have a peer group (same IP as user1, installed via dynamic neighbor)")

@@ -240,56 +240,27 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 	}
 	allUserComms = append(allUserComms, largeCommunity(m.cfg.LocalASN, user.ID))
 
-	// Create the export policy for this peer group (includes REMOVE to strip other users' communities).
-	policyName := fmt.Sprintf("user_%d_policy", user.ID)
-	if err := m.rebuildPeerGroupPolicyLocked(ctx, user, allUserComms); err != nil {
-		return err
+	// If another peer already uses this IP, upgrade any existing static peers
+	// at this IP to peer-groups before adding the new peer.
+	if otherUsesIP {
+		for _, existing := range m.peerConfigs {
+			if existing.Enabled && existing.PeerIP == user.PeerIP && existing.ID != user.ID {
+				if !m.hasPeerGroup(existing) {
+					// This peer was added as a static peer (first at this IP).
+					// Delete the static peer and re-create as peer-group.
+					if err := m.server.DeletePeer(ctx, &api.DeletePeerRequest{Address: existing.PeerIP}); err != nil {
+						return fmt.Errorf("delete static peer %s for upgrade: %w", existing.PeerIP, err)
+					}
+					if err := m.addPeerGroupForUserLocked(ctx, existing, allUserComms, localAddress); err != nil {
+						return fmt.Errorf("upgrade peer %s to peer-group: %w", existing.PeerIP, err)
+					}
+				}
+			}
+		}
 	}
 
-	pgName := fmt.Sprintf("user_%d_pg", user.ID)
-	conf := &api.PeerGroupConf{
-		PeerGroupName: pgName,
-		PeerAsn:       uint32(user.PeerASN),
-	}
-	if user.BGPPassword != "" {
-		conf.AuthPassword = user.BGPPassword
-	}
-	if err := m.server.AddPeerGroup(ctx, &api.AddPeerGroupRequest{
-		PeerGroup: &api.PeerGroup{
-			Conf: conf,
-			Transport: &api.Transport{LocalAddress: localAddress},
-			EbgpMultihop: &api.EbgpMultihop{Enabled: true, MultihopTtl: 64},
-			AfiSafis: []*api.AfiSafi{
-				{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
-				{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
-			},
-			ApplyPolicy: &api.ApplyPolicy{
-				ExportPolicy: &api.PolicyAssignment{
-					Name:      fmt.Sprintf("export_peer_%d", user.ID),
-					Direction: api.PolicyDirection_POLICY_DIRECTION_EXPORT,
-					Policies: []*api.Policy{{
-						Name: policyName,
-					}},
-					DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT,
-				},
-			},
-		},
-	}); err != nil {
-		return fmt.Errorf("add peer group for dynamic neighbor: %w", err)
-	}
-	dynPrefix := fmt.Sprintf("%s/32", user.PeerIP)
-	if user.PeerIP == "0.0.0.0" {
-		dynPrefix = "0.0.0.0/0"
-	}
-	if err := m.server.AddDynamicNeighbor(ctx, &api.AddDynamicNeighborRequest{
-		DynamicNeighbor: &api.DynamicNeighbor{
-			Prefix:    dynPrefix,
-			PeerGroup: pgName,
-		},
-	}); err != nil {
-		return fmt.Errorf("add dynamic neighbor: %w", err)
-	}
-	return nil
+	// Create peer-group + dynamic neighbor for the new peer.
+	return m.addPeerGroupForUserLocked(ctx, user, allUserComms, localAddress)
 }
 
 func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP string) error {
@@ -324,25 +295,9 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 		return err
 	}
 	// Check if any other enabled user shares this peer's IP.
-	// If yes, this peer was added via dynamic neighbor, so clean up
-	// the dynamic neighbor, peer group, and policy instead of DeletePeer.
-	// However, a static peer may also share its IP if a second peer
-	// (installed via dynamic neighbor) was added later.  In that case
-	// the peer group doesn't exist and we fall back to DeletePeer.
-	otherUsesIP := false
-	for _, u := range m.peerConfigs {
-		if u.Enabled && u.PeerIP == peerIP && u.ID != userID {
-			otherUsesIP = true
-			break
-		}
-	}
-	if !otherUsesIP && peerIP != "0.0.0.0" {
-		// Delete the static peer
-		return m.server.DeletePeer(ctx, &api.DeletePeerRequest{
-			Address: peerIP,
-		})
-	}
-	// Clean up dynamic neighbor if this peer shared its IP
+	// After the upgrade in addPeerLocked, all shared-IP peers are added via
+	// peer-group + dynamic neighbor.  We always try peer-group cleanup first
+	// and fall back to static DeletePeer when the dynamic neighbor is not found.
 	pgName := fmt.Sprintf("user_%d_pg", user.ID)
 	dynPrefix := fmt.Sprintf("%s/32", peerIP)
 	if peerIP == "0.0.0.0" {
@@ -354,7 +309,10 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 	}); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			// This user was a static peer, not a dynamic neighbor.
-			// Fall back to DeletePeer.
+			// Fall back to DeletePeer (only valid for non-dynamic peers).
+			if peerIP == "0.0.0.0" {
+				return fmt.Errorf("dynamic neighbor not found for dynamic peer: %w", err)
+			}
 			return m.server.DeletePeer(ctx, &api.DeletePeerRequest{
 				Address: peerIP,
 			})
@@ -389,6 +347,76 @@ func (m *Manager) hasPeerGroupPolicy(user store.User) bool {
 		}
 	}
 	return false
+}
+
+// hasPeerGroup reports whether a user has (or should have) a peer-group in GoBGP.
+// True for dynamic peers (0.0.0.0) and for peers that share an IP with another
+// enabled peer, which forces usage of dynamic neighbors / peer groups.
+func (m *Manager) hasPeerGroup(user store.User) bool {
+	if user.PeerIP == "0.0.0.0" {
+		return true
+	}
+	for _, u := range m.peerConfigs {
+		if u.Enabled && u.PeerIP == user.PeerIP && u.ID != user.ID {
+			return true
+		}
+	}
+	return false
+}
+
+// addPeerGroupForUserLocked creates a per-peer-group export policy, AddPeerGroup,
+// and AddDynamicNeighbor for a given user. The caller must have already created
+// the user's defined sets (community, neighbor).
+func (m *Manager) addPeerGroupForUserLocked(ctx context.Context, user store.User, allUserComms []string, localAddress string) error {
+	policyName := fmt.Sprintf("user_%d_policy", user.ID)
+	if err := m.rebuildPeerGroupPolicyLocked(ctx, user, allUserComms); err != nil {
+		return err
+	}
+
+	pgName := fmt.Sprintf("user_%d_pg", user.ID)
+	conf := &api.PeerGroupConf{
+		PeerGroupName: pgName,
+		PeerAsn:       uint32(user.PeerASN),
+	}
+	if user.BGPPassword != "" {
+		conf.AuthPassword = user.BGPPassword
+	}
+	if err := m.server.AddPeerGroup(ctx, &api.AddPeerGroupRequest{
+		PeerGroup: &api.PeerGroup{
+			Conf: conf,
+			Transport: &api.Transport{LocalAddress: localAddress},
+			EbgpMultihop: &api.EbgpMultihop{Enabled: true, MultihopTtl: 64},
+			AfiSafis: []*api.AfiSafi{
+				{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
+				{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
+			},
+			ApplyPolicy: &api.ApplyPolicy{
+				ExportPolicy: &api.PolicyAssignment{
+					Name:      fmt.Sprintf("export_peer_%d", user.ID),
+					Direction: api.PolicyDirection_POLICY_DIRECTION_EXPORT,
+					Policies: []*api.Policy{{
+						Name: policyName,
+					}},
+					DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT,
+				},
+			},
+		},
+	}); err != nil {
+		return fmt.Errorf("add peer group for user %d: %w", user.ID, err)
+	}
+	dynPrefix := fmt.Sprintf("%s/32", user.PeerIP)
+	if user.PeerIP == "0.0.0.0" {
+		dynPrefix = "0.0.0.0/0"
+	}
+	if err := m.server.AddDynamicNeighbor(ctx, &api.AddDynamicNeighborRequest{
+		DynamicNeighbor: &api.DynamicNeighbor{
+			Prefix:    dynPrefix,
+			PeerGroup: pgName,
+		},
+	}); err != nil {
+		return fmt.Errorf("add dynamic neighbor for user %d: %w", user.ID, err)
+	}
+	return nil
 }
 
 // rebuildPeerGroupPolicyLocked deletes the old per-peer-group policy (ignoring
