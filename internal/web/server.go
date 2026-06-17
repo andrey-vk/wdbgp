@@ -1472,13 +1472,19 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if _, err := s.store.Feed(r.Context(), id); err != nil {
+	currentFeed, err := s.store.Feed(r.Context(), id)
+	if err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
 		} else {
 			s.internalError(w, r, err)
 		}
 		return
+	}
+	// If the form didn't contain the "enabled" field (e.g. edit form has no checkbox),
+	// preserve the feed's current enabled state so it doesn't get accidentally disabled.
+	if !r.Form.Has("enabled") {
+		feed.Enabled = currentFeed.Enabled
 	}
 	if modeIDs == nil {
 		modeIDs = []int64{}

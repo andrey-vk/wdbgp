@@ -1287,3 +1287,71 @@ func TestUpdateFeedAtomicWithModeAssignment(t *testing.T) {
 		t.Errorf("mode assignments changed: got %d, expected 1 (partial update)", modeCount)
 	}
 }
+
+func TestUpdateFeedPreservesEnabledState(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create an enabled feed.
+	if err := db.AddFeed(ctx, "enabled-feed", "https://example.test/feed.json", 0); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feedID int64
+	var feedEnabled bool
+	for _, f := range feedList {
+		if f.Name == "enabled-feed" {
+			feedID = f.ID
+			feedEnabled = f.Enabled
+			break
+		}
+	}
+	if feedID == 0 {
+		t.Fatal("created feed not found")
+	}
+	if !feedEnabled {
+		t.Fatal("newly created feed should be enabled, but Enabled=false")
+	}
+
+	bgp := &fakeBGP{}
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Update feed with a name change only — NO enabled field in form.
+	updateForm := url.Values{
+		"name": {"renamed-feed"},
+		"url":  {"https://example.test/feed.json"},
+	}
+	req := httptest.NewRequest(http.MethodPost,
+		"/admin/feed/"+strconv.FormatInt(feedID, 10),
+		strings.NewReader(updateForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d: body=%s", w.Code, w.Body.String())
+	}
+
+	// Verify feed is still enabled after update (the form had no "enabled" field).
+	updated, err := db.Feed(ctx, feedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Enabled {
+		t.Errorf("BUG: feed became disabled after update with no enabled field in form (got Enabled=%v, want true)", updated.Enabled)
+	}
+	if updated.Name != "renamed-feed" {
+		t.Errorf("feed name not updated: got %q, want %q", updated.Name, "renamed-feed")
+	}
+}
