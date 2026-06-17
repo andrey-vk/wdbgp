@@ -1393,6 +1393,62 @@ func TestFeedsEnabledOnlyExcludesDisabledFeed(t *testing.T) {
 	}
 }
 
+func TestBuiltInAdapterUpgradeOnSourceChange(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Get the current built-in adapter info for canonical-json
+	var currentSource string
+	var currentVersion int
+	var currentCustomized int
+	if err := s.DB.QueryRow(
+		"SELECT source, builtin_version, is_customized FROM feed_adapters WHERE key='canonical-json'",
+	).Scan(&currentSource, &currentVersion, &currentCustomized); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("initial source length=%d version=%d customized=%d", len(currentSource), currentVersion, currentCustomized)
+
+	// Simulate an old version with a different source (built-in was upgraded in a new
+	// release). The user has NOT customized the adapter — is_customized=0, but the
+	// stored source differs from the current built-in because the previous version had
+	// a different implementation.
+	if _, err := s.DB.Exec(
+		"UPDATE feed_adapters SET builtin_version = 0, source = ?, is_customized = 0 WHERE key='canonical-json'",
+		"function sync(feed, api) { return []; }"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-run the built-in adapter seeding (simulating an upgrade after a new release).
+	if err := s.seedBuiltInAdapters(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// After seeding, the adapter should have been upgraded:
+	// - is_customized should STILL be 0 (user never customized it)
+	// - source should be the CURRENT built-in source
+	// - builtin_version should be the current version (1)
+	var newSource string
+	var newCustomized int
+	var newVersion int
+	if err := s.DB.QueryRow(
+		"SELECT source, is_customized, builtin_version FROM feed_adapters WHERE key='canonical-json'",
+	).Scan(&newSource, &newCustomized, &newVersion); err != nil {
+		t.Fatal(err)
+	}
+
+	expectedSource := normalizedBuiltInSource(canonicalJSONAdapter)
+
+	if newCustomized != 0 {
+		t.Errorf("is_customized = %d, want 0 (adapter should not be marked as customized — source changed because built-in was upgraded, not because user edited it)", newCustomized)
+	}
+	if newVersion != 1 {
+		t.Errorf("builtin_version = %d, want 1 (should be upgraded to current built-in version)", newVersion)
+	}
+	if newSource != expectedSource {
+		t.Errorf("source was not upgraded to current built-in:\n  got  length=%d\n  want length=%d", len(newSource), len(expectedSource))
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))

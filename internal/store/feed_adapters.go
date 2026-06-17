@@ -196,6 +196,12 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 		).Scan(&currentSource); err != nil {
 			return err
 		}
+		var currentBuiltinVersion int
+		if err := s.DB.QueryRowContext(ctx,
+			"SELECT builtin_version FROM feed_adapters WHERE key = ?", key,
+		).Scan(&currentBuiltinVersion); err != nil {
+			return err
+		}
 		normalized := normalizedBuiltInSource(adapter.source)
 
 		if isCustomized == 1 {
@@ -229,19 +235,36 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 					return err
 				}
 			} else {
-				// Source differs from built-in — was customized but is_customized=0.
-				// Mark as customized and keep the user's source intact.
-				if _, err := s.DB.ExecContext(ctx,
-					`UPDATE feed_adapters
-					 SET name = ?, allowed_hosts = ?, builtin_version = ?, is_customized = 1
-					 WHERE key = ?`,
-					adapter.name, adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
-					return err
+				// Source differs from built-in — check whether it's a built-in
+				// upgrade (version bumped in new release) or a true user
+				// customization.
+				if currentBuiltinVersion < adapter.builtinVersion {
+					// Built-in version was bumped — this is an upgrade, not a
+					// customization. Update to the new built-in source.
+					if _, err := s.DB.ExecContext(ctx,
+						`UPDATE feed_adapters
+						 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?
+						 WHERE key = ?`,
+						adapter.name, normalized,
+						adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+						return err
+					}
+				} else {
+					// Source differs but built-in version is the same — user
+					// truly customized the adapter. Mark as customized and
+					// keep the user's source intact.
+					if _, err := s.DB.ExecContext(ctx,
+						`UPDATE feed_adapters
+						 SET name = ?, allowed_hosts = ?, builtin_version = ?, is_customized = 1
+						 WHERE key = ?`,
+						adapter.name, adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+						return err
+					}
 				}
 			}
-		}
 	}
-	return nil
+	}
+return nil
 }
 
 func IsBuiltInFeedAdapter(key string) bool {
