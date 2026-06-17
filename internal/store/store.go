@@ -1185,9 +1185,36 @@ func (s *Store) AddFeedToMode(ctx context.Context, modeID, feedID int64) error {
 }
 
 func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) error {
-	_, err := s.DB.ExecContext(ctx,
-		"DELETE FROM catalog_mode_feeds WHERE mode_id = ? AND feed_id = ?", modeID, feedID)
-	return err
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM catalog_mode_feeds WHERE mode_id = ? AND feed_id = ?", modeID, feedID); err != nil {
+			return err
+		}
+		// Clean up orphan selections: categories/services that no longer have
+		// any feed in this mode.
+		if _, err := tx.ExecContext(ctx, `
+DELETE FROM selected_categories
+WHERE mode_id = ?
+  AND NOT EXISTS (
+      SELECT 1 FROM catalog_entries ce
+      JOIN feeds f ON f.id = ce.feed_id
+      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = selected_categories.mode_id
+      WHERE ce.category = selected_categories.category
+  )`, modeID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
+DELETE FROM selected_services
+WHERE mode_id = ?
+  AND NOT EXISTS (
+      SELECT 1 FROM catalog_entries ce
+      JOIN feeds f ON f.id = ce.feed_id
+      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = selected_services.mode_id
+      WHERE ce.category = selected_services.category
+        AND ce.service = selected_services.service
+  )`, modeID)
+		return err
+	})
 }
 
 func (s *Store) SetFeedModes(ctx context.Context, feedID int64, modeIDs []int64) error {

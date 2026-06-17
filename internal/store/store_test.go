@@ -850,6 +850,13 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	if err := s.AddFeedToMode(ctx, DefaultCatalogModeID, feed.ID); err != nil {
 		t.Fatal(err)
 	}
+	// After re-adding the feed, the user must re-select the category
+	// (orphan cleanup removed the stale selection when the feed was unlinked).
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserSelection(ctx, tx, userID, []string{"Custom"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	prefixes, _, err = s.DesiredPrefixes(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -2286,5 +2293,117 @@ func TestPrefixCountsExcludesDisabledFeeds(t *testing.T) {
 	}
 	if len(catV6) != 0 {
 		t.Fatalf("BUG: CategoryPrefixCounts v6 (disabled feed) = %#v, want empty", catV6)
+	}
+}
+
+func TestRemoveFeedFromModeCleansUpOrphanSelections(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Create a fresh mode for isolation (mode 4).
+	if err := s.AddCatalogMode(ctx, "orphan-test-mode", true); err != nil {
+		t.Fatal(err)
+	}
+	modes, err := s.CatalogModes(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var orphanModeID int64
+	for _, m := range modes {
+		if m.Name == "orphan-test-mode" {
+			orphanModeID = m.ID
+			break
+		}
+	}
+	if orphanModeID == 0 {
+		t.Fatal("created orphan-test-mode not found")
+	}
+
+	// Create a feed with a catalog entry, linked to the orphan mode.
+	if err := s.AddFeedForMode(ctx, "orphan-feed", "https://example.test/orphan.json", orphanModeID, 0); err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := s.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feedID int64
+	for _, f := range feeds {
+		if f.Name == "orphan-feed" {
+			feedID = f.ID
+			break
+		}
+	}
+	if feedID == 0 {
+		t.Fatal("created orphan-feed not found")
+	}
+
+	// Insert a catalog entry for this feed.
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'OrphanCat', 'OrphanSvc', '10.99.0.0/24')`,
+		feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a user in the orphan mode.
+	userID, err := s.AddUser(ctx, User{
+		Name:          "orphan-user",
+		PeerIP:        "172.16.99.1",
+		PeerASN:       65099,
+		Enabled:       true,
+		CatalogModeID: orphanModeID,
+		Networks:      []string{"192.168.99.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Select the category (user auto-subscribes to OrphanCat in the orphan mode).
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserModeSelection(ctx, tx, userID, orphanModeID,
+			[]string{"OrphanCat"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify selection exists.
+	var catCount int
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM selected_categories WHERE user_id = ? AND mode_id = ? AND category = ?",
+		userID, orphanModeID, "OrphanCat",
+	).Scan(&catCount); err != nil {
+		t.Fatal(err)
+	}
+	if catCount != 1 {
+		t.Fatalf("selected_categories count = %d, want 1 (selection should exist)", catCount)
+	}
+
+	// RemoveFeedFromMode — this is the last feed providing OrphanCat in this mode.
+	if err := s.RemoveFeedFromMode(ctx, orphanModeID, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// BUG: After RemoveFeedFromMode, the stale selection persists.
+	// Verify that the stale selection is cleaned up.
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM selected_categories WHERE user_id = ? AND mode_id = ? AND category = ?",
+		userID, orphanModeID, "OrphanCat",
+	).Scan(&catCount); err != nil {
+		t.Fatal(err)
+	}
+	if catCount != 0 {
+		t.Fatalf("STALE BUG: selected_categories count = %d, want 0 (orphan selection should be cleaned up after last feed is removed)", catCount)
+	}
+
+	// Verify service selection is also cleaned up.
+	var svcCount int
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM selected_services WHERE user_id = ? AND mode_id = ? AND category = ? AND service = ?",
+		userID, orphanModeID, "OrphanCat", "OrphanSvc",
+	).Scan(&svcCount); err != nil {
+		t.Fatal(err)
+	}
+	if svcCount != 0 {
+		t.Fatalf("STALE BUG: selected_services count = %d, want 0 (orphan service selection should be cleaned up)", svcCount)
 	}
 }
