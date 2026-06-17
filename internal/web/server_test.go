@@ -1426,3 +1426,85 @@ func TestUpdateFeedCanDisableFeed(t *testing.T) {
 		t.Errorf("feed should be disabled after update with enabled=off, but Enabled is true")
 	}
 }
+
+func TestUpdateFeedEnabledCheckboxWorks(t *testing.T) {
+	// Bug: feed edit template has hidden <input name=enabled value=off>
+	// AND checkbox <input type=checkbox name=enabled value=on>.
+	// When checkbox is checked, the browser sends BOTH enabled=off and
+	// enabled=on. r.FormValue("enabled") returns the FIRST value ("off"),
+	// so formBool returns false and the feed gets disabled even though the
+	// user checked the checkbox.
+	//
+	// This test verifies that submitting BOTH values (checked checkbox)
+	// keeps the feed enabled.
+
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Step 1: Create an enabled feed.
+	if err := db.AddFeed(ctx, "checkbox-test-feed", "https://example.test/checkbox.json", 0); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feedID int64
+	for _, f := range feedList {
+		if f.Name == "checkbox-test-feed" {
+			feedID = f.ID
+			break
+		}
+	}
+	if feedID == 0 {
+		t.Fatal("created feed not found")
+	}
+
+	// Verify feed starts enabled.
+	feed, err := db.Feed(ctx, feedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !feed.Enabled {
+		t.Fatal("newly created feed should be enabled")
+	}
+
+	bgp := &fakeBGP{}
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Step 2: POST feed update with BOTH enabled=off and enabled=on
+	// (simulating the hidden field + checked checkbox pattern).
+	// url.Values.Add appends, so encoding produces enabled=off&enabled=on.
+	updateForm := url.Values{}
+	updateForm.Set("name", "checkbox-test-feed")
+	updateForm.Set("url", "https://example.test/checkbox.json")
+	updateForm.Add("enabled", "off") // from hidden field
+	updateForm.Add("enabled", "on")  // from checked checkbox
+	req := httptest.NewRequest(http.MethodPost,
+		"/admin/feed/"+strconv.FormatInt(feedID, 10),
+		strings.NewReader(updateForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d: body=%s", w.Code, w.Body.String())
+	}
+
+	// Step 3: Verify feed REMAINS enabled (checkbox was checked).
+	updated, err := db.Feed(ctx, feedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Enabled {
+		t.Errorf("feed should remain ENABLED after update with enabled=on (checked checkbox), but Enabled is false")
+	}
+}

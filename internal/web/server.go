@@ -2912,11 +2912,19 @@ func formBool(r *http.Request, key string) bool {
 	if r.Form == nil {
 		return false
 	}
-	if !r.Form.Has(key) {
+	vals, ok := r.Form[key]
+	if !ok || len(vals) == 0 {
 		return false
 	}
-	val := r.FormValue(key)
-	return val == "on" || val == "true" || val == "1"
+	// Check all values — when a hidden field sends "off" and a
+	// checked checkbox sends "on", r.FormValue returns only the
+	// first ("off"), which would incorrectly disable the feed.
+	for _, v := range vals {
+		if v == "on" || v == "true" || v == "1" {
+			return true
+		}
+	}
+	return false
 }
 
 func sessionToken(secret string) string {
