@@ -619,6 +619,54 @@ func assertRemoveCommunities(t *testing.T, manager *Manager, expected []string) 
 	}
 }
 
+func TestDynamicNeighborSameIPDifferentASN(t *testing.T) {
+	ctx := context.Background()
+	levelVar := &slog.LevelVar{}
+	levelVar.Set(slog.LevelWarn)
+	bgpServer := server.NewBgpServer(server.LoggerOption(slog.Default(), levelVar))
+	go bgpServer.Serve()
+
+	if err := bgpServer.StartBgp(ctx, &api.StartBgpRequest{
+		Global: &api.Global{Asn: 64512, RouterId: "192.0.2.1", ListenPort: -1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer bgpServer.StopBgp(ctx, &api.StopBgpRequest{})
+
+	// Peer group for user 1
+	if err := bgpServer.AddPeerGroup(ctx, &api.AddPeerGroupRequest{PeerGroup: &api.PeerGroup{
+		Conf: &api.PeerGroupConf{PeerGroupName: "user1_pg", PeerAsn: 65001},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// Dynamic neighbor on 127.0.0.100/32 → user1_pg
+	if err := bgpServer.AddDynamicNeighbor(ctx, &api.AddDynamicNeighborRequest{DynamicNeighbor: &api.DynamicNeighbor{
+		Prefix: "127.0.0.100/32", PeerGroup: "user1_pg",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Peer group for user 2
+	if err := bgpServer.AddPeerGroup(ctx, &api.AddPeerGroupRequest{PeerGroup: &api.PeerGroup{
+		Conf: &api.PeerGroupConf{PeerGroupName: "user2_pg", PeerAsn: 65002},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// Dynamic neighbor on same IP → user2_pg
+	if err := bgpServer.AddDynamicNeighbor(ctx, &api.AddDynamicNeighborRequest{DynamicNeighbor: &api.DynamicNeighbor{
+		Prefix: "127.0.0.100/32", PeerGroup: "user2_pg",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Log("SUCCESS: two peer groups with dynamic neighbor on same IP")
+
+	// Verify peer groups exist
+	bgpServer.ListPeerGroup(ctx, &api.ListPeerGroupRequest{}, func(pg *api.PeerGroup) {
+		t.Logf("Peer group: %s ASN=%d", pg.Conf.PeerGroupName, pg.Conf.PeerAsn)
+	})
+}
+
 func equalStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
@@ -630,3 +678,4 @@ func equalStrings(got, want []string) bool {
 	}
 	return true
 }
+

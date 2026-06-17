@@ -202,23 +202,137 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 	if localAddress == "" {
 		return fmt.Errorf("no local BGP address configured for peer family")
 	}
-	return m.server.AddPeer(ctx, &api.AddPeerRequest{Peer: &api.Peer{
-		Conf: &api.PeerConf{
-			NeighborAddress: user.PeerIP,
-			PeerAsn:         user.PeerASN,
-			AuthPassword:    user.BGPPassword,
-			Description:     user.Name,
+
+	// Check if any other enabled peer already uses this IP.
+	// If yes, we must use dynamic neighbor (peer group) instead of static AddPeer.
+	otherUsesIP := false
+	for _, u := range m.peerConfigs {
+		if u.Enabled && u.PeerIP == user.PeerIP && u.ID != user.ID {
+			otherUsesIP = true
+			break
+		}
+	}
+
+	if !otherUsesIP {
+		return m.server.AddPeer(ctx, &api.AddPeerRequest{Peer: &api.Peer{
+			Conf: &api.PeerConf{
+				NeighborAddress: user.PeerIP,
+				PeerAsn:         user.PeerASN,
+				AuthPassword:    user.BGPPassword,
+				Description:     user.Name,
+			},
+			Transport: &api.Transport{LocalAddress: localAddress},
+			EbgpMultihop: &api.EbgpMultihop{
+				Enabled:     true,
+				MultihopTtl: 64,
+			},
+			AfiSafis: []*api.AfiSafi{
+				{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
+				{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
+			},
+		}})
+	}
+
+	// Shared IP: use dynamic neighbor via peer group.
+	// Compute next hop actions for per-peer-group policy.
+	nextHopV4, err := nextHopAction(user, api.Family_AFI_IP)
+	if err != nil {
+		return err
+	}
+	nextHopV6, err := nextHopAction(user, api.Family_AFI_IP6)
+	if err != nil {
+		return err
+	}
+
+	// Compute all user communities for REMOVE action in per-peer-group policy.
+	allUserComms := make([]string, 0, len(m.peerConfigs)+1)
+	for _, u := range m.peerConfigs {
+		allUserComms = append(allUserComms, largeCommunity(m.cfg.LocalASN, u.ID))
+	}
+	allUserComms = append(allUserComms, largeCommunity(m.cfg.LocalASN, user.ID))
+
+	// Create the export policy for this peer group (includes REMOVE to strip other users' communities).
+	policyName := fmt.Sprintf("user_%d_policy", user.ID)
+	if err := m.server.AddPolicy(ctx, &api.AddPolicyRequest{
+		Policy: &api.Policy{
+			Name: policyName,
+			Statements: []*api.Statement{
+				{
+					Name: fmt.Sprintf("user_%d_v4", user.ID),
+					Conditions: &api.Conditions{
+						LargeCommunitySet: &api.MatchSet{
+							Name: userCommunitySetName(user.ID),
+							Type: api.MatchSet_TYPE_ANY,
+						},
+					},
+					Actions: &api.Actions{
+						RouteAction: api.RouteAction_ROUTE_ACTION_ACCEPT,
+						LargeCommunity: &api.CommunityAction{
+							Type:        api.CommunityAction_TYPE_REMOVE,
+							Communities: allUserComms,
+						},
+						Nexthop: nextHopV4,
+					},
+				},
+				{
+					Name: fmt.Sprintf("user_%d_v6", user.ID),
+					Conditions: &api.Conditions{
+						LargeCommunitySet: &api.MatchSet{
+							Name: userCommunitySetName(user.ID),
+							Type: api.MatchSet_TYPE_ANY,
+						},
+					},
+					Actions: &api.Actions{
+						RouteAction: api.RouteAction_ROUTE_ACTION_ACCEPT,
+						LargeCommunity: &api.CommunityAction{
+							Type:        api.CommunityAction_TYPE_REMOVE,
+							Communities: allUserComms,
+						},
+						Nexthop: nextHopV6,
+					},
+				},
+			},
 		},
-		Transport: &api.Transport{LocalAddress: localAddress},
-		EbgpMultihop: &api.EbgpMultihop{
-			Enabled:     true,
-			MultihopTtl: 64,
+	}); err != nil {
+		return fmt.Errorf("add policy for peer group: %w", err)
+	}
+
+	pgName := fmt.Sprintf("user_%d_pg", user.ID)
+	if err := m.server.AddPeerGroup(ctx, &api.AddPeerGroupRequest{
+		PeerGroup: &api.PeerGroup{
+			Conf: &api.PeerGroupConf{
+				PeerGroupName: pgName,
+				PeerAsn:       uint32(user.PeerASN),
+			},
+			Transport: &api.Transport{LocalAddress: localAddress},
+			EbgpMultihop: &api.EbgpMultihop{Enabled: true, MultihopTtl: 64},
+			AfiSafis: []*api.AfiSafi{
+				{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
+				{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
+			},
+			ApplyPolicy: &api.ApplyPolicy{
+				ExportPolicy: &api.PolicyAssignment{
+					Name:      fmt.Sprintf("export_peer_%d", user.ID),
+					Direction: api.PolicyDirection_POLICY_DIRECTION_EXPORT,
+					Policies: []*api.Policy{{
+						Name: policyName,
+					}},
+					DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT,
+				},
+			},
 		},
-		AfiSafis: []*api.AfiSafi{
-			{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
-			{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
+	}); err != nil {
+		return fmt.Errorf("add peer group for dynamic neighbor: %w", err)
+	}
+	if err := m.server.AddDynamicNeighbor(ctx, &api.AddDynamicNeighborRequest{
+		DynamicNeighbor: &api.DynamicNeighbor{
+			Prefix:    fmt.Sprintf("%s/32", user.PeerIP),
+			PeerGroup: pgName,
 		},
-	}})
+	}); err != nil {
+		return fmt.Errorf("add dynamic neighbor: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP string) error {
@@ -252,10 +366,43 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 	}); err != nil {
 		return err
 	}
-	// Delete the peer
-	return m.server.DeletePeer(ctx, &api.DeletePeerRequest{
-		Address: peerIP,
-	})
+	// Check if any other enabled user shares this peer's IP.
+	// If yes, this peer was added via dynamic neighbor, so clean up
+	// the dynamic neighbor, peer group, and policy instead of DeletePeer.
+	otherUsesIP := false
+	for _, u := range m.peerConfigs {
+		if u.Enabled && u.PeerIP == peerIP && u.ID != userID {
+			otherUsesIP = true
+			break
+		}
+	}
+	if !otherUsesIP {
+		// Delete the static peer
+		return m.server.DeletePeer(ctx, &api.DeletePeerRequest{
+			Address: peerIP,
+		})
+	}
+	// Clean up dynamic neighbor if this peer shared its IP
+	pgName := fmt.Sprintf("user_%d_pg", user.ID)
+	if err := m.server.DeleteDynamicNeighbor(ctx, &api.DeleteDynamicNeighborRequest{
+		Prefix:    fmt.Sprintf("%s/32", peerIP),
+		PeerGroup: pgName,
+	}); err != nil {
+		return err
+	}
+	if err := m.server.DeletePeerGroup(ctx, &api.DeletePeerGroupRequest{
+		Name: pgName,
+	}); err != nil {
+		return err
+	}
+	// Delete the per-peer-group policy
+	policyName := fmt.Sprintf("user_%d_policy", user.ID)
+	if err := m.server.DeletePolicy(ctx, &api.DeletePolicyRequest{
+		Policy: &api.Policy{Name: policyName},
+	}); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store.User) error {
