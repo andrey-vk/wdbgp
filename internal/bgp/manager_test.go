@@ -749,6 +749,92 @@ func equalStrings(got, want []string) bool {
 	return true
 }
 
+func TestDeletePeerCleansUpSharedIPPeerGroup(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Add first peer (will become peer group — no other peer shares IP yet, so static).
+	user1ID, err := s.AddUser(ctx, store.User{
+		Name: "user1", PeerIP: "192.0.2.100", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, store.User{
+		ID: user1ID, Name: "user1", PeerIP: "192.0.2.100", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add second peer (same IP, different ASN — installed as peer group + dynamic neighbor
+	// because user1 already uses that IP).
+	user2ID, err := s.AddUser(ctx, store.User{
+		Name: "user2", PeerIP: "192.0.2.100", PeerASN: 65002, Enabled: true,
+		Networks: []string{"198.51.101.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, store.User{
+		ID: user2ID, Name: "user2", PeerIP: "192.0.2.100", PeerASN: 65002, Enabled: true,
+		Networks: []string{"198.51.101.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	pgName1 := fmt.Sprintf("user_%d_pg", user1ID)
+	pgName2 := fmt.Sprintf("user_%d_pg", user2ID)
+
+	// user1 was added first → static peer (no peer group).
+	// user2 was added second with same IP → peer group + dynamic neighbor.
+	var pg1Found, pg2Found bool
+	manager.server.ListPeerGroup(ctx, &api.ListPeerGroupRequest{}, func(pg *api.PeerGroup) {
+		if pg.Conf.PeerGroupName == pgName1 {
+			pg1Found = true
+		}
+		if pg.Conf.PeerGroupName == pgName2 {
+			pg2Found = true
+		}
+	})
+	if pg1Found {
+		t.Fatal("user1 should be a static peer, not a peer group")
+	}
+	if !pg2Found {
+		t.Fatal("user2 should have a peer group (same IP as user1, installed via dynamic neighbor)")
+	}
+
+	// Delete second peer — this should clean up user2's peer group and dynamic neighbor.
+	if err := manager.DeletePeer(ctx, user2ID, "192.0.2.100"); err != nil {
+		t.Fatalf("DeletePeer failed: %v", err)
+	}
+
+	// Verify user2's peer group is gone.
+	pg2Found = false
+	manager.server.ListPeerGroup(ctx, &api.ListPeerGroupRequest{}, func(pg *api.PeerGroup) {
+		if pg.Conf.PeerGroupName == pgName2 {
+			pg2Found = true
+		}
+	})
+	if pg2Found {
+		t.Fatal("BUG: user2's peer group was NOT cleaned up after DeletePeer — same-IP peer group leaked")
+	}
+}
+
 func TestUpdateDynamicPeerReconfiguresPeerGroup(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))

@@ -326,6 +326,9 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 	// Check if any other enabled user shares this peer's IP.
 	// If yes, this peer was added via dynamic neighbor, so clean up
 	// the dynamic neighbor, peer group, and policy instead of DeletePeer.
+	// However, a static peer may also share its IP if a second peer
+	// (installed via dynamic neighbor) was added later.  In that case
+	// the peer group doesn't exist and we fall back to DeletePeer.
 	otherUsesIP := false
 	for _, u := range m.peerConfigs {
 		if u.Enabled && u.PeerIP == peerIP && u.ID != userID {
@@ -349,6 +352,13 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 		Prefix:    dynPrefix,
 		PeerGroup: pgName,
 	}); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			// This user was a static peer, not a dynamic neighbor.
+			// Fall back to DeletePeer.
+			return m.server.DeletePeer(ctx, &api.DeletePeerRequest{
+				Address: peerIP,
+			})
+		}
 		return err
 	}
 	if err := m.server.DeletePeerGroup(ctx, &api.DeletePeerGroupRequest{
@@ -732,9 +742,11 @@ func (m *Manager) DeletePeer(ctx context.Context, userID int64, peerIP string) e
 	}
 	// Check if peer exists — match by userID+peerIP
 	found := false
+	var user store.User
 	for _, u := range m.peerConfigs {
 		if u.ID == userID && u.PeerIP == peerIP {
 			found = true
+			user = u
 			break
 		}
 	}
@@ -749,7 +761,7 @@ func (m *Manager) DeletePeer(ctx context.Context, userID int64, peerIP string) e
 			break
 		}
 	}
-	if !otherUserHasIP || peerIP == "0.0.0.0" {
+	if !otherUserHasIP || peerIP == "0.0.0.0" || m.hasPeerGroupPolicy(user) {
 		if err := m.deletePeerLocked(ctx, userID, peerIP); err != nil {
 			return err
 		}
