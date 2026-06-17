@@ -237,14 +237,16 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		var currentAdapterRevision int64
 		var currentData string
 		var currentName string
+		var currentEnabled bool
 		if err := tx.QueryRowContext(ctx,
-			`SELECT f.url, f.adapter_id, f.data, f.name, a.revision
+			`SELECT f.url, f.adapter_id, f.data, f.name, f.enabled, a.revision
 			 FROM feeds f
 			 JOIN feed_adapters a ON a.id = f.adapter_id
 			 WHERE f.id = ?`, feed.ID).
 			Scan(
 				&currentURL, &currentAdapterID,
 				&currentData, &currentName,
+				&currentEnabled,
 				&currentAdapterRevision,
 			); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -256,7 +258,8 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 			currentAdapterID != feed.AdapterID ||
 			currentAdapterRevision != adapter.Revision ||
 			currentData != feed.Data ||
-			currentName != feed.Name {
+			currentName != feed.Name ||
+			currentEnabled != feed.Enabled {
 			return errFeedChanged
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {

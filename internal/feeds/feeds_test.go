@@ -633,6 +633,60 @@ WHERE NOT EXISTS (
 	}
 }
 
+func TestSyncSkipsDisabledFeed(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Remove all built-in feeds from enabled modes so we have a clean slate.
+	if _, err := db.DB.Exec("DELETE FROM catalog_mode_feeds"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddFeed(ctx, "custom", "https://example.test/feed", 0); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feedList) == 0 {
+		t.Fatal("expected at least one enabled feed after AddFeed")
+	}
+	feed := feedList[0]
+
+	syncer := NewSyncer(db, config.Config{})
+	syncer.Client = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		// Disable the feed mid-sync to simulate admin action.
+		if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0 WHERE id = ?", feed.ID); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{"entries":[
+				{"category":"Test","service":"Stale","cidrs":["8.8.8.0/24"]}
+			]}`)),
+			Header: make(http.Header),
+		}, nil
+	})}
+
+	// SyncOne should return no error (stale-sync guard swallows errFeedChanged).
+	if _, err := syncer.SyncOne(ctx, feed); err != nil {
+		t.Fatalf("SyncOne error: %v", err)
+	}
+
+	var entries int
+	if err := db.DB.QueryRow(
+		"SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feed.ID).
+		Scan(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if entries != 0 {
+		t.Fatalf("stale catalog entries = %d after disabling feed, want 0", entries)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
