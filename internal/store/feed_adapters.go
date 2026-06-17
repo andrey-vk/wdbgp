@@ -191,11 +191,32 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 		}
 
 		if isCustomized == 1 {
-			// Only update version — don't overwrite user customizations.
-			if _, err := s.DB.ExecContext(ctx,
-				"UPDATE feed_adapters SET builtin_version = ? WHERE key = ?",
-				adapter.builtinVersion, key); err != nil {
+			// Compare stored source to built-in. A reset adapter
+			// (is_customized may be 1 from a flawed migration heuristic)
+			// has built-in source and should receive upgrades.
+			var currentSource string
+			if err := s.DB.QueryRowContext(ctx,
+				"SELECT COALESCE(source, '') FROM feed_adapters WHERE key = ?", key,
+			).Scan(&currentSource); err != nil {
 				return err
+			}
+			if strings.TrimSpace(currentSource) == strings.TrimSpace(adapter.source) {
+				// Source matches built-in — treat as non-customized (was reset).
+				if _, err := s.DB.ExecContext(ctx,
+					`UPDATE feed_adapters
+					 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?, is_customized = 0
+					 WHERE key = ?`,
+					adapter.name, normalizedBuiltInSource(adapter.source),
+					adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+					return err
+				}
+			} else {
+				// Truly customized — only update version.
+				if _, err := s.DB.ExecContext(ctx,
+					"UPDATE feed_adapters SET builtin_version = ? WHERE key = ?",
+					adapter.builtinVersion, key); err != nil {
+					return err
+				}
 			}
 		} else {
 			if _, err := s.DB.ExecContext(ctx,

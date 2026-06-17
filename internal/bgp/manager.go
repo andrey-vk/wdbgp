@@ -30,11 +30,11 @@ type installedPath struct {
 }
 
 type Manager struct {
-	cfg        config.Config
-	store      *store.Store
-	mu         sync.Mutex
-	server     *server.BgpServer
-	installed  map[string]installedPath
+	cfg         config.Config
+	store       *store.Store
+	mu          sync.Mutex
+	server      *server.BgpServer
+	installed   map[string]installedPath
 	peerConfigs []store.User // all configured peers (supports multiple per IP, dynamic 0.0.0.0)
 }
 
@@ -45,21 +45,21 @@ const (
 
 func NewManager(cfg config.Config, s *store.Store) *Manager {
 	return &Manager{
-		cfg:        cfg,
-		store:      s,
-		installed:  map[string]installedPath{},
+		cfg:         cfg,
+		store:       s,
+		installed:   map[string]installedPath{},
 		peerConfigs: []store.User{},
 	}
 }
 
 func (m *Manager) Start(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
-	logger.Info("starting BGP manager", 
+	logger.Info("starting BGP manager",
 		"asn", m.cfg.LocalASN,
 		"router_id", m.cfg.RouterID,
 		"bgp_port", m.cfg.BGPListenPort,
 	)
-	
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.startLocked(ctx)
@@ -68,7 +68,7 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) Stop(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
 	logger.Info("stopping BGP manager")
-	
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.server == nil {
@@ -79,7 +79,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 	m.server = nil
 	m.installed = map[string]installedPath{}
 	m.peerConfigs = []store.User{}
-	
+
 	if err != nil {
 		logger.Error("failed to stop BGP server", "error", err)
 	} else {
@@ -100,14 +100,14 @@ func (m *Manager) ReloadPeers(ctx context.Context) error {
 		}
 	}
 	m.server = nil
-	m.installed = savedInstalled // Restore installed routes
+	m.installed = savedInstalled     // Restore installed routes
 	m.peerConfigs = savedPeerConfigs // Restore peer configs
 	return m.startLocked(ctx)
 }
 
 func (m *Manager) startLocked(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
-	
+
 	levelVar := &slog.LevelVar{}
 	levelVar.Set(slog.LevelInfo)
 	bgpServer := server.NewBgpServer(server.LoggerOption(slog.Default(), levelVar))
@@ -123,7 +123,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		return err
 	}
 	logger.Debug("BGP server started")
-	
+
 	started := false
 	defer func() {
 		if !started {
@@ -138,7 +138,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		logger.Error("failed to get users from store", "error", err)
 		return err
 	}
-	
+
 	logger.Info("configuring BGP peers", "peer_count", len(users))
 	// Store peer configs for later updates
 	m.peerConfigs = make([]store.User, 0, len(users))
@@ -157,7 +157,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		return err
 	}
 	logger.Debug("global policy configured")
-	
+
 	if err := m.reconcileLocked(ctx); err != nil {
 		m.server = nil
 		logger.Error("failed to reconcile routes", "error", err)
@@ -418,7 +418,7 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 			oldCommunitySetName := userCommunitySetName(oldUser.ID)
 			newCommunitySetName := userCommunitySetName(user.ID)
 			newCommunity := largeCommunity(m.cfg.LocalASN, user.ID)
-			
+
 			// Delete old community set
 			if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
 				DefinedSet: &api.DefinedSet{
@@ -428,7 +428,7 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 			}); err != nil {
 				return err
 			}
-			
+
 			// Add new community set
 			if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
 				DefinedSet: &api.DefinedSet{
@@ -616,6 +616,8 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			if modeComms, ok := modeCommunities[meta.ModeID]; ok {
 				for k, v := range modeComms {
 					mr.comms[k] = v
+					// Also store mode-specific key to prevent cross-mode overwrite.
+					mr.comms[fmt.Sprintf("%d|%s", meta.ModeID, k)] = v
 				}
 			}
 			if mr.category == "" && meta.Category != "" {
@@ -638,9 +640,9 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 
 		err := retry.Do(ctx, retry.BGPConfig,
 			func() error {
-			return m.server.DeletePath(apiutil.DeletePathRequest{
-				UUIDs: []uuid.UUID{installed.UUID},
-			})
+				return m.server.DeletePath(apiutil.DeletePathRequest{
+					UUIDs: []uuid.UUID{installed.UUID},
+				})
 			},
 			retry.TransientError,
 		)
@@ -665,9 +667,9 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 
 		responses, err := retry.DoWithResult(ctx, retry.BGPConfig,
 			func() ([]apiutil.AddPathResponse, error) {
-			return m.server.AddPath(apiutil.AddPathRequest{
-				Paths: []*apiutil.Path{path},
-			})
+				return m.server.AddPath(apiutil.AddPathRequest{
+					Paths: []*apiutil.Path{path},
+				})
 			},
 			retry.TransientError,
 		)

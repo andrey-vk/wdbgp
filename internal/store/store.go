@@ -488,10 +488,9 @@ WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
 
 		ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0;
 
-		-- Detect pre-existing customizations: built-in adapters that were edited
-		UPDATE feed_adapters SET is_customized = 1
-		WHERE key IN ('opencck', 'opencck-main', 'canonical-json', 'ipranges', 'singbox-srs')
-		  AND revision > 1;
+		-- Detect pre-existing customizations: removed revision-based heuristic.
+		-- It misclassified reset adapters (source restored to built-in but revision > 1).
+		-- is_customized defaults to 0; seedBuiltInAdapters compares source at startup.
 
 		-- Catalog modes M:M with feeds
 CREATE TABLE catalog_mode_feeds (
@@ -501,9 +500,9 @@ CREATE TABLE catalog_mode_feeds (
 );
 CREATE INDEX IF NOT EXISTS idx_catalog_mode_feeds_feed ON catalog_mode_feeds(feed_id);
 
--- Migrate existing feed→mode assignments (only enabled feeds)
+-- Migrate existing feed→mode assignments (all feeds, including disabled)
 INSERT INTO catalog_mode_feeds (mode_id, feed_id)
-SELECT mode_id, id FROM feeds WHERE mode_id IS NOT NULL AND enabled = 1;
+SELECT mode_id, id FROM feeds WHERE mode_id IS NOT NULL;
 
 -- Drop legacy feeds.mode_id column (indexes first)
 DROP INDEX IF EXISTS idx_feeds_mode;
@@ -514,7 +513,13 @@ ALTER TABLE feeds DROP COLUMN mode_id;
 -- Remove UNIQUE constraint on peer_ip (issue #17)
 -- PRAGMA foreign_keys = OFF is a no-op inside a transaction, so this
 -- must run outside the migration transaction.
-CREATE TABLE users_new (
+--
+-- Idempotent: if a previous run crashed after committing the transactional
+-- SQL but before recording schema_migrations, users_new may already exist.
+-- Check for that and skip already-done steps.
+
+-- Only create users_new if it doesn't exist (previous run may have failed after creation).
+CREATE TABLE IF NOT EXISTS users_new (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     peer_ip TEXT NOT NULL,
@@ -530,14 +535,19 @@ CREATE TABLE users_new (
     catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
     web_auth TEXT NOT NULL DEFAULT 'network'
 );
-INSERT INTO users_new SELECT * FROM users;
-PRAGMA foreign_keys = OFF;
-DROP TABLE users;
-ALTER TABLE users_new RENAME TO users;
-		PRAGMA foreign_keys = ON;
 
-		-- Recreate index dropped by table rebuild (migration 12)
-		CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id);
+-- Only copy data if users_new is empty (first attempt).
+INSERT INTO users_new SELECT * FROM users
+WHERE NOT EXISTS (SELECT 1 FROM users_new LIMIT 1);
+
+-- Drop old table and rename. Use IF EXISTS to be safe.
+PRAGMA foreign_keys = OFF;
+DROP TABLE IF EXISTS users;
+ALTER TABLE users_new RENAME TO users;
+PRAGMA foreign_keys = ON;
+
+-- Recreate index dropped by table rebuild (migration 12)
+CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id);
 	`,
 	},
 	{

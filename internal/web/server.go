@@ -1130,20 +1130,34 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 	if modeIDs == nil {
 		modeIDs = []int64{}
 	}
-	// Insert feed first, capture rowid immediately — before any junction inserts.
-	_, err = s.store.DB.ExecContext(r.Context(),
+	tx, err := s.store.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(r.Context(),
 		"INSERT INTO feeds(name, url, adapter_id, sync_interval, data) VALUES (?, ?, ?, ?, ?)",
 		feed.Name, feed.URL, feed.AdapterID, feed.SyncInterval, feed.Data)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		s.internalError(w, r, err)
 		return
 	}
-	var feedID int64
-	if err := s.store.DB.QueryRowContext(r.Context(), "SELECT last_insert_rowid()").Scan(&feedID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	feedID, err := res.LastInsertId()
+	if err != nil {
+		s.internalError(w, r, err)
 		return
 	}
-	if err := s.store.SetFeedModes(r.Context(), feedID, modeIDs); err != nil {
+	for _, modeID := range modeIDs {
+		if _, err := tx.ExecContext(r.Context(),
+			"INSERT OR IGNORE INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
+			modeID, feedID); err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		s.internalError(w, r, err)
 		return
 	}
