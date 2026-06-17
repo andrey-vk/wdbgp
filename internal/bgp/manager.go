@@ -251,7 +251,7 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 		PeerGroupName: pgName,
 		PeerAsn:       uint32(user.PeerASN),
 	}
-	if user.PeerIP == "0.0.0.0" {
+	if user.BGPPassword != "" {
 		conf.AuthPassword = user.BGPPassword
 	}
 	if err := m.server.AddPeerGroup(ctx, &api.AddPeerGroupRequest{
