@@ -1783,6 +1783,16 @@ func (s *Server) saveUserSettings(w http.ResponseWriter, r *http.Request, id int
 		http.Error(w, `web_auth must be "network", "login", "both", or "any"`, http.StatusBadRequest)
 		return nil
 	}
+	// If password is empty and not being cleared, load stored password for validation.
+	if user.BGPPassword == "" && !clearPassword {
+		currentUser, err := s.store.User(r.Context(), id)
+		if err != nil {
+			http.Error(w, "failed to load user", http.StatusInternalServerError)
+			return nil
+		}
+		user.BGPPassword = currentUser.BGPPassword
+	}
+
 	// Step A: Same IP + same ASN → reject unconditionally.
 	// GoBGP's neighborMap is keyed by NeighborAddress; same IP+ASN is a single
 	// peer slot. A second AddPeer call would overwrite the first.
