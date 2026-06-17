@@ -31,7 +31,7 @@ button.primary,.button.primary{background:var(--accent);color:#fff;border-color:
 button.danger,.button.danger{background:var(--danger);color:#fff;border-color:var(--danger)}
 button:disabled{opacity:.5;cursor:not-allowed}
 
-.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:center}
 .form-grid label{margin-bottom:0}
 .checkbox-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .checkbox-row label{margin-bottom:0;display:flex;align-items:center;gap:6px;font-weight:400}
