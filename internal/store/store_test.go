@@ -1513,6 +1513,65 @@ func TestCatalogForModeDisabled(t *testing.T) {
 	}
 }
 
+func TestDesiredPrefixesExcludesDisabledFeeds(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Use seeded mode 1 (opencck, enabled) and feed 1 (opencck-main, enabled).
+	userID, err := s.AddUser(ctx, User{
+		Name: "test-user", PeerIP: "172.16.0.9", PeerASN: 65009, Enabled: true,
+		CatalogModeID: 1, Networks: []string{"192.168.50.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Give feed 1 a catalog entry (use non-denied prefix).
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(1, 'TestCat', 'TestSvc', '8.8.8.0/24')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Enable mode 1 (already enabled by default, but be explicit).
+	if err := s.UpdateCatalogMode(ctx, 1, "OpenCCK", true); err != nil {
+		t.Fatal(err)
+	}
+
+	// User selects the category.
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserModeSelection(ctx, tx, userID, 1, []string{"TestCat"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Confirm the prefix appears while feed is enabled.
+	prefixes, _, err := s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := compoundKey("8.8.8.0/24", 1)
+	if _, ok := prefixes[key]; !ok {
+		t.Fatalf("enabled feed: expected prefix %s, got none. prefixes=%#v", key, prefixes)
+	}
+	if len(prefixes[key]) != 1 || prefixes[key][0] != userID {
+		t.Fatalf("enabled feed: unexpected users for %s: %#v", key, prefixes[key])
+	}
+
+	// Disable the feed.
+	if _, err := s.DB.Exec(`UPDATE feeds SET enabled = 0 WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	// After disabling the feed, the prefix should NOT appear.
+	prefixes, _, err = s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := prefixes[key]; ok {
+		t.Fatalf("disabled feed: prefix %s still returned, want none. prefixes=%#v", key, prefixes)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))

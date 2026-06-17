@@ -1828,6 +1828,7 @@ JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE u.enabled = 1
   AND m.enabled = 1
+  AND f.enabled = 1
   AND EXISTS (
       SELECT 1 FROM selected_categories sc
       WHERE sc.user_id = u.id
@@ -1844,6 +1845,7 @@ JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE u.enabled = 1
   AND m.enabled = 1
+  AND f.enabled = 1
   AND EXISTS (
       SELECT 1 FROM selected_services ss
       WHERE ss.user_id = u.id
