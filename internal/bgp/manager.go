@@ -532,14 +532,28 @@ func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store
 			})
 		}
 	}
+	// Unassign the old global export policy so it is no longer "in use",
+	// then delete it to clear statement names from GoBGP's internal registry.
+	if err := m.server.SetPolicyAssignment(ctx, &api.SetPolicyAssignmentRequest{
+		Assignment: &api.PolicyAssignment{
+			Name:          globalPolicyTable,
+			Direction:     api.PolicyDirection_POLICY_DIRECTION_EXPORT,
+			DefaultAction: api.RouteAction_ROUTE_ACTION_REJECT,
+		},
+	}); err != nil {
+		return fmt.Errorf("unassign old global export policy: %w", err)
+	}
+	if err := m.server.DeletePolicy(ctx, &api.DeletePolicyRequest{
+		Policy: &api.Policy{Name: exportPolicyName},
+		All:    true,
+	}); err != nil {
+		if !strings.Contains(err.Error(), "not found") {
+			return fmt.Errorf("delete old global export policy: %w", err)
+		}
+	}
 	if err := m.server.AddPolicy(ctx, &api.AddPolicyRequest{
 		Policy: &api.Policy{Name: exportPolicyName, Statements: statements},
 	}); err != nil {
-		if strings.Contains(err.Error(), "already defined") {
-			// GoBGP v4 retains statement names across delete+recreate.
-			// The statements are already correct, so this is a harmless no-op.
-			return nil
-		}
 		return err
 	}
 	if err := m.server.SetPolicyAssignment(ctx, &api.SetPolicyAssignmentRequest{

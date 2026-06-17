@@ -947,3 +947,99 @@ func TestUpdateDynamicPeerReconfiguresPeerGroup(t *testing.T) {
 	}
 }
 
+func TestExportPolicyRebuildIncludesNewUsers(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Insert catalog entry so routes can be reconciled.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
+		(feed_id, category, service, cidr) VALUES
+		(1, 'chat', 'telegram', '149.154.160.0/20')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 1: Start manager with user A only (2 export statements).
+	userAID, err := s.AddUser(ctx, store.User{
+		Name: "user-a", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, userAID, []string{"chat"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Verify phase 1: policy has 2 statements (v4+v6) for user A.
+	assertExportStatementCount(t, manager, 2)
+
+	// Phase 2: Add user B via AddPeer. This calls configureGlobalPolicyLocked again
+	// within the same server instance, which triggers "already defined" for existing
+	// statement names. The bug: we tolerate the error by returning nil, but the new
+	// user's statements are never installed.
+	userBID, err := s.AddUser(ctx, store.User{
+		Name: "user-b", PeerIP: "192.0.2.3", PeerASN: 65002, Enabled: true,
+		Networks: []string{"198.51.101.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, userBID, []string{"chat"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.AddPeer(ctx, store.User{
+		ID: userBID, Name: "user-b", PeerIP: "192.0.2.3", PeerASN: 65002,
+		Enabled: true, Networks: []string{"198.51.101.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify: the policy should have 4 statements (v4+v6 for each of user A and user B).
+	// The fix ensures configureGlobalPolicyLocked unassigns, deletes, and recreates the
+	// global export policy so that new users' statements are always installed.
+	assertExportStatementCount(t, manager, 4)
+}
+
+// assertExportStatementCount checks that the wdbgp_export policy has exactly n statements.
+func assertExportStatementCount(t *testing.T, manager *Manager, want int) {
+	t.Helper()
+	var count int
+	err := manager.server.ListPolicy(context.Background(), &api.ListPolicyRequest{
+		Name: exportPolicyName,
+	}, func(policy *api.Policy) {
+		count = len(policy.Statements)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		var names []string
+		_ = manager.server.ListPolicy(context.Background(), &api.ListPolicyRequest{
+			Name: exportPolicyName,
+		}, func(policy *api.Policy) {
+			for _, stmt := range policy.Statements {
+				names = append(names, stmt.Name)
+			}
+		})
+		t.Fatalf("export policy statement count = %d (names=%v), want %d", count, names, want)
+	}
+}
+
