@@ -2021,6 +2021,119 @@ func TestDeleteBuiltInModeDoesNotMoveUsers(t *testing.T) {
 	}
 }
 
+// TestMigrationRecoveryPreservesForeignKeys verifies that when migration
+// 20's NoTxSQL drops the users/feeds tables, the PRAGMA foreign_keys = OFF
+// correctly prevents ON DELETE CASCADE from deleting user_networks,
+// selected_categories, selected_services, and other child rows.
+func TestMigrationRecoveryPreservesForeignKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.sqlite3")
+
+	// Step 1: Open a store to run all migrations, then add FK data.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Add a user so we can create FK references.
+	userID, err := s.AddUser(ctx, User{
+		Name:   "fk-test-user",
+		PeerIP: "192.168.1.1",
+		PeerASN: 65001,
+		Enabled: true,
+	})
+	if err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+
+	// Add FK-referencing data: user_networks, selected_categories,
+	// selected_services. We use direct Exec so these rows are present
+	// when the recovery DROP TABLE users runs.
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT INTO user_networks (user_id, cidr) VALUES (?, '10.0.0.0/8')`,
+		userID); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT INTO selected_categories (user_id, mode_id, category) VALUES (?, 1, 'test-cat')`,
+		userID); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT INTO selected_services (user_id, mode_id, category, service) VALUES (?, 1, 'test-cat', 'test-svc')`,
+		userID); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+
+	s.Close()
+
+	// Step 2: Simulate a crash — transactional SQL committed but
+	// NoTxSQL didn't finish. Delete schema_migrations for 20 and 21
+	// so migration 20 re-runs on the next Open.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"DELETE FROM schema_migrations WHERE version IN (20, 21)"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Step 3: Re-open. Migration 20 re-runs: the Go func detects
+	// cnt==0 (crash recovery), rebuilds users_new/feeds_new, then
+	// NoTxSQL drops users and renames users_new. With PRAGMA
+	// foreign_keys=OFF, the FK-referenced rows must survive.
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("crash recovery open failed: %v", err)
+	}
+	defer s2.Close()
+
+	// Verify schema version is up to date.
+	var version int
+	if err := s2.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		t.Fatalf("schema version after recovery = %d, want %d", version, len(migrations))
+	}
+
+	// Verify FK-referencing rows survived the DROP TABLE users.
+	var networkCount int
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM user_networks WHERE user_id = ?", userID).Scan(&networkCount); err != nil {
+		t.Fatal(err)
+	}
+	if networkCount == 0 {
+		t.Fatal("user_networks rows were cascade-deleted by DROP TABLE users")
+	}
+
+	var catCount int
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM selected_categories WHERE user_id = ?", userID).Scan(&catCount); err != nil {
+		t.Fatal(err)
+	}
+	if catCount == 0 {
+		t.Fatal("selected_categories rows were cascade-deleted by DROP TABLE users")
+	}
+
+	var svcCount int
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM selected_services WHERE user_id = ?", userID).Scan(&svcCount); err != nil {
+		t.Fatal(err)
+	}
+	if svcCount == 0 {
+		t.Fatal("selected_services rows were cascade-deleted by DROP TABLE users")
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
