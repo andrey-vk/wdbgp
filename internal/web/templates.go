@@ -389,9 +389,9 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <p class=muted>{{tr "users.dynamic_ip_hint"}}</p>
 <div class=form-grid>
 <label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{tr "users.bgp_password_placeholder"}}"></label>
-{{if .RequirePasswordForNonUniqueIP}}<p class=muted>Password is required when sharing this IP address with a different ASN.</p>{{end}}
 <label>{{tr "user.clear_password"}} <input type=checkbox name=clear_bgp_password></label>
 </div>
+{{if .RequirePasswordForNonUniqueIP}}<p class=muted>{{tr "hints.user_peer_password_required"}}</p>{{end}}
 <script>
 var d=document.getElementById('dynamic-ip');
 var i=document.getElementById('peer-ip-input');
