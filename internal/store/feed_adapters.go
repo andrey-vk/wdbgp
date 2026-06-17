@@ -190,23 +190,22 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 			return err
 		}
 
+		var currentSource string
+		if err := s.DB.QueryRowContext(ctx,
+			"SELECT COALESCE(source, '') FROM feed_adapters WHERE key = ?", key,
+		).Scan(&currentSource); err != nil {
+			return err
+		}
+		normalized := normalizedBuiltInSource(adapter.source)
+
 		if isCustomized == 1 {
-			// Compare stored source to built-in. A reset adapter
-			// (is_customized may be 1 from a flawed migration heuristic)
-			// has built-in source and should receive upgrades.
-			var currentSource string
-			if err := s.DB.QueryRowContext(ctx,
-				"SELECT COALESCE(source, '') FROM feed_adapters WHERE key = ?", key,
-			).Scan(&currentSource); err != nil {
-				return err
-			}
-			if strings.TrimSpace(currentSource) == strings.TrimSpace(adapter.source) {
+			if currentSource == normalized {
 				// Source matches built-in — treat as non-customized (was reset).
 				if _, err := s.DB.ExecContext(ctx,
 					`UPDATE feed_adapters
 					 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?, is_customized = 0
 					 WHERE key = ?`,
-					adapter.name, normalizedBuiltInSource(adapter.source),
+					adapter.name, normalized,
 					adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
 					return err
 				}
@@ -219,13 +218,26 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 				}
 			}
 		} else {
-			if _, err := s.DB.ExecContext(ctx,
-				`UPDATE feed_adapters
-				 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?
-				 WHERE key = ?`,
-				adapter.name, normalizedBuiltInSource(adapter.source),
-				adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
-				return err
+			if currentSource == normalized || currentSource == "" {
+				// Source matches built-in or is empty (never seeded) — populate.
+				if _, err := s.DB.ExecContext(ctx,
+					`UPDATE feed_adapters
+					 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?
+					 WHERE key = ?`,
+					adapter.name, normalized,
+					adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+					return err
+				}
+			} else {
+				// Source differs from built-in — was customized but is_customized=0.
+				// Mark as customized and keep the user's source intact.
+				if _, err := s.DB.ExecContext(ctx,
+					`UPDATE feed_adapters
+					 SET name = ?, allowed_hosts = ?, builtin_version = ?, is_customized = 1
+					 WHERE key = ?`,
+					adapter.name, adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+					return err
+				}
 			}
 		}
 	}

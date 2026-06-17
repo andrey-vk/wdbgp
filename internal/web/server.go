@@ -984,6 +984,15 @@ func (s *Server) deleteMode(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
 		return
 	}
+
+	// Check if any users reference this mode before deleting.
+	var userCount int
+	if err := s.store.DB.QueryRowContext(r.Context(),
+		"SELECT COUNT(*) FROM users WHERE catalog_mode_id = ?", id).Scan(&userCount); err == nil && userCount > 0 {
+		http.Error(w, fmt.Sprintf("Cannot delete mode: %d user(s) still use this mode. Reassign them first.", userCount), http.StatusConflict)
+		return
+	}
+
 	if err := s.store.DeleteCatalogMode(r.Context(), id); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
