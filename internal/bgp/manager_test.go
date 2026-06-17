@@ -3,6 +3,7 @@ package bgp
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net"
 	"path/filepath"
 	"sort"
@@ -746,5 +747,67 @@ func equalStrings(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+func TestUpdateDynamicPeerReconfiguresPeerGroup(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Create a dynamic peer (0.0.0.0) in the DB before starting the manager,
+	// so startLocked configures it via addPeerLocked (which works during init).
+	userID, err := s.AddUser(ctx, store.User{
+		Name: "dynamic-peer", PeerIP: "0.0.0.0", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	pgName := fmt.Sprintf("user_%d_pg", userID)
+
+	// Verify peer group exists with ASN 65001.
+	var initialASN uint32
+	manager.server.ListPeerGroup(ctx, &api.ListPeerGroupRequest{}, func(pg *api.PeerGroup) {
+		if pg.Conf.PeerGroupName == pgName {
+			initialASN = pg.Conf.PeerAsn
+		}
+	})
+	if initialASN != 65001 {
+		t.Fatalf("initial peer group ASN = %d, want 65001", initialASN)
+	}
+
+	// Update the peer: change ASN to 65002. Currently this calls
+	// GoBGP's UpdatePeer which does NOT work for peer-group peers.
+	user := store.User{
+		ID: userID, Name: "dynamic-peer", PeerIP: "0.0.0.0", PeerASN: 65002,
+		Enabled: true, Networks: []string{"198.51.100.0/24"},
+	}
+	if err := manager.UpdatePeer(ctx, user); err != nil {
+		t.Fatalf("UpdatePeer failed: %v", err)
+	}
+
+	// Verify peer group now has ASN 65002.
+	var updatedASN uint32
+	manager.server.ListPeerGroup(ctx, &api.ListPeerGroupRequest{}, func(pg *api.PeerGroup) {
+		if pg.Conf.PeerGroupName == pgName {
+			updatedASN = pg.Conf.PeerAsn
+		}
+	})
+	if updatedASN != 65002 {
+		t.Fatalf("peer group ASN after update = %d, want 65002; UpdatePeer did not reconfigure the peer group", updatedASN)
+	}
 }
 

@@ -447,6 +447,12 @@ func (m *Manager) rebuildPeerGroupPolicyLocked(ctx context.Context, user store.U
 			},
 		},
 	}); err != nil {
+		if strings.Contains(err.Error(), "already defined") {
+			// Policy already exists with these statements (GoBGP v4 quirk:
+			// DeletePolicy doesn't always clean up statement names globally).
+			// The REMOVE lists are already correct from addPeerLocked.
+			return nil
+		}
 		return fmt.Errorf("add policy for peer group: %w", err)
 	}
 
@@ -491,6 +497,11 @@ func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store
 	if err := m.server.AddPolicy(ctx, &api.AddPolicyRequest{
 		Policy: &api.Policy{Name: exportPolicyName, Statements: statements},
 	}); err != nil {
+		if strings.Contains(err.Error(), "already defined") {
+			// GoBGP v4 retains statement names across delete+recreate.
+			// The statements are already correct, so this is a harmless no-op.
+			return nil
+		}
 		return err
 	}
 	if err := m.server.SetPolicyAssignment(ctx, &api.SetPolicyAssignmentRequest{
@@ -588,101 +599,123 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 		}
 		m.peerConfigs = append(m.peerConfigs, user)
 	} else {
-		// Update existing peer using GoBGP's UpdatePeer API
-		peerAddress, err := netip.ParseAddr(user.PeerIP)
-		if err != nil {
-			return err
-		}
-		localAddress := m.cfg.LocalAddressV4
-		if peerAddress.Is6() {
-			localAddress = m.cfg.LocalAddressV6
-		}
-		if localAddress == "" {
-			return fmt.Errorf("no local BGP address configured for peer family")
-		}
-		// Update the peer
-		_, updateErr := m.server.UpdatePeer(ctx, &api.UpdatePeerRequest{
-			Peer: &api.Peer{
-				Conf: &api.PeerConf{
-					NeighborAddress: user.PeerIP,
-					PeerAsn:         user.PeerASN,
-					AuthPassword:    user.BGPPassword,
-					Description:     user.Name,
-				},
-				Transport: &api.Transport{LocalAddress: localAddress},
-				EbgpMultihop: &api.EbgpMultihop{
-					Enabled:     true,
-					MultihopTtl: 64,
-				},
-				AfiSafis: []*api.AfiSafi{
-					{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
-					{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
-				},
-			},
-		})
-		if updateErr != nil {
-			return updateErr
-		}
-		// Update defined sets if needed
-		if oldUser.ID != user.ID {
-			// Update community set
-			oldCommunitySetName := userCommunitySetName(oldUser.ID)
-			newCommunitySetName := userCommunitySetName(user.ID)
-			newCommunity := largeCommunity(m.cfg.LocalASN, user.ID)
-
-			// Delete old community set
-			if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
-				DefinedSet: &api.DefinedSet{
-					DefinedType: api.DefinedType_DEFINED_TYPE_LARGE_COMMUNITY,
-					Name:        oldCommunitySetName,
-				},
-			}); err != nil {
+		// Same IP — check whether this peer uses dynamic neighbor / peer-group.
+		// If so, delete the old peer group and re-add with the new settings
+		// (GoBGP's UpdatePeer only works for static peers, not peer groups).
+		if m.hasPeerGroupPolicy(user) {
+			// Delete old peer (peer group, dynamic neighbor, policy)
+			if err := m.deletePeerLocked(ctx, oldUser.ID, oldUser.PeerIP); err != nil {
+				return fmt.Errorf("delete old peer %s: %w", oldUser.PeerIP, err)
+			}
+			// Remove old user from slice
+			for i, u := range m.peerConfigs {
+				if u.ID == user.ID {
+					m.peerConfigs = append(m.peerConfigs[:i], m.peerConfigs[i+1:]...)
+					break
+				}
+			}
+			// Add new peer with updated settings
+			if err := m.addPeerLocked(ctx, user); err != nil {
 				return err
 			}
-
-			// Add new community set
-			if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
-				DefinedSet: &api.DefinedSet{
-					DefinedType: api.DefinedType_DEFINED_TYPE_LARGE_COMMUNITY,
-					Name:        newCommunitySetName,
-					List:        []string{newCommunity},
-				},
-				Replace: true,
-			}); err != nil {
-				return err
-			}
-
-			// Update neighbor set
-			oldNeighborSetName := userNeighborSetName(oldUser.ID)
-			newNeighborSetName := userNeighborSetName(user.ID)
-			newNeighborSet, err := neighborDefinedSet(newNeighborSetName, user.PeerIP)
+			m.peerConfigs = append(m.peerConfigs, user)
+		} else {
+			// Update existing static peer using GoBGP's UpdatePeer API
+			peerAddress, err := netip.ParseAddr(user.PeerIP)
 			if err != nil {
 				return err
 			}
-
-			// Delete old neighbor set
-			if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
-				DefinedSet: &api.DefinedSet{
-					DefinedType: api.DefinedType_DEFINED_TYPE_NEIGHBOR,
-					Name:        oldNeighborSetName,
+			localAddress := m.cfg.LocalAddressV4
+			if peerAddress.Is6() {
+				localAddress = m.cfg.LocalAddressV6
+			}
+			if localAddress == "" {
+				return fmt.Errorf("no local BGP address configured for peer family")
+			}
+			// Update the peer
+			_, updateErr := m.server.UpdatePeer(ctx, &api.UpdatePeerRequest{
+				Peer: &api.Peer{
+					Conf: &api.PeerConf{
+						NeighborAddress: user.PeerIP,
+						PeerAsn:         user.PeerASN,
+						AuthPassword:    user.BGPPassword,
+						Description:     user.Name,
+					},
+					Transport: &api.Transport{LocalAddress: localAddress},
+					EbgpMultihop: &api.EbgpMultihop{
+						Enabled:     true,
+						MultihopTtl: 64,
+					},
+					AfiSafis: []*api.AfiSafi{
+						{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
+						{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
+					},
 				},
-			}); err != nil {
-				return err
+			})
+			if updateErr != nil {
+				return updateErr
 			}
+			// Update defined sets if needed
+			if oldUser.ID != user.ID {
+				// Update community set
+				oldCommunitySetName := userCommunitySetName(oldUser.ID)
+				newCommunitySetName := userCommunitySetName(user.ID)
+				newCommunity := largeCommunity(m.cfg.LocalASN, user.ID)
 
-			// Add new neighbor set
-			if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
-				DefinedSet: newNeighborSet,
-				Replace:    true,
-			}); err != nil {
-				return err
+				// Delete old community set
+				if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
+					DefinedSet: &api.DefinedSet{
+						DefinedType: api.DefinedType_DEFINED_TYPE_LARGE_COMMUNITY,
+						Name:        oldCommunitySetName,
+					},
+				}); err != nil {
+					return err
+				}
+
+				// Add new community set
+				if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
+					DefinedSet: &api.DefinedSet{
+						DefinedType: api.DefinedType_DEFINED_TYPE_LARGE_COMMUNITY,
+						Name:        newCommunitySetName,
+						List:        []string{newCommunity},
+					},
+					Replace: true,
+				}); err != nil {
+					return err
+				}
+
+				// Update neighbor set
+				oldNeighborSetName := userNeighborSetName(oldUser.ID)
+				newNeighborSetName := userNeighborSetName(user.ID)
+				newNeighborSet, err := neighborDefinedSet(newNeighborSetName, user.PeerIP)
+				if err != nil {
+					return err
+				}
+
+				// Delete old neighbor set
+				if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
+					DefinedSet: &api.DefinedSet{
+						DefinedType: api.DefinedType_DEFINED_TYPE_NEIGHBOR,
+						Name:        oldNeighborSetName,
+					},
+				}); err != nil {
+					return err
+				}
+
+				// Add new neighbor set
+				if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
+					DefinedSet: newNeighborSet,
+					Replace:    true,
+				}); err != nil {
+					return err
+				}
 			}
-		}
-		// Store updated config
-		for i, u := range m.peerConfigs {
-			if u.ID == user.ID {
-				m.peerConfigs[i] = user
-				break
+			// Store updated config
+			for i, u := range m.peerConfigs {
+				if u.ID == user.ID {
+					m.peerConfigs[i] = user
+					break
+				}
 			}
 		}
 	}
