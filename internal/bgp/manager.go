@@ -939,6 +939,18 @@ func (m *Manager) path(rawPrefix string, userIDs []int64, category, service stri
 			}
 		}
 	}
+	// Attach per-mode metadata communities (mode-scoped keys like "1|key" or "2|key|subkey").
+	for key, val := range communities {
+		// Mode-scoped keys have format "<modeID>|<rest>" where modeID is numeric.
+		idx := strings.IndexByte(key, '|')
+		if idx > 0 {
+			if _, err := strconv.ParseInt(key[:idx], 10, 64); err == nil {
+				comms = append(comms, &bgp.LargeCommunity{
+					ASN: m.cfg.LocalASN, LocalData1: 0, LocalData2: val,
+				})
+			}
+		}
+	}
 	communityAttribute := bgp.NewPathAttributeLargeCommunities(comms)
 	if prefix.Addr().Is4() {
 		nextHop, err := bgp.NewPathAttributeNextHop(netip.MustParseAddr(m.cfg.LocalAddressV4))

@@ -619,6 +619,75 @@ func assertRemoveCommunities(t *testing.T, manager *Manager, expected []string) 
 	}
 }
 
+func TestPathPreservesPerModeCommunities(t *testing.T) {
+	manager := NewManager(config.Config{
+		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
+	}, nil)
+
+	// Simulate what reconcileLocked produces when the same prefix "10.0.0.0/24"
+	// is selected in two different modes with different community values.
+	// Mode 1: category=video, community 10000, service community 10001
+	// Mode 2: category=video, community 20000, service community 20001
+	// After merge, mr.comms contains both mode-scoped and non-scoped keys.
+	comms := map[string]uint32{
+		"1|video":          10000,
+		"2|video":          20000,
+		"video":            10000, // non-scoped fallback (from whichever mode merged last)
+		"1|video|youtube":  10001,
+		"2|video|youtube":  20001,
+		"video|youtube":    10001, // non-scoped service fallback
+	}
+
+	path, err := manager.path("10.0.0.0/24", []int64{1, 2}, "video", "youtube", comms)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var communities *bgp.PathAttributeLargeCommunities
+	found := false
+	for _, attr := range path.Attrs {
+		if lc, ok := attr.(*bgp.PathAttributeLargeCommunities); ok {
+			communities = lc
+			found = true
+			break
+		}
+	}
+	if !found || len(communities.Values) == 0 {
+		t.Fatalf("large communities not found: %#v", path.Attrs)
+	}
+
+	// The path should carry communities from BOTH modes.
+	var hasMode1, hasMode2 bool
+	var hasMode1Svc, hasMode2Svc bool
+	for _, c := range communities.Values {
+		if c.LocalData1 == 0 && c.LocalData2 == 10000 {
+			hasMode1 = true
+		}
+		if c.LocalData1 == 0 && c.LocalData2 == 20000 {
+			hasMode2 = true
+		}
+		if c.LocalData1 == 0 && c.LocalData2 == 10001 {
+			hasMode1Svc = true
+		}
+		if c.LocalData1 == 0 && c.LocalData2 == 20001 {
+			hasMode2Svc = true
+		}
+	}
+
+	if !hasMode1 {
+		t.Fatalf("missing mode 1 category community (10000): %#v", communities.Values)
+	}
+	if !hasMode2 {
+		t.Fatalf("missing mode 2 category community (20000): mode-scoped key not looked up, per-mode metadata lost — BUG: %#v", communities.Values)
+	}
+	if !hasMode1Svc {
+		t.Fatalf("missing mode 1 service community (10001): %#v", communities.Values)
+	}
+	if !hasMode2Svc {
+		t.Fatalf("missing mode 2 service community (20001): mode-scoped service key not looked up, per-mode metadata lost — BUG: %#v", communities.Values)
+	}
+}
+
 func TestDynamicNeighborSameIPDifferentASN(t *testing.T) {
 	ctx := context.Background()
 	levelVar := &slog.LevelVar{}
