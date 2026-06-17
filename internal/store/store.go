@@ -806,7 +806,9 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
 	          FROM feeds f`
 	if enabledOnly {
-		query += ` WHERE f.enabled = 1`
+		query += ` WHERE f.enabled = 1 AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
+		            JOIN catalog_modes m ON m.id = cmf.mode_id
+		            WHERE cmf.feed_id = f.id AND m.enabled = 1)`
 	}
 	query += " ORDER BY f.id"
 	rows, err := s.DB.QueryContext(ctx, query)
