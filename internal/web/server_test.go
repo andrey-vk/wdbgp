@@ -895,6 +895,73 @@ func TestLocalizedPages(t *testing.T) {
 	}
 }
 
+func TestAddUserSharedIPChecksAllPeers(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "sharedip_allpeers.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create user A at IP 10.0.0.1 with a password.
+	_, err = db.AddUser(ctx, store.User{
+		Name:        "user-a",
+		PeerIP:      "10.0.0.1",
+		PeerASN:     65001,
+		BGPPassword: "pass1",
+		Networks:    []string{"192.168.1.0/24"},
+		Enabled:     true,
+		WebAuth:     "network",
+		CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create user B at same IP with empty password (simulating bypassed check).
+	_, err = db.AddUser(ctx, store.User{
+		Name:        "user-b",
+		PeerIP:      "10.0.0.1",
+		PeerASN:     65002,
+		BGPPassword: "",
+		Networks:    []string{"192.168.2.0/24"},
+		Enabled:     true,
+		WebAuth:     "network",
+		CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.RequirePasswordForNonUniqueIP = true
+	bgp := &fakeBGP{}
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Attempt to add user C at same IP with different ASN.
+	// Should REJECT because user B has no password.
+	form := url.Values{}
+	form.Set("name", "user-c")
+	form.Set("peer_ip", "10.0.0.1")
+	form.Set("peer_asn", "65003")
+	form.Set("networks", "192.168.3.0/24")
+	form.Set("bgp_password", "pass3")
+	form.Set("web_auth", "network")
+	form.Set("catalog_mode_id", strconv.FormatInt(store.DefaultCatalogModeID, 10))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("POST /admin/user: expected 400 Bad Request because one shared-IP peer has no password, got status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestAddUserSharedIPRejectsWhenExistingHasNoPassword(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "sharedip_nopass.sqlite3"))
 	if err != nil {
