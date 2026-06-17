@@ -245,7 +245,7 @@ func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
 	if otherUsesIP {
 		for _, existing := range m.peerConfigs {
 			if existing.Enabled && existing.PeerIP == user.PeerIP && existing.ID != user.ID {
-				if !m.hasPeerGroup(existing) {
+				if !m.hasPeerGroup(ctx, existing) {
 					// This peer was added as a static peer (first at this IP).
 					// Delete the static peer and re-create as peer-group.
 					if err := m.server.DeletePeer(ctx, &api.DeletePeerRequest{Address: existing.PeerIP}); err != nil {
@@ -338,34 +338,32 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 	return nil
 }
 
-// hasPeerGroupPolicy reports whether a user has a per-peer-group export policy.
-// True for dynamic peers (0.0.0.0) and for peers that share an IP with another
-// enabled peer (served via dynamic neighbors).
-func (m *Manager) hasPeerGroupPolicy(user store.User) bool {
+// hasPeerGroupPolicy reports whether a user has a per-peer-group export policy
+// in GoBGP. Checks the actual GoBGP state rather than inferring from peerConfigs,
+// because a peer may remain a peer-group even after other shared-IP users are
+// deleted.
+func (m *Manager) hasPeerGroupPolicy(ctx context.Context, user store.User) bool {
 	if user.PeerIP == "0.0.0.0" {
 		return true
 	}
-	for _, u := range m.peerConfigs {
-		if u.Enabled && u.PeerIP == user.PeerIP && u.ID != user.ID {
-			return true
-		}
-	}
-	return false
+	return m.hasPeerGroup(ctx, user)
 }
 
-// hasPeerGroup reports whether a user has (or should have) a peer-group in GoBGP.
-// True for dynamic peers (0.0.0.0) and for peers that share an IP with another
-// enabled peer, which forces usage of dynamic neighbors / peer groups.
-func (m *Manager) hasPeerGroup(user store.User) bool {
+// hasPeerGroup reports whether a user has a peer-group in GoBGP.
+// True for dynamic peers (0.0.0.0) and for peers whose peer group
+// actually exists in GoBGP's configuration.
+func (m *Manager) hasPeerGroup(ctx context.Context, user store.User) bool {
 	if user.PeerIP == "0.0.0.0" {
 		return true
 	}
-	for _, u := range m.peerConfigs {
-		if u.Enabled && u.PeerIP == user.PeerIP && u.ID != user.ID {
-			return true
+	pgName := fmt.Sprintf("user_%d_pg", user.ID)
+	found := false
+	m.server.ListPeerGroup(ctx, &api.ListPeerGroupRequest{}, func(pg *api.PeerGroup) {
+		if pg.Conf != nil && pg.Conf.PeerGroupName == pgName {
+			found = true
 		}
-	}
-	return false
+	})
+	return found
 }
 
 // addPeerGroupForUserLocked creates a per-peer-group export policy, AddPeerGroup,
@@ -577,7 +575,7 @@ func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store
 
 	// Rebuild per-peer-group policies for all users to keep REMOVE lists fresh.
 	for _, user := range users {
-		if m.hasPeerGroupPolicy(user) {
+		if m.hasPeerGroupPolicy(ctx, user) {
 			if err := m.rebuildPeerGroupPolicyLocked(ctx, user, allUserComms); err != nil {
 				return err
 			}
@@ -662,7 +660,7 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 		// Same IP — check whether this peer uses dynamic neighbor / peer-group.
 		// If so, delete the old peer group and re-add with the new settings
 		// (GoBGP's UpdatePeer only works for static peers, not peer groups).
-		if m.hasPeerGroupPolicy(user) {
+		if m.hasPeerGroupPolicy(ctx, user) {
 			// Delete old peer (peer group, dynamic neighbor, policy)
 			if err := m.deletePeerLocked(ctx, oldUser.ID, oldUser.PeerIP); err != nil {
 				return fmt.Errorf("delete old peer %s: %w", oldUser.PeerIP, err)
@@ -811,7 +809,7 @@ func (m *Manager) DeletePeer(ctx context.Context, userID int64, peerIP string) e
 			break
 		}
 	}
-	if !otherUserHasIP || peerIP == "0.0.0.0" || m.hasPeerGroupPolicy(user) {
+	if !otherUserHasIP || peerIP == "0.0.0.0" || m.hasPeerGroupPolicy(ctx, user) {
 		if err := m.deletePeerLocked(ctx, userID, peerIP); err != nil {
 			return err
 		}

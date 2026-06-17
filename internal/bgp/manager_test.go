@@ -1087,6 +1087,93 @@ func TestDynamicNeighborPrefixIPv6(t *testing.T) {
 	}
 }
 
+func TestHasPeerGroupPolicyAfterSharedPeerDeleted(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	manager := NewManager(config.Config{
+		LocalASN:       64512,
+		RouterID:       "192.0.2.1",
+		BGPListenPort:  -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Step 1: Add first user at 192.0.2.100 — static peer (no other user shares IP).
+	userAID, err := s.AddUser(ctx, store.User{
+		Name: "user-a", PeerIP: "192.0.2.100", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, store.User{
+		ID: userAID, Name: "user-a", PeerIP: "192.0.2.100", PeerASN: 65001,
+		Enabled: true, Networks: []string{"198.51.100.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 2: Add second user at same IP — upgrades both to peer-group.
+	userBID, err := s.AddUser(ctx, store.User{
+		Name: "user-b", PeerIP: "192.0.2.100", PeerASN: 65002, Enabled: true,
+		Networks: []string{"198.51.101.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, store.User{
+		ID: userBID, Name: "user-b", PeerIP: "192.0.2.100", PeerASN: 65002,
+		Enabled: true, Networks: []string{"198.51.101.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 3: Delete second user.
+	if err := manager.DeletePeer(ctx, userBID, "192.0.2.100"); err != nil {
+		t.Fatalf("DeletePeer failed: %v", err)
+	}
+
+	// Step 4: hasPeerGroupPolicy for remaining user should be TRUE.
+	// After deletion, user A is the only remaining peer at this IP,
+	// but its GoBGP resource is still a peer-group (created when B was added).
+	var userA store.User
+	for _, u := range manager.peerConfigs {
+		if u.ID == userAID {
+			userA = u
+			break
+		}
+	}
+	if userA.ID == 0 {
+		t.Fatal("user A not found in peerConfigs after deletion")
+	}
+
+	// Verify the peer group still exists in GoBGP.
+	pgNameA := fmt.Sprintf("user_%d_pg", userAID)
+	var pgFound bool
+	manager.server.ListPeerGroup(ctx, &api.ListPeerGroupRequest{}, func(pg *api.PeerGroup) {
+		if pg.Conf.PeerGroupName == pgNameA {
+			pgFound = true
+		}
+	})
+	if !pgFound {
+		t.Fatal("user A's peer group should still exist in GoBGP after B deletion")
+	}
+
+	// BUG: hasPeerGroupPolicy returns false because no other user now shares the IP.
+	// The remaining user still IS a peer-group in GoBGP, so this should be TRUE.
+	if !manager.hasPeerGroupPolicy(ctx, userA) {
+		t.Fatal("BUG: hasPeerGroupPolicy returns false for a peer that still has a peer-group in GoBGP")
+	}
+}
+
 // assertExportStatementCount checks that the wdbgp_export policy has exactly n statements.
 func assertExportStatementCount(t *testing.T, manager *Manager, want int) {
 	t.Helper()
