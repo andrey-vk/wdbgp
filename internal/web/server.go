@@ -2718,12 +2718,12 @@ func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
 			if name, ok := modeMap[mid]; ok {
 				modeNames += name
 			}
-			for _, m := range modes {
-				if m.ID == mid && m.Enabled {
-					active = true
-					break
-				}
+		for _, m := range modes {
+			if m.ID == mid && m.Enabled && f.Enabled {
+				active = true
+				break
 			}
+		}
 		}
 		rows = append(rows, feedRow{
 			Feed:      f,

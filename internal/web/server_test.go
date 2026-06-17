@@ -1562,3 +1562,80 @@ func TestUpdateFeedEnabledCheckboxWorks(t *testing.T) {
 		t.Errorf("feed should remain ENABLED after update with enabled=on (checked checkbox), but Enabled is false")
 	}
 }
+
+func TestFeedsListDisabledFeedNotActive(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web-bug7.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	// Create a disabled feed assigned to mode 1 (enabled).
+	if err := db.AddFeed(ctx, "disabled-feed-bug7", "https://example.test/df7.json", 0); err != nil {
+		t.Fatal(err)
+	}
+	// Create an enabled feed assigned to mode 1.
+	if err := db.AddFeed(ctx, "enabled-feed-bug7", "https://example.test/ef7.json", 0); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var disabledID, enabledID int64
+	for _, f := range feedList {
+		switch f.Name {
+		case "disabled-feed-bug7":
+			disabledID = f.ID
+		case "enabled-feed-bug7":
+			enabledID = f.ID
+		}
+	}
+	// Disable the disabled feed (it's still in mode 1).
+	if _, err := db.DB.Exec(`UPDATE feeds SET enabled = 0 WHERE id = ?`, disabledID); err != nil {
+		t.Fatal(err)
+	}
+	// Also remove all built-in feeds from mode 1 so they don't clutter the page.
+	if _, err := db.DB.Exec(`DELETE FROM catalog_mode_feeds WHERE feed_id NOT IN (?, ?)`, disabledID, enabledID); err != nil {
+		t.Fatal(err)
+	}
+
+	bgp := &fakeBGP{}
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/feeds", nil)
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /admin/feeds: status=%d", w.Code)
+	}
+
+	body := w.Body.String()
+	// The enabled feed should appear as "active" (has class=ok)
+	// The disabled feed should appear as "inactive" (has class=muted, does NOT have class=ok)
+	// Look for the disabled feed's row: the <td> next to its name should contain class=muted, NOT class=ok.
+	// Simple check: the disabled feed name should be followed by "inactive" not "active" with class=ok.
+	if !strings.Contains(body, "disabled-feed-bug7") || !strings.Contains(body, "enabled-feed-bug7") {
+		t.Fatalf("feeds list missing expected feed names:\n%s", body)
+	}
+	// Find the disabled feed's status cell: it should NOT have <span class=ok> after its row.
+	// The template renders: <td>{{if .Active}}<span class=ok>active{{else}}<span class=muted>inactive
+	// So a disabled feed's row should contain "inactive" for its status, not "active" in a class=ok span.
+	idx := strings.Index(body, "disabled-feed-bug7")
+	if idx < 0 {
+		t.Fatal("disabled feed not found in page")
+	}
+	// Look at the next ~500 chars after the feed name. We expect "inactive" not "class=ok".
+	after := body[idx : min(idx+500, len(body))]
+	if strings.Contains(after, `<span class=ok>`) {
+		t.Fatalf("BUG: disabled feed shown as active; fragment after name: %s", after)
+	}
+	if !strings.Contains(after, `class=muted`) {
+		t.Fatalf("disabled feed missing inactive marker: %s", after)
+	}
+}

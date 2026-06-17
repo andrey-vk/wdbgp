@@ -1369,7 +1369,7 @@ FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
-WHERE m.enabled = 1 AND cmf.mode_id = ?
+WHERE f.enabled = 1 AND m.enabled = 1 AND cmf.mode_id = ?
 ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 	if err != nil {
 		return nil, err
@@ -1600,7 +1600,7 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
       WHERE ce.category = sc.category
         AND NOT EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
                         JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
-                        WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1)
+                        WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1 AND f.enabled = 1)
   )
   AND NOT EXISTS (
       SELECT 1
@@ -1609,7 +1609,7 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
       WHERE ce.category = sc.category
         AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
                     JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
-                    WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1)
+                    WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1 AND f.enabled = 1)
   )`, userID, modeID, modeID)
 	if err != nil {
 		return err
@@ -1638,7 +1638,7 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
         AND ce.service = ss.service
         AND NOT EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
                         JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
-                        WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1)
+                        WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1 AND f.enabled = 1)
   )
   AND NOT EXISTS (
       SELECT 1
@@ -1648,7 +1648,7 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
         AND ce.service = ss.service
         AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
                     JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
-                    WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1)
+                    WHERE cmf2.feed_id = f.id AND cmf2.mode_id = ?3 AND m2.enabled = 1 AND f.enabled = 1)
   )`, userID, modeID, modeID)
 	if err != nil {
 		return err
@@ -1749,6 +1749,7 @@ JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE cmf.mode_id = ?1
+  AND f.enabled = 1
   AND m.enabled = 1
   AND ce.category IN (%s)`, strings.Join(placeholders, ", ")))
 	}
@@ -1766,6 +1767,7 @@ JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE cmf.mode_id = ?1
+  AND f.enabled = 1
   AND m.enabled = 1
   AND (ce.category, ce.service) IN (%s)`, strings.Join(pairs, ", ")))
 	}
@@ -1867,6 +1869,7 @@ JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE cmf.mode_id = ?1
+  AND f.enabled = 1
   AND m.enabled = 1
   AND EXISTS (
       SELECT 1 FROM selected_categories sc
@@ -1881,6 +1884,7 @@ JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE cmf.mode_id = ?1
+  AND f.enabled = 1
   AND m.enabled = 1
   AND EXISTS (
       SELECT 1 FROM selected_services ss

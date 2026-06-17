@@ -759,6 +759,80 @@ func TestCountPrefixesEmptyLists(t *testing.T) {
 	}
 }
 
+func TestCountPrefixesExcludesDisabledFeeds(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Create a feed in mode 1 (enabled by default).
+	if err := s.AddFeed(ctx, "count-disabled-test", "https://example.test/cdt.json", 0); err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := s.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feedID int64
+	for _, f := range feeds {
+		if f.Name == "count-disabled-test" {
+			feedID = f.ID
+			break
+		}
+	}
+	if feedID == 0 {
+		t.Fatal("created feed not found")
+	}
+
+	// Insert catalog entries.
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'CountBug3', 'Svc1', '10.0.0.0/24'),
+		(?, 'CountBug3', 'Svc1', '2001:db8:1::/48')`,
+		feedID, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Clear default filters that deny prefix ranges.
+	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{}); err != nil {
+		t.Fatal(err)
+	}
+
+	userID, err := s.AddUser(ctx, User{
+		Name: "count-disabled-user", PeerIP: "172.16.0.90", PeerASN: 65001, Enabled: true,
+		Networks: []string{"192.168.90.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Count should include the feed (it's enabled by default).
+	v4, v6, err := s.CountPrefixes(ctx, 1, []string{"CountBug3"}, nil, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v4 != 1 {
+		t.Fatalf("CountPrefixes v4 (enabled feed) = %d, want 1", v4)
+	}
+	if v6 != 1 {
+		t.Fatalf("CountPrefixes v6 (enabled feed) = %d, want 1", v6)
+	}
+
+	// Disable the feed.
+	if _, err := s.DB.Exec(`UPDATE feeds SET enabled = 0 WHERE id = ?`, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// After disabling, counts should be zero (f.enabled = 0 should exclude it).
+	v4, v6, err = s.CountPrefixes(ctx, 1, []string{"CountBug3"}, nil, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v4 != 0 {
+		t.Fatalf("BUG: CountPrefixes v4 (disabled feed) = %d, want 0 — f.enabled check missing", v4)
+	}
+	if v6 != 0 {
+		t.Fatalf("BUG: CountPrefixes v6 (disabled feed) = %d, want 0 — f.enabled check missing", v6)
+	}
+}
+
 func TestCategoryPrefixCounts(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

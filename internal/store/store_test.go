@@ -955,6 +955,91 @@ func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 	}
 }
 
+func TestSetVisibleUserSelectionPreservesDisabledFeedCategories(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	// Remove all built-in feeds from mode 1 so only our test feeds matter
+	if _, err := s.DB.Exec("DELETE FROM catalog_mode_feeds"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddFeed(ctx, "enabled-feed-5", "https://example.test/ef5.json", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddFeed(ctx, "disabled-feed-5", "https://example.test/df5.json", 0); err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := s.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var enabledID, disabledID int64
+	for _, f := range feeds {
+		switch f.Name {
+		case "enabled-feed-5":
+			enabledID = f.ID
+		case "disabled-feed-5":
+			disabledID = f.ID
+		}
+	}
+	// Both feeds stay in mode 1 (enabled). Disable the disabled-feed-5.
+	if _, err := s.DB.Exec(`UPDATE feeds SET enabled = 0 WHERE id = ?`, disabledID); err != nil {
+		t.Fatal(err)
+	}
+	// Insert catalog entries: enabled feed has Visible/Keep+Remove, disabled feed has HiddenCat/HiddenSvc
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'VisibleBug5', 'Keep', '8.8.8.0/24'),
+		(?, 'VisibleBug5', 'Remove', '8.8.4.0/24'),
+		(?, 'HiddenBug5', 'Any', '1.1.1.0/24'),
+		(?, 'HiddenSvc5', 'Hidden', '1.0.0.0/24')`,
+		enabledID, enabledID, disabledID, disabledID); err != nil {
+		t.Fatal(err)
+	}
+	userID, err := s.AddUser(ctx, User{
+		Name: "client-bug5", PeerIP: "172.16.0.5", PeerASN: 65001, Enabled: true,
+		Networks: []string{"192.168.5.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// User has HiddenBug5 category and HiddenSvc5 service selected (from disabled feed).
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserSelection(ctx, tx, userID,
+			[]string{"HiddenBug5", "VisibleBug5"},
+			[]ServiceKey{
+				{Category: "HiddenSvc5", Service: "Hidden"},
+				{Category: "VisibleBug5", Service: "Remove"},
+			})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Save visible selection with only VisibleBug5/Keep — the disabled feed's
+	// HiddenBug5 and HiddenSvc5 should be PRESERVED, not dropped.
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetVisibleUserSelection(ctx, tx, userID,
+			nil,
+			[]ServiceKey{{Category: "VisibleBug5", Service: "Keep"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	categories, services, err := s.UserSelection(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !categories["HiddenBug5"] {
+		t.Fatalf("BUG: HiddenBug5 category from disabled feed was dropped; categories = %#v", categories)
+	}
+	if !services[ServiceKey{Category: "HiddenSvc5", Service: "Hidden"}] {
+		t.Fatalf("BUG: HiddenSvc5 service from disabled feed was dropped; services = %#v", services)
+	}
+	if !services[ServiceKey{Category: "VisibleBug5", Service: "Keep"}] {
+		t.Fatalf("VisibleBug5/Keep missing from saved services: %#v", services)
+	}
+	// Remove should NOT be present.
+	if services[ServiceKey{Category: "VisibleBug5", Service: "Remove"}] {
+		t.Fatalf("VisibleBug5/Remove should have been removed: %#v", services)
+	}
+}
+
 func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -1817,6 +1902,69 @@ func TestCatalogForModeExcludesDisabledFeeds(t *testing.T) {
 	}
 	if len(catalog) != 0 {
 		t.Fatalf("BUG: CatalogForMode(enabled mode, false) with disabled feed = %#v, want empty", catalog)
+	}
+}
+
+func TestEnabledCatalogPrefixesExcludesDisabledFeeds(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Create feed in mode 1 (enabled).
+	if err := s.AddFeed(ctx, "ecp-test", "https://example.test/ecp.json", 0); err != nil {
+		t.Fatal(err)
+	}
+	feeds, err := s.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feedID int64
+	for _, f := range feeds {
+		if f.Name == "ecp-test" {
+			feedID = f.ID
+			break
+		}
+	}
+	if feedID == 0 {
+		t.Fatal("feed not found")
+	}
+
+	// Insert catalog entries.
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'ECP', 'Svc1', '10.10.0.0/24'),
+		(?, 'ECP', 'Svc1', '2001:db8:ecp::/48')`,
+		feedID, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify prefixes appear when feed is enabled.
+	prefixes, err := s.EnabledCatalogPrefixes(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, p := range prefixes {
+		if p.Category == "ECP" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("EnabledCatalogPrefixes (enabled feed) ECP count = %d, want 2; prefixes=%#v", count, prefixes)
+	}
+
+	// Disable the feed.
+	if _, err := s.DB.Exec(`UPDATE feeds SET enabled = 0 WHERE id = ?`, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// After disabling, prefixes should NOT appear.
+	prefixes, err = s.EnabledCatalogPrefixes(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range prefixes {
+		if p.Category == "ECP" {
+			t.Fatalf("BUG: EnabledCatalogPrefixes returned ECP prefix from disabled feed: %#v", p)
+		}
 	}
 }
 
