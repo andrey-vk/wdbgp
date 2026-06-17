@@ -1244,7 +1244,7 @@ func TestMigration20IsReentrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Verify migration 20 was applied.
+	// Verify all migrations were applied.
 	var version int
 	if err := s.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
@@ -1256,8 +1256,8 @@ func TestMigration20IsReentrant(t *testing.T) {
 
 	// Step 2: Simulate a crash — the transactional SQL committed, but
 	// the process died before INSERT INTO schema_migrations for version 20.
-	// Delete the schema_migrations row so that the next Open thinks it
-	// needs to re-apply migration 20.
+	// Delete the schema_migrations rows so that the next Open thinks it
+	// needs to re-apply migrations 20 and 21.
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)
@@ -1273,35 +1273,185 @@ func TestMigration20IsReentrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	deleted, _ := result.RowsAffected()
-	if deleted != 2 {
-		db.Close()
-		t.Fatalf("expected to delete 1 schema_migrations row, deleted %d", deleted)
-	}
 	db.Close()
+	if deleted != 2 {
+		t.Fatalf("expected to delete 2 schema_migrations rows, deleted %d", deleted)
+	}
 
-	// Step 3: Create a NEW store on the same DB file.
-	// This will try to re-run migration 20 from scratch.
-	//
-	// Step 4: Expected (if migration 20 were re-entrant): the second Open
-	//   succeeds because the transactional SQL is idempotent.
-	//
-	// Step 5: Current behavior: FAILS with "duplicate column name" because
-	//   SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS, and
-	//   migration 20's transactional SQL includes:
-	//     ALTER TABLE feed_adapters ADD COLUMN builtin_version ...
-	//     ALTER TABLE feed_adapters ADD COLUMN is_customized ...
-	//     CREATE TABLE catalog_mode_feeds ... (no IF NOT EXISTS)
-	//
-	// These statements fail on the second run because the schema objects
-	// already exist from the first (committed) run.
+	// Step 3: Re-open — migration 20 is now re-entrant: the Go func
+	// detects that the transactional DDL already ran (mode_id column is
+	// gone) and rebuilds users_new/feeds_new inside the tx.  The NoTxSQL
+	// then re-does the DROP+RENAME (which is also idempotent).
 	s2, err := Open(path)
 	if err != nil {
-		t.Fatalf("migration 20 is not re-entrant: %v", err)
+		t.Fatalf("migration 20 re-run failed: %v", err)
 	}
 	defer s2.Close()
 
-	// If we get here, migration 20 was re-entrant (the bug was fixed).
-	t.Log("migration 20 is re-entrant — this should not happen with current code")
+	// Verify the re-opened store is healthy.
+	if err := s2.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		t.Fatalf("schema version after re-open = %d, want %d", version, len(migrations))
+	}
+
+	// Ensure users table exists and has the correct schema (no peer_ip UNIQUE).
+	var peerIPPK int
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'peer_ip' AND pk > 0").Scan(&peerIPPK); err != nil {
+		t.Fatal(err)
+	}
+	if peerIPPK > 0 {
+		t.Fatal("peer_ip should not be part of the primary key after migration 20")
+	}
+
+	feeds, err := s2.Feeds(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) == 0 {
+		t.Fatal("no feeds after re-open")
+	}
+}
+
+// TestMigration20CrashAfterDropUsers simulates the P3 bug: migration 20
+// NoTxSQL crashes after DROP TABLE users but before the rename.  On the
+// next run the INSERT INTO users_new SELECT * FROM users must not fail
+// because users no longer exists.
+func TestMigration20CrashAfterDropUsers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.sqlite3")
+
+	// Step 1: Open a store to run all migrations, then add a user.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	// Add a user so we can verify data survives the crash recovery.
+	if _, err := s.AddUser(ctx, User{
+		Name:   "test-crash-user",
+		PeerIP: "10.0.0.1",
+		PeerASN: 65001,
+		Enabled: true,
+	}); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	s.Close()
+
+	// Step 2: Simulate a crash AFTER the transactional commit and DROP users
+	// but BEFORE the rename.  We do this by manually replaying the scenario:
+	// drop users, then delete the schema_migrations entries so that Open()
+	// thinks migration 20+21 never finished.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+
+	// Verify users exists and users_new doesn't (normal state after full migration).
+	var usersNewExists int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users_new'").Scan(&usersNewExists); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if usersNewExists != 0 {
+		db.Close()
+		t.Fatal("users_new should not exist after successful migration")
+	}
+
+	// Simulate the crash: DROP users, leaving users_new in limbo.
+	// But to do this, we first need users_new to exist.  We'll create it
+	// with the same schema and copy data, then drop users — exactly what
+	// the old NoTxSQL would have done.
+	if _, err := db.Exec(`
+		CREATE TABLE users_new (
+			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			peer_ip TEXT NOT NULL,
+			peer_asn INTEGER NOT NULL,
+			next_hop TEXT,
+			bgp_password TEXT,
+			selection_locked INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+			filter_editable INTEGER NOT NULL DEFAULT 0,
+			filter_mode TEXT NOT NULL DEFAULT 'global',
+			catalog_mode_id INTEGER REFERENCES catalog_modes(id),
+			catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
+			web_auth TEXT NOT NULL DEFAULT 'network'
+		)
+	`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users_new SELECT * FROM users`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+
+	// Now simulate the crash point: DROP users (but DON'T rename).
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF; DROP TABLE users; PRAGMA foreign_keys = ON`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+
+	// Verify the corrupted state.
+	var usersExists int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'").Scan(&usersExists); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if usersExists != 0 {
+		db.Close()
+		t.Fatal("users should have been dropped")
+	}
+
+	// Delete schema_migrations for 20 and 21 so migration re-runs.
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version IN (20, 21)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Step 3: Re-open.  This is the critical test: migration 20's Go func
+	// must detect the crash-recovery state (cnt==0, users_new exists) and
+	// handle it without failing on the INSERT (which would reference the
+	// now-dropped users table).
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("crash recovery failed: %v", err)
+	}
+	defer s2.Close()
+
+	// Verify the store is healthy.
+	var version int
+	if err := s2.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		t.Fatalf("schema version after recovery = %d, want %d", version, len(migrations))
+	}
+
+	// users table should exist and have data (the rename completed).
+	users, err := s2.Users(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) == 0 {
+		t.Fatal("users table should exist and have data after recovery")
+	}
+
+	// users_new should no longer exist.
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users_new'").Scan(&usersNewExists); err != nil {
+		t.Fatal(err)
+	}
+	if usersNewExists != 0 {
+		t.Fatal("users_new should not exist after recovery")
+	}
 }
 
 func TestFeedsEnabledOnlyExcludesDisabledFeed(t *testing.T) {

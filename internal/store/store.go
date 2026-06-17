@@ -484,15 +484,74 @@ WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
 		SQL:     "",
 		Go: func(tx *sql.Tx) error {
 			// Sentinel: if feeds.mode_id column is already gone, the
-			// transactional DDL already ran — nothing to do.
+			// transactional DDL already ran.
 			var cnt int
 			if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name = 'mode_id'").Scan(&cnt); err != nil {
 				return err
 			}
-			if cnt == 0 {
+
+			rebuildTable := func(name, createSQL, insertSQL string) error {
+				var exists int
+				if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", name).Scan(&exists); err != nil {
+					return err
+				}
+				if exists == 0 {
+					if _, err := tx.Exec(createSQL); err != nil {
+						return err
+					}
+					if _, err := tx.Exec(insertSQL); err != nil {
+						return err
+					}
+				}
 				return nil
 			}
 
+			if cnt == 0 {
+				// Crash recovery: transactional DDL already committed in a
+				// previous run. Create users_new / feeds_new (with data) inside
+				// this tx if the previous run didn't get that far. After commit,
+				// NoTxSQL will finish the DROP+RENAME.
+				if err := rebuildTable("users_new",
+					`CREATE TABLE users_new (
+						id INTEGER PRIMARY KEY,
+						name TEXT NOT NULL UNIQUE,
+						peer_ip TEXT NOT NULL,
+						peer_asn INTEGER NOT NULL,
+						next_hop TEXT,
+						bgp_password TEXT,
+						selection_locked INTEGER NOT NULL DEFAULT 0,
+						enabled INTEGER NOT NULL DEFAULT 1,
+						filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+						filter_editable INTEGER NOT NULL DEFAULT 0,
+						filter_mode TEXT NOT NULL DEFAULT 'global',
+						catalog_mode_id INTEGER REFERENCES catalog_modes(id),
+						catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
+						web_auth TEXT NOT NULL DEFAULT 'network'
+					)`,
+					`INSERT INTO users_new SELECT * FROM users`,
+				); err != nil {
+					return err
+				}
+				if err := rebuildTable("feeds_new",
+					`CREATE TABLE feeds_new (
+						id INTEGER PRIMARY KEY,
+						name TEXT NOT NULL UNIQUE,
+						url TEXT NOT NULL,
+						enabled INTEGER NOT NULL DEFAULT 1,
+						last_success TEXT,
+						last_error TEXT,
+						adapter_id INTEGER REFERENCES feed_adapters(id),
+						sync_interval INTEGER NOT NULL DEFAULT 0,
+						data TEXT NOT NULL DEFAULT ''
+					)`,
+					`INSERT INTO feeds_new SELECT * FROM feeds`,
+				); err != nil {
+					return err
+				}
+				return nil
+			}
+
+			// First-time run: apply transactional DDL.
 			// Adapter upgrade support
 			if _, err := tx.Exec("ALTER TABLE feed_adapters ADD COLUMN builtin_version INTEGER NOT NULL DEFAULT 0"); err != nil {
 				return err
@@ -529,40 +588,62 @@ SELECT mode_id, id FROM feeds WHERE mode_id IS NOT NULL`); err != nil {
 			if _, err := tx.Exec("ALTER TABLE feeds DROP COLUMN mode_id"); err != nil {
 				return err
 			}
+
+			// Pre-build users_new / feeds_new inside the transaction so that
+			// the non-transactional SQL that follows only has to DROP+RENAME.
+			// This avoids the crash scenario where users is DROPped but the
+			// rename hasn't happened yet — on the next run the INSERT would
+			// fail because users no longer exists.
+			if err := rebuildTable("users_new",
+				`CREATE TABLE users_new (
+					id INTEGER PRIMARY KEY,
+					name TEXT NOT NULL UNIQUE,
+					peer_ip TEXT NOT NULL,
+					peer_asn INTEGER NOT NULL,
+					next_hop TEXT,
+					bgp_password TEXT,
+					selection_locked INTEGER NOT NULL DEFAULT 0,
+					enabled INTEGER NOT NULL DEFAULT 1,
+					filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+					filter_editable INTEGER NOT NULL DEFAULT 0,
+					filter_mode TEXT NOT NULL DEFAULT 'global',
+					catalog_mode_id INTEGER REFERENCES catalog_modes(id),
+					catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
+					web_auth TEXT NOT NULL DEFAULT 'network'
+				)`,
+				`INSERT INTO users_new SELECT * FROM users`,
+			); err != nil {
+				return err
+			}
+			if err := rebuildTable("feeds_new",
+				`CREATE TABLE feeds_new (
+					id INTEGER PRIMARY KEY,
+					name TEXT NOT NULL UNIQUE,
+					url TEXT NOT NULL,
+					enabled INTEGER NOT NULL DEFAULT 1,
+					last_success TEXT,
+					last_error TEXT,
+					adapter_id INTEGER REFERENCES feed_adapters(id),
+					sync_interval INTEGER NOT NULL DEFAULT 0,
+					data TEXT NOT NULL DEFAULT ''
+				)`,
+				`INSERT INTO feeds_new SELECT * FROM feeds`,
+			); err != nil {
+				return err
+			}
 			return nil
 		},
 		NoTxSQL: `
--- Remove UNIQUE constraint on peer_ip (issue #17)
--- PRAGMA foreign_keys = OFF is a no-op inside a transaction, so this
--- must run outside the migration transaction.
+-- Remove UNIQUE constraint on peer_ip (issue #17).
+-- The tables users_new and feeds_new (with data) were already created
+-- inside the transaction by the Go func. This non-transactional SQL
+-- only needs to drop the originals and rename the copies (PRAGMA
+-- foreign_keys = OFF is a no-op inside a transaction, hence NoTxSQL).
 --
--- Idempotent: if a previous run crashed after committing the transactional
--- SQL but before recording schema_migrations, users_new may already exist.
--- Check for that and skip already-done steps.
+-- Idempotent: if a previous run crashed mid-way, on re-run the Go func
+-- above recreates any missing *_new tables, and this SQL safely retries
+-- the DROP+RENAME.
 
--- Only create users_new if it doesn't exist (previous run may have failed after creation).
-CREATE TABLE IF NOT EXISTS users_new (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    peer_ip TEXT NOT NULL,
-    peer_asn INTEGER NOT NULL,
-    next_hop TEXT,
-    bgp_password TEXT,
-    selection_locked INTEGER NOT NULL DEFAULT 0,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    filter_override_enabled INTEGER NOT NULL DEFAULT 0,
-    filter_editable INTEGER NOT NULL DEFAULT 0,
-    filter_mode TEXT NOT NULL DEFAULT 'global',
-    catalog_mode_id INTEGER REFERENCES catalog_modes(id),
-    catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
-    web_auth TEXT NOT NULL DEFAULT 'network'
-);
-
--- Only copy data if users_new is empty (first attempt).
-INSERT INTO users_new SELECT * FROM users
-WHERE NOT EXISTS (SELECT 1 FROM users_new LIMIT 1);
-
--- Drop old table and rename. Use IF EXISTS to be safe.
 PRAGMA foreign_keys = OFF;
 DROP TABLE IF EXISTS users;
 ALTER TABLE users_new RENAME TO users;
@@ -570,24 +651,6 @@ PRAGMA foreign_keys = ON;
 
 -- Recreate index dropped by table rebuild (migration 12)
 CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id);
-
--- Rebuild feeds to ensure the enabled column is preserved.
--- Idempotent: skip if feeds_new already exists from a previous partial run.
-CREATE TABLE IF NOT EXISTS feeds_new (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    url TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    last_success TEXT,
-    last_error TEXT,
-    adapter_id INTEGER REFERENCES feed_adapters(id),
-    sync_interval INTEGER NOT NULL DEFAULT 0,
-    data TEXT NOT NULL DEFAULT ''
-);
-
--- Only copy data if feeds_new is empty (first attempt).
-INSERT INTO feeds_new SELECT * FROM feeds
-WHERE NOT EXISTS (SELECT 1 FROM feeds_new LIMIT 1);
 
 PRAGMA foreign_keys = OFF;
 DROP TABLE IF EXISTS feeds;
@@ -600,11 +663,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_feeds_url ON feeds(url);
 	},
 	{
 		Version: 21,
-		Name:    "restore feeds.enabled column for DBs that went through old drop migration",
+		Name:    "restore feeds.enabled column and recover from partial NoTxSQL crashes",
 		SQL:     "",
 		Go: func(tx *sql.Tx) error {
-			// Only add the column if it doesn't exist (migration 20 NoTxSQL
-			// may have already rebuilt feeds with it).
+			// 1. Restore feeds.enabled column if missing (DBs that went
+			//    through old drop-migration path).
 			var cnt int
 			if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name = 'enabled'").Scan(&cnt); err != nil {
 				return err
@@ -614,6 +677,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_feeds_url ON feeds(url);
 					return err
 				}
 			}
+
+			// 2. Crash recovery: if a previous run of the old migration-20
+			//    NoTxSQL dropped the users table but didn't rename users_new,
+			//    complete the rename now. (The new migration-20 Go func
+			//    prevents this in the future, but existing DBs may still be
+			//    in the partial state.)
+			var usersNewExists int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users_new'").Scan(&usersNewExists); err != nil {
+				return err
+			}
+			if usersNewExists > 0 {
+				if _, err := tx.Exec("DROP TABLE IF EXISTS users"); err != nil {
+					return err
+				}
+				if _, err := tx.Exec("ALTER TABLE users_new RENAME TO users"); err != nil {
+					return err
+				}
+			}
+
+			var feedsNewExists int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='feeds_new'").Scan(&feedsNewExists); err != nil {
+				return err
+			}
+			if feedsNewExists > 0 {
+				if _, err := tx.Exec("DROP TABLE IF EXISTS feeds"); err != nil {
+					return err
+				}
+				if _, err := tx.Exec("ALTER TABLE feeds_new RENAME TO feeds"); err != nil {
+					return err
+				}
+			}
+
 			return nil
 		},
 	},
