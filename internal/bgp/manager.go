@@ -260,6 +260,10 @@ func (m *Manager) deletePeerLocked(ctx context.Context, userID int64, peerIP str
 
 func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store.User) error {
 	statements := make([]*api.Statement, 0, len(users)*2)
+	allUserComms := make([]string, 0, len(users))
+	for _, u := range users {
+		allUserComms = append(allUserComms, largeCommunity(m.cfg.LocalASN, u.ID))
+	}
 	for _, user := range users {
 		for _, family := range []api.Family_Afi{api.Family_AFI_IP, api.Family_AFI_IP6} {
 			nextHop, err := nextHopAction(user, family)
@@ -281,8 +285,8 @@ func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store
 				Actions: &api.Actions{
 					RouteAction: api.RouteAction_ROUTE_ACTION_ACCEPT,
 					LargeCommunity: &api.CommunityAction{
-						Type:        api.CommunityAction_TYPE_REPLACE,
-						Communities: []string{largeCommunity(m.cfg.LocalASN, user.ID)},
+						Type:        api.CommunityAction_TYPE_REMOVE,
+						Communities: allUserComms,
 					},
 					Nexthop: nextHop,
 				},
