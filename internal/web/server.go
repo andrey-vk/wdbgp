@@ -1463,6 +1463,16 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	currentFeed, err := s.store.Feed(r.Context(), id)
+	if err != nil {
+		if store.IsNotFound(err) {
+			http.NotFound(w, r)
+		} else {
+			s.internalError(w, r, err)
+		}
+		return
+	}
+	feed.Enabled = currentFeed.Enabled
 	if err := s.store.UpdateFeed(r.Context(), feed); err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
@@ -1569,6 +1579,7 @@ func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
 		ID: id, Name: name, URL: rawURL, AdapterID: adapterID,
 		SyncInterval: formInt(r, "sync_interval"),
 		Data:         data,
+		Enabled:      formBool(r, "enabled"),
 	}, modeIDs, nil
 }
 
@@ -2807,6 +2818,13 @@ func formInt(r *http.Request, key string) int {
 		return 0
 	}
 	return val
+}
+
+func formBool(r *http.Request, key string) bool {
+	if r.Form == nil {
+		return false
+	}
+	return r.Form.Has(key)
 }
 
 func sessionToken(secret string) string {
