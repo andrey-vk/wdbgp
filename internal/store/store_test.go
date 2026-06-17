@@ -1449,6 +1449,70 @@ func TestBuiltInAdapterUpgradeOnSourceChange(t *testing.T) {
 	}
 }
 
+func TestCatalogForModeDisabled(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	modes, err := s.CatalogModes(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// modeA = opencck (ID=1, enabled by default)
+	modeA := modes[0]
+	if modeA.ID != 1 || !modeA.Enabled {
+		t.Fatalf("expected modeA (opencck) to be enabled, got %#v", modeA)
+	}
+
+	// modeB = ipranges (ID=2, disabled by default)
+	modeB := modes[1]
+	if modeB.ID != 2 || modeB.Enabled {
+		t.Fatalf("expected modeB (ipranges) to be disabled, got %#v", modeB)
+	}
+
+	// Create a feed linked to mode B (via AddFeedForMode)
+	if err := s.AddFeedForMode(ctx, "shared-feed", "https://example.test/feed.json", modeB.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	feeds, err := s.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID := feeds[len(feeds)-1].ID
+
+	// Link the same feed to mode A as well — so the feed belongs to BOTH modes.
+	if err := s.AddFeedToMode(ctx, modeA.ID, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert a catalog entry for the shared feed.
+	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'DisabledCat', 'DisabledSvc', '10.0.0.0/24')`, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bug reproduction: CatalogForMode(B, false) should return EMPTY because
+	// mode B is disabled and includeDisabled=false. The current buggy behavior
+	// is that it returns entries because the feed is also linked to enabled mode A.
+	catalog, err := s.CatalogForMode(ctx, modeB.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 0 {
+		t.Fatalf("CatalogForMode(B, false) = %#v, want empty (disabled mode with includeDisabled=false)", catalog)
+	}
+
+	// CatalogForMode(B, true) should return entries since includeDisabled=true.
+	catalog, err = s.CatalogForMode(ctx, modeB.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svcs, ok := catalog["DisabledCat"]; !ok || len(svcs) != 1 || svcs[0] != "DisabledSvc" {
+		t.Fatalf("CatalogForMode(B, true) = %#v, want {DisabledCat:[DisabledSvc]}", catalog)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))

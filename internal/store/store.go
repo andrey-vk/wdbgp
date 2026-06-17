@@ -1201,12 +1201,11 @@ func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisable
 SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE (EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
-              JOIN catalog_modes m ON m.id = cmf.mode_id
-              WHERE cmf.feed_id = f.id AND m.enabled = 1)
+WHERE (EXISTS (SELECT 1 FROM catalog_modes m
+              WHERE m.id = ? AND m.enabled = 1)
        OR ? = 1)
   AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf WHERE cmf.feed_id = f.id AND cmf.mode_id = ?)
-ORDER BY ce.category, ce.service`, includeDisabledInt, modeID)
+ORDER BY ce.category, ce.service`, modeID, includeDisabledInt, modeID)
 	if err != nil {
 		return nil, err
 	}
