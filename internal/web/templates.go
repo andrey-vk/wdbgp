@@ -379,21 +379,23 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <p class=muted>{{tr "hints.user_networks"}}</p>
 
 {{template "section-header" (tr "users.bgp_section")}}
-<label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" id=peer-ip-input {{if eq .User.PeerIP "0.0.0.0"}}disabled{{end}}></label>
+<label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" id=peer-ip-input {{if eq .User.PeerIP "0.0.0.0"}}readonly{{end}}></label>
 <p class=muted>{{tr "hints.user_peer_ip"}}</p>
 <label>{{tr "users.peer_asn"}} <input type=number name=peer_asn value="{{.User.PeerASN}}" required></label>
 <p class=muted>{{tr "hints.user_peer_asn"}}</p>
+<label>{{tr "users.next_hop"}} <input name=next_hop value="{{.User.NextHop}}" placeholder="auto"></label>
+<p class=muted>Override the BGP next-hop address (optional, leave empty for auto).</p>
 <label class=checkbox-row><input type=checkbox id=dynamic-ip {{if eq .User.PeerIP "0.0.0.0"}}checked{{end}}> {{tr "users.dynamic_ip"}}</label>
 <p class=muted>{{tr "users.dynamic_ip_hint"}}</p>
 <div class=form-grid>
-<label>{{tr "users.bgp_password"}} <input type=password name=bgp_password value="{{.User.BGPPassword}}" placeholder="{{tr "users.bgp_password_placeholder"}}"></label>
+<label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{tr "users.bgp_password_placeholder"}}"></label>
 {{if .RequirePasswordForNonUniqueIP}}<p class=muted>Password is required when sharing this IP address with a different ASN.</p>{{end}}
 <label>{{tr "user.clear_password"}} <input type=checkbox name=clear_bgp_password></label>
 </div>
 <script>
 var d=document.getElementById('dynamic-ip');
 var i=document.getElementById('peer-ip-input');
-d.addEventListener('change',function(){if(this.checked){i.value='0.0.0.0';i.disabled=true}else{i.disabled=false;if(i.value==='0.0.0.0')i.value=''}});
+d.addEventListener('change',function(){if(this.checked){i.value='0.0.0.0';i.readOnly=true}else{i.readOnly=false;if(i.value==='0.0.0.0')i.value=''}});
 </script>
 
 {{template "section-header" (tr "users.access_section")}}
