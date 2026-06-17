@@ -497,20 +497,27 @@ func (m *Manager) DeletePeer(ctx context.Context, userID int64, peerIP string) e
 	if !found {
 		return fmt.Errorf("peer %s (user %d) does not exist", peerIP, userID)
 	}
-	// Delete the peer
-	if err := m.deletePeerLocked(ctx, userID, peerIP); err != nil {
-		return err
-	}
-	// Remove from configs — match by userID+peerIP
+	// Remove from config list
 	for i, u := range m.peerConfigs {
 		if u.ID == userID && u.PeerIP == peerIP {
 			m.peerConfigs = append(m.peerConfigs[:i], m.peerConfigs[i+1:]...)
 			break
 		}
 	}
-	// Update global policy
-	users := m.peerConfigs
-	return m.configureGlobalPolicyLocked(ctx, users)
+	// Check if any other enabled user shares this IP
+	var otherUserHasIP bool
+	for _, u := range m.peerConfigs {
+		if u.Enabled && u.PeerIP == peerIP {
+			otherUserHasIP = true
+			break
+		}
+	}
+	if !otherUserHasIP {
+		if err := m.deletePeerLocked(ctx, userID, peerIP); err != nil {
+			return err
+		}
+	}
+	return m.configureGlobalPolicyLocked(ctx, m.peerConfigs)
 }
 
 // findPeer matches an incoming BGP session to a user.
