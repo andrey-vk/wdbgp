@@ -1235,6 +1235,75 @@ WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1`).Scan(&feedID); err != nil {
 	}
 }
 
+func TestMigration20IsReentrant(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.sqlite3")
+
+	// Step 1: Open a store — runs all migrations including migration 20
+	// (both transactional SQL and NoTxSQL), records schema_migrations rows.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Verify migration 20 was applied.
+	var version int
+	if err := s.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		t.Fatalf("schema version after first open = %d, want %d", version, len(migrations))
+	}
+	s.Close()
+
+	// Step 2: Simulate a crash — the transactional SQL committed, but
+	// the process died before INSERT INTO schema_migrations for version 20.
+	// Delete the schema_migrations row so that the next Open thinks it
+	// needs to re-apply migration 20.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	result, err := db.ExecContext(context.Background(),
+		"DELETE FROM schema_migrations WHERE version = 20")
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	deleted, _ := result.RowsAffected()
+	if deleted != 1 {
+		db.Close()
+		t.Fatalf("expected to delete 1 schema_migrations row, deleted %d", deleted)
+	}
+	db.Close()
+
+	// Step 3: Create a NEW store on the same DB file.
+	// This will try to re-run migration 20 from scratch.
+	//
+	// Step 4: Expected (if migration 20 were re-entrant): the second Open
+	//   succeeds because the transactional SQL is idempotent.
+	//
+	// Step 5: Current behavior: FAILS with "duplicate column name" because
+	//   SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS, and
+	//   migration 20's transactional SQL includes:
+	//     ALTER TABLE feed_adapters ADD COLUMN builtin_version ...
+	//     ALTER TABLE feed_adapters ADD COLUMN is_customized ...
+	//     CREATE TABLE catalog_mode_feeds ... (no IF NOT EXISTS)
+	//
+	// These statements fail on the second run because the schema objects
+	// already exist from the first (committed) run.
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("migration 20 is not re-entrant: %v", err)
+	}
+	defer s2.Close()
+
+	// If we get here, migration 20 was re-entrant (the bug was fixed).
+	t.Log("migration 20 is re-entrant — this should not happen with current code")
+}
+
 func TestFeedsEnabledOnlyExcludesDisabledFeed(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
 	if err != nil {

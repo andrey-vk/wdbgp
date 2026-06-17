@@ -481,34 +481,56 @@ WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
 	{
 		Version: 20,
 		Name:    "add adapter upgrade support, catalog mode M:M, drop peer_ip unique",
-		SQL: `
-		-- Adapter upgrade support
-		ALTER TABLE feed_adapters ADD COLUMN builtin_version INTEGER NOT NULL DEFAULT 0;
-		
+		SQL:     "",
+		Go: func(tx *sql.Tx) error {
+			// Sentinel: if feeds.mode_id column is already gone, the
+			// transactional DDL already ran — nothing to do.
+			var cnt int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name = 'mode_id'").Scan(&cnt); err != nil {
+				return err
+			}
+			if cnt == 0 {
+				return nil
+			}
 
-		ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0;
+			// Adapter upgrade support
+			if _, err := tx.Exec("ALTER TABLE feed_adapters ADD COLUMN builtin_version INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return err
+			}
+			if _, err := tx.Exec("ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return err
+			}
 
-		-- Detect pre-existing customizations: removed revision-based heuristic.
-		-- It misclassified reset adapters (source restored to built-in but revision > 1).
-		-- is_customized defaults to 0; seedBuiltInAdapters compares source at startup.
-
-		-- Catalog modes M:M with feeds
-CREATE TABLE catalog_mode_feeds (
+			// Catalog modes M:M with feeds
+			if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS catalog_mode_feeds (
     mode_id INTEGER NOT NULL REFERENCES catalog_modes(id) ON DELETE CASCADE,
     feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
     PRIMARY KEY (mode_id, feed_id)
-);
-CREATE INDEX IF NOT EXISTS idx_catalog_mode_feeds_feed ON catalog_mode_feeds(feed_id);
+)`); err != nil {
+				return err
+			}
+			if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_catalog_mode_feeds_feed ON catalog_mode_feeds(feed_id)"); err != nil {
+				return err
+			}
 
--- Migrate existing feed→mode assignments (all feeds, including disabled)
-INSERT INTO catalog_mode_feeds (mode_id, feed_id)
-SELECT mode_id, id FROM feeds WHERE mode_id IS NOT NULL;
+			// Migrate existing feed→mode assignments (all feeds, including disabled)
+			if _, err := tx.Exec(`INSERT INTO catalog_mode_feeds (mode_id, feed_id)
+SELECT mode_id, id FROM feeds WHERE mode_id IS NOT NULL`); err != nil {
+				return err
+			}
 
--- Drop legacy feeds.mode_id column (indexes first)
-DROP INDEX IF EXISTS idx_feeds_mode;
-DROP INDEX IF EXISTS idx_feeds_enabled_mode;
-ALTER TABLE feeds DROP COLUMN mode_id;
-`,
+			// Drop legacy feeds.mode_id column (indexes first)
+			if _, err := tx.Exec("DROP INDEX IF EXISTS idx_feeds_mode"); err != nil {
+				return err
+			}
+			if _, err := tx.Exec("DROP INDEX IF EXISTS idx_feeds_enabled_mode"); err != nil {
+				return err
+			}
+			if _, err := tx.Exec("ALTER TABLE feeds DROP COLUMN mode_id"); err != nil {
+				return err
+			}
+			return nil
+		},
 		NoTxSQL: `
 -- Remove UNIQUE constraint on peer_ip (issue #17)
 -- PRAGMA foreign_keys = OFF is a no-op inside a transaction, so this
