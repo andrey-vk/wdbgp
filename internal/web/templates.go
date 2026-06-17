@@ -388,7 +388,7 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <label>{{tr "users.peer_asn"}} <input type=number name=peer_asn value="{{.User.PeerASN}}" required></label>
 <p class=muted>{{tr "hints.user_peer_asn"}}</p>
 <label>{{tr "users.next_hop"}} <input name=next_hop value="{{.User.NextHop}}" placeholder="auto"></label>
-<p class=muted>Override the BGP next-hop address (optional, leave empty for auto).</p>
+<p class=muted>{{tr "hints.user_next_hop"}}</p>
 <div class=form-grid>
 <label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{tr "users.bgp_password_placeholder"}}"></label>
 <label class=checkbox-row><input type=checkbox name=clear_bgp_password> {{tr "user.clear_password"}}</label>
