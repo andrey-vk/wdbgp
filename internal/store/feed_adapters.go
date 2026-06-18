@@ -211,8 +211,8 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 		normalized := normalizedBuiltInSource(adapter.source)
 
 		if isCustomized == 1 {
-			if currentSource == normalized {
-				// Source matches built-in — treat as non-customized (was reset).
+			if currentSource == normalized && currentAllowedHosts == adapter.allowedHosts {
+				// Source and allowed_hosts match built-in — treat as non-customized (was reset).
 				if _, err := s.DB.ExecContext(ctx,
 					`UPDATE feed_adapters
 					 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?, is_customized = 0

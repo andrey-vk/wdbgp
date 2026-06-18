@@ -2303,6 +2303,42 @@ func TestPrefixCountsExcludesDisabledFeeds(t *testing.T) {
 	}
 }
 
+func TestSeedPreservesAllowedHostsCustomization(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Use ipranges adapter — it has built-in allowed_hosts = "raw.githubusercontent.com"
+	customHosts := "custom.example.com,another.example.org"
+
+	// Simulate UpdateFeedAdapter: set custom allowed_hosts, keep source as built-in, mark is_customized=1
+	if _, err := s.DB.Exec(
+		`UPDATE feed_adapters SET allowed_hosts = ?, is_customized = 1 WHERE key='ipranges'`,
+		customHosts); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run seedBuiltInAdapters — simulating app restart
+	if err := s.seedBuiltInAdapters(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Check results
+	var newHosts string
+	var newCustomized int
+	if err := s.DB.QueryRow(
+		"SELECT COALESCE(allowed_hosts, ''), is_customized FROM feed_adapters WHERE key='ipranges'",
+	).Scan(&newHosts, &newCustomized); err != nil {
+		t.Fatal(err)
+	}
+
+	if newCustomized != 1 {
+		t.Errorf("is_customized = %d, want 1 (allowed_hosts customization should be preserved, not cleared on restart)", newCustomized)
+	}
+	if newHosts != customHosts {
+		t.Errorf("allowed_hosts = %q, want %q (custom allowed_hosts should be preserved, not overwritten by built-in default)", newHosts, customHosts)
+	}
+}
+
 func TestUniquePeerIPAndASN(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
