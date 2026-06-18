@@ -144,32 +144,63 @@ type builtInAdapter struct {
 	name         string
 	source       string
 	allowedHosts string
+	builtinVersion int
 }
 
 var builtInAdapters = map[string]builtInAdapter{
 	"canonical-json": {
 		name: "Canonical JSON", source: canonicalJSONAdapter,
+		builtinVersion: 1,
 	},
 	"opencck": {
 		name: "OpenCCK", source: openCCKAdapter,
+		builtinVersion: 1,
 	},
 	"ipranges": {
 		name: "IPRanges", source: ipRangesAdapter,
 		allowedHosts: "raw.githubusercontent.com",
+		builtinVersion: 1,
 	},
 	"singbox-srs": {
 		name: "sing-box SRS", source: singboxSRSAdapter,
+		builtinVersion: 1,
 	},
 }
 
 func (s *Store) seedBuiltInAdapters(ctx context.Context) error {
 	for key, adapter := range builtInAdapters {
+		// First, INSERT OR IGNORE any built-in adapters that don't exist yet.
 		if _, err := s.DB.ExecContext(ctx, `
-UPDATE feed_adapters
-SET source = ?
-WHERE key = ? AND source = ''`,
-			normalizedBuiltInSource(adapter.source), key); err != nil {
+INSERT OR IGNORE INTO feed_adapters(key, name, language, api_version, source, allowed_hosts, builtin_version)
+VALUES (?, ?, 'javascript', 1, ?, ?, ?)`,
+			key, adapter.name, normalizedBuiltInSource(adapter.source),
+			adapter.allowedHosts, adapter.builtinVersion); err != nil {
 			return err
+		}
+		// Then, for existing adapters: read is_customized.
+		var isCustomized int
+		err := s.DB.QueryRowContext(ctx,
+			"SELECT is_customized FROM feed_adapters WHERE key = ?", key).Scan(&isCustomized)
+		if err != nil {
+			continue
+		}
+		if isCustomized == 1 {
+			// Only update builtin_version; preserve user edits.
+			if _, err := s.DB.ExecContext(ctx,
+				"UPDATE feed_adapters SET builtin_version = ? WHERE key = ?",
+				adapter.builtinVersion, key); err != nil {
+				return err
+			}
+		} else {
+			// Not customized: update name, source, allowed_hosts, builtin_version.
+			if _, err := s.DB.ExecContext(ctx, `
+UPDATE feed_adapters
+SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?
+WHERE key = ?`,
+				adapter.name, normalizedBuiltInSource(adapter.source),
+				adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -239,7 +270,7 @@ func (s *Store) DeleteFeedAdapter(ctx context.Context, id int64) error {
 func (s *Store) UpdateFeedAdapter(ctx context.Context, adapter FeedAdapter) error {
 	result, err := s.DB.ExecContext(ctx, `
 UPDATE feed_adapters
-SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1
+SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1, is_customized = 1
 WHERE id = ?`,
 		adapter.Name, adapter.Source, adapter.AllowedHosts, adapter.ID)
 	if err != nil {

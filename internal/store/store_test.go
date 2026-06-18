@@ -550,7 +550,8 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 	var feedID, modeID, feedCount, entryCount int64
 	var name, feedURL string
 	if err := s.DB.QueryRow(`
-SELECT id, name, url, mode_id FROM feeds
+SELECT f.id, f.name, f.url, cmf.mode_id FROM feeds f
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 WHERE name = 'ipranges' OR url = 'https://github.com/antonme/ipranges'
 `).Scan(&feedID, &name, &feedURL, &modeID); err != nil {
 		t.Fatal(err)
@@ -656,11 +657,11 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	}
 
 	var openCCKFeedID, ipRangesFeedID int64
-	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").
+	if err := s.DB.QueryRow(	"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").
 		Scan(&openCCKFeedID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = ?", ipranges.ID).
+	if err := s.DB.QueryRow(		"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = ?", ipranges.ID).
 		Scan(&ipRangesFeedID); err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1150,7 @@ func TestCountSelectionPrefixes(t *testing.T) {
 
 	// Get a feed ID for mode 1 (opencck, already enabled)
 	var feedID int64
-	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").Scan(&feedID); err != nil {
+	if err := s.DB.QueryRow(	"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID); err != nil {
 		t.Fatal(err)
 	}
 
