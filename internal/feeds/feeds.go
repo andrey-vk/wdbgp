@@ -311,6 +311,7 @@ JOIN feeds f ON f.id = ce.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 WHERE ce.feed_id != ?1
   AND cmf.mode_id IN (SELECT mode_id FROM catalog_mode_feeds WHERE feed_id = ?1)
+  AND f.enabled = 1
   AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf2
               JOIN catalog_modes m2 ON m2.id = cmf2.mode_id
               WHERE cmf2.feed_id = f.id AND m2.enabled = 1)`, feed.ID)

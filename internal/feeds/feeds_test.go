@@ -687,6 +687,95 @@ func TestSyncSkipsDisabledFeed(t *testing.T) {
 	}
 }
 
+func TestRemapFeedCategoriesIgnoresDisabledFeed(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "remap.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Clean up built-in mode feeds.
+	if _, err := db.DB.Exec("DELETE FROM catalog_mode_feeds"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure mode 1 is enabled.
+	if _, err := db.DB.Exec("UPDATE catalog_modes SET enabled = 1 WHERE id = ?",
+		store.DefaultCatalogModeID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create feed A and add it to mode 1 (AddFeed defaults to mode 1).
+	if err := db.AddFeed(ctx, "feedA", "https://example.test/feedA", 0); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feedA, feedB store.Feed
+	for _, f := range feedList {
+		if f.Name == "feedA" {
+			feedA = f
+			break
+		}
+	}
+
+	// Insert catalog entries for feed A — gives feed B something to reuse.
+	if _, err := db.DB.ExecContext(ctx,
+		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
+		feedA.ID, "Messengers", "Telegram", "10.0.0.0/8"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create feed B in the same mode.
+	if err := db.AddFeed(ctx, "feedB", "https://example.test/feedB", 0); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err = db.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range feedList {
+		if f.Name == "feedB" {
+			feedB = f
+			break
+		}
+	}
+
+	// Set up syncer. MetadataURL returns the same URL for example.test (not
+	// OpenCCK), so the download path is skipped and only the DB query runs.
+	syncer := NewSyncer(db, config.Config{})
+	syncer.Client = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		t.Fatal("HTTP client should not be called for non-OpenCCK URLs")
+		return nil, nil
+	})}
+
+	// Feed B should reuse feed A's category when feed A is enabled.
+	lookup, err := syncer.categoryLookup(ctx, feedB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cats, ok := lookup["Telegram"]; !ok || len(cats) == 0 || cats[0] != "Messengers" {
+		t.Fatalf("expected category Messengers for Telegram when feed A is enabled, got %v", lookup)
+	}
+
+	// Disable feed A.
+	if _, err := db.DB.ExecContext(ctx, "UPDATE feeds SET enabled = 0 WHERE id = ?", feedA.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// After disabling feed A, its categories must NOT be reused.
+	lookup, err = syncer.categoryLookup(ctx, feedB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := lookup["Telegram"]; ok {
+		t.Fatalf("categoryLookup returned categories from a disabled feed, got %v", lookup)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
