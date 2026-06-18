@@ -1184,15 +1184,11 @@ func (s *Store) AddFeedToMode(ctx context.Context, modeID, feedID int64) error {
 	return err
 }
 
-func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM catalog_mode_feeds WHERE mode_id = ? AND feed_id = ?", modeID, feedID); err != nil {
-			return err
-		}
-		// Clean up orphan selections: categories/services that no longer have
-		// any feed in this mode.
-		if _, err := tx.ExecContext(ctx, `
+// CleanupOrphanSelections removes selected_categories and selected_services rows
+// that no longer have any feed providing the corresponding category/service in the given mode.
+// Must be called within a transaction (tx).
+func CleanupOrphanSelections(ctx context.Context, tx *sql.Tx, modeID int64) error {
+	if _, err := tx.ExecContext(ctx, `
 DELETE FROM selected_categories
 WHERE mode_id = ?
   AND NOT EXISTS (
@@ -1201,9 +1197,9 @@ WHERE mode_id = ?
       JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id AND cmf.mode_id = selected_categories.mode_id
       WHERE ce.category = selected_categories.category
   )`, modeID); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
 DELETE FROM selected_services
 WHERE mode_id = ?
   AND NOT EXISTS (
@@ -1213,12 +1209,37 @@ WHERE mode_id = ?
       WHERE ce.category = selected_services.category
         AND ce.service = selected_services.service
   )`, modeID)
-		return err
+	return err
+}
+
+func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM catalog_mode_feeds WHERE mode_id = ? AND feed_id = ?", modeID, feedID); err != nil {
+			return err
+		}
+		return CleanupOrphanSelections(ctx, tx, modeID)
 	})
 }
 
 func (s *Store) SetFeedModes(ctx context.Context, feedID int64, modeIDs []int64) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		// Read current mode assignments so we can detect removed modes.
+		rows, err := tx.QueryContext(ctx, "SELECT mode_id FROM catalog_mode_feeds WHERE feed_id = ?", feedID)
+		if err != nil {
+			return err
+		}
+		var oldIDs []int64
+		for rows.Next() {
+			var mid int64
+			if err := rows.Scan(&mid); err != nil {
+				rows.Close()
+				return err
+			}
+			oldIDs = append(oldIDs, mid)
+		}
+		rows.Close()
+
 		if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_mode_feeds WHERE feed_id = ?", feedID); err != nil {
 			return err
 		}
@@ -1226,6 +1247,19 @@ func (s *Store) SetFeedModes(ctx context.Context, feedID int64, modeIDs []int64)
 			if _, err := tx.ExecContext(ctx,
 				"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", mid, feedID); err != nil {
 				return err
+			}
+		}
+
+		// Clean up orphan selections for modes that were removed.
+		newSet := make(map[int64]bool, len(modeIDs))
+		for _, mid := range modeIDs {
+			newSet[mid] = true
+		}
+		for _, oldID := range oldIDs {
+			if !newSet[oldID] {
+				if err := CleanupOrphanSelections(ctx, tx, oldID); err != nil {
+					return err
+				}
 			}
 		}
 		return nil

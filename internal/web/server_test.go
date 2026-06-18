@@ -1811,3 +1811,137 @@ func TestFeedsListDisabledFeedNotActive(t *testing.T) {
 		t.Fatalf("disabled feed missing inactive marker: %s", after)
 	}
 }
+
+func TestUpdateFeedCleansUpOrphanSelections(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create a fresh mode for isolation.
+	if err := db.AddCatalogMode(ctx, "orphan-update-mode", true); err != nil {
+		t.Fatal(err)
+	}
+	modes, err := db.CatalogModes(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var orphanModeID int64
+	for _, m := range modes {
+		if m.Name == "orphan-update-mode" {
+			orphanModeID = m.ID
+			break
+		}
+	}
+	if orphanModeID == 0 {
+		t.Fatal("created orphan-update-mode not found")
+	}
+
+	// Create a feed, assigned only to the orphan mode.
+	if err := db.AddFeedForMode(ctx, "orphan-update-feed", "https://example.test/update-orphan.json", orphanModeID, 0); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feedID int64
+	for _, f := range feedList {
+		if f.Name == "orphan-update-feed" {
+			feedID = f.ID
+			break
+		}
+	}
+	if feedID == 0 {
+		t.Fatal("created orphan-update-feed not found")
+	}
+
+	// Insert a catalog entry for this feed.
+	if _, err := db.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
+		(?, 'OrphanUpdateCat', 'OrphanUpdateSvc', '10.88.0.0/24')`,
+		feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a user in the orphan mode.
+	userID, err := db.AddUser(ctx, store.User{
+		Name:          "orphan-update-user",
+		PeerIP:        "172.16.88.1",
+		PeerASN:       65088,
+		Enabled:       true,
+		CatalogModeID: orphanModeID,
+		Networks:      []string{"192.168.88.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set the user's category selection in the orphan mode.
+	if err := db.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserModeSelection(ctx, tx, userID, orphanModeID,
+			[]string{"OrphanUpdateCat"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify selection exists.
+	var catCount int
+	if err := db.DB.QueryRow(
+		"SELECT COUNT(*) FROM selected_categories WHERE user_id = ? AND mode_id = ? AND category = ?",
+		userID, orphanModeID, "OrphanUpdateCat",
+	).Scan(&catCount); err != nil {
+		t.Fatal(err)
+	}
+	if catCount != 1 {
+		t.Fatalf("selected_categories count = %d, want 1 (selection should exist before update)", catCount)
+	}
+
+	// Now update the feed via the HTTP handler, omitting mode_ids.
+	// This triggers the bug: inline SetFeedModes DELETEs all catalog_mode_feeds for this feed
+	// without cleaning up orphan selections.
+	bgp := &fakeBGP{}
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	updateForm := url.Values{
+		"name": {"orphan-update-feed"},
+		"url":  {"https://example.test/update-orphan.json"},
+	}
+	req := httptest.NewRequest(http.MethodPost,
+		"/admin/feed/"+strconv.FormatInt(feedID, 10),
+		strings.NewReader(updateForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// The request should succeed (redirect to /admin/feeds).
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 See Other, got %d: body=%s", w.Code, w.Body.String())
+	}
+
+	// Verify the feed is no longer assigned to any mode.
+	var modeCount int
+	if err := db.DB.QueryRow("SELECT COUNT(*) FROM catalog_mode_feeds WHERE feed_id = ?", feedID).Scan(&modeCount); err != nil {
+		t.Fatal(err)
+	}
+	if modeCount != 0 {
+		t.Errorf("feed still assigned to %d modes, want 0 (modes should be cleared)", modeCount)
+	}
+
+	// BUG: After updateFeed removes the feed from the mode,
+	// stale selection in that mode persists — orphan cleanup should have run.
+	if err := db.DB.QueryRow(
+		"SELECT COUNT(*) FROM selected_categories WHERE user_id = ? AND mode_id = ? AND category = ?",
+		userID, orphanModeID, "OrphanUpdateCat",
+	).Scan(&catCount); err != nil {
+		t.Fatal(err)
+	}
+	if catCount != 0 {
+		t.Fatalf("STALE BUG: selected_categories count = %d, want 0 (orphan selection should be cleaned up after feed is removed from the mode via updateFeed)", catCount)
+	}
+}

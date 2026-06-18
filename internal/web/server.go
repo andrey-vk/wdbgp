@@ -1537,6 +1537,25 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ----- Inline SetFeedModes -----
+	// Read current mode assignments so we can detect removed modes.
+	oldRows, err := tx.QueryContext(r.Context(),
+		"SELECT mode_id FROM catalog_mode_feeds WHERE feed_id = ?", id)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	var oldIDs []int64
+	for oldRows.Next() {
+		var mid int64
+		if err := oldRows.Scan(&mid); err != nil {
+			oldRows.Close()
+			s.internalError(w, r, err)
+			return
+		}
+		oldIDs = append(oldIDs, mid)
+	}
+	oldRows.Close()
+
 	if _, err := tx.ExecContext(r.Context(),
 		"DELETE FROM catalog_mode_feeds WHERE feed_id = ?", id); err != nil {
 		s.internalError(w, r, err)
@@ -1547,6 +1566,20 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", mid, id); err != nil {
 			s.internalError(w, r, err)
 			return
+		}
+	}
+
+	// Clean up orphan selections for modes that were removed from the feed.
+	newSet := make(map[int64]bool, len(modeIDs))
+	for _, mid := range modeIDs {
+		newSet[mid] = true
+	}
+	for _, oldID := range oldIDs {
+		if !newSet[oldID] {
+			if err := store.CleanupOrphanSelections(r.Context(), tx, oldID); err != nil {
+				s.internalError(w, r, err)
+				return
+			}
 		}
 	}
 
