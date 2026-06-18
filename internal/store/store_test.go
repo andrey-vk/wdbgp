@@ -2456,6 +2456,54 @@ func TestPrefixCountsExcludesDisabledFeeds(t *testing.T) {
 	}
 }
 
+func TestSeedPreservesLegacyAllowedHostsCustomization(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Use ipranges adapter — it has built-in allowed_hosts = "raw.githubusercontent.com"
+	customHosts := "custom.example.com,another.example.org"
+
+	// Simulate a legacy migration state where builtin_version=0, is_customized=0,
+	// source matches built-in, but allowed_hosts was customized by the user.
+	// This is the v20 migration legacy path — the user customized allowed_hosts
+	// before builtin_version or is_customized fields existed.
+	var currentAdapterKey, currentSource, currentBuiltinHosts string
+	if err := s.DB.QueryRow(
+		"SELECT key, COALESCE(source,''), COALESCE(allowed_hosts,'') FROM feed_adapters WHERE key='ipranges'",
+	).Scan(&currentAdapterKey, &currentSource, &currentBuiltinHosts); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("built-in source matched=%v, built-in hosts=%q", currentSource == normalizedBuiltInSource(ipRangesAdapter), currentBuiltinHosts)
+
+	// Set custom allowed_hosts, keep source matching built-in, builtin_version=0, is_customized=0
+	if _, err := s.DB.Exec(
+		`UPDATE feed_adapters SET allowed_hosts = ?, builtin_version = 0, is_customized = 0 WHERE key='ipranges'`,
+		customHosts); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run seedBuiltInAdapters — simulating app restart
+	if err := s.seedBuiltInAdapters(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify allowed_hosts preserved and is_customized=1
+	var newHosts string
+	var newCustomized int
+	if err := s.DB.QueryRow(
+		"SELECT COALESCE(allowed_hosts, ''), is_customized FROM feed_adapters WHERE key='ipranges'",
+	).Scan(&newHosts, &newCustomized); err != nil {
+		t.Fatal(err)
+	}
+
+	if newCustomized != 1 {
+		t.Errorf("BUG: is_customized = %d, want 1 (legacy allowed_hosts customization with source matching built-in should be detected and protected)", newCustomized)
+	}
+	if newHosts != customHosts {
+		t.Errorf("BUG: allowed_hosts = %q, want %q (custom allowed_hosts lost — overwritten by built-in default in legacy version=0 path)", newHosts, customHosts)
+	}
+}
+
 func TestSeedPreservesAllowedHostsCustomization(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

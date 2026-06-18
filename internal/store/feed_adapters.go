@@ -247,12 +247,24 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 						adapter.name, currentAllowedHosts, adapter.builtinVersion, key); err != nil {
 						return err
 					}
-				} else {
-					// Source matches built-in or is empty — normal upgrade.
+				} else if currentAllowedHosts != "" && currentAllowedHosts != adapter.allowedHosts {
+					// Source matches built-in but allowed_hosts was customized
+					// in the legacy state. Preserve custom hosts, mark as customized.
 					if _, err := s.DB.ExecContext(ctx,
 						`UPDATE feed_adapters
-						 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?
-						 WHERE key = ?`,
+					 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?, is_customized = 1
+					 WHERE key = ?`,
+						adapter.name, normalized, currentAllowedHosts,
+						adapter.builtinVersion, key); err != nil {
+						return err
+					}
+				} else {
+					// Source matches built-in or is empty, allowed_hosts also matches
+					// — normal upgrade.
+					if _, err := s.DB.ExecContext(ctx,
+						`UPDATE feed_adapters
+					 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?
+					 WHERE key = ?`,
 						adapter.name, normalized,
 						adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
 						return err
@@ -298,7 +310,7 @@ VALUES (?, ?, ?, ?, ?, 0)`,
 			}
 		}
 	}
-return nil
+	return nil
 }
 
 func IsBuiltInFeedAdapter(key string) bool {
