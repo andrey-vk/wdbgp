@@ -18,6 +18,8 @@ import (
 	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 	"github.com/osrg/gobgp/v4/pkg/server"
 
+	"github.com/google/uuid"
+
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
@@ -1317,6 +1319,84 @@ func TestPeerGroupPolicyRebuildUpdatesRemoveList(t *testing.T) {
 	communityB := fmt.Sprintf("^%d:%d:0$", manager.cfg.LocalASN, userBID)
 	expected := []string{communityA, communityB}
 	assertPolicyRemoveCommunities(t, manager, fmt.Sprintf("user_%d_policy", userAID), expected)
+}
+
+func TestReconcileDetectsCommunityChanges(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Insert catalog entry so routes can be reconciled.
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
+		(feed_id, category, service, cidr) VALUES
+		(1, 'video', 'youtube', '8.8.8.0/24')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set initial communities for mode 1.
+	modeID := int64(1)
+	if err := s.SetCommunity(ctx, modeID, "video", "", 10000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCommunity(ctx, modeID, "video", "youtube", 10001); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create user with selection.
+	userID, err := s.AddUser(ctx, store.User{
+		Name: "client", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, userID, []string{"video"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Phase 1: Start manager, install path with initial communities.
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	if len(manager.installed) != 1 {
+		t.Fatalf("expected 1 installed path, got %d: %#v", len(manager.installed), manager.installed)
+	}
+	firstUUID := manager.installed["8.8.8.0/24"].UUID
+	if firstUUID == uuid.Nil {
+		t.Fatal("first UUID is nil")
+	}
+
+	// Phase 2: Change communities to different values.
+	if err := s.SetCommunity(ctx, modeID, "video", "", 50000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCommunity(ctx, modeID, "video", "youtube", 50001); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify: path should be re-announced with a new UUID.
+	secondUUID := manager.installed["8.8.8.0/24"].UUID
+	if secondUUID == firstUUID {
+		t.Fatalf("community change did not trigger re-announce; UUID still %s", firstUUID)
+	}
+	if secondUUID == uuid.Nil {
+		t.Fatal("second UUID is nil")
+	}
 }
 
 // assertPolicyRemoveCommunities checks that policy `name` has a REMOVE community

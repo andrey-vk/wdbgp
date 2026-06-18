@@ -992,7 +992,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		mr, exists := perPrefix[prefix]
 		sig := ""
 		if exists {
-			sig = signature(mr.userIDs)
+			sig = signature(mr.userIDs, mr.comms)
 		}
 		if exists && sig == installed.Signature {
 			continue
@@ -1015,7 +1015,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 
 	// Announce one NLRI per unique prefix with merged communities.
 	for actualPrefix, mr := range perPrefix {
-		sig := signature(mr.userIDs)
+		sig := signature(mr.userIDs, mr.comms)
 		if installed, ok := m.installed[actualPrefix]; ok && installed.Signature == sig {
 			continue
 		}
@@ -1159,12 +1159,21 @@ func neighborDefinedSet(name, rawAddress string) (*api.DefinedSet, error) {
 	}, nil
 }
 
-func signature(userIDs []int64) string {
+func signature(userIDs []int64, comms map[string]uint32) string {
 	sorted := append([]int64(nil), userIDs...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	parts := make([]string, len(sorted))
-	for i, id := range sorted {
-		parts[i] = strconv.FormatInt(id, 10)
+	parts := make([]string, 0, len(sorted)+len(comms)*2)
+	for _, id := range sorted {
+		parts = append(parts, strconv.FormatInt(id, 10))
+	}
+	// Sort community keys for deterministic output.
+	commKeys := make([]string, 0, len(comms))
+	for k := range comms {
+		commKeys = append(commKeys, k)
+	}
+	sort.Strings(commKeys)
+	for _, k := range commKeys {
+		parts = append(parts, k, strconv.FormatUint(uint64(comms[k]), 10))
 	}
 	return strings.Join(parts, ",")
 }
