@@ -659,6 +659,9 @@ PRAGMA foreign_keys = ON;
 
 -- Recreate indexes that were on the original feeds table.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_feeds_url ON feeds(url);
+
+-- Enforce peer slot uniqueness at DB level (same IP + same ASN = single GoBGP slot).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ip_asn ON users(peer_ip, peer_asn);
 	`,
 	},
 	{
@@ -711,6 +714,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_feeds_url ON feeds(url);
 
 			return nil
 		},
+	},
+	{
+		Version: 22,
+		Name:    "add UNIQUE(peer_ip, peer_asn) constraint",
+		SQL: `
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ip_asn ON users(peer_ip, peer_asn);
+`,
 	},
 }
 

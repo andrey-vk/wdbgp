@@ -1359,15 +1359,15 @@ func TestMigration20IsReentrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := db.ExecContext(context.Background(),
-		"DELETE FROM schema_migrations WHERE version IN (20, 21)")
+		"DELETE FROM schema_migrations WHERE version IN (20, 21, 22)")
 	if err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
 	deleted, _ := result.RowsAffected()
 	db.Close()
-	if deleted != 2 {
-		t.Fatalf("expected to delete 2 schema_migrations rows, deleted %d", deleted)
+	if deleted != 3 {
+		t.Fatalf("expected to delete 3 schema_migrations rows, deleted %d", deleted)
 	}
 
 	// Step 3: Re-open — migration 20 is now re-entrant: the Go func
@@ -1502,8 +1502,8 @@ func TestMigration20CrashAfterDropUsers(t *testing.T) {
 		t.Fatal("users should have been dropped")
 	}
 
-	// Delete schema_migrations for 20 and 21 so migration re-runs.
-	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version IN (20, 21)`); err != nil {
+	// Delete schema_migrations for 20, 21, and 22 so migration re-runs.
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version IN (20, 21, 22)`); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
@@ -2153,7 +2153,7 @@ func TestMigrationRecoveryPreservesForeignKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx,
-		"DELETE FROM schema_migrations WHERE version IN (20, 21)"); err != nil {
+		"DELETE FROM schema_migrations WHERE version IN (20, 21, 22)"); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
@@ -2301,6 +2301,31 @@ func TestPrefixCountsExcludesDisabledFeeds(t *testing.T) {
 	if len(catV6) != 0 {
 		t.Fatalf("BUG: CategoryPrefixCounts v6 (disabled feed) = %#v, want empty", catV6)
 	}
+}
+
+func TestUniquePeerIPAndASN(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Create user A at IP X, ASN Y
+	idA, err := s.AddUser(ctx, User{
+		Name: "user-a", PeerIP: "10.0.0.1", PeerASN: 65001, Enabled: true,
+		Networks: []string{"10.0.0.0/24"},
+	})
+	if err != nil {
+		t.Fatalf("user-a insert failed: %v", err)
+	}
+	t.Logf("user-a created with id=%d", idA)
+
+	// Attempt to create user B at same IP X, same ASN Y — must fail
+	idB, err := s.AddUser(ctx, User{
+		Name: "user-b", PeerIP: "10.0.0.1", PeerASN: 65001, Enabled: true,
+		Networks: []string{"10.0.1.0/24"},
+	})
+	if err == nil {
+		t.Fatalf("expected UNIQUE constraint violation for duplicate (peer_ip, peer_asn), but insert succeeded (id=%d)", idB)
+	}
+	t.Logf("user-b correctly rejected: %v", err)
 }
 
 func TestRemoveFeedFromModeCleansUpOrphanSelections(t *testing.T) {
