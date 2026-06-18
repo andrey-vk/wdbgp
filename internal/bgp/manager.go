@@ -9,52 +9,45 @@ import (
 	"strings"
 	"sync"
 
-	api "github.com/osrg/gobgp/v3/api"
-	"github.com/osrg/gobgp/v3/pkg/server"
-	"google.golang.org/protobuf/types/known/anypb"
-
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/logging"
-	"github.com/andrey-vk/wdbgp/internal/retry"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
-type installedPath struct {
-	UUID      []byte
+// instPrefix tracks a globally installed prefix and its routing signature.
+type instPrefix struct {
 	Signature string
 }
 
+// Manager manages BGP peers and route announcements using our custom Speaker.
 type Manager struct {
-	cfg        config.Config
-	store      *store.Store
-	mu         sync.Mutex
-	server     *server.BgpServer
-	installed  map[string]installedPath
-	peerConfigs []store.User // all configured peers (supports multiple per IP, dynamic 0.0.0.0)
+	cfg         config.Config
+	store       *store.Store
+	mu          sync.Mutex
+	speaker     *Speaker
+	installed   map[string]instPrefix // global prefix → signature
+	peerConfigs []store.User          // all configured peers
+	peerRoutes  map[string][]Route    // per-peer last announced routes (keyed by peer address string)
 }
-
-const (
-	globalPolicyTable = "global"
-	exportPolicyName  = "wdbgp_export"
-)
 
 func NewManager(cfg config.Config, s *store.Store) *Manager {
 	return &Manager{
 		cfg:        cfg,
 		store:      s,
-		installed:  map[string]installedPath{},
+		installed:  map[string]instPrefix{},
 		peerConfigs: []store.User{},
+		peerRoutes: map[string][]Route{},
 	}
 }
 
 func (m *Manager) Start(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
-	logger.Info("starting BGP manager", 
+	logger.Info("starting BGP manager",
 		"asn", m.cfg.LocalASN,
 		"router_id", m.cfg.RouterID,
 		"bgp_port", m.cfg.BGPListenPort,
 	)
-	
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.startLocked(ctx)
@@ -63,22 +56,23 @@ func (m *Manager) Start(ctx context.Context) error {
 func (m *Manager) Stop(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
 	logger.Info("stopping BGP manager")
-	
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.server == nil {
-		logger.Debug("BGP server already stopped")
+	if m.speaker == nil {
+		logger.Debug("BGP speaker already stopped")
 		return nil
 	}
-	err := m.server.StopBgp(ctx, &api.StopBgpRequest{})
-	m.server = nil
-	m.installed = map[string]installedPath{}
+	err := m.speaker.Stop()
+	m.speaker = nil
+	m.installed = map[string]instPrefix{}
 	m.peerConfigs = []store.User{}
-	
+	m.peerRoutes = map[string][]Route{}
+
 	if err != nil {
-		logger.Error("failed to stop BGP server", "error", err)
+		logger.Error("failed to stop BGP speaker", "error", err)
 	} else {
-		logger.Info("BGP server stopped successfully")
+		logger.Info("BGP speaker stopped successfully")
 	}
 	return err
 }
@@ -86,214 +80,85 @@ func (m *Manager) Stop(ctx context.Context) error {
 func (m *Manager) ReloadPeers(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// Save state before restart
 	savedInstalled := m.installed
 	savedPeerConfigs := m.peerConfigs
-	if m.server != nil {
-		if err := m.server.StopBgp(ctx, &api.StopBgpRequest{}); err != nil {
+	savedPeerRoutes := m.peerRoutes
+	if m.speaker != nil {
+		if err := m.speaker.Stop(); err != nil {
 			return err
 		}
 	}
-	m.server = nil
-	m.installed = savedInstalled // Restore installed routes
-	m.peerConfigs = savedPeerConfigs // Restore peer configs
+	m.speaker = nil
+	m.installed = savedInstalled
+	m.peerConfigs = savedPeerConfigs
+	m.peerRoutes = savedPeerRoutes
 	return m.startLocked(ctx)
 }
 
 func (m *Manager) startLocked(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
-	
-	bgpServer := server.NewBgpServer()
-	go bgpServer.Serve()
-	if err := bgpServer.StartBgp(ctx, &api.StartBgpRequest{
-		Global: &api.Global{
-			Asn:        m.cfg.LocalASN,
-			RouterId:   m.cfg.RouterID,
-			ListenPort: m.cfg.BGPListenPort,
-		},
-	}); err != nil {
-		logger.Error("failed to start BGP server", "error", err)
-		return err
+
+	routerID, err := netip.ParseAddr(m.cfg.RouterID)
+	if err != nil {
+		return fmt.Errorf("parse router ID %q: %w", m.cfg.RouterID, err)
 	}
-	logger.Debug("BGP server started")
-	
+	localAddr, err := netip.ParseAddr(m.cfg.LocalAddressV4)
+	if err != nil {
+		return fmt.Errorf("parse local address %q: %w", m.cfg.LocalAddressV4, err)
+	}
+
+	speaker := NewSpeaker(SpeakerConfig{
+		ASN:       m.cfg.LocalASN,
+		RouterID:  routerID,
+		Port:      m.cfg.BGPListenPort,
+		LocalAddr: localAddr,
+	}, logger.Logger)
+
+	if err := speaker.Start(ctx); err != nil {
+		return fmt.Errorf("start speaker: %w", err)
+	}
 	started := false
 	defer func() {
 		if !started {
-			logger.Debug("cleaning up BGP server after failed initialization")
-			_ = bgpServer.StopBgp(context.Background(), &api.StopBgpRequest{})
+			_ = speaker.Stop()
 		}
 	}()
-	m.server = bgpServer
+
+	m.speaker = speaker
+
+	// Load enabled users as peer configs
 	users, err := m.store.Users(ctx, true)
 	if err != nil {
-		m.server = nil
-		logger.Error("failed to get users from store", "error", err)
-		return err
+		return fmt.Errorf("load peers: %w", err)
 	}
-	
+
 	logger.Info("configuring BGP peers", "peer_count", len(users))
-	// Store peer configs for later updates
 	m.peerConfigs = make([]store.User, 0, len(users))
-	for _, user := range users {
-		if err := m.addPeerLocked(ctx, user); err != nil {
-			m.server = nil
-			logger.Error("failed to add BGP peer", "peer_ip", user.PeerIP, "error", err)
-			return fmt.Errorf("add peer %s: %w", user.PeerIP, err)
+	var peerConfigs []PeerConfig
+	for _, u := range users {
+		addr, err := netip.ParseAddr(u.PeerIP)
+		if err != nil {
+			logger.Warn("skipping peer with invalid IP", "peer_ip", u.PeerIP, "error", err)
+			continue
 		}
-		m.peerConfigs = append(m.peerConfigs, user)
-		logger.Debug("added BGP peer", "peer_ip", user.PeerIP, "peer_asn", user.PeerASN)
+		peerConfigs = append(peerConfigs, PeerConfig{
+			ID:       u.ID,
+			Address:  addr,
+			ASN:      u.PeerASN,
+			Password: u.BGPPassword,
+			Name:     u.Name,
+		})
+		m.peerConfigs = append(m.peerConfigs, u)
+		logger.Debug("configured BGP peer", "peer_ip", u.PeerIP, "peer_asn", u.PeerASN)
 	}
-	if err := m.configureGlobalPolicyLocked(ctx, users); err != nil {
-		m.server = nil
-		logger.Error("failed to configure global policy", "error", err)
-		return err
-	}
-	logger.Debug("global policy configured")
-	
+
+	speaker.SetPeers(peerConfigs)
+
 	if err := m.reconcileLocked(ctx); err != nil {
-		m.server = nil
-		logger.Error("failed to reconcile routes", "error", err)
 		return err
 	}
 	logger.Info("BGP manager started successfully", "peer_count", len(users))
 	started = true
-	return nil
-}
-
-func (m *Manager) addPeerLocked(ctx context.Context, user store.User) error {
-	communitySetName := userCommunitySetName(user.ID)
-	community := largeCommunity(m.cfg.LocalASN, user.ID)
-	if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
-		DefinedSet: &api.DefinedSet{
-			DefinedType: api.DefinedType_LARGE_COMMUNITY,
-			Name:        communitySetName,
-			List:        []string{community},
-		},
-		Replace: true,
-	}); err != nil {
-		return err
-	}
-	neighborSet, err := neighborDefinedSet(userNeighborSetName(user.ID), user.PeerIP)
-	if err != nil {
-		return err
-	}
-	if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
-		DefinedSet: neighborSet,
-		Replace:    true,
-	}); err != nil {
-		return err
-	}
-
-	peerAddress, err := netip.ParseAddr(user.PeerIP)
-	if err != nil {
-		return err
-	}
-	localAddress := m.cfg.LocalAddressV4
-	if peerAddress.Is6() {
-		localAddress = m.cfg.LocalAddressV6
-	}
-	if localAddress == "" {
-		return fmt.Errorf("no local BGP address configured for peer family")
-	}
-	return m.server.AddPeer(ctx, &api.AddPeerRequest{Peer: &api.Peer{
-		Conf: &api.PeerConf{
-			NeighborAddress: user.PeerIP,
-			PeerAsn:         user.PeerASN,
-			AuthPassword:    user.BGPPassword,
-			Description:     user.Name,
-		},
-		Transport: &api.Transport{LocalAddress: localAddress},
-		EbgpMultihop: &api.EbgpMultihop{
-			Enabled:     true,
-			MultihopTtl: 64,
-		},
-		AfiSafis: []*api.AfiSafi{
-			{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
-			{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
-		},
-	}})
-}
-
-func (m *Manager) deletePeerLocked(ctx context.Context, peerIP string) error {
-	// Find user by peerIP
-	var user store.User
-	for _, u := range m.peerConfigs {
-		if u.PeerIP == peerIP {
-			user = u
-			break
-		}
-	}
-	if user.ID == 0 {
-		return fmt.Errorf("user not found for peer %s", peerIP)
-	}
-	// Delete defined sets
-	communitySetName := userCommunitySetName(user.ID)
-	if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
-		DefinedSet: &api.DefinedSet{
-			DefinedType: api.DefinedType_LARGE_COMMUNITY,
-			Name:        communitySetName,
-		},
-	}); err != nil {
-		return err
-	}
-	neighborSetName := userNeighborSetName(user.ID)
-	if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
-		DefinedSet: &api.DefinedSet{
-			DefinedType: api.DefinedType_NEIGHBOR,
-			Name:        neighborSetName,
-		},
-	}); err != nil {
-		return err
-	}
-	// Delete the peer
-	return m.server.DeletePeer(ctx, &api.DeletePeerRequest{
-		Address: peerIP,
-	})
-}
-
-func (m *Manager) configureGlobalPolicyLocked(ctx context.Context, users []store.User) error {
-	statements := make([]*api.Statement, 0, len(users)*2)
-	for _, user := range users {
-		for _, family := range []api.Family_Afi{api.Family_AFI_IP, api.Family_AFI_IP6} {
-			nextHop, err := nextHopAction(user, family)
-			if err != nil {
-				return err
-			}
-			statements = append(statements, &api.Statement{
-				Name: fmt.Sprintf("export_user_%d_%s", user.ID, strings.ToLower(family.String())),
-				Conditions: &api.Conditions{
-					NeighborSet: &api.MatchSet{
-						Name: userNeighborSetName(user.ID),
-						Type: api.MatchSet_ANY,
-					},
-					LargeCommunitySet: &api.MatchSet{
-						Name: userCommunitySetName(user.ID),
-						Type: api.MatchSet_ANY,
-					},
-				},
-				Actions: &api.Actions{
-					RouteAction: api.RouteAction_ACCEPT,
-					Nexthop:     nextHop,
-				},
-			})
-		}
-	}
-	if err := m.server.AddPolicy(ctx, &api.AddPolicyRequest{
-		Policy: &api.Policy{Name: exportPolicyName, Statements: statements},
-	}); err != nil {
-		return err
-	}
-	if err := m.server.SetPolicyAssignment(ctx, &api.SetPolicyAssignmentRequest{
-		Assignment: &api.PolicyAssignment{
-			Name:          globalPolicyTable,
-			Direction:     api.PolicyDirection_EXPORT,
-			Policies:      []*api.Policy{{Name: exportPolicyName}},
-			DefaultAction: api.RouteAction_REJECT,
-		},
-	}); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -306,13 +171,12 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 func (m *Manager) AddPeer(ctx context.Context, user store.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.server == nil {
-		return fmt.Errorf("BGP server is not running")
+	if m.speaker == nil {
+		return fmt.Errorf("BGP speaker is not running")
 	}
-	// Check if peer already exists (match by IP+ASN for non-dynamic, or by ASN+password for dynamic)
+	// Check if peer already exists
 	for _, u := range m.peerConfigs {
 		if u.PeerIP == user.PeerIP && u.PeerASN == user.PeerASN {
-			// For dynamic peers (0.0.0.0), also check password
 			if user.PeerIP == "0.0.0.0" && u.BGPPassword == user.BGPPassword {
 				return fmt.Errorf("dynamic peer with ASN %d already exists", user.PeerASN)
 			}
@@ -321,29 +185,22 @@ func (m *Manager) AddPeer(ctx context.Context, user store.User) error {
 			}
 		}
 	}
-	// Add the peer
-	if err := m.addPeerLocked(ctx, user); err != nil {
-		return err
-	}
-	// Store the config
 	m.peerConfigs = append(m.peerConfigs, user)
-	// Update global policy to include new peer
-	users := m.peerConfigs
-	return m.configureGlobalPolicyLocked(ctx, users)
+	m.speaker.SetPeers(m.buildPeerConfigs())
+	return nil
 }
 
 func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.server == nil {
-		return fmt.Errorf("BGP server is not running")
+	if m.speaker == nil {
+		return fmt.Errorf("BGP speaker is not running")
 	}
-	// Find existing peer by user ID (IP may have changed)
-	var oldUser store.User
+	// Find existing peer by user ID
 	found := false
-	for _, u := range m.peerConfigs {
+	for i, u := range m.peerConfigs {
 		if u.ID == user.ID {
-			oldUser = u
+			m.peerConfigs[i] = user
 			found = true
 			break
 		}
@@ -351,133 +208,17 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	if !found {
 		return fmt.Errorf("peer %s does not exist", user.PeerIP)
 	}
-	// If peer IP changed, we need to delete old peer and add new one
-	if oldUser.PeerIP != user.PeerIP {
-		// Delete old peer
-		if err := m.deletePeerLocked(ctx, oldUser.PeerIP); err != nil {
-			return fmt.Errorf("delete old peer %s: %w", oldUser.PeerIP, err)
-		}
-		// Remove old user from slice
-		for i, u := range m.peerConfigs {
-			if u.ID == user.ID {
-				m.peerConfigs = append(m.peerConfigs[:i], m.peerConfigs[i+1:]...)
-				break
-			}
-		}
-		// Add new peer
-		if err := m.addPeerLocked(ctx, user); err != nil {
-			return err
-		}
-		m.peerConfigs = append(m.peerConfigs, user)
-	} else {
-		// Update existing peer using GoBGP's UpdatePeer API
-		peerAddress, err := netip.ParseAddr(user.PeerIP)
-		if err != nil {
-			return err
-		}
-		localAddress := m.cfg.LocalAddressV4
-		if peerAddress.Is6() {
-			localAddress = m.cfg.LocalAddressV6
-		}
-		if localAddress == "" {
-			return fmt.Errorf("no local BGP address configured for peer family")
-		}
-		// Update the peer
-		_, updateErr := m.server.UpdatePeer(ctx, &api.UpdatePeerRequest{
-			Peer: &api.Peer{
-				Conf: &api.PeerConf{
-					NeighborAddress: user.PeerIP,
-					PeerAsn:         user.PeerASN,
-					AuthPassword:    user.BGPPassword,
-					Description:     user.Name,
-				},
-				Transport: &api.Transport{LocalAddress: localAddress},
-				EbgpMultihop: &api.EbgpMultihop{
-					Enabled:     true,
-					MultihopTtl: 64,
-				},
-				AfiSafis: []*api.AfiSafi{
-					{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
-					{Config: &api.AfiSafiConfig{Family: ipv6Family(), Enabled: true}},
-				},
-			},
-		})
-		if updateErr != nil {
-			return updateErr
-		}
-		// Update defined sets if needed
-		if oldUser.ID != user.ID {
-			// Update community set
-			oldCommunitySetName := userCommunitySetName(oldUser.ID)
-			newCommunitySetName := userCommunitySetName(user.ID)
-			newCommunity := largeCommunity(m.cfg.LocalASN, user.ID)
-			
-			// Delete old community set
-			if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
-				DefinedSet: &api.DefinedSet{
-					DefinedType: api.DefinedType_LARGE_COMMUNITY,
-					Name:        oldCommunitySetName,
-				},
-			}); err != nil {
-				return err
-			}
-			
-			// Add new community set
-			if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
-				DefinedSet: &api.DefinedSet{
-					DefinedType: api.DefinedType_LARGE_COMMUNITY,
-					Name:        newCommunitySetName,
-					List:        []string{newCommunity},
-				},
-				Replace: true,
-			}); err != nil {
-				return err
-			}
-			
-			// Update neighbor set
-			oldNeighborSetName := userNeighborSetName(oldUser.ID)
-			newNeighborSetName := userNeighborSetName(user.ID)
-			newNeighborSet, err := neighborDefinedSet(newNeighborSetName, user.PeerIP)
-			if err != nil {
-				return err
-			}
-			
-			// Delete old neighbor set
-			if err := m.server.DeleteDefinedSet(ctx, &api.DeleteDefinedSetRequest{
-				DefinedSet: &api.DefinedSet{
-					DefinedType: api.DefinedType_NEIGHBOR,
-					Name:        oldNeighborSetName,
-				},
-			}); err != nil {
-				return err
-			}
-			
-			// Add new neighbor set
-			if err := m.server.AddDefinedSet(ctx, &api.AddDefinedSetRequest{
-				DefinedSet: newNeighborSet,
-				Replace:    true,
-			}); err != nil {
-				return err
-			}
-		}
-		// Store updated config
-		for i, u := range m.peerConfigs {
-			if u.ID == user.ID {
-				m.peerConfigs[i] = user
-				break
-			}
-		}
-	}
-	// Update global policy
-	users := m.peerConfigs
-	return m.configureGlobalPolicyLocked(ctx, users)
+	// Clear peer routes since the peer may have changed
+	delete(m.peerRoutes, user.PeerIP)
+	m.speaker.SetPeers(m.buildPeerConfigs())
+	return nil
 }
 
 func (m *Manager) DeletePeer(ctx context.Context, peerIP string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.server == nil {
-		return fmt.Errorf("BGP server is not running")
+	if m.speaker == nil {
+		return fmt.Errorf("BGP speaker is not running")
 	}
 	// Check if peer exists
 	found := false
@@ -490,10 +231,6 @@ func (m *Manager) DeletePeer(ctx context.Context, peerIP string) error {
 	if !found {
 		return fmt.Errorf("peer %s does not exist", peerIP)
 	}
-	// Delete the peer
-	if err := m.deletePeerLocked(ctx, peerIP); err != nil {
-		return err
-	}
 	// Remove from configs
 	for i, u := range m.peerConfigs {
 		if u.PeerIP == peerIP {
@@ -501,13 +238,40 @@ func (m *Manager) DeletePeer(ctx context.Context, peerIP string) error {
 			break
 		}
 	}
-	// Update global policy
-	users := m.peerConfigs
-	return m.configureGlobalPolicyLocked(ctx, users)
+	delete(m.peerRoutes, peerIP)
+	m.speaker.SetPeers(m.buildPeerConfigs())
+	return nil
+}
+
+func (m *Manager) PeerStates(ctx context.Context) (map[string]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.speaker == nil {
+		return map[string]string{}, nil
+	}
+	return m.speaker.PeerStates(), nil
+}
+
+// buildPeerConfigs converts m.peerConfigs (store.User) to []PeerConfig.
+func (m *Manager) buildPeerConfigs() []PeerConfig {
+	var configs []PeerConfig
+	for _, u := range m.peerConfigs {
+		addr, err := netip.ParseAddr(u.PeerIP)
+		if err != nil {
+			continue
+		}
+		configs = append(configs, PeerConfig{
+			ID:       u.ID,
+			Address:  addr,
+			ASN:      u.PeerASN,
+			Password: u.BGPPassword,
+			Name:     u.Name,
+		})
+	}
+	return configs
 }
 
 // findPeer matches an incoming BGP session to a user.
-//
 // Step 1: exact IP match — if exactly one user matches, verify password if set.
 // Step 2: multiple IP matches — narrow by ASN, then verify password if set.
 // Step 3: dynamic (IP 0.0.0.0) — match by ASN + password (password mandatory).
@@ -550,8 +314,8 @@ func (m *Manager) findPeer(peerIP string, peerASN uint32, password string) (stor
 }
 
 func (m *Manager) reconcileLocked(ctx context.Context) error {
-	if m.server == nil {
-		return fmt.Errorf("BGP server is not running")
+	if m.speaker == nil {
+		return fmt.Errorf("BGP speaker is not running")
 	}
 	desired, prefixMeta, err := m.store.DesiredPrefixes(ctx)
 	if err != nil {
@@ -576,190 +340,130 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		}
 	}
 
-	// Use retry for BGP operations
-	for prefix, installed := range m.installed {
-		users, exists := desired[prefix]
-		signature := signature(users)
-		if exists && signature == installed.Signature {
+	// Track global prefix signatures for change detection
+	newInstalled := make(map[string]instPrefix)
+	for prefix, userIDs := range desired {
+		newInstalled[prefix] = instPrefix{Signature: signature(userIDs)}
+	}
+
+	// For each enabled peer, compute desired routes and reconcile
+	for _, user := range m.peerConfigs {
+		if !user.Enabled {
+			continue
+		}
+		addr, err := netip.ParseAddr(user.PeerIP)
+		if err != nil {
 			continue
 		}
 
-		err := retry.Do(ctx, retry.BGPConfig,
-			func() error {
-				return m.server.DeletePath(ctx, &api.DeletePathRequest{
-					TableType: api.TableType_GLOBAL,
-					Uuid:      installed.UUID,
-				})
-			},
-			retry.TransientError,
-		)
-
-		if err != nil {
-			return fmt.Errorf("withdraw %s: %w", prefix, err)
+		// Build desired routes for this peer
+		var desiredRoutes []Route
+		for rawPrefix, userIDs := range desired {
+			if !containsID(userIDs, user.ID) {
+				continue
+			}
+			prefix, _ := netip.ParsePrefix(rawPrefix)
+			meta, hasMeta := prefixMeta[rawPrefix]
+			comms := map[string]uint32{}
+			if hasMeta {
+				comms = modeCommunities[meta.ModeID]
+			}
+			route, err := m.buildRoute(prefix, user, meta.Category, meta.Service, comms)
+			if err != nil {
+				return err
+			}
+			desiredRoutes = append(desiredRoutes, route)
 		}
-		delete(m.installed, prefix)
-	}
 
-	for prefix, users := range desired {
-		sig := signature(users)
-		if installed, ok := m.installed[prefix]; ok && installed.Signature == sig {
+		// Sort for stable comparison
+		sortRoutes(desiredRoutes)
+
+		// Compare with previously announced
+		prevRoutes := m.peerRoutes[user.PeerIP]
+		if routesEqual(prevRoutes, desiredRoutes) {
 			continue
 		}
 
-		meta, hasMeta := prefixMeta[prefix]
-		comms := map[string]uint32{}
-		if hasMeta {
-			comms = modeCommunities[meta.ModeID]
-		}
-		path, err := m.path(prefix, users, meta.Category, meta.Service, comms)
-		if err != nil {
-			return err
+		// Compute withdrawals (prefixes in prev but not in desired)
+		desiredSet := routePrefixSet(desiredRoutes)
+		var toWithdraw []netip.Prefix
+		for _, r := range prevRoutes {
+			if !desiredSet[r.Prefix.String()] {
+				toWithdraw = append(toWithdraw, r.Prefix)
+			}
 		}
 
-		response, err := retry.DoWithResult(ctx, retry.BGPConfig,
-			func() (*api.AddPathResponse, error) {
-				return m.server.AddPath(ctx, &api.AddPathRequest{
-					TableType: api.TableType_GLOBAL,
-					Path:      path,
-				})
-			},
-			retry.TransientError,
-		)
-
-		if err != nil {
-			return fmt.Errorf("announce %s: %w", prefix, err)
+		if len(toWithdraw) > 0 {
+			if err := m.speaker.Withdraw(addr, toWithdraw); err != nil {
+				return fmt.Errorf("withdraw from %s: %w", user.PeerIP, err)
+			}
 		}
-		m.installed[prefix] = installedPath{UUID: response.Uuid, Signature: sig}
+
+		if len(desiredRoutes) > 0 {
+			if err := m.speaker.Announce(addr, desiredRoutes); err != nil {
+				return fmt.Errorf("announce to %s: %w", user.PeerIP, err)
+			}
+		} else {
+			// No routes — ensure peer has empty routes
+			if err := m.speaker.Announce(addr, nil); err != nil {
+				return fmt.Errorf("clear routes for %s: %w", user.PeerIP, err)
+			}
+		}
+
+		m.peerRoutes[user.PeerIP] = desiredRoutes
 	}
+
+	m.installed = newInstalled
 	return nil
 }
 
-func (m *Manager) path(rawPrefix string, userIDs []int64, category, service string, communities map[string]uint32) (*api.Path, error) {
-	prefix, err := netip.ParsePrefix(rawPrefix)
-	if err != nil {
-		return nil, err
-	}
-	nlri, err := anypb.New(&api.IPAddressPrefix{
-		Prefix:    prefix.Addr().String(),
-		PrefixLen: uint32(prefix.Bits()),
+// buildRoute creates a Route for a single prefix for a specific peer.
+func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, service string, communities map[string]uint32) (Route, error) {
+	comms := make([]LargeCommunity, 0, 3)
+	// User ID community
+	comms = append(comms, LargeCommunity{
+		GlobalAdmin: m.cfg.LocalASN,
+		LocalData1:  uint32(user.ID),
+		LocalData2:  0,
 	})
-	if err != nil {
-		return nil, err
-	}
-	origin, _ := anypb.New(&api.OriginAttribute{Origin: 0})
-	comms := make([]*api.LargeCommunity, 0, len(userIDs)+2)
-	for _, userID := range userIDs {
-		if userID < 0 || userID > int64(^uint32(0)) {
-			return nil, fmt.Errorf("user id %d is outside large community range", userID)
-		}
-		comms = append(comms, &api.LargeCommunity{
-			GlobalAdmin: m.cfg.LocalASN,
-			LocalData1:  uint32(userID),
-			LocalData2:  0,
-		})
-	}
-	// Attach category and service communities if available.
+	// Category and service communities if available
 	if category != "" {
 		if c, ok := communities[category]; ok {
-			comms = append(comms, &api.LargeCommunity{
+			comms = append(comms, LargeCommunity{
 				GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
 			})
 		}
 		if service != "" {
 			if c, ok := communities[category+"|"+service]; ok {
-				comms = append(comms, &api.LargeCommunity{
+				comms = append(comms, LargeCommunity{
 					GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
 				})
 			}
 		}
 	}
-	communityAttribute, _ := anypb.New(&api.LargeCommunitiesAttribute{Communities: comms})
-	if prefix.Addr().Is4() {
-		nextHop, err := anypb.New(&api.NextHopAttribute{NextHop: m.cfg.LocalAddressV4})
-		if err != nil {
-			return nil, err
-		}
-		return &api.Path{
-			Family: ipv4Family(),
-			Nlri:   nlri,
-			Pattrs: []*anypb.Any{origin, nextHop, communityAttribute},
-		}, nil
-	}
-	if m.cfg.LocalAddressV6 == "" {
-		return nil, fmt.Errorf("cannot announce IPv6 prefix %s without WDBGP_BGP_LOCAL_ADDRESS_V6", rawPrefix)
-	}
-	mpReach, err := anypb.New(&api.MpReachNLRIAttribute{
-		Family:   ipv6Family(),
-		NextHops: []string{m.cfg.LocalAddressV6},
-		Nlris:    []*anypb.Any{nlri},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &api.Path{
-		Family: ipv6Family(),
-		Nlri:   nlri,
-		Pattrs: []*anypb.Any{origin, mpReach, communityAttribute},
-	}, nil
-}
 
-func (m *Manager) PeerStates(ctx context.Context) (map[string]string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	states := map[string]string{}
-	if m.server == nil {
-		return states, nil
-	}
-	err := m.server.ListPeer(ctx, &api.ListPeerRequest{}, func(peer *api.Peer) {
-		if peer.Conf != nil && peer.State != nil {
-			states[peer.Conf.NeighborAddress] = peer.State.SessionState.String()
+	// Determine next hop
+	nextHop := m.cfg.LocalAddressV4
+	if prefix.Addr().Is6() {
+		nextHop = m.cfg.LocalAddressV6
+		if nextHop == "" {
+			return Route{}, fmt.Errorf("cannot build IPv6 route %s without local IPv6 address", prefix)
 		}
-	})
-	return states, err
+	}
+	nh, err := netip.ParseAddr(nextHop)
+	if err != nil {
+		return Route{}, fmt.Errorf("parse next hop %q: %w", nextHop, err)
+	}
+
+	return Route{
+		Prefix:      prefix,
+		Communities: comms,
+		NextHop:     nh,
+	}, nil
 }
 
 func largeCommunity(asn uint32, userID int64) string {
 	return fmt.Sprintf("%d:%d:0", asn, userID)
-}
-
-func nextHopAction(user store.User, family api.Family_Afi) (*api.NexthopAction, error) {
-	nextHop := &api.NexthopAction{Self: true}
-	if user.NextHop == "" {
-		return nextHop, nil
-	}
-	address, err := netip.ParseAddr(user.NextHop)
-	if err != nil {
-		return nil, err
-	}
-	if (address.Is4() && family == api.Family_AFI_IP) ||
-		(address.Is6() && family == api.Family_AFI_IP6) {
-		nextHop = &api.NexthopAction{Address: address.String()}
-	}
-	return nextHop, nil
-}
-
-func userNeighborSetName(userID int64) string {
-	return fmt.Sprintf("user_%d_neighbor", userID)
-}
-
-func userCommunitySetName(userID int64) string {
-	return fmt.Sprintf("user_%d_community", userID)
-}
-
-func neighborDefinedSet(name, rawAddress string) (*api.DefinedSet, error) {
-	address, err := netip.ParseAddr(rawAddress)
-	if err != nil {
-		return nil, err
-	}
-	mask := 32
-	if address.Is6() {
-		mask = 128
-	}
-	return &api.DefinedSet{
-		DefinedType: api.DefinedType_NEIGHBOR,
-		Name:        name,
-		List:        []string{fmt.Sprintf("%s/%d", address, mask)},
-	}, nil
 }
 
 func signature(userIDs []int64) string {
@@ -772,10 +476,56 @@ func signature(userIDs []int64) string {
 	return strings.Join(parts, ",")
 }
 
-func ipv4Family() *api.Family {
-	return &api.Family{Afi: api.Family_AFI_IP, Safi: api.Family_SAFI_UNICAST}
+func containsID(ids []int64, target int64) bool {
+	for _, id := range ids {
+		if id == target {
+			return true
+		}
+	}
+	return false
 }
 
-func ipv6Family() *api.Family {
-	return &api.Family{Afi: api.Family_AFI_IP6, Safi: api.Family_SAFI_UNICAST}
+// sortRoutes sorts routes by prefix string for stable comparison.
+func sortRoutes(routes []Route) {
+	sort.Slice(routes, func(i, j int) bool {
+		return routes[i].Prefix.String() < routes[j].Prefix.String()
+	})
+}
+
+func routesEqual(a, b []Route) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Prefix != b[i].Prefix {
+			return false
+		}
+		if !communitiesEqual(a[i].Communities, b[i].Communities) {
+			return false
+		}
+		if a[i].NextHop != b[i].NextHop {
+			return false
+		}
+	}
+	return true
+}
+
+func communitiesEqual(a, b []LargeCommunity) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func routePrefixSet(routes []Route) map[string]bool {
+	set := make(map[string]bool, len(routes))
+	for _, r := range routes {
+		set[r.Prefix.String()] = true
+	}
+	return set
 }

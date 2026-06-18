@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"net"
+	"net/netip"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -16,34 +17,37 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
-func TestPathCarriesUserCommunities(t *testing.T) {
+// ipv4FamilyGoBGP returns the GoBGP IPv4 unicast family (used only by GoBGP test peers).
+func ipv4FamilyGoBGP() *api.Family {
+	return &api.Family{Afi: api.Family_AFI_IP, Safi: api.Family_SAFI_UNICAST}
+}
+
+func TestBuildRouteCarriesCommunities(t *testing.T) {
 	manager := NewManager(config.Config{
 		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
 	}, nil)
+	prefix := netip.MustParsePrefix("149.154.160.0/20")
 	comms := map[string]uint32{"testcat": 10000, "testcat|testsvc": 10001}
-	path, err := manager.path("149.154.160.0/20", []int64{2, 7}, "testcat", "testsvc", comms)
+	user := store.User{ID: 7}
+	route, err := manager.buildRoute(prefix, user, "testcat", "testsvc", comms)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var communities api.LargeCommunitiesAttribute
-	found := false
-	for _, attribute := range path.Pattrs {
-		if attribute.MessageIs(&communities) {
-			if err := attribute.UnmarshalTo(&communities); err != nil {
-				t.Fatal(err)
-			}
-			found = true
-		}
+
+	// Should have 3 communities: user ID, category, category|service
+	if len(route.Communities) != 3 {
+		t.Fatalf("expected 3 communities, got %d: %#v", len(route.Communities), route.Communities)
 	}
-	if !found || len(communities.Communities) != 4 {
-		t.Fatalf("large communities not found: %#v", path.Pattrs)
+
+	// First community: user ID (LocalData1=7, LocalData2=0)
+	if route.Communities[0].GlobalAdmin != 64512 || route.Communities[0].LocalData1 != 7 || route.Communities[0].LocalData2 != 0 {
+		t.Fatalf("expected user community 64512:7:0, got %d:%d:%d",
+			route.Communities[0].GlobalAdmin, route.Communities[0].LocalData1, route.Communities[0].LocalData2)
 	}
-	if communities.Communities[1].LocalData1 != 7 {
-		t.Fatalf("unexpected communities: %#v", communities.Communities)
-	}
-	// Verify category and service communities are present.
+
+	// Check category and service communities
 	var catFound, svcFound bool
-	for _, c := range communities.Communities {
+	for _, c := range route.Communities {
 		if c.LocalData1 == 0 && c.LocalData2 == 10000 {
 			catFound = true
 		}
@@ -52,7 +56,15 @@ func TestPathCarriesUserCommunities(t *testing.T) {
 		}
 	}
 	if !catFound || !svcFound {
-		t.Fatalf("category/service communities missing: %#v", communities.Communities)
+		t.Fatalf("category/service communities missing: %#v", route.Communities)
+	}
+
+	// Next hop should be IPv4
+	if route.NextHop.String() != "172.16.0.1" {
+		t.Fatalf("expected next hop 172.16.0.1, got %s", route.NextHop)
+	}
+	if route.Prefix != prefix {
+		t.Fatalf("expected prefix %s, got %s", prefix, route.Prefix)
 	}
 }
 
@@ -120,7 +132,7 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	}
 }
 
-func TestReconcileBuildsGlobalExportPolicy(t *testing.T) {
+func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
 	if err != nil {
@@ -167,34 +179,30 @@ func TestReconcileBuildsGlobalExportPolicy(t *testing.T) {
 	}
 	defer manager.Stop(ctx)
 
-	sets := map[string][]string{}
-	for _, definedType := range []api.DefinedType{api.DefinedType_LARGE_COMMUNITY, api.DefinedType_NEIGHBOR} {
-		if err := manager.server.ListDefinedSet(ctx, &api.ListDefinedSetRequest{
-			DefinedType: definedType,
-		}, func(set *api.DefinedSet) {
-			sets[set.Name] = append(sets[set.Name], set.List...)
-		}); err != nil {
-			t.Fatal(err)
+	// First peer (user 1 with "video" category) should get video prefixes.
+	firstRoutes := manager.peerRoutes["192.0.2.2"]
+	firstPrefixes := routePrefixStrings(firstRoutes)
+	sort.Strings(firstPrefixes)
+	assertPrefixes(t, firstPrefixes, []string{"8.8.4.0/24", "8.8.8.0/24"})
+
+	// Second peer (user 2 with "chat/telegram" service) should get chat prefix.
+	secondRoutes := manager.peerRoutes["192.0.2.3"]
+	secondPrefixes := routePrefixStrings(secondRoutes)
+	assertPrefixes(t, secondPrefixes, []string{"149.154.160.0/20"})
+
+	// Verify communities on first peer's route.
+	if len(firstRoutes) > 0 {
+		// First route should have user community for user 1.
+		hasUserComm := false
+		for _, c := range firstRoutes[0].Communities {
+			if c.GlobalAdmin == 64512 && c.LocalData1 == uint32(firstID) {
+				hasUserComm = true
+			}
+		}
+		if !hasUserComm {
+			t.Fatalf("first peer route missing user community: %#v", firstRoutes[0].Communities)
 		}
 	}
-	for name := range sets {
-		sort.Strings(sets[name])
-	}
-	assertPrefixes(t, sets[userCommunitySetName(firstID)], []string{"^64512:1:0$"})
-	assertPrefixes(t, sets[userCommunitySetName(secondID)], []string{"^64512:2:0$"})
-	assertPrefixes(t, sets[userNeighborSetName(firstID)], []string{"192.0.2.2/32"})
-	assertPrefixes(t, sets[userNeighborSetName(secondID)], []string{"192.0.2.3/32"})
-
-	policies := map[string]*api.Policy{}
-	if err := manager.server.ListPolicy(ctx, &api.ListPolicyRequest{}, func(policy *api.Policy) {
-		policies[policy.Name] = policy
-	}); err != nil {
-		t.Fatal(err)
-	}
-	assertPolicyUsesNeighborCommunitySet(t, policies[exportPolicyName],
-		userNeighborSetName(firstID), userCommunitySetName(firstID))
-	assertPolicyUsesNeighborCommunitySet(t, policies[exportPolicyName],
-		userNeighborSetName(secondID), userCommunitySetName(secondID))
 }
 
 func TestPeersReceiveOnlyTheirOwnPrefixes(t *testing.T) {
@@ -266,6 +274,14 @@ func TestPeersReceiveOnlyTheirOwnPrefixes(t *testing.T) {
 	waitForPrefixes(t, secondClient, []string{"149.154.160.0/20"})
 }
 
+func routePrefixStrings(routes []Route) []string {
+	var out []string
+	for _, r := range routes {
+		out = append(out, r.Prefix.String())
+	}
+	return out
+}
+
 func assertPrefixes(t *testing.T, got, want []string) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -276,24 +292,6 @@ func assertPrefixes(t *testing.T, got, want []string) {
 			t.Fatalf("prefixes = %v, want %v", got, want)
 		}
 	}
-}
-
-func assertPolicyUsesNeighborCommunitySet(t *testing.T, policy *api.Policy, neighborSetName, communitySetName string) {
-	t.Helper()
-	if policy == nil {
-		t.Fatalf("policy not found for community set %s", communitySetName)
-	}
-	for _, statement := range policy.Statements {
-		if statement.Conditions != nil &&
-			statement.Conditions.NeighborSet != nil &&
-			statement.Conditions.NeighborSet.Name == neighborSetName &&
-			statement.Conditions.LargeCommunitySet != nil &&
-			statement.Conditions.LargeCommunitySet.Name == communitySetName {
-			return
-		}
-	}
-	t.Fatalf("policy %s does not use neighbor set %s and community set %s: %#v",
-		policy.Name, neighborSetName, communitySetName, policy.Statements)
 }
 
 func canBindLoopback(t *testing.T, address string) bool {
@@ -346,7 +344,7 @@ func startTestPeer(t *testing.T, localAddress string, localASN uint32, routerID 
 			MultihopTtl: 64,
 		},
 		AfiSafis: []*api.AfiSafi{
-			{Config: &api.AfiSafiConfig{Family: ipv4Family(), Enabled: true}},
+			{Config: &api.AfiSafiConfig{Family: ipv4FamilyGoBGP(), Enabled: true}},
 		},
 	}}); err != nil {
 		t.Fatal(err)
@@ -373,7 +371,7 @@ func receivedPrefixes(t *testing.T, bgpServer *server.BgpServer) []string {
 	var prefixes []string
 	err := bgpServer.ListPath(context.Background(), &api.ListPathRequest{
 		TableType: api.TableType_GLOBAL,
-		Family:    ipv4Family(),
+		Family:    ipv4FamilyGoBGP(),
 	}, func(destination *api.Destination) {
 		if len(destination.Paths) > 0 {
 			prefixes = append(prefixes, destination.Prefix)
