@@ -2091,6 +2091,159 @@ func TestDeleteBuiltInModeDoesNotMoveUsers(t *testing.T) {
 	}
 }
 
+// TestMigrationGoFuncRecoveryPreservesForeignKeys verifies that when the
+// DROP TABLE users/feeds runs inside a Go func migration transaction (e.g.,
+// migration 21's crash-recovery path), foreign keys are temporarily disabled
+// to prevent ON DELETE CASCADE from deleting child rows (user_networks,
+// selected_categories, selected_services, user_credentials).
+func TestMigrationGoFuncRecoveryPreservesForeignKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.sqlite3")
+
+	// Step 1: Open a store to run all migrations, then add FK data.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Add a user so we can create FK references.
+	userID, err := s.AddUser(ctx, User{
+		Name:   "fk-gofunc-test-user",
+		PeerIP: "192.168.2.1",
+		PeerASN: 65002,
+		Enabled: true,
+	})
+	if err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+
+	// Add FK-referencing data: user_networks, selected_categories,
+	// selected_services, user_credentials.
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT INTO user_networks (user_id, cidr) VALUES (?, '10.1.0.0/8')`,
+		userID); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT INTO selected_categories (user_id, mode_id, category) VALUES (?, 1, 'gofunc-cat')`,
+		userID); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT INTO selected_services (user_id, mode_id, category, service) VALUES (?, 1, 'gofunc-cat', 'gofunc-svc')`,
+		userID); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT INTO user_credentials (user_id, login, password_hash) VALUES (?, 'gofunc-user', 'hash123')`,
+		userID); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+
+	s.Close()
+
+	// Step 2: Simulate a crash scenario where:
+	//   - All migrations 1-22 completed (migration 20 NoTxSQL already
+	//     did DROP+RENAME with PRAGMA OFF, so users_new does NOT exist).
+	//   - A later operation (or a manual intervention) creates users_new
+	//     with a copy of users, then the process crashes before the rename.
+	//   - Migration 21 re-runs and enters its crash-recovery path: it sees
+	//     users_new exists, drops users, and renames users_new → users.
+	//   - If foreign_keys is ON inside the tx, the DROP TABLE users
+	//     cascades ON DELETE to all child tables.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+
+	// Create users_new with a copy of users data.
+	if _, err := db.Exec(`CREATE TABLE users_new AS SELECT * FROM users`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+
+	// Verify users_new exists and users also exists (pre-crash state).
+	var usersNewExists int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users_new'").Scan(&usersNewExists); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if usersNewExists == 0 {
+		db.Close()
+		t.Fatal("users_new should exist after manual creation")
+	}
+
+	// Delete schema_migrations rows for 21 and 22 only, so that
+	// migration 20 is NOT re-run (it already completed), but migration 21
+	// re-runs and enters its crash-recovery path.
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version IN (21, 22)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Step 3: Re-open. Migration 21 re-runs its Go func. The
+	// crash-recovery path sees users_new exists, does DROP TABLE users
+	// and RENAME users_new → users. With foreign_keys enabled (BUG),
+	// the DROP cascades to delete child rows.
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("Go func crash recovery open failed: %v", err)
+	}
+	defer s2.Close()
+
+	// Verify schema version is up to date.
+	var version int
+	if err := s2.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		t.Fatalf("schema version after recovery = %d, want %d", version, len(migrations))
+	}
+
+	// Verify FK-referencing rows survived the DROP TABLE users.
+	var networkCount int
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM user_networks WHERE user_id = ?", userID).Scan(&networkCount); err != nil {
+		t.Fatal(err)
+	}
+	if networkCount == 0 {
+		t.Fatal("BUG: user_networks rows were cascade-deleted by DROP TABLE users inside Go func migration transaction")
+	}
+
+	var catCount int
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM selected_categories WHERE user_id = ? AND mode_id = 1 AND category = 'gofunc-cat'", userID).Scan(&catCount); err != nil {
+		t.Fatal(err)
+	}
+	if catCount == 0 {
+		t.Fatal("BUG: selected_categories rows were cascade-deleted by DROP TABLE users inside Go func migration transaction")
+	}
+
+	var svcCount int
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM selected_services WHERE user_id = ? AND mode_id = 1 AND category = 'gofunc-cat' AND service = 'gofunc-svc'", userID).Scan(&svcCount); err != nil {
+		t.Fatal(err)
+	}
+	if svcCount == 0 {
+		t.Fatal("BUG: selected_services rows were cascade-deleted by DROP TABLE users inside Go func migration transaction")
+	}
+
+	var credCount int
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM user_credentials WHERE user_id = ? AND login = 'gofunc-user'", userID).Scan(&credCount); err != nil {
+		t.Fatal(err)
+	}
+	if credCount == 0 {
+		t.Fatal("BUG: user_credentials rows were cascade-deleted by DROP TABLE users inside Go func migration transaction")
+	}
+}
+
 // TestMigrationRecoveryPreservesForeignKeys verifies that when migration
 // 20's NoTxSQL drops the users/feeds tables, the PRAGMA foreign_keys = OFF
 // correctly prevents ON DELETE CASCADE from deleting user_networks,

@@ -669,8 +669,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ip_asn ON users(peer_ip, peer_asn);
 		Name:    "restore feeds.enabled column and recover from partial NoTxSQL crashes",
 		SQL:     "",
 		Go: func(tx *sql.Tx) error {
-			// 1. Restore feeds.enabled column if missing (DBs that went
-			//    through old drop-migration path).
+			// Restore feeds.enabled column if missing (DBs that went
+			// through old drop-migration path).
 			var cnt int
 			if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name = 'enabled'").Scan(&cnt); err != nil {
 				return err
@@ -680,38 +680,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ip_asn ON users(peer_ip, peer_asn);
 					return err
 				}
 			}
-
-			// 2. Crash recovery: if a previous run of the old migration-20
-			//    NoTxSQL dropped the users table but didn't rename users_new,
-			//    complete the rename now. (The new migration-20 Go func
-			//    prevents this in the future, but existing DBs may still be
-			//    in the partial state.)
-			var usersNewExists int
-			if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users_new'").Scan(&usersNewExists); err != nil {
-				return err
-			}
-			if usersNewExists > 0 {
-				if _, err := tx.Exec("DROP TABLE IF EXISTS users"); err != nil {
-					return err
-				}
-				if _, err := tx.Exec("ALTER TABLE users_new RENAME TO users"); err != nil {
-					return err
-				}
-			}
-
-			var feedsNewExists int
-			if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='feeds_new'").Scan(&feedsNewExists); err != nil {
-				return err
-			}
-			if feedsNewExists > 0 {
-				if _, err := tx.Exec("DROP TABLE IF EXISTS feeds"); err != nil {
-					return err
-				}
-				if _, err := tx.Exec("ALTER TABLE feeds_new RENAME TO feeds"); err != nil {
-					return err
-				}
-			}
-
+			// Note: crash-recovery DROP+RENAME for orphaned users_new /
+			// feeds_new tables is now handled at the end of Migrate(),
+			// outside any transaction, where PRAGMA foreign_keys = OFF
+			// actually prevents ON DELETE CASCADE.
 			return nil
 		},
 	},
@@ -925,6 +897,49 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 				return err
 			}
 		}
+	}
+
+	// Crash recovery: if a previous run of the old migration-20 NoTxSQL
+	// dropped users/feeds but never renamed the *_new copies, complete
+	// the rename now.  This MUST run outside any transaction because
+	// PRAGMA foreign_keys = OFF is a no-op inside a transaction with
+	// Go SQLite drivers.  Running it here prevents ON DELETE CASCADE
+	// from destroying user_networks, selected_categories, and other
+	// child rows.
+	recoveryCheck := func(name string) error {
+		var exists int
+		if err := s.DB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+			name+"_new").Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			return nil
+		}
+		// PRAGMA foreign_keys=OFF disables cascade for this
+		// connection; since we are outside any transaction it
+		// takes effect immediately.
+		if _, err := s.DB.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+			return err
+		}
+		if _, err := s.DB.ExecContext(ctx,
+			"DROP TABLE IF EXISTS "+name); err != nil {
+			return err
+		}
+		if _, err := s.DB.ExecContext(ctx,
+			"ALTER TABLE "+name+"_new RENAME TO "+name); err != nil {
+			return err
+		}
+		if _, err := s.DB.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := recoveryCheck("users"); err != nil {
+		return err
+	}
+	if err := recoveryCheck("feeds"); err != nil {
+		return err
 	}
 	return nil
 }
