@@ -1015,6 +1015,58 @@ func TestAddUserSharedIPRejectsWhenExistingHasNoPassword(t *testing.T) {
 	}
 }
 
+func TestAddUserUniqueIPAcceptsNoPassword(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "uniqueip_nopass.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create a user at IP 10.0.0.99 with ASN 65099 so 10.0.0.1 is unused.
+	_, err = db.AddUser(ctx, store.User{
+		Name:        "other-user",
+		PeerIP:      "10.0.0.99",
+		PeerASN:     65099,
+		BGPPassword: "",
+		Networks:    []string{"192.168.99.0/24"},
+		Enabled:     true,
+		WebAuth:     "network",
+		CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.RequirePasswordForNonUniqueIP = true
+	bgp := &fakeBGP{}
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Add a new user at unique IP 10.0.0.1 with NO BGP password.
+	// Unique IP — should be accepted.
+	form := url.Values{}
+	form.Set("name", "unique-ip-user")
+	form.Set("peer_ip", "10.0.0.1")
+	form.Set("peer_asn", "65001")
+	form.Set("networks", "192.168.100.0/24")
+	form.Set("bgp_password", "")
+	form.Set("web_auth", "network")
+	form.Set("catalog_mode_id", strconv.FormatInt(store.DefaultCatalogModeID, 10))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(adminCookie)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("POST /admin/user: expected 303 See Other for unique IP with no password, got status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestTranslationCatalogsHaveMatchingKeys(t *testing.T) {
 	for key := range translations[localeEnglish] {
 		if translations[localeRussian][key] == "" {

@@ -1733,19 +1733,25 @@ func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step C: Shared IP with different ASN requires password when setting is ON.
+	// Only applies when other peers already exist at this IP.
 	if s.cfg.RequirePasswordForNonUniqueIP && user.PeerIP != "0.0.0.0" {
-		var noPasswordCount int
+		var peerCount int
 		if err := s.store.DB.QueryRowContext(r.Context(),
-			"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND peer_asn != ? AND COALESCE(bgp_password, '') = ''",
-			user.PeerIP, user.PeerASN).Scan(&noPasswordCount); err == nil && noPasswordCount > 0 {
-			http.Error(w, fmt.Sprintf("IP %s is shared with %d peer(s) that have no BGP password. All shared-IP peers must have passwords set first.",
-				user.PeerIP, noPasswordCount), http.StatusBadRequest)
-			return
-		}
-		if user.BGPPassword == "" {
-			http.Error(w, fmt.Sprintf("IP %s is already used by peers with different ASNs. A non-empty BGP password is required when sharing an IP with different ASNs.",
-				user.PeerIP), http.StatusBadRequest)
-			return
+			"SELECT COUNT(*) FROM users WHERE peer_ip = ?",
+			user.PeerIP).Scan(&peerCount); err == nil && peerCount > 0 {
+			var noPasswordCount int
+			if err := s.store.DB.QueryRowContext(r.Context(),
+				"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND peer_asn != ? AND COALESCE(bgp_password, '') = ''",
+				user.PeerIP, user.PeerASN).Scan(&noPasswordCount); err == nil && noPasswordCount > 0 {
+				http.Error(w, fmt.Sprintf("IP %s is shared with %d peer(s) that have no BGP password. All shared-IP peers must have passwords set first.",
+					user.PeerIP, noPasswordCount), http.StatusBadRequest)
+				return
+			}
+			if user.BGPPassword == "" {
+				http.Error(w, fmt.Sprintf("IP %s is already used by peers with different ASNs. A non-empty BGP password is required when sharing an IP with different ASNs.",
+					user.PeerIP), http.StatusBadRequest)
+				return
+			}
 		}
 	}
 
@@ -1900,19 +1906,25 @@ func (s *Server) saveUserSettings(w http.ResponseWriter, r *http.Request, id int
 	}
 
 	// Step C: Shared IP with different ASN requires password when setting is ON.
+	// Only applies when other peers already exist at this IP (excluding self).
 	if s.cfg.RequirePasswordForNonUniqueIP && user.PeerIP != "0.0.0.0" {
-		var noPasswordCount int
+		var peerCount int
 		if err := s.store.DB.QueryRowContext(r.Context(),
-			"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND peer_asn != ? AND id != ? AND COALESCE(bgp_password, '') = ''",
-			user.PeerIP, user.PeerASN, id).Scan(&noPasswordCount); err == nil && noPasswordCount > 0 {
-			http.Error(w, fmt.Sprintf("IP %s is shared with %d peer(s) that have no BGP password. All shared-IP peers must have passwords set first.",
-				user.PeerIP, noPasswordCount), http.StatusBadRequest)
-			return nil
-		}
-		if user.BGPPassword == "" {
-			http.Error(w, fmt.Sprintf("IP %s is already used by peers with different ASNs. A non-empty BGP password is required when sharing an IP with different ASNs.",
-				user.PeerIP), http.StatusBadRequest)
-			return nil
+			"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ?",
+			user.PeerIP, id).Scan(&peerCount); err == nil && peerCount > 0 {
+			var noPasswordCount int
+			if err := s.store.DB.QueryRowContext(r.Context(),
+				"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND peer_asn != ? AND id != ? AND COALESCE(bgp_password, '') = ''",
+				user.PeerIP, user.PeerASN, id).Scan(&noPasswordCount); err == nil && noPasswordCount > 0 {
+				http.Error(w, fmt.Sprintf("IP %s is shared with %d peer(s) that have no BGP password. All shared-IP peers must have passwords set first.",
+					user.PeerIP, noPasswordCount), http.StatusBadRequest)
+				return nil
+			}
+			if user.BGPPassword == "" {
+				http.Error(w, fmt.Sprintf("IP %s is already used by peers with different ASNs. A non-empty BGP password is required when sharing an IP with different ASNs.",
+					user.PeerIP), http.StatusBadRequest)
+				return nil
+			}
 		}
 	}
 	if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {
