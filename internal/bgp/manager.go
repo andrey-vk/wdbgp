@@ -1108,8 +1108,16 @@ func (m *Manager) PeerStates(ctx context.Context) (map[string]string, error) {
 		return states, nil
 	}
 	err := m.server.ListPeer(ctx, &api.ListPeerRequest{}, func(peer *api.Peer) {
-		if peer.Conf != nil && peer.State != nil {
-			states[peer.Conf.NeighborAddress] = peer.State.SessionState.String()
+		if peer.State != nil {
+			addr := ""
+			if peer.Conf != nil && peer.Conf.NeighborAddress != "" {
+				addr = peer.Conf.NeighborAddress
+			} else if peer.State.NeighborAddress != "" {
+				addr = peer.State.NeighborAddress
+			}
+			if addr != "" {
+				states[addr] = peer.State.SessionState.String()
+			}
 		}
 	})
 	return states, err

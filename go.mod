@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/dop251/goja v0.0.0-20260607120635-348e6bea910d
+	github.com/google/uuid v1.6.0
 	github.com/osrg/gobgp/v4 v4.6.0
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/crypto v0.52.0
@@ -22,7 +23,6 @@ require (
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/k-sone/critbitgo v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

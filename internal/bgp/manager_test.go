@@ -1321,6 +1321,97 @@ func TestPeerGroupPolicyRebuildUpdatesRemoveList(t *testing.T) {
 	assertPolicyRemoveCommunities(t, manager, fmt.Sprintf("user_%d_policy", userAID), expected)
 }
 
+func TestPeerStatesIncludesPeerGroupPeers(t *testing.T) {
+	if !canBindLoopback(t, "127.0.0.2") {
+		t.Skip("loopback address 127.0.0.2 is not available")
+	}
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	port := freeTCPPort(t)
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: int32(port),
+		LocalAddressV4: "127.0.0.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Add first peer at 127.0.0.2 — will be static initially (no other peer at this IP).
+	user1ID, err := s.AddUser(ctx, store.User{
+		Name: "user1", PeerIP: "127.0.0.2", PeerASN: 65001, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, store.User{
+		ID: user1ID, Name: "user1", PeerIP: "127.0.0.2", PeerASN: 65001, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add second peer at same IP — triggers upgrade to peer-group for both.
+	user2ID, err := s.AddUser(ctx, store.User{
+		Name: "user2", PeerIP: "127.0.0.2", PeerASN: 65002, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, store.User{
+		ID: user2ID, Name: "user2", PeerIP: "127.0.0.2", PeerASN: 65002, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Connect test peers from 127.0.0.2. Both use the same source IP but
+	// different ASNs, exercising the dynamic neighbor / peer-group path.
+	client1 := startTestPeer(t, "127.0.0.2", 65001, "192.0.2.11", port)
+	defer client1.StopBgp(ctx, &api.StopBgpRequest{})
+	client2 := startTestPeer(t, "127.0.0.2", 65002, "192.0.2.12", port)
+	defer client2.StopBgp(ctx, &api.StopBgpRequest{})
+
+	// Wait for BGP sessions to establish.  Dynamic-neighbor peers may take
+	// longer to negotiate; retry up to 5 seconds.
+	deadline := time.Now().Add(5 * time.Second)
+	var states map[string]string
+	for time.Now().Before(deadline) {
+		var listErr error
+		states, listErr = manager.PeerStates(ctx)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		if len(states) > 0 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Logf("PeerStates: %v", states)
+
+	if len(states) == 0 {
+		t.Fatal("BUG: PeerStates() returned empty map for peer-group peers — Conf.NeighborAddress is empty, State.NeighborAddress is ignored")
+	}
+
+	// With both peers at the same IP, GoBGP may report them with distinct keys
+	// or both under "127.0.0.2".  Either way, verify entries exist and have
+	// meaningful session states.
+	for k, v := range states {
+		if v == "" {
+			t.Fatalf("empty state for key %q: expected a session state string", k)
+		}
+		if v != "ESTABLISHED" {
+			t.Logf("peer %q state = %s (non-ESTABLISHED but present)", k, v)
+		}
+	}
+
+	_ = user1ID
+	_ = user2ID
+}
+
 func TestReconcileDetectsCommunityChanges(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
