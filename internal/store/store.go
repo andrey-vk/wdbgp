@@ -669,6 +669,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ip_asn ON users(peer_ip, peer_asn);
 		Name:    "restore feeds.enabled column and recover from partial NoTxSQL crashes",
 		SQL:     "",
 		Go: func(tx *sql.Tx) error {
+			// If migration 20's NoTxSQL dropped feeds but never
+			// renamed feeds_new → feeds (partial crash), the
+			// pragma_table_info query below would fail with "no
+			// such table".  Detect and recover from this state
+			// first.
+			var exists int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='feeds'").Scan(&exists); err != nil {
+				return err
+			}
+			if exists == 0 {
+				if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='feeds_new'").Scan(&exists); err != nil {
+					return err
+				}
+				if exists > 0 {
+					if _, err := tx.Exec("ALTER TABLE feeds_new RENAME TO feeds"); err != nil {
+						return err
+					}
+				}
+			}
+
 			// Restore feeds.enabled column if missing (DBs that went
 			// through old drop-migration path).
 			var cnt int
@@ -681,9 +701,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ip_asn ON users(peer_ip, peer_asn);
 				}
 			}
 			// Note: crash-recovery DROP+RENAME for orphaned users_new /
-			// feeds_new tables is now handled at the end of Migrate(),
-			// outside any transaction, where PRAGMA foreign_keys = OFF
-			// actually prevents ON DELETE CASCADE.
+			// feeds_new tables is now also handled at the end of
+			// Migrate(), outside any transaction, where PRAGMA
+			// foreign_keys = OFF actually prevents ON DELETE CASCADE.
 			return nil
 		},
 	},

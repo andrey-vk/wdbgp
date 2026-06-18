@@ -2628,3 +2628,92 @@ func TestRemoveFeedFromModeCleansUpOrphanSelections(t *testing.T) {
 		t.Fatalf("STALE BUG: selected_services count = %d, want 0 (orphan service selection should be cleaned up)", svcCount)
 	}
 }
+
+// TestMigration21HandlesDroppedFeeds simulates a partial crash where
+// migration 20's NoTxSQL dropped the feeds table but never renamed
+// feeds_new → feeds.  When migration 21 re-runs, its pragma_table_info
+// query on the missing feeds table must not fail; it should detect the
+// orphaned feeds_new, rename it, and then proceed.
+func TestMigration21HandlesDroppedFeeds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.sqlite3")
+
+	// Step 1: Fresh DB, all migrations run (including 20 and 21).
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := s.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		s.Close()
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		s.Close()
+		t.Fatalf("schema version = %d, want %d", version, len(migrations))
+	}
+	s.Close()
+
+	// Step 2: Simulate partial crash of migration 20 NoTxSQL.
+	//   - DROP TABLE feeds succeeded (feeds gone).
+	//   - ALTER TABLE feeds_new RENAME TO feeds never happened.
+	//   - Migration 21 hasn't run yet.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a snapshot of feeds as feeds_new BEFORE dropping feeds.
+	if _, err := db.Exec(`CREATE TABLE feeds_new AS SELECT * FROM feeds`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+
+	// Now drop the original feeds table.
+	if _, err := db.Exec(`DROP TABLE feeds`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+
+	// Delete migrations 21 and 22 so they re-run on next Open
+	// (must delete both to keep sequential history).
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version IN (21, 22)`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Step 3: Re-open.  Migration 21's Go func queries
+	// pragma_table_info('feeds'), which currently fails because feeds
+	// was dropped.  After the fix it should detect feeds_new, rename
+	// it to feeds, and proceed.
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open with dropped feeds: %v", err)
+	}
+	defer s2.Close()
+
+	// Verify schema is up to date.
+	if err := s2.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		t.Fatalf("schema version after recovery = %d, want %d", version, len(migrations))
+	}
+
+	// feeds_new should no longer exist (renamed to feeds).
+	var exists int
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='feeds_new'").Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if exists != 0 {
+		t.Fatalf("feeds_new should have been renamed away, but still exists")
+	}
+
+	// feeds should exist.
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='feeds'").Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	if exists == 0 {
+		t.Fatal("feeds table missing after recovery")
+	}
+}
