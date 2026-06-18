@@ -1116,7 +1116,9 @@ func (m *Manager) PeerStates(ctx context.Context) (map[string]string, error) {
 				addr = peer.State.NeighborAddress
 			}
 			if addr != "" {
-				states[addr] = peer.State.SessionState.String()
+				state := peer.State.SessionState.String()
+				state = strings.TrimPrefix(state, "SESSION_STATE_")
+				states[addr] = state
 			}
 		}
 	})

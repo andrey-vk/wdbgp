@@ -839,7 +839,7 @@ const usersListTemplate = `{{with .Data}}
 <td><a href="/admin/user/{{.User.ID}}">{{.User.Name}}</a></td>
 <td><code>{{.Networks}}</code></td>
 <td>{{.User.CatalogModeName}}</td>
-<td><span class="status-dot {{if eq .PeerState "ESTABLISHED"}}up{{else}}down{{end}}" title="{{if eq .PeerState "ESTABLISHED"}}{{tr "bgp.established"}}{{else if eq .PeerState "UNKNOWN"}}{{tr "bgp.unknown"}}{{else}}{{.PeerState}}{{end}}"></span> <code>{{.User.PeerIP}}</code></td>
+<td><span class="status-dot {{if eq .PeerState "ESTABLISHED"}}up{{else}}down{{end}}" title="{{tr (printf "bgp.state.%s" .PeerState)}} ({{.PeerState}})"></span> <code>{{.User.PeerIP}}</code></td>
 <td>{{.User.PeerASN}}</td>
 <td>{{.User.WebAuth}}</td>
 <td>{{if .User.Enabled}}<span class=ok>enabled</span>{{else}}<span class=error>disabled</span>{{end}}</td>
