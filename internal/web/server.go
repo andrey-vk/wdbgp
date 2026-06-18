@@ -2842,19 +2842,21 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 			// changed, the error is from a stale sync and must not
 			// overwrite the new feed's status.
 			var currentURL, currentData, currentName string
-			var currentAdapterID, currentRevision int64
-			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT f.url, f.adapter_id, f.data, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentName, &currentRevision)
-			if checkErr == nil &&
-				currentURL == feed.URL &&
-				currentAdapterID == feed.AdapterID &&
-				currentData == feed.Data &&
-				currentName == feed.Name &&
-				currentRevision == executedRevision {
-				s.store.DB.ExecContext(context.Background(),
-					"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
-			}
+				var currentAdapterID, currentRevision int64
+				var currentEnabled bool
+				checkErr := s.store.DB.QueryRowContext(context.Background(),
+					"SELECT f.url, f.adapter_id, f.data, f.name, f.enabled, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
+					Scan(&currentURL, &currentAdapterID, &currentData, &currentName, &currentEnabled, &currentRevision)
+				if checkErr == nil &&
+					currentURL == feed.URL &&
+					currentAdapterID == feed.AdapterID &&
+					currentData == feed.Data &&
+					currentName == feed.Name &&
+					currentEnabled == feed.Enabled &&
+					currentRevision == executedRevision {
+					s.store.DB.ExecContext(context.Background(),
+						"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
+				}
 		}
 		if err := s.bgp.Reconcile(context.Background()); err != nil {
 			// Re-check guard before writing BGP error: if the feed or
@@ -2862,14 +2864,16 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 			// must not overwrite the new feed's status.
 			var currentURL, currentData, currentName string
 			var currentAdapterID, currentRevision int64
+			var currentEnabled bool
 			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT f.url, f.adapter_id, f.data, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentName, &currentRevision)
+				"SELECT f.url, f.adapter_id, f.data, f.name, f.enabled, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
+				Scan(&currentURL, &currentAdapterID, &currentData, &currentName, &currentEnabled, &currentRevision)
 			if checkErr == nil &&
 				currentURL == feed.URL &&
 				currentAdapterID == feed.AdapterID &&
 				currentData == feed.Data &&
 				currentName == feed.Name &&
+				currentEnabled == feed.Enabled &&
 				currentRevision == executedRevision {
 				msg := "BGP reconcile failed: " + err.Error()
 				if syncErr != nil {
