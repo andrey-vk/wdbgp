@@ -1412,6 +1412,53 @@ func TestPeerStatesIncludesPeerGroupPeers(t *testing.T) {
 	_ = user2ID
 }
 
+func TestSignatureIsDeterministic(t *testing.T) {
+	// The same prefix in multiple modes causes both bare keys and
+	// mode-scoped keys to be stored in the communities map.  Map
+	// iteration order in Go is non-deterministic; signature() must
+	// sort the keys before hashing to produce a stable output.
+
+	// Simulate a realistic communities map like reconcileLocked builds.
+	// Two modes share the same prefix with identical category+service,
+	// producing both bare keys and mode-scoped keys.
+	comms := map[string]uint32{
+		"video":            10000,
+		"video|youtube":    10001,
+		"chat":             20000,
+		"chat|telegram":    20001,
+		"1|video":          10000,
+		"1|video|youtube":  10001,
+		"2|chat":           20000,
+		"2|chat|telegram":  20001,
+	}
+	userIDs := []int64{1, 2, 3}
+
+	// Run many times: if map iteration order affects the output the
+	// signatures will differ across runs.
+	base := signature(userIDs, comms)
+	for i := 0; i < 10000; i++ {
+		if got := signature(userIDs, comms); got != base {
+			t.Fatalf("iteration %d: signature changed across calls (non-deterministic):\n  base: %s\n  got:  %s", i, base, got)
+		}
+	}
+
+	// Also verify that the same data in a different map instance produces
+	// the same signature.
+	comms2 := map[string]uint32{
+		"1|video":          10000,
+		"2|chat":           20000,
+		"video":            10000,
+		"video|youtube":    10001,
+		"chat":             20000,
+		"chat|telegram":    20001,
+		"2|chat|telegram":  20001,
+		"1|video|youtube":  10001,
+	}
+	if got := signature(userIDs, comms2); got != base {
+		t.Fatalf("signature differs with identical data in different map instance:\n  base: %s\n  got:  %s", base, got)
+	}
+}
+
 func TestReconcileDetectsCommunityChanges(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
