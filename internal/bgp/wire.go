@@ -87,6 +87,7 @@ type NextHopAttribute struct {
 // MpReachNLRIAttribute is the MP_REACH_NLRI path attribute (type 14, RFC 4760).
 type MpReachNLRIAttribute struct {
 	NextHop netip.Addr
+	NLRI    []netip.Prefix
 }
 
 // ASPathAttribute is the AS_PATH path attribute (type 2, well-known mandatory).
@@ -385,13 +386,14 @@ func (a *MpReachNLRIAttribute) TypeCode() uint8 {
 
 // Serialize encodes the MP_REACH_NLRI path attribute value (RFC 4760).
 func (a *MpReachNLRIAttribute) Serialize() []byte {
-	// Two-byte AFI (2=IPv6) + 1-byte SAFI (1=unicast) + 1-byte NH len + NH + 1-byte SNP
+	// Two-byte AFI (2=IPv6) + 1-byte SAFI (1=unicast) + 1-byte NH len + NH + 1-byte SNP + NLRI
 	afi := uint16(2) // IPv6
 	safi := uint8(1)
 	nh := a.NextHop.AsSlice()
 	data := []byte{byte(afi >> 8), byte(afi), safi, byte(len(nh))}
 	data = append(data, nh...)
 	data = append(data, 0) // SNP = 0 (no subsequent address family info)
+	data = append(data, encodePrefixes(a.NLRI)...)
 	return encodePathAttribute(attrFlagOptional|attrFlagTransitive, AttrMpReachNLRI, data)
 }
 
@@ -560,7 +562,19 @@ func decodeMpReachNLRI(value []byte) (PathAttribute, error) {
 	default:
 		return nil, fmt.Errorf("bgp: mp_reach_nlri bad next hop length: %d", nhLen)
 	}
-	return &MpReachNLRIAttribute{NextHop: nh}, nil
+
+	// After next hop comes SNP (1 byte), then NLRI.
+	nlriStart := 4 + nhLen + 1 // AFI(2) + SAFI(1) + NHLen(1) + NH(nhLen) + SNP(1)
+	var nlri []netip.Prefix
+	if len(value) > nlriStart {
+		var err error
+		nlri, err = decodePrefixes(value[nlriStart:])
+		if err != nil {
+			return nil, fmt.Errorf("bgp: mp_reach_nlri decode NLRI: %w", err)
+		}
+	}
+
+	return &MpReachNLRIAttribute{NextHop: nh, NLRI: nlri}, nil
 }
 
 // decodeASPath decodes an AS_PATH attribute value.

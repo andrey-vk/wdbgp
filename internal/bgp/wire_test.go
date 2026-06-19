@@ -473,3 +473,102 @@ func TestReadMessageErrors(t *testing.T) {
 	}
 	t.Logf("notification short body error: %v", err)
 }
+
+func TestIPv6UpdateWithMpReachNLRI(t *testing.T) {
+	// Build an UPDATE with IPv6 NLRI inside MP_REACH (RFC 4760).
+	// Legacy UPDATE.NLRI must be empty for IPv6.
+	ipv6Prefix := netip.MustParsePrefix("fd00::1/128")
+	ipv6NextHop := netip.MustParseAddr("2001:db8::1")
+
+	mpReach := &MpReachNLRIAttribute{
+		NextHop: ipv6NextHop,
+		NLRI:    []netip.Prefix{ipv6Prefix},
+	}
+
+	origin := OriginAttribute(OriginIGP)
+	asPath := &ASPathAttribute{ASN: 64512}
+
+	update := &UpdateMessage{
+		PathAttributes: []PathAttribute{origin, asPath, mpReach},
+		// NLRI is empty — IPv6 prefixes go inside MP_REACH per RFC 4760.
+	}
+
+	data := update.Serialize()
+	msg, err := ReadMessage(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ReadMessage failed: %v", err)
+	}
+
+	decoded, ok := msg.(*UpdateMessage)
+	if !ok {
+		t.Fatalf("expected *UpdateMessage, got %T", msg)
+	}
+
+	// UPDATE.NLRI must be empty for IPv6 routes.
+	if len(decoded.NLRI) != 0 {
+		t.Fatalf("legacy NLRI len = %d, want 0 (IPv6 NLRI goes inside MP_REACH)", len(decoded.NLRI))
+	}
+
+	// Find the MP_REACH attribute and check its NLRI.
+	var foundMpReach *MpReachNLRIAttribute
+	for _, attr := range decoded.PathAttributes {
+		if mp, ok := attr.(*MpReachNLRIAttribute); ok {
+			foundMpReach = mp
+			break
+		}
+	}
+	if foundMpReach == nil {
+		t.Fatal("MP_REACH attribute not found in decoded update")
+	}
+
+	if foundMpReach.NextHop != ipv6NextHop {
+		t.Fatalf("next_hop = %s, want %s", foundMpReach.NextHop, ipv6NextHop)
+	}
+	if len(foundMpReach.NLRI) != 1 {
+		t.Fatalf("mp_reach NLRI len = %d, want 1", len(foundMpReach.NLRI))
+	}
+	if foundMpReach.NLRI[0] != ipv6Prefix {
+		t.Fatalf("mp_reach NLRI[0] = %s, want %s", foundMpReach.NLRI[0], ipv6Prefix)
+	}
+
+	t.Logf("IPv6 MP_REACH round-trip verified: next_hop=%s NLRI=%v", foundMpReach.NextHop, foundMpReach.NLRI)
+}
+
+// decodeNLRIFromAttr extracts NLRI from path attributes, collecting
+// both legacy UPDATE.NLRI and NLRI from MP_REACH attributes (RFC 4760).
+func decodeNLRIFromAttr(update *UpdateMessage) []netip.Prefix {
+	nlri := append([]netip.Prefix(nil), update.NLRI...)
+	for _, attr := range update.PathAttributes {
+		if mp, ok := attr.(*MpReachNLRIAttribute); ok {
+			nlri = append(nlri, mp.NLRI...)
+		}
+	}
+	return nlri
+}
+
+func TestDecodeNLRIFromAttr(t *testing.T) {
+	ipv4 := netip.MustParsePrefix("10.0.0.0/8")
+	ipv6 := netip.MustParsePrefix("fd00::/64")
+
+	update := &UpdateMessage{
+		NLRI: []netip.Prefix{ipv4},
+		PathAttributes: []PathAttribute{
+			&MpReachNLRIAttribute{
+				NextHop: netip.MustParseAddr("2001:db8::1"),
+				NLRI:    []netip.Prefix{ipv6},
+			},
+		},
+	}
+
+	nlri := decodeNLRIFromAttr(update)
+	if len(nlri) != 2 {
+		t.Fatalf("nlri len = %d, want 2", len(nlri))
+	}
+	if nlri[0] != ipv4 {
+		t.Fatalf("nlri[0] = %s, want %s", nlri[0], ipv4)
+	}
+	if nlri[1] != ipv6 {
+		t.Fatalf("nlri[1] = %s, want %s", nlri[1], ipv6)
+	}
+	t.Logf("decodeNLRIFromAttr: %v", nlri)
+}

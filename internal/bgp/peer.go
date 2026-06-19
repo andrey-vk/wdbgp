@@ -246,7 +246,14 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 			// Invoke route callback if set
 			if p.routeCB != nil {
 				upd := msg.(*UpdateMessage)
-				p.routeCB(upd.NLRI)
+				nlri := upd.NLRI
+				// Extract NLRI from MP_REACH attributes for IPv6 (RFC 4760).
+				for _, attr := range upd.PathAttributes {
+					if mp, ok := attr.(*MpReachNLRIAttribute); ok {
+						nlri = append(nlri, mp.NLRI...)
+					}
+				}
+				p.routeCB(nlri)
 			}
 		case *NotificationMessage:
 			nm := msg.(*NotificationMessage)
@@ -266,21 +273,36 @@ func (p *Peer) sendRoutes(conn net.Conn) {
 	}
 
 	for _, r := range routes {
-		var nhAttr PathAttribute
+		var attrs []PathAttribute
+		var update *UpdateMessage
+
 		if r.Prefix.Addr().Is6() {
-			nhAttr = &MpReachNLRIAttribute{NextHop: r.NextHop}
+			// IPv6: NLRI goes inside MP_REACH per RFC 4760.
+			// UPDATE.NLRI must be empty.
+			attrs = []PathAttribute{
+				OriginAttribute(OriginIGP),
+				&ASPathAttribute{ASN: p.spk.ASN},
+				&MpReachNLRIAttribute{
+					NextHop: r.NextHop,
+					NLRI:    []netip.Prefix{r.Prefix},
+				},
+				&LargeCommunitiesAttribute{Communities: r.Communities},
+			}
+			update = &UpdateMessage{
+				PathAttributes: attrs,
+			}
 		} else {
-			nhAttr = &NextHopAttribute{NextHop: r.NextHop}
-		}
-		attrs := []PathAttribute{
-			OriginAttribute(OriginIGP),
-			&ASPathAttribute{ASN: p.spk.ASN},
-			nhAttr,
-			&LargeCommunitiesAttribute{Communities: r.Communities},
-		}
-		update := &UpdateMessage{
-			PathAttributes: attrs,
-			NLRI:           []netip.Prefix{r.Prefix},
+			// IPv4: NLRI in UPDATE.NLRI field + NextHopAttribute (RFC 4271).
+			attrs = []PathAttribute{
+				OriginAttribute(OriginIGP),
+				&ASPathAttribute{ASN: p.spk.ASN},
+				&NextHopAttribute{NextHop: r.NextHop},
+				&LargeCommunitiesAttribute{Communities: r.Communities},
+			}
+			update = &UpdateMessage{
+				PathAttributes: attrs,
+				NLRI:           []netip.Prefix{r.Prefix},
+			}
 		}
 		if _, err := conn.Write(update.Serialize()); err != nil {
 			p.logger.Error("failed to send update", "error", err)
