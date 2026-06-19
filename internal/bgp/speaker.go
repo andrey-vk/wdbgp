@@ -268,11 +268,11 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 		return
 	}
 
-	// Prevent duplicate sessions: if this peer already has an established
-	// connection (e.g., both sides initiated simultaneously), keep the
+	// Prevent duplicate sessions: if this peer already has a connection
+	// in progress (e.g., both sides initiated simultaneously), keep the
 	// existing session and close the new one.
 	if peer.hasEstablishedConn() {
-		s.logger.Warn("duplicate connection rejected, peer already established",
+		s.logger.Warn("duplicate connection rejected, peer session in progress",
 			"addr", addr, "asn", remoteASN)
 		conn.Close()
 		return

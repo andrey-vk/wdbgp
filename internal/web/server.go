@@ -943,6 +943,10 @@ func (s *Server) deleteMode(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		logger := logging.FromContext(r.Context())
+		logger.Error("delete mode reconcile failed", "error", err)
+	}
 	http.Redirect(w, r, "/admin/modes?saved=1", http.StatusSeeOther)
 }
 
@@ -1533,17 +1537,28 @@ func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, sk
 		return nil
 	}
 
-	// Step C: Shared IP + different ASN → require password when setting is ON
-	if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
-		var count int
-		err := s.store.DB.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ?",
-			user.PeerIP, skipUserID).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("failed to check shared IP peers: %w", err)
-		}
-		if count > 0 {
+	// Step C: Shared IP + different ASN → require matching password
+	var sharedCount int
+	err = s.store.DB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ?",
+		user.PeerIP, skipUserID).Scan(&sharedCount)
+	if err != nil {
+		return fmt.Errorf("failed to check shared IP peers: %w", err)
+	}
+	if sharedCount > 0 {
+		if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
 			return fmt.Errorf("BGP password required when sharing IP %s with another ASN", user.PeerIP)
+		}
+		// If any existing peer on same IP has a password, new peer's must match.
+		var existingPwd string
+		err = s.store.DB.QueryRowContext(ctx,
+			"SELECT DISTINCT bgp_password FROM users WHERE peer_ip = ? AND id != ? AND bgp_password != ''",
+			user.PeerIP, skipUserID).Scan(&existingPwd)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("failed to check shared IP passwords: %w", err)
+		}
+		if existingPwd != "" && user.BGPPassword != existingPwd {
+			return fmt.Errorf("BGP password must match existing peer on IP %s", user.PeerIP)
 		}
 	}
 

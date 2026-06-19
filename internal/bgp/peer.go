@@ -64,13 +64,13 @@ func (p *Peer) TriggerUpdate() {
 	p.needsUpdate.Store(true)
 }
 
-// hasEstablishedConn reports whether the peer has an established BGP session
-// with a live TCP connection. Used to prevent duplicate sessions when both
-// sides initiate connections simultaneously.
+// hasEstablishedConn reports whether the peer has any BGP session in progress
+// (CONNECT/OPENSENT/OPENCONFIRM/ESTABLISHED). Used to prevent duplicate
+// sessions when both sides initiate connections simultaneously.
 func (p *Peer) hasEstablishedConn() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.state == StateEstablished && p.conn != nil
+	return p.conn != nil
 }
 
 // Run connects to the peer and runs the BGP FSM.
@@ -142,6 +142,7 @@ func (p *Peer) connectAndRun() error {
 		return fmt.Errorf("dial: %w", err)
 	}
 	p.conn = conn
+	defer func() { p.conn = nil }()
 	defer conn.Close()
 
 	// Deadlines for read/write
@@ -433,6 +434,7 @@ func (p *Peer) WithdrawRoutes(prefixes []netip.Prefix) {
 // then delegates to AcceptWithOpen.
 func (p *Peer) Accept(conn net.Conn) {
 	p.conn = conn
+	defer func() { p.conn = nil }()
 	defer conn.Close()
 
 	// Receive OPEN first (passive side)
@@ -454,6 +456,7 @@ func (p *Peer) Accept(conn net.Conn) {
 // AcceptWithOpen handles a passive connection with a pre-read OPEN message.
 func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	p.conn = conn
+	defer func() { p.conn = nil }()
 
 	// Validate ASN — use four-octet ASN capability (RFC 6793) if present
 	remoteASN := openIn.MyASN32
@@ -477,10 +480,12 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		remoteIP := remoteAddr.Addr()
 		if p.cfg.Address.IsUnspecified() && !remoteIP.IsLoopback() {
 			// Dynamic peer on non-loopback: MD5 can't be enforced at
-			// the TCP handshake level. Accept the connection and rely
-			// on the absence of listener-level MD5 (the peer connected
-			// without MD5 enforcement).
-			p.logger.Warn("dynamic peer has password on non-loopback; MD5 not enforced at handshake")
+			// the TCP handshake level. Validate password from OPEN message.
+			if openIn.Password != p.cfg.Password {
+				p.sendNotification(conn, 5, 0, nil)
+				conn.Close()
+				return
+			}
 		} else if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
 			p.logger.Error("accept: tcp md5 set failed", "error", err)
 			conn.Close()
@@ -496,10 +501,14 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	}
 
 	// Send OPEN
+	holdTime := uint16(90)
+	if openIn.HoldTime > 0 && openIn.HoldTime < 90 {
+		holdTime = openIn.HoldTime
+	}
 	bgpID := p.spk.RouterID.As4()
 	var id [4]byte
 	copy(id[:], bgpID[:])
-	openOut := &OpenMessage{Version: 4, MyASN32: p.spk.ASN, HoldTime: 90, BGPID: id}
+	openOut := &OpenMessage{Version: 4, MyASN32: p.spk.ASN, HoldTime: holdTime, BGPID: id}
 	// Only include Password in OPEN for loopback connections.
 	if p.cfg.Password != "" {
 		remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
@@ -577,6 +586,7 @@ func (p *Peer) Stop() {
 	p.stopping.Store(true)
 	if p.conn != nil {
 		p.conn.Close()
+		p.conn = nil
 	}
 }
 

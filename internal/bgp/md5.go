@@ -147,6 +147,10 @@ func setTCPMD5OnFd(fd int, addr netip.Addr, password string) error {
 	if password == "" || addr.IsLoopback() {
 		return nil
 	}
+	const maxMD5KeyLen = 80
+	if len(password) > maxMD5KeyLen {
+		return fmt.Errorf("tcp md5: password too long (%d bytes > %d)", len(password), maxMD5KeyLen)
+	}
 	af, err := getsocketFamily(fd)
 	if err != nil {
 		return fmt.Errorf("tcp md5: getsockname: %w", err)

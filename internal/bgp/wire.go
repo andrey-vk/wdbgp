@@ -338,11 +338,11 @@ func (o *OpenMessage) Serialize() []byte {
 	capParam[7] = 0x01  // SAFI=1 (unicast)
 
 	// Build password parameter (type 1) if set and fits in OPEN message.
-	// Max password length is 247 bytes: OptParmLen (255) - capParam (8).
+	// Max password length is 245 bytes: OptParmLen (255) - capParam (8) - pwParam header (2).
 	var pwParam []byte
 	if o.Password != "" {
-		if len(o.Password) > 247 {
-			log.Printf("WARNING: BGP password too long (%d bytes > 247), omitting from OPEN", len(o.Password))
+		if len(o.Password) > 245 {
+			log.Printf("WARNING: BGP password too long (%d bytes > 245), omitting from OPEN", len(o.Password))
 		} else {
 			pwParam = make([]byte, 2+len(o.Password))
 			pwParam[0] = 1 // Parameter type: password
