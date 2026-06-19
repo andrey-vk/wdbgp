@@ -301,6 +301,8 @@ func (m *Manager) buildPeerConfigs() []PeerConfig {
 		if addr.Is6() && localAddrV6.IsValid() {
 			peerLocalAddr = localAddrV6
 		} else if addr.Is6() {
+			logging.Warn("skipping IPv6 peer: no LocalAddressV6 configured",
+				"peer_ip", u.PeerIP, "peer_asn", u.PeerASN)
 			continue
 		}
 		configs = append(configs, PeerConfig{

@@ -179,10 +179,10 @@ VALUES (?, ?, 'javascript', 1, ?, ?, ?)`,
 		}
 		// Then, read current state of the adapter.
 		var isCustomized, builtinVersion int
-		var storedSource string
+		var storedSource, currentName, currentAllowedHosts string
 		err := s.DB.QueryRowContext(ctx,
-			"SELECT is_customized, builtin_version, source FROM feed_adapters WHERE key = ?", key).
-			Scan(&isCustomized, &builtinVersion, &storedSource)
+			"SELECT is_customized, builtin_version, source, name, COALESCE(allowed_hosts, '') FROM feed_adapters WHERE key = ?", key).
+			Scan(&isCustomized, &builtinVersion, &storedSource, &currentName, &currentAllowedHosts)
 		if err != nil {
 			continue
 		}
@@ -196,7 +196,9 @@ VALUES (?, ?, 'javascript', 1, ?, ?, ?)`,
 				adapter.builtinVersion, key); err != nil {
 				return err
 			}
-		} else if builtinVersion == 0 && storedSource != "" && strings.TrimSpace(storedSource) != strings.TrimSpace(normBuiltIn) {
+		} else if builtinVersion == 0 && storedSource != "" && (strings.TrimSpace(storedSource) != strings.TrimSpace(normBuiltIn) ||
+			currentName != adapter.name ||
+			currentAllowedHosts != adapter.allowedHosts) {
 			// Freshly migrated adapter (builtin_version == 0) whose source
 			// differs from the built-in default. This adapter was customized
 			// before migration 20 added the is_customized column.

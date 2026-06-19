@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"net/netip"
 )
 
@@ -330,13 +331,18 @@ func (o *OpenMessage) Serialize() []byte {
 	capParam[12] = 0x00 // Reserved
 	capParam[13] = 0x01 // SAFI=1 (unicast)
 
-	// Build password parameter (type 1) if set
+	// Build password parameter (type 1) if set and fits in OPEN message.
+	// Max password length is 239 bytes: OptParmLen (255) - capParam (14) - 2 header bytes.
 	var pwParam []byte
 	if o.Password != "" {
-		pwParam = make([]byte, 2+len(o.Password))
-		pwParam[0] = 1 // Parameter type: password
-		pwParam[1] = uint8(len(o.Password))
-		copy(pwParam[2:], o.Password)
+		if len(o.Password) > 239 {
+			log.Printf("WARNING: BGP password too long (%d bytes > 239), omitting from OPEN", len(o.Password))
+		} else {
+			pwParam = make([]byte, 2+len(o.Password))
+			pwParam[0] = 1 // Parameter type: password
+			pwParam[1] = uint8(len(o.Password))
+			copy(pwParam[2:], o.Password)
+		}
 	}
 
 	// 2-byte ASN field: use actual ASN when it fits in 16 bits,
@@ -463,14 +469,13 @@ func (a *ASPathAttribute) TypeCode() uint8 {
 }
 
 // Serialize encodes the AS_PATH path attribute value.
-// Always uses 4-octet ASN format since every OPEN advertises the
-// Four-octet ASN capability (RFC 6793), so peers expect 4-byte AS_PATH.
+// Uses 2-octet ASN encoding since all our ASNs fit in 16 bits.
 func (a *ASPathAttribute) Serialize() []byte {
-	// 4-octet AS_SEQUENCE: type=2, length=1 (in ASNs), value=4 bytes
-	val := make([]byte, 6)
+	// 2-octet AS_SEQUENCE: type=2, length=1 (in ASNs), value=2 bytes
+	val := make([]byte, 4)
 	val[0] = 2 // AS_SEQUENCE
 	val[1] = 1 // one AS in segment
-	binary.BigEndian.PutUint32(val[2:6], a.ASN)
+	binary.BigEndian.PutUint16(val[2:4], uint16(a.ASN))
 	return encodePathAttribute(attrFlagTransitive, AttrASPath, val)
 }
 

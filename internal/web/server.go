@@ -1028,7 +1028,10 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	if feedID > 0 {
 		if len(modeIDs) > 0 {
-			_ = s.store.SetFeedModes(r.Context(), feedID, modeIDs)
+			if err := s.store.SetFeedModes(r.Context(), feedID, modeIDs); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
@@ -1072,6 +1075,10 @@ func (s *Server) feedEditPage(w http.ResponseWriter, r *http.Request) {
 	feedModeSet := make(map[int64]bool)
 	for _, mid := range feedModeIDs {
 		feedModeSet[mid] = true
+	}
+	// Default mode selected for new feeds.
+	if isNew {
+		feedModeSet[store.DefaultCatalogModeID] = true
 	}
 
 	s.renderAdmin(w, r, http.StatusOK, title, "feed-edit", map[string]any{

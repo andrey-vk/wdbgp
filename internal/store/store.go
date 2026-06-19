@@ -738,6 +738,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	); err != nil {
 		return fmt.Errorf("users UNIQUE(peer_ip, peer_asn) index: %w", err)
 	}
+	// Backfill: index for filtering enabled users by catalog mode.
+	if _, err := s.DB.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id)`,
+	); err != nil {
+		return fmt.Errorf("users enabled+catalog_mode index: %w", err)
+	}
 	return s.seedBuiltInAdapters(ctx)
 }
 
