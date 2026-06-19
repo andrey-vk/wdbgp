@@ -213,6 +213,26 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
 	addr := remoteAddr.Addr()
 
+	// Set TCP MD5 before reading OPEN when exactly one configured peer
+	// exists at this address (no ambiguity about which password to use).
+	s.mu.Lock()
+	var matchCount int
+	var matchPassword string
+	for _, pc := range s.peerConfigs {
+		if pc.Address == addr {
+			matchCount++
+			matchPassword = pc.Password
+		}
+	}
+	s.mu.Unlock()
+	if matchCount == 1 && matchPassword != "" {
+		if err := setTCPMD5OnConn(conn, addr, matchPassword); err != nil {
+			s.logger.Error("tcp md5 set failed on accept", "addr", addr, "error", err)
+			conn.Close()
+			return
+		}
+	}
+
 	// Read OPEN message to get the remote ASN
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	msg, err := ReadMessage(conn)

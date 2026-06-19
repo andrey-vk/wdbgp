@@ -214,8 +214,11 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	}
 	// Find existing peer by user ID
 	found := false
+	var oldPeerKey string
 	for i, u := range m.peerConfigs {
 		if u.ID == user.ID {
+			// Remember old key before update so we can clean up peerRoutes
+			oldPeerKey = fmt.Sprintf("%s:%d", u.PeerIP, u.PeerASN)
 			m.peerConfigs[i] = user
 			found = true
 			break
@@ -224,9 +227,15 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	if !found {
 		return fmt.Errorf("peer %s does not exist", user.PeerIP)
 	}
-	// Clear peer routes since the peer may have changed
+	// Clear old peer routes when IP or ASN changed
+	if oldPeerKey != "" {
+		delete(m.peerRoutes, oldPeerKey)
+	}
+	// Clear new peer routes since the peer may have changed
 	peerKey := fmt.Sprintf("%s:%d", user.PeerIP, user.PeerASN)
-	delete(m.peerRoutes, peerKey)
+	if peerKey != oldPeerKey {
+		delete(m.peerRoutes, peerKey)
+	}
 	m.speaker.SetPeers(m.buildPeerConfigs())
 	return nil
 }

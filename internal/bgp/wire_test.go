@@ -267,7 +267,7 @@ func TestPrefixEncodeDecode(t *testing.T) {
 	}
 
 	encoded := encodePrefixes(prefixes)
-	decoded, err := decodePrefixes(encoded)
+	decoded, err := decodePrefixes(encoded, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,7 +303,7 @@ func TestPrefixEncodeDecode(t *testing.T) {
 	}
 
 	maxEncoded := encodePrefixes(maxPrefixes)
-	maxDecoded, err := decodePrefixes(maxEncoded)
+	maxDecoded, err := decodePrefixes(maxEncoded, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestPrefixEncodeDecode(t *testing.T) {
 
 	// Empty prefix list
 	emptyEncoded := encodePrefixes(nil)
-	emptyDecoded, err := decodePrefixes(emptyEncoded)
+	emptyDecoded, err := decodePrefixes(emptyEncoded, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestPrefixEncodeDecode(t *testing.T) {
 	}
 
 	mixedEncoded := encodePrefixes(mixedPrefixes)
-	mixedDecoded, err := decodePrefixes(mixedEncoded)
+	mixedDecoded, err := decodePrefixes(mixedEncoded, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

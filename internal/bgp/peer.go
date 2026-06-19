@@ -258,7 +258,9 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 		msg, err := ReadMessage(conn)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue // deadline hit, loop again
+				// Hold timer expired — tear down session with NOTIFICATION.
+				p.sendNotification(conn, 4, 0, nil) // Hold Timer Expired
+				return fmt.Errorf("hold timer expired")
 			}
 			if err == io.EOF {
 				return fmt.Errorf("peer closed connection")

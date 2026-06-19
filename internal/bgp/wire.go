@@ -262,7 +262,7 @@ func decodeUpdate(data []byte) (*UpdateMessage, error) {
 	}
 
 	var err error
-	u.WithdrawnRoutes, err = decodePrefixes(data[:withdrawnLen])
+	u.WithdrawnRoutes, err = decodePrefixes(data[:withdrawnLen], 1) // AFI=1 (IPv4)
 	if err != nil {
 		return nil, fmt.Errorf("bgp: decode withdrawn routes: %w", err)
 	}
@@ -285,7 +285,7 @@ func decodeUpdate(data []byte) (*UpdateMessage, error) {
 	}
 	data = data[pathAttrLen:]
 
-	u.NLRI, err = decodePrefixes(data)
+	u.NLRI, err = decodePrefixes(data, 1) // AFI=1 (IPv4)
 	if err != nil {
 		return nil, fmt.Errorf("bgp: decode nlri: %w", err)
 	}
@@ -439,7 +439,7 @@ func (a *MpReachNLRIAttribute) Serialize() []byte {
 	data = append(data, nh...)
 	data = append(data, 0) // SNP = 0 (no subsequent address family info)
 	data = append(data, encodePrefixes(a.NLRI)...)
-	return encodePathAttribute(attrFlagOptional|attrFlagTransitive, AttrMpReachNLRI, data)
+	return encodePathAttribute(attrFlagOptional, AttrMpReachNLRI, data)
 }
 
 // TypeCode returns the path attribute type code for MP_UNREACH_NLRI (15).
@@ -454,7 +454,7 @@ func (a *MpUnreachNLRIAttribute) Serialize() []byte {
 	safi := uint8(1)
 	data := []byte{byte(afi >> 8), byte(afi), safi}
 	data = append(data, encodePrefixes(a.NLRI)...)
-	return encodePathAttribute(attrFlagOptional|attrFlagTransitive, AttrMpUnreachNLRI, data)
+	return encodePathAttribute(attrFlagOptional, AttrMpUnreachNLRI, data)
 }
 
 // TypeCode returns the path attribute type code for AS_PATH (2).
@@ -463,21 +463,14 @@ func (a *ASPathAttribute) TypeCode() uint8 {
 }
 
 // Serialize encodes the AS_PATH path attribute value.
-// Uses 2-octet ASN format for ASN <= 65535, otherwise 4-octet (RFC 6793).
+// Always uses 4-octet ASN format since every OPEN advertises the
+// Four-octet ASN capability (RFC 6793), so peers expect 4-byte AS_PATH.
 func (a *ASPathAttribute) Serialize() []byte {
-	if a.ASN > 65535 {
-		// 4-octet AS_SEQUENCE: type=2, length=1 (in ASNs), value=4 bytes
-		val := make([]byte, 6)
-		val[0] = 2 // AS_SEQUENCE
-		val[1] = 1 // one AS in segment
-		binary.BigEndian.PutUint32(val[2:6], a.ASN)
-		return encodePathAttribute(attrFlagTransitive, AttrASPath, val)
-	}
-	// 2-octet AS_SEQUENCE: type=2, length=1 (in ASNs), value=2 bytes
-	val := make([]byte, 4)
+	// 4-octet AS_SEQUENCE: type=2, length=1 (in ASNs), value=4 bytes
+	val := make([]byte, 6)
 	val[0] = 2 // AS_SEQUENCE
 	val[1] = 1 // one AS in segment
-	binary.BigEndian.PutUint16(val[2:4], uint16(a.ASN))
+	binary.BigEndian.PutUint32(val[2:6], a.ASN)
 	return encodePathAttribute(attrFlagTransitive, AttrASPath, val)
 }
 
@@ -619,6 +612,7 @@ func decodeMpReachNLRI(value []byte) (PathAttribute, error) {
 		return nil, fmt.Errorf("bgp: mp_reach_nlri too short: %d bytes", len(value))
 	}
 	// AFI (2 bytes) + SAFI (1 byte) + NH len (1 byte)
+	afi := binary.BigEndian.Uint16(value[0:2])
 	nhLen := int(value[3])
 	if len(value) < 4+nhLen {
 		return nil, fmt.Errorf("bgp: mp_reach_nlri truncated: need next hop %d bytes, have %d", nhLen, len(value)-4)
@@ -639,7 +633,7 @@ func decodeMpReachNLRI(value []byte) (PathAttribute, error) {
 	var nlri []netip.Prefix
 	if len(value) > nlriStart {
 		var err error
-		nlri, err = decodePrefixes(value[nlriStart:])
+		nlri, err = decodePrefixes(value[nlriStart:], afi)
 		if err != nil {
 			return nil, fmt.Errorf("bgp: mp_reach_nlri decode NLRI: %w", err)
 		}
@@ -655,11 +649,12 @@ func decodeMpUnreachNLRI(value []byte) (PathAttribute, error) {
 		return nil, fmt.Errorf("bgp: mp_unreach_nlri too short: %d bytes", len(value))
 	}
 	// AFI (2 bytes) + SAFI (1 byte) — NLRI follows immediately
+	afi := binary.BigEndian.Uint16(value[0:2])
 	nlriData := value[3:]
 	var nlri []netip.Prefix
 	if len(nlriData) > 0 {
 		var err error
-		nlri, err = decodePrefixes(nlriData)
+		nlri, err = decodePrefixes(nlriData, afi)
 		if err != nil {
 			return nil, fmt.Errorf("bgp: mp_unreach_nlri decode NLRI: %w", err)
 		}
@@ -729,8 +724,10 @@ func encodePrefixes(prefixes []netip.Prefix) []byte {
 }
 
 // decodePrefixes decodes NLRI/withdrawn prefixes from wire format.
-func decodePrefixes(data []byte) ([]netip.Prefix, error) {
+// afi is the Address Family Identifier (1=IPv4, 2=IPv6).
+func decodePrefixes(data []byte, afi uint16) ([]netip.Prefix, error) {
 	var prefixes []netip.Prefix
+	is6 := afi == 2 || afi == 0x0200
 	for len(data) > 0 {
 		prefixLen := int(data[0])
 		data = data[1:]
@@ -744,15 +741,15 @@ func decodePrefixes(data []byte) ([]netip.Prefix, error) {
 		data = data[bytesNeeded:]
 
 		var addr netip.Addr
-		if bytesNeeded <= 4 {
+		if is6 {
+			var ip [16]byte
+			copy(ip[:], prefixBytes)
+			addr = netip.AddrFrom16(ip)
+		} else {
 			// IPv4 (or default route, which is also IPv4)
 			var ip [4]byte
 			copy(ip[:], prefixBytes)
 			addr = netip.AddrFrom4(ip)
-		} else {
-			var ip [16]byte
-			copy(ip[:], prefixBytes)
-			addr = netip.AddrFrom16(ip)
 		}
 
 		prefix, err := netip.ParsePrefix(fmt.Sprintf("%s/%d", addr.String(), prefixLen))
