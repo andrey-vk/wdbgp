@@ -1721,6 +1721,100 @@ func TestMigrationReopenPreservesData(t *testing.T) {
 	}
 }
 
+// TestMigration20PreservesAdapterCustomizations verifies that migration 20 and
+// seedBuiltInAdapters do NOT overwrite admin-customized built-in adapter sources.
+func TestMigration20PreservesAdapterCustomizations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "adapter-custom.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create schema_migrations with all migrations 1-19 applied, so only
+	// migration 20 runs on Open().
+	_, err = db.Exec(`CREATE TABLE schema_migrations (
+		version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for v := 1; v <= 19; v++ {
+		if _, err := db.Exec(
+			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+			v, "migration-"+strconv.Itoa(v), "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	customSource := "// CUSTOMIZED BY ADMIN\nfunction sync(feed, api) { return []; }\n"
+
+	// Build a pre-migration-20 database with a customized built-in adapter and
+	// minimal other tables required by migration 20's DDL.
+	_, err = db.Exec(`
+		CREATE TABLE feed_adapters (
+			id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE, language TEXT NOT NULL DEFAULT 'javascript',
+			api_version INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT '',
+			allowed_hosts TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1
+		);
+		INSERT INTO feed_adapters(id, key, name, source) VALUES
+			(1, 'canonical-json', 'Canonical JSON', ?);
+		CREATE TABLE catalog_modes (
+			id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 1
+		);
+		INSERT INTO catalog_modes(id, key, name, enabled) VALUES (1, 'test', 'Test', 1);
+		CREATE TABLE feeds (
+			id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, url TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1, last_success TEXT, last_error TEXT,
+			adapter_id INTEGER, sync_interval INTEGER NOT NULL DEFAULT 0,
+			data TEXT NOT NULL DEFAULT '', mode_id INTEGER
+		);
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+			peer_ip TEXT NOT NULL UNIQUE, peer_asn INTEGER NOT NULL,
+			next_hop TEXT, bgp_password TEXT,
+			selection_locked INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+			filter_editable INTEGER NOT NULL DEFAULT 0,
+			filter_mode TEXT NOT NULL DEFAULT 'global',
+			catalog_mode_id INTEGER, catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
+			web_auth TEXT NOT NULL DEFAULT 'network'
+		);
+	`, customSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Open triggers migration 20 + seedBuiltInAdapters.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Verify the custom source was NOT overwritten by seedBuiltInAdapters.
+	var storedSource string
+	err = s.DB.QueryRow("SELECT source FROM feed_adapters WHERE key = 'canonical-json'").Scan(&storedSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedSource != customSource {
+		t.Errorf("custom source was overwritten by seedBuiltInAdapters!\ngot:  %q\nwant: %q", storedSource, customSource)
+	}
+
+	// Verify is_customized was set to 1 to protect from future overwrites.
+	var isCustomized int
+	err = s.DB.QueryRow("SELECT is_customized FROM feed_adapters WHERE key = 'canonical-json'").Scan(&isCustomized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isCustomized != 1 {
+		t.Errorf("is_customized = %d, want 1 (custom adapter not protected from overwrites)", isCustomized)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))

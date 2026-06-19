@@ -177,17 +177,32 @@ VALUES (?, ?, 'javascript', 1, ?, ?, ?)`,
 			adapter.allowedHosts, adapter.builtinVersion); err != nil {
 			return err
 		}
-		// Then, for existing adapters: read is_customized.
-		var isCustomized int
+		// Then, read current state of the adapter.
+		var isCustomized, builtinVersion int
+		var storedSource string
 		err := s.DB.QueryRowContext(ctx,
-			"SELECT is_customized FROM feed_adapters WHERE key = ?", key).Scan(&isCustomized)
+			"SELECT is_customized, builtin_version, source FROM feed_adapters WHERE key = ?", key).
+			Scan(&isCustomized, &builtinVersion, &storedSource)
 		if err != nil {
 			continue
 		}
+
+		normBuiltIn := normalizedBuiltInSource(adapter.source)
+
 		if isCustomized == 1 {
 			// Only update builtin_version; preserve user edits.
 			if _, err := s.DB.ExecContext(ctx,
 				"UPDATE feed_adapters SET builtin_version = ? WHERE key = ?",
+				adapter.builtinVersion, key); err != nil {
+				return err
+			}
+		} else if builtinVersion == 0 && storedSource != "" && strings.TrimSpace(storedSource) != strings.TrimSpace(normBuiltIn) {
+			// Freshly migrated adapter (builtin_version == 0) whose source
+			// differs from the built-in default. This adapter was customized
+			// before migration 20 added the is_customized column.
+			// Mark as customized so future seed runs don't overwrite it.
+			if _, err := s.DB.ExecContext(ctx,
+				"UPDATE feed_adapters SET is_customized = 1, builtin_version = ? WHERE key = ?",
 				adapter.builtinVersion, key); err != nil {
 				return err
 			}
@@ -197,7 +212,7 @@ VALUES (?, ?, 'javascript', 1, ?, ?, ?)`,
 UPDATE feed_adapters
 SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?
 WHERE key = ?`,
-				adapter.name, normalizedBuiltInSource(adapter.source),
+				adapter.name, normBuiltIn,
 				adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
 				return err
 			}
