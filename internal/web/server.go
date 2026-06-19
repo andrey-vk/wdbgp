@@ -995,9 +995,15 @@ func (s *Server) modeFeedToggle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.FormValue("action") == "remove" {
-		_ = s.store.RemoveFeedFromMode(r.Context(), modeID, feedID)
+		if err := s.store.RemoveFeedFromMode(r.Context(), modeID, feedID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	} else {
-		_ = s.store.AddFeedToMode(r.Context(), modeID, feedID)
+		if err := s.store.AddFeedToMode(r.Context(), modeID, feedID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	// Generate communities before reconcile so new categories/services have community values
 	s.store.GenerateCommunities(r.Context(), modeID)
@@ -1332,7 +1338,13 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	_ = s.store.SetFeedModes(r.Context(), feed.ID, modeIDs)
+	if err := s.store.SetFeedModes(r.Context(), feed.ID, modeIDs); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for _, mid := range modeIDs {
+		s.store.GenerateCommunities(r.Context(), mid)
+	}
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
 		s.internalError(w, r, err)
 		return

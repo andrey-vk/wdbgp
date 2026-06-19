@@ -21,6 +21,7 @@ const (
 	AttrASPath           = 2
 	AttrNextHop          = 3
 	AttrMpReachNLRI      = 14
+	AttrMpUnreachNLRI    = 15
 	AttrLargeCommunities = 32
 )
 
@@ -90,6 +91,12 @@ type NextHopAttribute struct {
 type MpReachNLRIAttribute struct {
 	NextHop netip.Addr
 	NLRI    []netip.Prefix
+}
+
+// MpUnreachNLRIAttribute is the MP_UNREACH_NLRI path attribute (type 15, RFC 4760).
+// Carries withdrawn IPv6 prefixes in the path attributes section of an UPDATE.
+type MpUnreachNLRIAttribute struct {
+	NLRI []netip.Prefix
 }
 
 // ASPathAttribute is the AS_PATH path attribute (type 2, well-known mandatory).
@@ -435,6 +442,21 @@ func (a *MpReachNLRIAttribute) Serialize() []byte {
 	return encodePathAttribute(attrFlagOptional|attrFlagTransitive, AttrMpReachNLRI, data)
 }
 
+// TypeCode returns the path attribute type code for MP_UNREACH_NLRI (15).
+func (a *MpUnreachNLRIAttribute) TypeCode() uint8 {
+	return AttrMpUnreachNLRI
+}
+
+// Serialize encodes the MP_UNREACH_NLRI path attribute value (RFC 4760).
+// Format: AFI(2) + SAFI(1) + NLRI — no next hop, no SNP.
+func (a *MpUnreachNLRIAttribute) Serialize() []byte {
+	afi := uint16(2) // IPv6
+	safi := uint8(1)
+	data := []byte{byte(afi >> 8), byte(afi), safi}
+	data = append(data, encodePrefixes(a.NLRI)...)
+	return encodePathAttribute(attrFlagOptional|attrFlagTransitive, AttrMpUnreachNLRI, data)
+}
+
 // TypeCode returns the path attribute type code for AS_PATH (2).
 func (a *ASPathAttribute) TypeCode() uint8 {
 	return AttrASPath
@@ -563,6 +585,9 @@ func decodePathAttribute(flags, typeCode uint8, value []byte) (PathAttribute, er
 	case AttrMpReachNLRI:
 		return decodeMpReachNLRI(value)
 
+	case AttrMpUnreachNLRI:
+		return decodeMpUnreachNLRI(value)
+
 	case AttrLargeCommunities:
 		if len(value)%12 != 0 {
 			return nil, fmt.Errorf("bgp: large communities attribute bad length: %d (must be multiple of 12)", len(value))
@@ -621,6 +646,25 @@ func decodeMpReachNLRI(value []byte) (PathAttribute, error) {
 	}
 
 	return &MpReachNLRIAttribute{NextHop: nh, NLRI: nlri}, nil
+}
+
+// decodeMpUnreachNLRI decodes an MP_UNREACH_NLRI attribute value.
+// Format: AFI(2) + SAFI(1) + NLRI (no next hop, no SNP).
+func decodeMpUnreachNLRI(value []byte) (PathAttribute, error) {
+	if len(value) < 3 {
+		return nil, fmt.Errorf("bgp: mp_unreach_nlri too short: %d bytes", len(value))
+	}
+	// AFI (2 bytes) + SAFI (1 byte) — NLRI follows immediately
+	nlriData := value[3:]
+	var nlri []netip.Prefix
+	if len(nlriData) > 0 {
+		var err error
+		nlri, err = decodePrefixes(nlriData)
+		if err != nil {
+			return nil, fmt.Errorf("bgp: mp_unreach_nlri decode NLRI: %w", err)
+		}
+	}
+	return &MpUnreachNLRIAttribute{NLRI: nlri}, nil
 }
 
 // decodeASPath decodes an AS_PATH attribute value.

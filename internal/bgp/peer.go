@@ -65,10 +65,16 @@ func (p *Peer) TriggerUpdate() {
 
 // Run connects to the peer and runs the BGP FSM.
 func (p *Peer) Run() {
+	p.connAttempt.Store(0)
 	for !p.stopping.Load() {
 		err := p.connectAndRun()
 		if p.stopping.Load() {
 			return
+		}
+		if err == nil {
+			// Graceful session end — reset backoff and reconnect immediately.
+			p.connAttempt.Store(0)
+			continue
 		}
 		backoff := time.Duration(p.connAttempt.Add(1)) * time.Second
 		if backoff > 60*time.Second {
@@ -81,7 +87,6 @@ func (p *Peer) Run() {
 
 func (p *Peer) connectAndRun() error {
 	p.setState(StateConnect)
-	p.connAttempt.Store(0)
 
 	// Connect to remote peer
 	port := int(p.cfg.Port)
@@ -230,25 +235,19 @@ func (p *Peer) connectAndRun() error {
 // mainLoop handles incoming messages, periodic keepalives, and route updates
 // for an established BGP session.
 func (p *Peer) mainLoop(conn net.Conn) error {
-	ka := &KeepaliveMessage{}
 	holdTime := p.holdTime
 	if holdTime <= 0 {
 		holdTime = 90 * time.Second
 	}
-	ticker := time.NewTicker(holdTime / 3) // KEEPALIVE interval is holdTime / 3
-	defer ticker.Stop()
+
+	// Dedicated keepalive sender goroutine — writes keepalives at holdTime/3
+	// independently of the blocking read in the main goroutine.
+	kaStop := make(chan struct{})
+	defer close(kaStop)
+	go p.keepaliveLoop(conn, holdTime, kaStop)
 
 	for !p.stopping.Load() {
 		conn.SetDeadline(time.Now().Add(holdTime)) // hold time
-
-		// Non-blocking check for keepalive tick
-		select {
-		case <-ticker.C:
-			if _, err := conn.Write(ka.Serialize()); err != nil {
-				return fmt.Errorf("write keepalive: %w", err)
-			}
-		default:
-		}
 
 		// Check for pending route updates
 		if p.needsUpdate.Swap(false) {
@@ -289,6 +288,25 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 		}
 	}
 	return nil
+}
+
+// keepaliveLoop sends periodic keepalive messages on conn at the configured
+// interval (holdTime/3). Exits when the stop channel is closed or a write
+// fails (connection is down).
+func (p *Peer) keepaliveLoop(conn net.Conn, holdTime time.Duration, stop <-chan struct{}) {
+	ticker := time.NewTicker(holdTime / 3)
+	defer ticker.Stop()
+	ka := &KeepaliveMessage{}
+	for {
+		select {
+		case <-ticker.C:
+			if _, err := conn.Write(ka.Serialize()); err != nil {
+				return
+			}
+		case <-stop:
+			return
+		}
+	}
 }
 
 func (p *Peer) sendRoutes(conn net.Conn) {
@@ -365,8 +383,23 @@ func (p *Peer) WithdrawRoutes(prefixes []netip.Prefix) {
 	p.mu.Unlock()
 
 	if conn != nil && state == StateEstablished {
+		var v4prefixes, v6prefixes []netip.Prefix
+		for _, pf := range prefixes {
+			if pf.Addr().Is6() {
+				v6prefixes = append(v6prefixes, pf)
+			} else {
+				v4prefixes = append(v4prefixes, pf)
+			}
+		}
+
+		var attrs []PathAttribute
+		if len(v6prefixes) > 0 {
+			attrs = append(attrs, &MpUnreachNLRIAttribute{NLRI: v6prefixes})
+		}
+
 		update := &UpdateMessage{
-			WithdrawnRoutes: prefixes,
+			WithdrawnRoutes: v4prefixes,
+			PathAttributes:  attrs,
 		}
 		if _, err := conn.Write(update.Serialize()); err != nil {
 			p.logger.Error("failed to send withdrawal", "error", err)

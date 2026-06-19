@@ -151,6 +151,9 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		peerLocalAddr := localAddr
 		if addr.Is6() && localAddrV6.IsValid() {
 			peerLocalAddr = localAddrV6
+		} else if addr.Is6() {
+			logger.Warn("skipping IPv6 peer without local IPv6 address", "peer_ip", u.PeerIP)
+			continue
 		}
 		peerConfigs = append(peerConfigs, PeerConfig{
 			ID:        u.ID,
@@ -288,6 +291,8 @@ func (m *Manager) buildPeerConfigs() []PeerConfig {
 		peerLocalAddr := localAddr
 		if addr.Is6() && localAddrV6.IsValid() {
 			peerLocalAddr = localAddrV6
+		} else if addr.Is6() {
+			continue
 		}
 		configs = append(configs, PeerConfig{
 			ID:        u.ID,
