@@ -79,6 +79,9 @@ func (p *Peer) Run() {
 }
 
 func (p *Peer) connectAndRun() error {
+	if err := validateASN(p.spk.ASN); err != nil {
+		return err
+	}
 	p.setState(StateConnect)
 	p.connAttempt.Store(0)
 
@@ -326,6 +329,13 @@ func (p *Peer) Accept(conn net.Conn) {
 func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	p.conn = conn
 
+	// Validate our own ASN before sending OPEN
+	if err := validateASN(p.spk.ASN); err != nil {
+		p.logger.Error("accept: invalid speaker ASN", "error", err)
+		conn.Close()
+		return
+	}
+
 	// Validate ASN
 	if uint32(openIn.MyASN) != p.cfg.ASN {
 		p.sendNotification(conn, 2, 2, nil)
@@ -418,4 +428,12 @@ func (p *Peer) setState(state string) {
 	p.state = state
 	p.mu.Unlock()
 	p.logger.Debug("state change", "new", state)
+}
+
+// validateASN returns an error if the ASN exceeds the 16-bit limit of the OPEN message.
+func validateASN(asn uint32) error {
+	if asn > 65535 {
+		return fmt.Errorf("ASN %d exceeds 16-bit limit, 4-byte ASN not yet supported", asn)
+	}
+	return nil
 }
