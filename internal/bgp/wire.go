@@ -53,7 +53,8 @@ type Header struct {
 // at the TCP level via TCP MD5 (RFC 2385), not in the OPEN message.
 type OpenMessage struct {
 	Version    uint8
-	MyASN      uint16
+	MyASN      uint16 // 2-byte ASN field (set to AS_TRANS=23456 when using 4-octet ASN capability)
+	MyASN32    uint32 // 4-byte local ASN for encoding in Four-octet ASN capability
 	HoldTime   uint16
 	BGPID      [4]byte
 	OptParmLen uint8
@@ -197,8 +198,28 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 	}
 	copy(o.BGPID[:], data[5:9])
 
-	// Optional parameters are ignored (password auth is done at TCP level via TCP MD5).
-	// The OptParmLen field records the length but the body is not parsed further.
+	// Parse optional parameters for Four-octet ASN Capability (RFC 6793).
+	if o.OptParmLen > 0 && len(data) >= 10+int(o.OptParmLen) {
+		opts := data[10 : 10+o.OptParmLen]
+		for len(opts) >= 2 {
+			paramType := opts[0]
+			paramLen := int(opts[1])
+			if 2+paramLen > len(opts) {
+				break // malformed, stop parsing
+			}
+			paramData := opts[2 : 2+paramLen]
+			// Capability parameter (type 2)
+			if paramType == 2 && len(paramData) >= 2 {
+				capCode := paramData[0]
+				capLen := int(paramData[1])
+				if capCode == 65 && capLen == 4 && len(paramData) >= 2+capLen {
+					// Four-octet ASN Capability
+					o.MyASN32 = binary.BigEndian.Uint32(paramData[2 : 2+capLen])
+				}
+			}
+			opts = opts[2+paramLen:]
+		}
+	}
 
 	return o, nil
 }
@@ -263,13 +284,34 @@ func decodeNotification(data []byte) (*NotificationMessage, error) {
 }
 
 // Serialize encodes the OPEN message to wire format including header.
+// Includes the Four-octet ASN Capability (RFC 6793) to match the 4-byte
+// AS_PATH encoding used in UPDATE messages.
 func (o *OpenMessage) Serialize() []byte {
-	body := make([]byte, 10)
+	// Build capability parameter for Four-octet ASN (RFC 6793)
+	// Parameter type: 2 (Capability)
+	// Parameter length: 6
+	//   Capability code: 65 (Four-octet ASN Capability)
+	//   Capability length: 4
+	//   Capability value: local ASN as 4 bytes
+	capParam := make([]byte, 8)
+	capParam[0] = 2    // Parameter type: Capability
+	capParam[1] = 6    // Parameter length: 2 + 4
+	capParam[2] = 65   // Capability code: Four-octet ASN
+	capParam[3] = 4    // Capability length: 4
+	binary.BigEndian.PutUint32(capParam[4:8], o.MyASN32)
+
+	// 2-byte ASN field set to AS_TRANS (23456) per RFC 6793
+	// when four-octet ASN capability is used.
+	o.OptParmLen = uint8(len(capParam))
+	o.MyASN = 23456
+
+	body := make([]byte, 10+o.OptParmLen)
 	body[0] = o.Version
 	binary.BigEndian.PutUint16(body[1:3], o.MyASN)
 	binary.BigEndian.PutUint16(body[3:5], o.HoldTime)
 	copy(body[5:9], o.BGPID[:])
-	body[9] = 0 // OptParmLen = 0 (no optional parameters)
+	body[9] = o.OptParmLen
+	copy(body[10:], capParam)
 
 	return wrapMessage(MsgOpen, body)
 }

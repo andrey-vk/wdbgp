@@ -125,11 +125,10 @@ func (p *Peer) connectAndRun() error {
 	// Step 1: Send OPEN
 	bgpID := p.spk.RouterID.As4()
 	openOut := &OpenMessage{
-		Version:    4,
-		MyASN:      uint16(p.spk.ASN),
-		HoldTime:   90,
-		BGPID:      bgpID,
-		OptParmLen: 0,
+		Version:  4,
+		MyASN32:  p.spk.ASN,
+		HoldTime: 90,
+		BGPID:    bgpID,
 	}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		return fmt.Errorf("write open: %w", err)
@@ -148,8 +147,16 @@ func (p *Peer) connectAndRun() error {
 		return fmt.Errorf("expected OPEN, got %T", msg)
 	}
 	if uint32(openIn.MyASN) != p.cfg.ASN {
-		p.sendNotification(conn, 2, 2, nil) // bad peer AS
-		return fmt.Errorf("peer ASN mismatch: got %d, want %d", openIn.MyASN, p.cfg.ASN)
+		// Check four-octet ASN capability (RFC 6793) — the 2-byte field
+		// may be AS_TRANS (23456) while the real ASN is in the capability.
+		remoteASN := openIn.MyASN32
+		if remoteASN == 0 {
+			remoteASN = uint32(openIn.MyASN)
+		}
+		if remoteASN != p.cfg.ASN {
+			p.sendNotification(conn, 2, 2, nil) // bad peer AS
+			return fmt.Errorf("peer ASN mismatch: got %d, want %d", remoteASN, p.cfg.ASN)
+		}
 	}
 
 	// Step 3: Send KEEPALIVE
@@ -342,8 +349,12 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		return
 	}
 
-	// Validate ASN
-	if uint32(openIn.MyASN) != p.cfg.ASN {
+	// Validate ASN — use four-octet ASN capability (RFC 6793) if present
+	remoteASN := openIn.MyASN32
+	if remoteASN == 0 {
+		remoteASN = uint32(openIn.MyASN)
+	}
+	if remoteASN != p.cfg.ASN {
 		p.sendNotification(conn, 2, 2, nil)
 		conn.Close()
 		return
@@ -356,7 +367,7 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	bgpID := p.spk.RouterID.As4()
 	var id [4]byte
 	copy(id[:], bgpID[:])
-	openOut := &OpenMessage{Version: 4, MyASN: uint16(p.spk.ASN), HoldTime: 90, BGPID: id}
+	openOut := &OpenMessage{Version: 4, MyASN32: p.spk.ASN, HoldTime: 90, BGPID: id}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		p.logger.Error("accept: write open", "error", err)
 		conn.Close()

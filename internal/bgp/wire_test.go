@@ -2,17 +2,17 @@ package bgp
 
 import (
 	"bytes"
+	"encoding/binary"
 	"net/netip"
 	"testing"
 )
 
 func TestEncodeDecodeOpen(t *testing.T) {
 	open := &OpenMessage{
-		Version:    4,
-		MyASN:      64512,
-		HoldTime:   90,
-		BGPID:      [4]byte{192, 0, 2, 1},
-		OptParmLen: 0,
+		Version:  4,
+		MyASN32:  64512,
+		HoldTime: 90,
+		BGPID:    [4]byte{192, 0, 2, 1},
 	}
 
 	data := open.Serialize()
@@ -29,8 +29,9 @@ func TestEncodeDecodeOpen(t *testing.T) {
 	if decoded.Version != 4 {
 		t.Fatalf("version = %d, want 4", decoded.Version)
 	}
-	if decoded.MyASN != 64512 {
-		t.Fatalf("my_asn = %d, want 64512", decoded.MyASN)
+	// MyASN is set to AS_TRANS (23456) by Serialize when 4-octet ASN capability is used
+	if decoded.MyASN != 23456 {
+		t.Fatalf("my_asn = %d, want 23456 (AS_TRANS)", decoded.MyASN)
 	}
 	if decoded.HoldTime != 90 {
 		t.Fatalf("hold_time = %d, want 90", decoded.HoldTime)
@@ -38,8 +39,9 @@ func TestEncodeDecodeOpen(t *testing.T) {
 	if decoded.BGPID != [4]byte{192, 0, 2, 1} {
 		t.Fatalf("bgp_id = %v, want {192, 0, 2, 1}", decoded.BGPID)
 	}
-	if decoded.OptParmLen != 0 {
-		t.Fatalf("opt_parm_len = %d, want 0", decoded.OptParmLen)
+	// OptParmLen now reflects capability parameter length
+	if decoded.OptParmLen != 8 {
+		t.Fatalf("opt_parm_len = %d, want 8", decoded.OptParmLen)
 	}
 }
 
@@ -136,6 +138,72 @@ func TestEncodeDecodeNotification(t *testing.T) {
 	if len(decoded.Data) != 2 || decoded.Data[0] != 0xAA || decoded.Data[1] != 0xBB {
 		t.Fatalf("data = %v, want [0xAA 0xBB]", decoded.Data)
 	}
+}
+
+func TestOpenIncludesFourOctetASNCapability(t *testing.T) {
+	open := &OpenMessage{
+		Version:  4,
+		MyASN:    23456, // AS_TRANS when using 4-octet ASN
+		MyASN32:  64600, // 4-byte ASN for capability
+		HoldTime: 90,
+		BGPID:    [4]byte{192, 0, 2, 1},
+	}
+
+	data := open.Serialize()
+
+	// BGP header is 19 bytes, OPEN body is 10 + opt parms
+	if len(data) < 19+10 {
+		t.Fatalf("serialized OPEN too short: %d bytes", len(data))
+	}
+
+	body := data[19:] // skip BGP header
+
+	// OptParmLen at offset 9 of body
+	optParmLen := body[9]
+	if optParmLen == 0 {
+		t.Fatal("OptParmLen is 0, expected four-octet ASN capability in optional parameters")
+	}
+	t.Logf("OptParmLen = %d", optParmLen)
+
+	// Optional parameters start at body[10]
+	opts := body[10:]
+
+	// Capability parameter format:
+	//   Param Type: 2 (Capability)
+	//   Param Length: variable
+	//   Capability Code: 65 (Four-octet ASN)
+	//   Capability Length: 4
+	//   Capability Value: ASN as 4 bytes
+
+	if len(opts) < 2 {
+		t.Fatal("optional parameters too short")
+	}
+	paramType := opts[0]
+	if paramType != 2 {
+		t.Fatalf("param type = %d, want 2 (Capability)", paramType)
+	}
+	paramLen := int(opts[1])
+	if paramLen < 6 {
+		t.Fatalf("param length = %d, want at least 6 (code + len + 4 bytes)", paramLen)
+	}
+
+	capData := opts[2 : 2+paramLen]
+	capCode := capData[0]
+	capLen := capData[1]
+
+	if capCode != 65 {
+		t.Fatalf("capability code = %d, want 65 (Four-octet ASN)", capCode)
+	}
+	if capLen != 4 {
+		t.Fatalf("capability length = %d, want 4", capLen)
+	}
+
+	asn := binary.BigEndian.Uint32(capData[2:6])
+	if asn != 64600 {
+		t.Fatalf("four-octet ASN = %d, want 64600", asn)
+	}
+
+	t.Logf("Four-octet ASN capability verified: ASN=%d", asn)
 }
 
 func TestLargeCommunitiesRoundTrip(t *testing.T) {

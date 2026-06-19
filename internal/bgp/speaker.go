@@ -234,7 +234,10 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	remoteASN := uint32(open.MyASN)
+	remoteASN := open.MyASN32
+	if remoteASN == 0 {
+		remoteASN = uint32(open.MyASN)
+	}
 
 	// Find peer by address + ASN
 	s.mu.Lock()
