@@ -250,10 +250,16 @@ func (p *Peer) sendRoutes(conn net.Conn) {
 	}
 
 	for _, r := range routes {
+		var nhAttr PathAttribute
+		if r.Prefix.Addr().Is6() {
+			nhAttr = &MpReachNLRIAttribute{NextHop: r.NextHop}
+		} else {
+			nhAttr = &NextHopAttribute{NextHop: r.NextHop}
+		}
 		attrs := []PathAttribute{
 			OriginAttribute(OriginIGP),
 			&ASPathAttribute{ASN: p.spk.ASN},
-			&NextHopAttribute{NextHop: r.NextHop},
+			nhAttr,
 			&LargeCommunitiesAttribute{Communities: r.Communities},
 		}
 		update := &UpdateMessage{

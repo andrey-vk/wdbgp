@@ -20,6 +20,7 @@ const (
 	AttrOrigin           = 1
 	AttrASPath           = 2
 	AttrNextHop          = 3
+	AttrMpReachNLRI      = 14
 	AttrLargeCommunities = 32
 )
 
@@ -79,6 +80,11 @@ type OriginAttribute uint8
 
 // NEXT_HOP attribute
 type NextHopAttribute struct {
+	NextHop netip.Addr
+}
+
+// MpReachNLRIAttribute is the MP_REACH_NLRI path attribute (type 14, RFC 4760).
+type MpReachNLRIAttribute struct {
 	NextHop netip.Addr
 }
 
@@ -336,6 +342,23 @@ func (n *NextHopAttribute) Serialize() []byte {
 	return encodePathAttribute(attrFlagTransitive, AttrNextHop, ip[:])
 }
 
+// TypeCode returns the path attribute type code for MP_REACH_NLRI (14).
+func (a *MpReachNLRIAttribute) TypeCode() uint8 {
+	return AttrMpReachNLRI
+}
+
+// Serialize encodes the MP_REACH_NLRI path attribute value (RFC 4760).
+func (a *MpReachNLRIAttribute) Serialize() []byte {
+	// Two-byte AFI (2=IPv6) + 1-byte SAFI (1=unicast) + 1-byte NH len + NH + 1-byte SNP
+	afi := uint16(2) // IPv6
+	safi := uint8(1)
+	nh := a.NextHop.AsSlice()
+	data := []byte{byte(afi >> 8), byte(afi), safi, byte(len(nh))}
+	data = append(data, nh...)
+	data = append(data, 0) // SNP = 0 (no subsequent address family info)
+	return encodePathAttribute(attrFlagOptional|attrFlagTransitive, AttrMpReachNLRI, data)
+}
+
 // TypeCode returns the path attribute type code for AS_PATH (2).
 func (a *ASPathAttribute) TypeCode() uint8 {
 	return AttrASPath
@@ -450,6 +473,9 @@ func decodePathAttribute(typeCode uint8, value []byte) (PathAttribute, error) {
 		copy(ip[:], value)
 		return &NextHopAttribute{NextHop: netip.AddrFrom4(ip)}, nil
 
+	case AttrMpReachNLRI:
+		return decodeMpReachNLRI(value)
+
 	case AttrLargeCommunities:
 		if len(value)%12 != 0 {
 			return nil, fmt.Errorf("bgp: large communities attribute bad length: %d (must be multiple of 12)", len(value))
@@ -469,6 +495,29 @@ func decodePathAttribute(typeCode uint8, value []byte) (PathAttribute, error) {
 	default:
 		return nil, fmt.Errorf("bgp: unknown path attribute type: %d", typeCode)
 	}
+}
+
+// decodeMpReachNLRI decodes an MP_REACH_NLRI attribute value.
+func decodeMpReachNLRI(value []byte) (PathAttribute, error) {
+	if len(value) < 5 {
+		return nil, fmt.Errorf("bgp: mp_reach_nlri too short: %d bytes", len(value))
+	}
+	// AFI (2 bytes) + SAFI (1 byte) + NH len (1 byte)
+	nhLen := int(value[3])
+	if len(value) < 4+nhLen {
+		return nil, fmt.Errorf("bgp: mp_reach_nlri truncated: need next hop %d bytes, have %d", nhLen, len(value)-4)
+	}
+	nhBytes := value[4 : 4+nhLen]
+	var nh netip.Addr
+	switch nhLen {
+	case 4:
+		nh = netip.AddrFrom4([4]byte(nhBytes))
+	case 16:
+		nh = netip.AddrFrom16([16]byte(nhBytes))
+	default:
+		return nil, fmt.Errorf("bgp: mp_reach_nlri bad next hop length: %d", nhLen)
+	}
+	return &MpReachNLRIAttribute{NextHop: nh}, nil
 }
 
 // decodeASPath decodes an AS_PATH attribute value.

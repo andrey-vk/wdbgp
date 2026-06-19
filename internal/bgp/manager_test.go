@@ -219,6 +219,50 @@ func TestBuildRouteSkipsCommunityForUnknownCategory(t *testing.T) {
 	}
 }
 
+func TestBuildRouteIPv6NoPanic(t *testing.T) {
+	manager := NewManager(config.Config{
+		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
+	}, nil)
+	prefix := netip.MustParsePrefix("2001:db8::/32")
+	comms := map[string]uint32{"cat": 10000}
+	route, err := manager.buildRoute(prefix, store.User{ID: 1}, "cat", "svc", comms)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// IPv6 routes must use MpReachNLRIAttribute instead of NextHopAttribute
+	// to avoid As4() panic.
+	attrs := []PathAttribute{
+		OriginAttribute(OriginIGP),
+		&ASPathAttribute{ASN: 64512},
+		&MpReachNLRIAttribute{NextHop: route.NextHop},
+		&LargeCommunitiesAttribute{Communities: route.Communities},
+	}
+	update := &UpdateMessage{
+		PathAttributes: attrs,
+		NLRI:           []netip.Prefix{route.Prefix},
+	}
+	_ = update.Serialize()
+
+	// Also verify IPv4 routes still use NextHopAttribute correctly
+	v4prefix := netip.MustParsePrefix("8.8.8.0/24")
+	v4route, err := manager.buildRoute(v4prefix, store.User{ID: 1}, "cat", "svc", comms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v4attrs := []PathAttribute{
+		OriginAttribute(OriginIGP),
+		&ASPathAttribute{ASN: 64512},
+		&NextHopAttribute{NextHop: v4route.NextHop},
+		&LargeCommunitiesAttribute{Communities: v4route.Communities},
+	}
+	v4update := &UpdateMessage{
+		PathAttributes: v4attrs,
+		NLRI:           []netip.Prefix{v4route.Prefix},
+	}
+	_ = v4update.Serialize()
+}
+
 func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
