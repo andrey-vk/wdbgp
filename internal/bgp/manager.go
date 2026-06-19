@@ -106,6 +106,13 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("parse local address %q: %w", m.cfg.LocalAddressV4, err)
 	}
+	localAddrV6 := netip.Addr{}
+	if m.cfg.LocalAddressV6 != "" {
+		localAddrV6, err = netip.ParseAddr(m.cfg.LocalAddressV6)
+		if err != nil {
+			return fmt.Errorf("parse local IPv6 address %q: %w", m.cfg.LocalAddressV6, err)
+		}
+	}
 
 	speaker := NewSpeaker(SpeakerConfig{
 		ASN:       m.cfg.LocalASN,
@@ -141,13 +148,19 @@ func (m *Manager) startLocked(ctx context.Context) error {
 			logger.Warn("skipping peer with invalid IP", "peer_ip", u.PeerIP, "error", err)
 			continue
 		}
+		// Determine per-peer local bind address based on peer IP version.
+		peerLocalAddr := localAddr
+		if addr.Is6() && localAddrV6.IsValid() {
+			peerLocalAddr = localAddrV6
+		}
 		peerConfigs = append(peerConfigs, PeerConfig{
-			ID:       u.ID,
-			Address:  addr,
-			Port:     peerPort(u.PeerIP),
-			ASN:      u.PeerASN,
-			Password: u.BGPPassword,
-			Name:     u.Name,
+			ID:        u.ID,
+			Address:   addr,
+			Port:      peerPort(u.PeerIP),
+			ASN:       u.PeerASN,
+			Password:  u.BGPPassword,
+			Name:      u.Name,
+			LocalAddr: peerLocalAddr,
 		})
 		m.peerConfigs = append(m.peerConfigs, u)
 		logger.Debug("configured BGP peer", "peer_ip", u.PeerIP, "peer_asn", u.PeerASN)
@@ -260,18 +273,31 @@ func (m *Manager) PeerStates(ctx context.Context) (map[string]string, error) {
 // buildPeerConfigs converts m.peerConfigs (store.User) to []PeerConfig.
 func (m *Manager) buildPeerConfigs() []PeerConfig {
 	var configs []PeerConfig
+	localAddr, err := netip.ParseAddr(m.cfg.LocalAddressV4)
+	if err != nil {
+		return configs
+	}
+	var localAddrV6 netip.Addr
+	if m.cfg.LocalAddressV6 != "" {
+		localAddrV6, _ = netip.ParseAddr(m.cfg.LocalAddressV6)
+	}
 	for _, u := range m.peerConfigs {
 		addr, err := netip.ParseAddr(u.PeerIP)
 		if err != nil {
 			continue
 		}
+		peerLocalAddr := localAddr
+		if addr.Is6() && localAddrV6.IsValid() {
+			peerLocalAddr = localAddrV6
+		}
 		configs = append(configs, PeerConfig{
-			ID:       u.ID,
-			Address:  addr,
-			Port:     peerPort(u.PeerIP),
-			ASN:      u.PeerASN,
-			Password: u.BGPPassword,
-			Name:     u.Name,
+			ID:        u.ID,
+			Address:   addr,
+			Port:      peerPort(u.PeerIP),
+			ASN:       u.PeerASN,
+			Password:  u.BGPPassword,
+			Name:      u.Name,
+			LocalAddr: peerLocalAddr,
 		})
 	}
 	return configs

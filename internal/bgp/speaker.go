@@ -33,12 +33,13 @@ type SpeakerConfig struct {
 
 // PeerConfig describes a configured BGP peer.
 type PeerConfig struct {
-	ID       int64
-	Address  netip.Addr
-	Port     int32  // destination port (0 = default 179)
-	ASN      uint32
-	Password string // MD5 password (empty = none)
-	Name     string // description
+	ID        int64
+	Address   netip.Addr
+	Port      int32  // destination port (0 = default 179)
+	ASN       uint32
+	Password  string // MD5 password (empty = none)
+	Name      string // description
+	LocalAddr netip.Addr // local bind address for dialing (per-peer, IPv4/IPv6 aware)
 }
 
 // Route is a single route to announce.

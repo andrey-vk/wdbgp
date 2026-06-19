@@ -101,10 +101,14 @@ func (p *Peer) connectAndRun() error {
 	}
 	addr := net.JoinHostPort(p.cfg.Address.String(), strconv.Itoa(port))
 	dialer := net.Dialer{Timeout: 10 * time.Second}
-	// Bind to local address if one is configured (e.g., for multihomed hosts
-	// or tests that need clients to appear from specific source addresses).
-	if p.spk.LocalAddr.IsValid() {
-		dialer.LocalAddr = &net.TCPAddr{IP: net.IP(p.spk.LocalAddr.AsSlice())}
+	// Bind to per-peer local address if configured (IPv4/IPv6 aware).
+	// Falls back to speaker-global LocalAddr for backward compatibility.
+	localAddr := p.cfg.LocalAddr
+	if !localAddr.IsValid() {
+		localAddr = p.spk.LocalAddr
+	}
+	if localAddr.IsValid() {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.IP(localAddr.AsSlice())}
 	}
 	// Set TCP MD5 before connect so the initial SYN carries the signature.
 	// Without this, routers that enforce MD5 will drop our SYN before we
