@@ -35,6 +35,7 @@ type SpeakerConfig struct {
 type PeerConfig struct {
 	ID       int64
 	Address  netip.Addr
+	Port     int32  // destination port (0 = default 179)
 	ASN      uint32
 	Password string // MD5 password (empty = none)
 	Name     string // description
@@ -128,7 +129,7 @@ func (s *Speaker) SetPeers(peers []PeerConfig) {
 			}
 		}
 		// Start new peer
-		p := NewPeer(pc, s.cfg, s.logger)
+		p := NewPeer(pc, s.cfg, s.logger, nil)
 		go p.Run()
 		s.peers[key] = p
 	}
@@ -229,6 +230,11 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 	s.mu.Lock()
 	key := fmt.Sprintf("%s:%d", addr.String(), remoteASN)
 	peer, ok := s.peers[key]
+	if !ok {
+		// Fallback: try 0.0.0.0 dynamic peer
+		key = fmt.Sprintf("%s:%d", "0.0.0.0", remoteASN)
+		peer, ok = s.peers[key]
+	}
 	s.mu.Unlock()
 
 	if !ok {

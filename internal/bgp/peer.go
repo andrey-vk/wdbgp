@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,27 +20,33 @@ const (
 	StateEstablished = "ESTABLISHED"
 )
 
+// RouteCallback is called when the peer receives an UPDATE message.
+// The callback receives the NLRI prefixes from the received UPDATE.
+type RouteCallback func(prefixes []netip.Prefix)
+
 type Peer struct {
 	mu          sync.Mutex
 	cfg         PeerConfig
 	spk         SpeakerConfig
 	logger      *slog.Logger
 	conn        net.Conn
-	routes      []Route // current announced routes
+	routes      []Route          // current announced routes
 	state       string
 	holdTime    time.Duration
 	remoteID    netip.Addr
 	stopping    atomic.Bool
 	needsUpdate atomic.Bool
 	connAttempt atomic.Int64
+	routeCB     RouteCallback
 }
 
-func NewPeer(cfg PeerConfig, spk SpeakerConfig, logger *slog.Logger) *Peer {
+func NewPeer(cfg PeerConfig, spk SpeakerConfig, logger *slog.Logger, routeCB RouteCallback) *Peer {
 	return &Peer{
-		cfg:    cfg,
-		spk:    spk,
-		logger: logger.With("peer", cfg.Address.String(), "asn", cfg.ASN),
-		state:  StateIdle,
+		cfg:     cfg,
+		spk:     spk,
+		logger:  logger.With("peer", cfg.Address.String(), "asn", cfg.ASN),
+		state:   StateIdle,
+		routeCB: routeCB,
 	}
 }
 
@@ -77,7 +84,24 @@ func (p *Peer) connectAndRun() error {
 
 	// Connect to remote peer
 	dialer := net.Dialer{Timeout: 10 * time.Second}
-	addr := net.JoinHostPort(p.cfg.Address.String(), "179")
+	port := int(p.cfg.Port)
+	if port < 0 {
+		// Port -1 means passive only (no active dialing — used for
+		// server-side peers that accept incoming connections).
+		for !p.stopping.Load() {
+			time.Sleep(1 * time.Second)
+		}
+		return fmt.Errorf("passive peer stopped")
+	}
+	if port == 0 {
+		port = 179
+	}
+	addr := net.JoinHostPort(p.cfg.Address.String(), strconv.Itoa(port))
+	// Bind to local address only if it's a loopback address (used for tests
+	// that need clients to appear from different 127.x.y.z addresses).
+	if p.spk.LocalAddr.IsValid() && p.spk.LocalAddr.IsLoopback() {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.IP(p.spk.LocalAddr.AsSlice())}
+	}
 	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
@@ -96,6 +120,7 @@ func (p *Peer) connectAndRun() error {
 		HoldTime:   90,
 		BGPID:      bgpID,
 		OptParmLen: 0,
+		Password:   p.cfg.Password,
 	}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		return fmt.Errorf("write open: %w", err)
@@ -116,6 +141,12 @@ func (p *Peer) connectAndRun() error {
 	if uint32(openIn.MyASN) != p.cfg.ASN {
 		p.sendNotification(conn, 2, 2, nil) // bad peer AS
 		return fmt.Errorf("peer ASN mismatch: got %d, want %d", openIn.MyASN, p.cfg.ASN)
+	}
+
+	// Validate remote password if client expects one
+	if p.cfg.Password != "" && openIn.Password != p.cfg.Password {
+		p.sendNotification(conn, 5, 0, nil)
+		return fmt.Errorf("peer password mismatch")
 	}
 
 	// Step 3: Send KEEPALIVE
@@ -193,7 +224,11 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 		case *KeepaliveMessage:
 			// Received keepalive — reset hold timer
 		case *UpdateMessage:
-			// We ignore received routes (route server mode)
+			// Invoke route callback if set
+			if p.routeCB != nil {
+				upd := msg.(*UpdateMessage)
+				p.routeCB(upd.NLRI)
+			}
 		case *NotificationMessage:
 			nm := msg.(*NotificationMessage)
 			return fmt.Errorf("received notification: code=%d sub=%d", nm.ErrorCode, nm.ErrorSubcode)
@@ -298,11 +333,18 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		return
 	}
 
+	// Validate password if configured
+	if p.cfg.Password != "" && openIn.Password != p.cfg.Password {
+		p.sendNotification(conn, 5, 0, nil)
+		conn.Close()
+		return
+	}
+
 	// Send OPEN
 	bgpID := p.spk.RouterID.As4()
 	var id [4]byte
 	copy(id[:], bgpID[:])
-	openOut := &OpenMessage{Version: 4, MyASN: uint16(p.spk.ASN), HoldTime: 90, BGPID: id}
+	openOut := &OpenMessage{Version: 4, MyASN: uint16(p.spk.ASN), HoldTime: 90, BGPID: id, Password: p.cfg.Password}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		p.logger.Error("accept: write open", "error", err)
 		conn.Close()

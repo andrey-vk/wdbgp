@@ -55,7 +55,7 @@ type OpenMessage struct {
 	HoldTime   uint16
 	BGPID      [4]byte
 	OptParmLen uint8
-	// No optional parameters for now (simplest possible)
+	Password   string // non-standard: carried in optional parameters
 }
 
 // UPDATE message
@@ -191,13 +191,9 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 	}
 	copy(o.BGPID[:], data[5:9])
 
-	// Skip optional parameters (not supported)
-	if o.OptParmLen > 0 && len(data) > 10 {
-		// Parameters present but we ignore them
-	}
-	if len(data) < 10+int(o.OptParmLen) {
-		return nil, fmt.Errorf("bgp: open body too short for optional parameters: %d bytes, need %d",
-			len(data), 10+o.OptParmLen)
+	// Parse password from optional parameter bytes
+	if o.OptParmLen > 0 && len(data) >= 10+int(o.OptParmLen) {
+		o.Password = string(data[10 : 10+int(o.OptParmLen)])
 	}
 
 	return o, nil
@@ -264,12 +260,16 @@ func decodeNotification(data []byte) (*NotificationMessage, error) {
 
 // Serialize encodes the OPEN message to wire format including header.
 func (o *OpenMessage) Serialize() []byte {
-	body := make([]byte, 10+o.OptParmLen)
+	pwBytes := []byte(o.Password)
+	body := make([]byte, 10+len(pwBytes))
 	body[0] = o.Version
 	binary.BigEndian.PutUint16(body[1:3], o.MyASN)
 	binary.BigEndian.PutUint16(body[3:5], o.HoldTime)
 	copy(body[5:9], o.BGPID[:])
-	body[9] = o.OptParmLen
+	body[9] = uint8(len(pwBytes))
+	if len(pwBytes) > 0 {
+		copy(body[10:], pwBytes)
+	}
 
 	return wrapMessage(MsgOpen, body)
 }
