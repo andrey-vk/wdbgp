@@ -39,6 +39,7 @@ type Peer struct {
 	needsUpdate atomic.Bool
 	connAttempt atomic.Int64
 	routeCB     RouteCallback
+	hasIPv6Cap  bool // remote peer advertised IPv6 unicast capability
 }
 
 func NewPeer(cfg PeerConfig, spk SpeakerConfig, logger *slog.Logger, routeCB RouteCallback) *Peer {
@@ -195,6 +196,10 @@ func (p *Peer) connectAndRun() error {
 		p.holdTime = 90 * time.Second
 	}
 
+	// Track remote IPv6 unicast capability so we skip IPv6 routes
+	// to IPv4-only peers.
+	p.hasIPv6Cap = openIn.HasIPv6Unicast
+
 	// Step 3: Send KEEPALIVE
 	ka := &KeepaliveMessage{}
 	if _, err := conn.Write(ka.Serialize()); err != nil {
@@ -325,6 +330,11 @@ func (p *Peer) sendRoutes(conn net.Conn) {
 		var update *UpdateMessage
 
 		if r.Prefix.Addr().Is6() {
+			// Skip IPv6 routes if remote peer didn't advertise IPv6 unicast capability.
+			if !p.hasIPv6Cap {
+				p.logger.Debug("skipping IPv6 route to IPv4-only peer", "prefix", r.Prefix)
+				continue
+			}
 			// IPv6: NLRI goes inside MP_REACH per RFC 4760.
 			// UPDATE.NLRI must be empty.
 			attrs = []PathAttribute{
@@ -520,6 +530,10 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 
 	p.setState(StateEstablished)
 	p.logger.Info("BGP session established (passive)")
+
+	// Track remote IPv6 unicast capability so we skip IPv6 routes
+	// to IPv4-only peers.
+	p.hasIPv6Cap = openIn.HasIPv6Unicast
 
 	// Initial routes
 	p.sendRoutes(conn)

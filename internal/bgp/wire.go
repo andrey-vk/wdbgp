@@ -55,13 +55,14 @@ type Header struct {
 // at the TCP level via TCP MD5 (RFC 2385). The Password field is a fallback
 // for loopback connections where TCP MD5 is not enforced by the kernel.
 type OpenMessage struct {
-	Version    uint8
-	MyASN      uint16 // 2-byte ASN field (set to AS_TRANS=23456 when using 4-octet ASN capability)
-	MyASN32    uint32 // 4-byte local ASN for encoding in Four-octet ASN capability
-	HoldTime   uint16
-	BGPID      [4]byte
-	OptParmLen uint8
-	Password   string // fallback auth for loopback (empty = none)
+	Version        uint8
+	MyASN          uint16 // 2-byte ASN field
+	MyASN32        uint32 // 4-byte local ASN (for decode only; no longer advertised)
+	HoldTime       uint16
+	BGPID          [4]byte
+	OptParmLen     uint8
+	Password       string // fallback auth for loopback (empty = none)
+	HasIPv6Unicast bool   // remote peer advertised IPv6 unicast capability (AFI=2, SAFI=1)
 }
 
 // UPDATE message
@@ -209,8 +210,8 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 	}
 	copy(o.BGPID[:], data[5:9])
 
-	// Parse optional parameters for Four-octet ASN Capability (RFC 6793)
-	// and password parameter (parameter type 1: opaque string).
+	// Parse optional parameters for Four-octet ASN Capability (RFC 6793),
+	// IPv6 unicast capability (RFC 4760), and password parameter.
 	if o.OptParmLen > 0 && len(data) >= 10+int(o.OptParmLen) {
 		opts := data[10 : 10+o.OptParmLen]
 		for len(opts) >= 2 {
@@ -232,6 +233,14 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 					if capCode == 65 && capLen == 4 {
 						// Four-octet ASN Capability — use the LAST one found
 						o.MyASN32 = binary.BigEndian.Uint32(capData[2 : 2+capLen])
+					}
+					if capCode == 1 && capLen == 4 {
+						// Multiprotocol Extension — check AFI/SAFI for IPv6 unicast
+						afi := binary.BigEndian.Uint16(capData[2:4])
+						safi := capData[4]
+						if afi == 2 && safi == 1 {
+							o.HasIPv6Unicast = true
+						}
 					}
 					capData = capData[2+capLen:]
 				}
@@ -307,36 +316,31 @@ func decodeNotification(data []byte) (*NotificationMessage, error) {
 }
 
 // Serialize encodes the OPEN message to wire format including header.
-// Includes the Four-octet ASN Capability (RFC 6793) to match the 4-byte
-// AS_PATH encoding used in UPDATE messages.
+// Advertises only the IPv6 unicast capability (RFC 4760). Uses 2-byte AS_PATH
+// encoding, so no Four-octet ASN capability is advertised.
 // If Password is set, it is included as parameter type 1 (fallback auth
 // for loopback connections where TCP MD5 is not enforced).
 func (o *OpenMessage) Serialize() []byte {
-	// Build capability parameter with two capabilities:
-	//   1. Four-octet ASN (RFC 6793): code 65, len 4
-	//   2. IPv6 unicast (RFC 4760): code 1, len 4 (AFI=2, SAFI=1)
+	// Build capability parameter with one capability:
+	//   IPv6 unicast (RFC 4760): code 1, len 4 (AFI=2, SAFI=1)
 	// Parameter type: 2 (Capability)
-	capParam := make([]byte, 14)
+	capParam := make([]byte, 8)
 	capParam[0] = 2     // Parameter type: Capability
-	capParam[1] = 12    // Parameter length: 6 + 6 = 12
-	// Capability 1: Four-octet ASN
-	capParam[2] = 65    // Capability code: Four-octet ASN
+	capParam[1] = 6     // Parameter length: 2 + 4 = 6
+	// Capability: Multiprotocol Extension for IPv6 unicast
+	capParam[2] = 1     // Capability code: Multiprotocol Extension
 	capParam[3] = 4     // Capability length: 4
-	binary.BigEndian.PutUint32(capParam[4:8], o.MyASN32)
-	// Capability 2: Multiprotocol Extension for IPv6 unicast
-	capParam[8] = 1     // Capability code: Multiprotocol Extension
-	capParam[9] = 4     // Capability length: 4
-	capParam[10] = 0x00 // AFI high byte (IPv6=2)
-	capParam[11] = 0x02 // AFI low byte
-	capParam[12] = 0x00 // Reserved
-	capParam[13] = 0x01 // SAFI=1 (unicast)
+	capParam[4] = 0x00  // AFI high byte (IPv6=2)
+	capParam[5] = 0x02  // AFI low byte
+	capParam[6] = 0x00  // Reserved
+	capParam[7] = 0x01  // SAFI=1 (unicast)
 
 	// Build password parameter (type 1) if set and fits in OPEN message.
-	// Max password length is 239 bytes: OptParmLen (255) - capParam (14) - 2 header bytes.
+	// Max password length is 247 bytes: OptParmLen (255) - capParam (8).
 	var pwParam []byte
 	if o.Password != "" {
-		if len(o.Password) > 239 {
-			log.Printf("WARNING: BGP password too long (%d bytes > 239), omitting from OPEN", len(o.Password))
+		if len(o.Password) > 247 {
+			log.Printf("WARNING: BGP password too long (%d bytes > 247), omitting from OPEN", len(o.Password))
 		} else {
 			pwParam = make([]byte, 2+len(o.Password))
 			pwParam[0] = 1 // Parameter type: password
@@ -345,14 +349,9 @@ func (o *OpenMessage) Serialize() []byte {
 		}
 	}
 
-	// 2-byte ASN field: use actual ASN when it fits in 16 bits,
-	// otherwise use AS_TRANS (23456) per RFC 6793.
+	// 2-byte ASN field: use actual ASN (always fits in 16 bits since we use 2-byte AS_PATH).
 	o.OptParmLen = uint8(len(capParam) + len(pwParam))
-	if o.MyASN32 <= 65535 {
-		o.MyASN = uint16(o.MyASN32)
-	} else {
-		o.MyASN = 23456
-	}
+	o.MyASN = uint16(o.MyASN32)
 
 	body := make([]byte, 10+o.OptParmLen)
 	body[0] = o.Version

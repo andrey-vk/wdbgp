@@ -39,9 +39,9 @@ func TestEncodeDecodeOpen(t *testing.T) {
 	if decoded.BGPID != [4]byte{192, 0, 2, 1} {
 		t.Fatalf("bgp_id = %v, want {192, 0, 2, 1}", decoded.BGPID)
 	}
-	// OptParmLen now reflects capability parameter length (14: 2 header + 12 capability TLVs)
-	if decoded.OptParmLen != 14 {
-		t.Fatalf("opt_parm_len = %d, want 14", decoded.OptParmLen)
+	// OptParmLen reflects IPv6 unicast capability only (8 bytes: 2 header + 6 capability TLV)
+	if decoded.OptParmLen != 8 {
+		t.Fatalf("opt_parm_len = %d, want 8", decoded.OptParmLen)
 	}
 }
 
@@ -140,11 +140,11 @@ func TestEncodeDecodeNotification(t *testing.T) {
 	}
 }
 
-func TestOpenIncludesFourOctetASNCapability(t *testing.T) {
+func TestOpenIncludesIPv6UnicastCapability(t *testing.T) {
 	open := &OpenMessage{
 		Version:  4,
-		MyASN:    23456, // AS_TRANS when using 4-octet ASN
-		MyASN32:  64600, // 4-byte ASN for capability
+		MyASN:    64512,
+		MyASN32:  64512,
 		HoldTime: 90,
 		BGPID:    [4]byte{192, 0, 2, 1},
 	}
@@ -161,7 +161,7 @@ func TestOpenIncludesFourOctetASNCapability(t *testing.T) {
 	// OptParmLen at offset 9 of body
 	optParmLen := body[9]
 	if optParmLen == 0 {
-		t.Fatal("OptParmLen is 0, expected four-octet ASN capability in optional parameters")
+		t.Fatal("OptParmLen is 0, expected IPv6 unicast capability in optional parameters")
 	}
 	t.Logf("OptParmLen = %d", optParmLen)
 
@@ -171,9 +171,9 @@ func TestOpenIncludesFourOctetASNCapability(t *testing.T) {
 	// Capability parameter format:
 	//   Param Type: 2 (Capability)
 	//   Param Length: variable
-	//   Capability Code: 65 (Four-octet ASN)
+	//   Capability Code: 1 (Multiprotocol Extension)
 	//   Capability Length: 4
-	//   Capability Value: ASN as 4 bytes
+	//   Capability Value: AFI(2 bytes) + Reserved(1) + SAFI(1)
 
 	if len(opts) < 2 {
 		t.Fatal("optional parameters too short")
@@ -191,19 +191,23 @@ func TestOpenIncludesFourOctetASNCapability(t *testing.T) {
 	capCode := capData[0]
 	capLen := capData[1]
 
-	if capCode != 65 {
-		t.Fatalf("capability code = %d, want 65 (Four-octet ASN)", capCode)
+	if capCode != 1 {
+		t.Fatalf("capability code = %d, want 1 (Multiprotocol Extension)", capCode)
 	}
 	if capLen != 4 {
 		t.Fatalf("capability length = %d, want 4", capLen)
 	}
 
-	asn := binary.BigEndian.Uint32(capData[2:6])
-	if asn != 64600 {
-		t.Fatalf("four-octet ASN = %d, want 64600", asn)
+	afi := binary.BigEndian.Uint16(capData[2:4])
+	safi := capData[5]
+	if afi != 2 {
+		t.Fatalf("AFI = %d, want 2 (IPv6)", afi)
+	}
+	if safi != 1 {
+		t.Fatalf("SAFI = %d, want 1 (unicast)", safi)
 	}
 
-	t.Logf("Four-octet ASN capability verified: ASN=%d", asn)
+	t.Logf("IPv6 unicast capability verified: AFI=%d SAFI=%d", afi, safi)
 }
 
 func TestLargeCommunitiesRoundTrip(t *testing.T) {

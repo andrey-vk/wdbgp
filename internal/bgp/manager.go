@@ -126,6 +126,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	started := false
 	defer func() {
 		if !started {
+			m.speaker = nil
 			_ = speaker.Stop()
 		}
 	}()
@@ -202,7 +203,13 @@ func (m *Manager) AddPeer(ctx context.Context, user store.User) error {
 		}
 	}
 	m.peerConfigs = append(m.peerConfigs, user)
-	m.speaker.SetPeers(m.buildPeerConfigs())
+	cfgs, err := m.buildPeerConfigs()
+	if err != nil {
+		// Rollback: remove the just-added peer from configs.
+		m.peerConfigs = m.peerConfigs[:len(m.peerConfigs)-1]
+		return err
+	}
+	m.speaker.SetPeers(cfgs)
 	return nil
 }
 
@@ -236,7 +243,11 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	if peerKey != oldPeerKey {
 		delete(m.peerRoutes, peerKey)
 	}
-	m.speaker.SetPeers(m.buildPeerConfigs())
+	cfgs, err := m.buildPeerConfigs()
+	if err != nil {
+		return err
+	}
+	m.speaker.SetPeers(cfgs)
 	return nil
 }
 
@@ -268,7 +279,11 @@ func (m *Manager) DeletePeer(ctx context.Context, peerIP string, userID int64) e
 	peerKey := fmt.Sprintf("%s:%d", removed.PeerIP, removed.PeerASN)
 	delete(m.peerRoutes, peerKey)
 
-	m.speaker.SetPeers(m.buildPeerConfigs())
+	cfgs, err := m.buildPeerConfigs()
+	if err != nil {
+		return err
+	}
+	m.speaker.SetPeers(cfgs)
 	return nil
 }
 
@@ -282,11 +297,12 @@ func (m *Manager) PeerStates(ctx context.Context) (map[string]string, error) {
 }
 
 // buildPeerConfigs converts m.peerConfigs (store.User) to []PeerConfig.
-func (m *Manager) buildPeerConfigs() []PeerConfig {
+// Returns an error if any peer is invalid (e.g., IPv6 peer with no LocalAddressV6).
+func (m *Manager) buildPeerConfigs() ([]PeerConfig, error) {
 	var configs []PeerConfig
 	localAddr, err := netip.ParseAddr(m.cfg.LocalAddressV4)
 	if err != nil {
-		return configs
+		return configs, err
 	}
 	var localAddrV6 netip.Addr
 	if m.cfg.LocalAddressV6 != "" {
@@ -301,9 +317,7 @@ func (m *Manager) buildPeerConfigs() []PeerConfig {
 		if addr.Is6() && localAddrV6.IsValid() {
 			peerLocalAddr = localAddrV6
 		} else if addr.Is6() {
-			logging.Warn("skipping IPv6 peer: no LocalAddressV6 configured",
-				"peer_ip", u.PeerIP, "peer_asn", u.PeerASN)
-			continue
+			return nil, fmt.Errorf("IPv6 peer %s AS%d requires LocalAddressV6 but none configured", u.PeerIP, u.PeerASN)
 		}
 		configs = append(configs, PeerConfig{
 			ID:        u.ID,
@@ -315,7 +329,7 @@ func (m *Manager) buildPeerConfigs() []PeerConfig {
 			LocalAddr: peerLocalAddr,
 		})
 	}
-	return configs
+	return configs, nil
 }
 
 // findPeer matches an incoming BGP session to a user.
@@ -470,6 +484,11 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 
 // buildRoute creates a Route for a single prefix for a specific peer.
 func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, service string, communities map[string]uint32) (Route, error) {
+	// Guard against user IDs that overflow uint32 (community LocalData1 field).
+	if user.ID > int64(^uint32(0)) {
+		return Route{}, fmt.Errorf("user ID %d exceeds max uint32", user.ID)
+	}
+
 	comms := make([]LargeCommunity, 0, 3)
 	// User ID community
 	comms = append(comms, LargeCommunity{
