@@ -840,6 +840,10 @@ const feedsListTemplate = `{{with .Data}}
 </table>
 </div>
 <p><a href="/admin/feed" class="button primary">{{tr "feeds.add"}}</a></p>
+<form method=post action="/admin/feeds/sync-all" style=display:inline>
+<input type=hidden name=csrf_token value="{{$.CSRFToken}}">
+<button type=submit class=button>{{tr "feeds.sync_all"}}</button>
+</form>
 {{end}}`
 
 const modesTemplate = `{{with .Data}}
