@@ -80,9 +80,6 @@ func (p *Peer) Run() {
 }
 
 func (p *Peer) connectAndRun() error {
-	if err := validateASN(p.spk.ASN); err != nil {
-		return err
-	}
 	p.setState(StateConnect)
 	p.connAttempt.Store(0)
 
@@ -181,6 +178,13 @@ func (p *Peer) connectAndRun() error {
 		}
 	}
 
+	// Negotiate hold time: use the lower of local (90s) and remote
+	if remoteHold := time.Duration(openIn.HoldTime) * time.Second; remoteHold > 0 && remoteHold < 90*time.Second {
+		p.holdTime = remoteHold
+	} else {
+		p.holdTime = 90 * time.Second
+	}
+
 	// Step 3: Send KEEPALIVE
 	ka := &KeepaliveMessage{}
 	if _, err := conn.Write(ka.Serialize()); err != nil {
@@ -213,18 +217,24 @@ func (p *Peer) connectAndRun() error {
 	p.sendRoutes(conn)
 
 	// Step 6: Main loop
-	return p.mainLoop(conn)
+	err = p.mainLoop(conn)
+	p.setState(StateIdle)
+	return err
 }
 
 // mainLoop handles incoming messages, periodic keepalives, and route updates
 // for an established BGP session.
 func (p *Peer) mainLoop(conn net.Conn) error {
 	ka := &KeepaliveMessage{}
-	ticker := time.NewTicker(30 * time.Second) // KEEPALIVE interval
+	holdTime := p.holdTime
+	if holdTime <= 0 {
+		holdTime = 90 * time.Second
+	}
+	ticker := time.NewTicker(holdTime / 3) // KEEPALIVE interval is holdTime / 3
 	defer ticker.Stop()
 
 	for !p.stopping.Load() {
-		conn.SetDeadline(time.Now().Add(60 * time.Second)) // hold time
+		conn.SetDeadline(time.Now().Add(holdTime)) // hold time
 
 		// Non-blocking check for keepalive tick
 		select {
@@ -386,13 +396,6 @@ func (p *Peer) Accept(conn net.Conn) {
 func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	p.conn = conn
 
-	// Validate our own ASN before sending OPEN
-	if err := validateASN(p.spk.ASN); err != nil {
-		p.logger.Error("accept: invalid speaker ASN", "error", err)
-		conn.Close()
-		return
-	}
-
 	// Validate ASN — use four-octet ASN capability (RFC 6793) if present
 	remoteASN := openIn.MyASN32
 	if remoteASN == 0 {
@@ -478,6 +481,7 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	if err := p.mainLoop(conn); err != nil {
 		p.logger.Error("main loop error", "error", err)
 	}
+	p.setState(StateIdle)
 	conn.Close()
 }
 
@@ -503,12 +507,4 @@ func (p *Peer) setState(state string) {
 	p.state = state
 	p.mu.Unlock()
 	p.logger.Debug("state change", "new", state)
-}
-
-// validateASN returns an error if the ASN exceeds the 16-bit limit of the OPEN message.
-func validateASN(asn uint32) error {
-	if asn > 65535 {
-		return fmt.Errorf("ASN %d exceeds 16-bit limit, 4-byte ASN not yet supported", asn)
-	}
-	return nil
 }

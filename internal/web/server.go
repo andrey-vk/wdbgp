@@ -999,6 +999,8 @@ func (s *Server) modeFeedToggle(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_ = s.store.AddFeedToMode(r.Context(), modeID, feedID)
 	}
+	// Generate communities before reconcile so new categories/services have community values
+	s.store.GenerateCommunities(r.Context(), modeID)
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
 		s.internalError(w, r, err)
 		return

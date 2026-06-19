@@ -29,9 +29,9 @@ func TestEncodeDecodeOpen(t *testing.T) {
 	if decoded.Version != 4 {
 		t.Fatalf("version = %d, want 4", decoded.Version)
 	}
-	// MyASN is set to AS_TRANS (23456) by Serialize when 4-octet ASN capability is used
-	if decoded.MyASN != 23456 {
-		t.Fatalf("my_asn = %d, want 23456 (AS_TRANS)", decoded.MyASN)
+	// MyASN is set to actual ASN when it fits in 16 bits (AS_TRANS=23456 only for >65535)
+	if decoded.MyASN != 64512 {
+		t.Fatalf("my_asn = %d, want 64512", decoded.MyASN)
 	}
 	if decoded.HoldTime != 90 {
 		t.Fatalf("hold_time = %d, want 90", decoded.HoldTime)

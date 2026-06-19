@@ -82,7 +82,6 @@ func (m *Manager) ReloadPeers(ctx context.Context) error {
 	defer m.mu.Unlock()
 	savedInstalled := m.installed
 	savedPeerConfigs := m.peerConfigs
-	savedPeerRoutes := m.peerRoutes
 	if m.speaker != nil {
 		if err := m.speaker.Stop(); err != nil {
 			return err
@@ -91,7 +90,7 @@ func (m *Manager) ReloadPeers(ctx context.Context) error {
 	m.speaker = nil
 	m.installed = savedInstalled
 	m.peerConfigs = savedPeerConfigs
-	m.peerRoutes = savedPeerRoutes
+	m.peerRoutes = make(map[string][]Route)
 	return m.startLocked(ctx)
 }
 
@@ -479,12 +478,16 @@ func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, ser
 
 	// Determine next hop
 	nextHop := m.cfg.LocalAddressV4
-	if user.NextHop != "" {
-		nextHop = user.NextHop
-	} else if prefix.Addr().Is6() {
+	if prefix.Addr().Is6() {
 		nextHop = m.cfg.LocalAddressV6
 		if nextHop == "" {
 			return Route{}, fmt.Errorf("cannot build IPv6 route %s without local IPv6 address", prefix)
+		}
+	}
+	if user.NextHop != "" {
+		// Only apply user's next-hop override if it matches the prefix family
+		if userNH, parseErr := netip.ParseAddr(user.NextHop); parseErr == nil && userNH.Is4() == prefix.Addr().Is4() {
+			nextHop = user.NextHop
 		}
 	}
 	nh, err := netip.ParseAddr(nextHop)

@@ -212,13 +212,20 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 				break // malformed, stop parsing
 			}
 			paramData := opts[2 : 2+paramLen]
-			// Capability parameter (type 2)
-			if paramType == 2 && len(paramData) >= 2 {
-				capCode := paramData[0]
-				capLen := int(paramData[1])
-				if capCode == 65 && capLen == 4 && len(paramData) >= 2+capLen {
-					// Four-octet ASN Capability
-					o.MyASN32 = binary.BigEndian.Uint32(paramData[2 : 2+capLen])
+			// Capability parameter (type 2) — may contain multiple TLVs
+			if paramType == 2 {
+				capData := paramData
+				for len(capData) >= 2 {
+					capCode := capData[0]
+					capLen := int(capData[1])
+					if 2+capLen > len(capData) {
+						break // malformed, stop
+					}
+					if capCode == 65 && capLen == 4 {
+						// Four-octet ASN Capability — use the LAST one found
+						o.MyASN32 = binary.BigEndian.Uint32(capData[2 : 2+capLen])
+					}
+					capData = capData[2+capLen:]
 				}
 			}
 			// Password parameter (type 1) — fallback for loopback
@@ -319,10 +326,14 @@ func (o *OpenMessage) Serialize() []byte {
 		copy(pwParam[2:], o.Password)
 	}
 
-	// 2-byte ASN field set to AS_TRANS (23456) per RFC 6793
-	// when four-octet ASN capability is used.
+	// 2-byte ASN field: use actual ASN when it fits in 16 bits,
+	// otherwise use AS_TRANS (23456) per RFC 6793.
 	o.OptParmLen = uint8(len(capParam) + len(pwParam))
-	o.MyASN = 23456
+	if o.MyASN32 <= 65535 {
+		o.MyASN = uint16(o.MyASN32)
+	} else {
+		o.MyASN = 23456
+	}
 
 	body := make([]byte, 10+o.OptParmLen)
 	body[0] = o.Version
@@ -424,13 +435,13 @@ func (a *ASPathAttribute) TypeCode() uint8 {
 }
 
 // Serialize encodes the AS_PATH path attribute value.
-// Uses 4-octet ASN format (AS_SEQUENCE with AS_TRANS = false).
+// Uses 2-octet ASN format (AS_SEQUENCE, RFC 4271).
 func (a *ASPathAttribute) Serialize() []byte {
-	// AS_PATH segment: type=2 (AS_SEQUENCE), length=1, ASN as 4 bytes
-	val := make([]byte, 6)
+	// AS_PATH segment: type=2 (AS_SEQUENCE), length=1, ASN as 2 bytes
+	val := make([]byte, 4)
 	val[0] = 2 // AS_SEQUENCE
 	val[1] = 1 // one AS in segment
-	binary.BigEndian.PutUint32(val[2:6], a.ASN)
+	binary.BigEndian.PutUint16(val[2:4], uint16(a.ASN))
 	return encodePathAttribute(attrFlagTransitive, AttrASPath, val)
 }
 
