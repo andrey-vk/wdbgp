@@ -209,7 +209,8 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 		return fmt.Errorf("peer %s does not exist", user.PeerIP)
 	}
 	// Clear peer routes since the peer may have changed
-	delete(m.peerRoutes, user.PeerIP)
+	peerKey := fmt.Sprintf("%s:%d", user.PeerIP, user.PeerASN)
+	delete(m.peerRoutes, peerKey)
 	m.speaker.SetPeers(m.buildPeerConfigs())
 	return nil
 }
@@ -378,8 +379,11 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		// Sort for stable comparison
 		sortRoutes(desiredRoutes)
 
+		// Use "addr:asn" as the peer routes key for multi-peer-per-IP support
+		peerKey := fmt.Sprintf("%s:%d", user.PeerIP, user.PeerASN)
+
 		// Compare with previously announced
-		prevRoutes := m.peerRoutes[user.PeerIP]
+		prevRoutes := m.peerRoutes[peerKey]
 		if routesEqual(prevRoutes, desiredRoutes) {
 			continue
 		}
@@ -394,23 +398,23 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		}
 
 		if len(toWithdraw) > 0 {
-			if err := m.speaker.Withdraw(addr, toWithdraw); err != nil {
+			if err := m.speaker.Withdraw(addr, user.PeerASN, toWithdraw); err != nil {
 				return fmt.Errorf("withdraw from %s: %w", user.PeerIP, err)
 			}
 		}
 
 		if len(desiredRoutes) > 0 {
-			if err := m.speaker.Announce(addr, desiredRoutes); err != nil {
+			if err := m.speaker.Announce(addr, user.PeerASN, desiredRoutes); err != nil {
 				return fmt.Errorf("announce to %s: %w", user.PeerIP, err)
 			}
 		} else {
 			// No routes — ensure peer has empty routes
-			if err := m.speaker.Announce(addr, nil); err != nil {
+			if err := m.speaker.Announce(addr, user.PeerASN, nil); err != nil {
 				return fmt.Errorf("clear routes for %s: %w", user.PeerIP, err)
 			}
 		}
 
-		m.peerRoutes[user.PeerIP] = desiredRoutes
+		m.peerRoutes[peerKey] = desiredRoutes
 	}
 
 	m.installed = newInstalled

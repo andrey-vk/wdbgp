@@ -1471,9 +1471,68 @@ func (s *Server) saveGlobalFilters(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
 
+// validatePeerUniqueness validates a user's BGP peer configuration against
+// existing peers. skipUserID is the user's own ID (0 for new users).
+// Step A: Same IP + same ASN → reject (UNIQUE constraint)
+// Step B: Dynamic peers (0.0.0.0) require password + globally unique ASN
+// Step C: Shared IP + different ASN → password required when RequirePasswordForNonUniqueIP is ON
+func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, skipUserID int64) error {
+	// Step A: Same IP + same ASN → reject
+	var existingID int64
+	var existingName string
+	err := s.store.DB.QueryRowContext(ctx,
+		"SELECT id, name FROM users WHERE peer_ip = ? AND peer_asn = ? AND id != ?",
+		user.PeerIP, user.PeerASN, skipUserID).Scan(&existingID, &existingName)
+	if err == nil {
+		return fmt.Errorf("peer %s with ASN %d already exists as user %s", user.PeerIP, user.PeerASN, existingName)
+	}
+	if err != sql.ErrNoRows {
+		return fmt.Errorf("failed to check peer uniqueness: %w", err)
+	}
+
+	// Step B: Dynamic peers (0.0.0.0) require password + globally unique ASN
+	if user.PeerIP == "0.0.0.0" {
+		if user.BGPPassword == "" {
+			return fmt.Errorf("dynamic peers (0.0.0.0) require a BGP MD5 password")
+		}
+		var count int
+		err := s.store.DB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM users WHERE peer_asn = ? AND id != ?",
+			user.PeerASN, skipUserID).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("failed to check dynamic peer uniqueness: %w", err)
+		}
+		if count > 0 {
+			return fmt.Errorf("dynamic peer with ASN %d already exists", user.PeerASN)
+		}
+		return nil
+	}
+
+	// Step C: Shared IP + different ASN → require password when setting is ON
+	if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
+		var count int
+		err := s.store.DB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ?",
+			user.PeerIP, skipUserID).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("failed to check shared IP peers: %w", err)
+		}
+		if count > 0 {
+			return fmt.Errorf("BGP password required when sharing IP %s with another ASN", user.PeerIP)
+		}
+	}
+
+	return nil
+}
+
 func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
 	user, _, err := parseUser(r, 0)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Validate peer uniqueness (three-step)
+	if err := s.validatePeerUniqueness(r.Context(), user, 0); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1553,6 +1612,11 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 	if r.FormValue("action") == "settings" {
 		user, clearPassword, err := parseUserForm(r, id)
 		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Validate peer uniqueness (three-step), excluding self
+		if err := s.validatePeerUniqueness(r.Context(), user, id); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -2336,7 +2400,8 @@ func (s *Server) usersList(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]userRow, 0, len(users))
 	for _, u := range users {
-		state := peerStates[u.PeerIP]
+		peerKey := fmt.Sprintf("%s:%d", u.PeerIP, u.PeerASN)
+		state := peerStates[peerKey]
 		if state == "" {
 			state = "—"
 		}

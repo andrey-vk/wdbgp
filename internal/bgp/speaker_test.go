@@ -73,17 +73,17 @@ func TestSpeakerSetPeers(t *testing.T) {
 	}
 
 	// Both peers should be in some state (IDLE or CONNECT since they can't actually connect)
-	if state, ok := states["10.0.0.1"]; !ok {
-		t.Fatalf("peer 10.0.0.1 not in states: %v", states)
+	if state, ok := states["10.0.0.1:65001"]; !ok {
+		t.Fatalf("peer 10.0.0.1:65001 not in states: %v", states)
 	} else if state != StateIdle {
 		// Peer may have transitioned past idle; allowable
-		t.Logf("peer 10.0.0.1 state = %s", state)
+		t.Logf("peer 10.0.0.1:65001 state = %s", state)
 	}
 
-	if state, ok := states["10.0.0.2"]; !ok {
-		t.Fatalf("peer 10.0.0.2 not in states: %v", states)
+	if state, ok := states["10.0.0.2:65002"]; !ok {
+		t.Fatalf("peer 10.0.0.2:65002 not in states: %v", states)
 	} else {
-		t.Logf("peer 10.0.0.2 state = %s", state)
+		t.Logf("peer 10.0.0.2:65002 state = %s", state)
 	}
 }
 

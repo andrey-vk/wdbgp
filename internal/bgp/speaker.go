@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Speaker is the BGP speaker — listens on TCP, accepts connections, manages peers.
@@ -16,8 +17,8 @@ type Speaker struct {
 	cfg         SpeakerConfig
 	logger      *slog.Logger
 	listener    net.Listener
-	peers       map[netip.Addr]*Peer
-	peerConfigs []PeerConfig // configured peers (from DB)
+	peers       map[string]*Peer // keyed by "addr:asn" string
+	peerConfigs []PeerConfig     // configured peers (from DB)
 	started     atomic.Bool
 	cancel      context.CancelFunc
 }
@@ -50,7 +51,7 @@ func NewSpeaker(cfg SpeakerConfig, logger *slog.Logger) *Speaker {
 	return &Speaker{
 		cfg:    cfg,
 		logger: logger,
-		peers:  make(map[netip.Addr]*Peer),
+		peers:  make(map[string]*Peer),
 	}
 }
 
@@ -90,7 +91,7 @@ func (s *Speaker) Stop() error {
 	for _, p := range s.peers {
 		p.Stop()
 	}
-	s.peers = make(map[netip.Addr]*Peer)
+	s.peers = make(map[string]*Peer)
 	s.logger.Info("BGP speaker stopped")
 	return nil
 }
@@ -101,26 +102,27 @@ func (s *Speaker) SetPeers(peers []PeerConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	newSet := make(map[netip.Addr]PeerConfig, len(peers))
+	newSet := make(map[string]PeerConfig, len(peers))
 	for _, pc := range peers {
-		newSet[pc.Address] = pc
+		key := fmt.Sprintf("%s:%d", pc.Address.String(), pc.ASN)
+		newSet[key] = pc
 	}
 
 	// Stop peers that were removed
-	for addr, p := range s.peers {
-		if _, ok := newSet[addr]; !ok {
+	for key, p := range s.peers {
+		if _, ok := newSet[key]; !ok {
 			p.Stop()
-			delete(s.peers, addr)
+			delete(s.peers, key)
 		}
 	}
 
 	// Start new peers or update existing
-	for addr, pc := range newSet {
-		if existing, ok := s.peers[addr]; ok {
+	for key, pc := range newSet {
+		if existing, ok := s.peers[key]; ok {
 			// Peer exists — check if config changed
 			if existing.PeerConfig().ASN != pc.ASN || existing.PeerConfig().Password != pc.Password {
 				existing.Stop()
-				delete(s.peers, addr)
+				delete(s.peers, key)
 			} else {
 				continue // no change
 			}
@@ -128,7 +130,7 @@ func (s *Speaker) SetPeers(peers []PeerConfig) {
 		// Start new peer
 		p := NewPeer(pc, s.cfg, s.logger)
 		go p.Run()
-		s.peers[addr] = p
+		s.peers[key] = p
 	}
 
 	s.peerConfigs = peers
@@ -139,8 +141,8 @@ func (s *Speaker) PeerStates() map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	states := make(map[string]string, len(s.peers))
-	for addr, p := range s.peers {
-		states[addr.String()] = p.State()
+	for key, p := range s.peers {
+		states[key] = p.State()
 	}
 	return states
 }
@@ -154,25 +156,27 @@ func (s *Speaker) ReconcileRoutes() {
 	}
 }
 
-// Announce pushes routes to a specific peer, identified by its address.
-func (s *Speaker) Announce(addr netip.Addr, routes []Route) error {
+// Announce pushes routes to a specific peer, identified by its address and ASN.
+func (s *Speaker) Announce(addr netip.Addr, asn uint32, routes []Route) error {
 	s.mu.Lock()
-	p, ok := s.peers[addr]
+	key := fmt.Sprintf("%s:%d", addr.String(), asn)
+	p, ok := s.peers[key]
 	s.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("peer %s not found", addr)
+		return fmt.Errorf("peer %s:%d not found", addr.String(), asn)
 	}
 	p.AnnounceRoutes(routes)
 	return nil
 }
 
 // Withdraw removes prefixes from a specific peer.
-func (s *Speaker) Withdraw(addr netip.Addr, prefixes []netip.Prefix) error {
+func (s *Speaker) Withdraw(addr netip.Addr, asn uint32, prefixes []netip.Prefix) error {
 	s.mu.Lock()
-	p, ok := s.peers[addr]
+	key := fmt.Sprintf("%s:%d", addr.String(), asn)
+	p, ok := s.peers[key]
 	s.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("peer %s not found", addr)
+		return fmt.Errorf("peer %s:%d not found", addr.String(), asn)
 	}
 	p.WithdrawRoutes(prefixes)
 	return nil
@@ -207,15 +211,32 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
 	addr := remoteAddr.Addr()
 
+	// Read OPEN message to get the remote ASN
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	msg, err := ReadMessage(conn)
+	if err != nil {
+		conn.Close()
+		return
+	}
+	open, ok := msg.(*OpenMessage)
+	if !ok {
+		conn.Close()
+		return
+	}
+	remoteASN := uint32(open.MyASN)
+
+	// Find peer by address + ASN
 	s.mu.Lock()
-	peer, ok := s.peers[addr]
+	key := fmt.Sprintf("%s:%d", addr.String(), remoteASN)
+	peer, ok := s.peers[key]
 	s.mu.Unlock()
 
 	if !ok {
-		s.logger.Warn("connection from unknown peer", "addr", addr)
+		s.logger.Warn("unknown peer", "addr", addr, "asn", remoteASN)
 		conn.Close()
 		return
 	}
 
-	peer.Accept(conn)
+	// Hand over connection with pre-read OPEN message
+	peer.AcceptWithOpen(conn, open)
 }

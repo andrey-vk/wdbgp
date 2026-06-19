@@ -170,13 +170,13 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	defer manager.Stop(ctx)
 
 	// First peer (user 1 with "video" category) should get video prefixes.
-	firstRoutes := manager.peerRoutes["192.0.2.2"]
+	firstRoutes := manager.peerRoutes["192.0.2.2:65001"]
 	firstPrefixes := routePrefixStrings(firstRoutes)
 	sort.Strings(firstPrefixes)
 	assertPrefixes(t, firstPrefixes, []string{"8.8.4.0/24", "8.8.8.0/24"})
 
 	// Second peer (user 2 with "chat/telegram" service) should get chat prefix.
-	secondRoutes := manager.peerRoutes["192.0.2.3"]
+	secondRoutes := manager.peerRoutes["192.0.2.3:65002"]
 	secondPrefixes := routePrefixStrings(secondRoutes)
 	assertPrefixes(t, secondPrefixes, []string{"149.154.160.0/20"})
 

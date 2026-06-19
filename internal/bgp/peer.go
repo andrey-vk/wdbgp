@@ -149,7 +149,14 @@ func (p *Peer) connectAndRun() error {
 	// Step 5: Send initial routes
 	p.sendRoutes(conn)
 
-	// Step 6: Main loop — handle incoming messages, periodic keepalives, route updates
+	// Step 6: Main loop
+	return p.mainLoop(conn)
+}
+
+// mainLoop handles incoming messages, periodic keepalives, and route updates
+// for an established BGP session.
+func (p *Peer) mainLoop(conn net.Conn) error {
+	ka := &KeepaliveMessage{}
 	ticker := time.NewTicker(30 * time.Second) // KEEPALIVE interval
 	defer ticker.Stop()
 
@@ -258,6 +265,8 @@ func (p *Peer) WithdrawRoutes(prefixes []netip.Prefix) {
 	}
 }
 
+// Accept handles a passive BGP connection. Reads the OPEN, validates,
+// then delegates to AcceptWithOpen.
 func (p *Peer) Accept(conn net.Conn) {
 	p.conn = conn
 	defer conn.Close()
@@ -274,22 +283,29 @@ func (p *Peer) Accept(conn net.Conn) {
 		p.sendNotification(conn, 2, 4, nil)
 		return
 	}
+
+	p.AcceptWithOpen(conn, openIn)
+}
+
+// AcceptWithOpen handles a passive connection with a pre-read OPEN message.
+func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
+	p.conn = conn
+
+	// Validate ASN
 	if uint32(openIn.MyASN) != p.cfg.ASN {
 		p.sendNotification(conn, 2, 2, nil)
+		conn.Close()
 		return
 	}
 
 	// Send OPEN
 	bgpID := p.spk.RouterID.As4()
-	openOut := &OpenMessage{
-		Version:    4,
-		MyASN:      uint16(p.spk.ASN),
-		HoldTime:   90,
-		BGPID:      bgpID,
-		OptParmLen: 0,
-	}
+	var id [4]byte
+	copy(id[:], bgpID[:])
+	openOut := &OpenMessage{Version: 4, MyASN: uint16(p.spk.ASN), HoldTime: 90, BGPID: id}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		p.logger.Error("accept: write open", "error", err)
+		conn.Close()
 		return
 	}
 	p.setState(StateOpenSent)
@@ -298,15 +314,17 @@ func (p *Peer) Accept(conn net.Conn) {
 	ka := &KeepaliveMessage{}
 	if _, err := conn.Write(ka.Serialize()); err != nil {
 		p.logger.Error("accept: write keepalive", "error", err)
+		conn.Close()
 		return
 	}
 	p.setState(StateOpenConfirm)
 
 	// Receive KEEPALIVE
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
-	msg, err = ReadMessage(conn)
+	msg, err := ReadMessage(conn)
 	if err != nil {
 		p.logger.Error("accept: read keepalive", "error", err)
+		conn.Close()
 		return
 	}
 	switch msg.(type) {
@@ -315,9 +333,11 @@ func (p *Peer) Accept(conn net.Conn) {
 	case *NotificationMessage:
 		nm := msg.(*NotificationMessage)
 		p.logger.Error("accept: received notification", "code", nm.ErrorCode, "sub", nm.ErrorSubcode)
+		conn.Close()
 		return
 	default:
 		p.sendNotification(conn, 5, 0, nil)
+		conn.Close()
 		return
 	}
 
@@ -328,46 +348,10 @@ func (p *Peer) Accept(conn net.Conn) {
 	p.sendRoutes(conn)
 
 	// Main loop
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for !p.stopping.Load() {
-		conn.SetDeadline(time.Now().Add(60 * time.Second))
-
-		select {
-		case <-ticker.C:
-			if _, err := conn.Write(ka.Serialize()); err != nil {
-				p.logger.Error("write keepalive", "error", err)
-				return
-			}
-		default:
-		}
-
-		if p.needsUpdate.Swap(false) {
-			p.sendRoutes(conn)
-		}
-
-		msg, err := ReadMessage(conn)
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue
-			}
-			if err == io.EOF {
-				return
-			}
-			p.logger.Error("read error", "error", err)
-			return
-		}
-
-		switch msg.(type) {
-		case *KeepaliveMessage:
-		case *UpdateMessage:
-		case *NotificationMessage:
-			nm := msg.(*NotificationMessage)
-			p.logger.Error("received notification", "code", nm.ErrorCode, "sub", nm.ErrorSubcode)
-			return
-		}
+	if err := p.mainLoop(conn); err != nil {
+		p.logger.Error("main loop error", "error", err)
 	}
+	conn.Close()
 }
 
 // sendNotification sends a BGP NOTIFICATION message.

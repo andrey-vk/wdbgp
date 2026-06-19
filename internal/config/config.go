@@ -41,10 +41,11 @@ type Config struct {
 	JSMaxRequests      int
 	JSMaxCallStack     int
 	DefaultWebAuth     string
-	StatusAllowed      []string // comma-separated CIDRs for /status access
-	StatusToken        string   // Bearer token for /status access
-	AdapterBackupDir   string   // backup directory for adapter sources (empty = disabled)
-	AdapterBackupMax   int      // max backup copies per adapter
+	StatusAllowed      []string            // comma-separated CIDRs for /status access
+	StatusToken        string              // Bearer token for /status access
+	AdapterBackupDir   string              // backup directory for adapter sources (empty = disabled)
+	AdapterBackupMax   int                 // max backup copies per adapter
+	RequirePasswordForNonUniqueIP bool     // require BGP password when sharing IP with different ASN
 }
 
 func Load() (Config, error) {
@@ -177,6 +178,7 @@ func Load() (Config, error) {
 		StatusToken:        os.Getenv("WDBGP_STATUS_TOKEN"),
 		AdapterBackupDir:   env("WDBGP_ADAPTER_BACKUP_DIR", filepath.Dir(dbPath)+"/backup/adapters"),
 		AdapterBackupMax:   validateBackupMax("WDBGP_ADAPTER_BACKUP_MAX", 10),
+		RequirePasswordForNonUniqueIP: envBool("WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP", true),
 	}
 	return cfg, nil
 }
@@ -257,6 +259,21 @@ func boolean(name string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func envBool(name string, fallback bool) bool {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
 	}
 }
 

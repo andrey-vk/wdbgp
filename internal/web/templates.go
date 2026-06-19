@@ -347,8 +347,10 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}` + 
 <p class=muted>{{tr "hints.user_name"}}</p>
 <label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
 <p class=muted>{{tr "hints.user_networks"}}</p>
-<label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" required></label>
+<label>{{tr "users.peer_ip"}} <input name=peer_ip id=peer-ip value="{{.User.PeerIP}}" required {{if eq .User.PeerIP "0.0.0.0"}}readonly{{end}}></label>
 <p class=muted>{{tr "hints.user_peer_ip"}}</p>
+<label class=checkbox-row><input type=checkbox id=dynamic-ip {{if eq .User.PeerIP "0.0.0.0"}}checked{{end}}> {{tr "users.dynamic_ip"}}</label>
+<p class=muted>{{tr "hints.user_dynamic_ip"}}</p>
 <label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn value="{{.User.PeerASN}}" required></label>
 <p class=muted>{{tr "hints.user_peer_asn"}}</p>
 <label>{{tr "users.next_hop"}} <input name=next_hop value="{{.User.NextHop}}" placeholder="auto"></label>
@@ -399,6 +401,25 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}` + 
   if (authSelect) {
     authSelect.addEventListener('change', toggleCredentials);
     toggleCredentials();
+  }
+})();
+</script>
+<script>
+(function(){
+  var peerIp = document.getElementById('peer-ip');
+  var dynamicIp = document.getElementById('dynamic-ip');
+  var savedIp = '';
+  if (peerIp && dynamicIp) {
+    dynamicIp.addEventListener('change', function() {
+      if (this.checked) {
+        savedIp = peerIp.value;
+        peerIp.value = '0.0.0.0';
+        peerIp.readOnly = true;
+      } else {
+        peerIp.value = savedIp || '';
+        peerIp.readOnly = false;
+      }
+    });
   }
 })();
 </script>
@@ -787,7 +808,7 @@ const usersListTemplate = `{{with .Data}}
 <td><a href="/admin/user/{{.User.ID}}">{{.User.Name}}</a></td>
 <td><code>{{.Networks}}</code></td>
 <td>{{.User.CatalogModeName}}</td>
-<td><span class="status-dot {{if eq .PeerState "ESTABLISHED"}}up{{else}}down{{end}}" title="{{.PeerState}}"></span> <code>{{.User.PeerIP}}</code></td>
+<td><span class="status-dot {{if eq .PeerState "ESTABLISHED"}}up{{else}}down{{end}}" title="{{tr (printf "bgp.state.%s" .PeerState)}}"></span> <code>{{.User.PeerIP}}</code></td>
 <td>{{.User.PeerASN}}</td>
 <td>{{.User.WebAuth}}</td>
 <td>{{if .User.Enabled}}<span class=ok>enabled</span>{{else}}<span class=error>disabled</span>{{end}}</td>
