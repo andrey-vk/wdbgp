@@ -523,7 +523,8 @@ CREATE TABLE IF NOT EXISTS users_new (
         CHECK (filter_mode IN ('global', 'extend', 'override')),
     catalog_mode_id INTEGER REFERENCES catalog_modes(id),
     catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
-    web_auth TEXT NOT NULL DEFAULT 'network'
+    web_auth TEXT NOT NULL DEFAULT 'network',
+    UNIQUE(peer_ip, peer_asn)
 );
 -- Only insert if users_new is empty (idempotent: safe for retry after partial run)
 INSERT INTO users_new SELECT id, name, peer_ip, peer_asn, next_hop, bgp_password,
@@ -728,6 +729,13 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+	}
+	// Migration 20 backfill: ensure UNIQUE(peer_ip, peer_asn) exists (for DBs
+	// that were already migrated before the constraint was added to the DDL).
+	if _, err := s.DB.ExecContext(ctx,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ip_asn ON users(peer_ip, peer_asn)`,
+	); err != nil {
+		return fmt.Errorf("users UNIQUE(peer_ip, peer_asn) index: %w", err)
 	}
 	return s.seedBuiltInAdapters(ctx)
 }
