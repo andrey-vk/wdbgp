@@ -351,12 +351,14 @@ func (o *OpenMessage) Serialize() []byte {
 		}
 	}
 
-	// 2-byte ASN field: use actual ASN (always fits in 16 bits since we use 2-byte AS_PATH).
+	// 2-byte ASN field: clamp to 16-bit range for safety.
 	o.OptParmLen = uint8(len(capParam) + len(pwParam))
-	if o.MyASN32 > 65535 {
-		log.Printf("ERROR: BGP ASN %d exceeds 65535 (2-byte BGP); truncation would corrupt OPEN", o.MyASN32)
+	myASN32 := o.MyASN32
+	if myASN32 > 65535 {
+		log.Printf("ERROR: BGP ASN %d exceeds 65535 (2-byte BGP), clamping", myASN32)
+		myASN32 = 65535
 	}
-	o.MyASN = uint16(o.MyASN32)
+	o.MyASN = uint16(myASN32)
 
 	body := make([]byte, 10+o.OptParmLen)
 	body[0] = o.Version
