@@ -322,9 +322,6 @@ func validateASN(name string, fallback uint32) (uint32, error) {
 	if number == 0 {
 		return 0, fmt.Errorf("%s must be greater than zero", name)
 	}
-	if number > 65535 {
-		return 0, fmt.Errorf("%s must not exceed 65535 (2-byte BGP ASN)", name)
-	}
 	return uint32(number), nil
 }
 

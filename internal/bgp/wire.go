@@ -633,6 +633,9 @@ func decodeMpReachNLRI(value []byte) (PathAttribute, error) {
 		nh = netip.AddrFrom4([4]byte(nhBytes))
 	case 16:
 		nh = netip.AddrFrom16([16]byte(nhBytes))
+	case 32:
+		// IPv6 with link-local: use first 16 bytes (global next hop)
+		nh = netip.AddrFrom16([16]byte(nhBytes[0:16]))
 	default:
 		return nil, fmt.Errorf("bgp: mp_reach_nlri bad next hop length: %d", nhLen)
 	}

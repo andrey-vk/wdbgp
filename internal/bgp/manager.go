@@ -212,6 +212,8 @@ func (m *Manager) AddPeer(ctx context.Context, user store.User) error {
 		return err
 	}
 	if err := m.speaker.SetPeers(cfgs); err != nil {
+		// Rollback: remove the just-added peer from configs.
+		m.peerConfigs = m.peerConfigs[:len(m.peerConfigs)-1]
 		return err
 	}
 	return nil

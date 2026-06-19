@@ -1341,6 +1341,18 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Validate mode IDs exist before updating feed
+	if len(modeIDs) > 0 {
+		for _, mid := range modeIDs {
+			if _, err := s.store.CatalogMode(r.Context(), mid); store.IsNotFound(err) {
+				http.Error(w, fmt.Sprintf("mode %d not found", mid), http.StatusBadRequest)
+				return
+			} else if err != nil {
+				s.internalError(w, r, err)
+				return
+			}
+		}
+	}
 	if err := s.store.UpdateFeed(r.Context(), feed); err != nil {
 		if store.IsNotFound(err) {
 			http.NotFound(w, r)
@@ -1548,6 +1560,19 @@ func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, sk
 	if sharedCount > 0 {
 		if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
 			return fmt.Errorf("BGP password required when sharing IP %s with another ASN", user.PeerIP)
+		}
+		// If new peer has password, existing same-IP peers must also have passwords
+		if user.BGPPassword != "" {
+			var pwLessCount int
+			err = s.store.DB.QueryRowContext(ctx,
+				"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ? AND (bgp_password = '' OR bgp_password IS NULL)",
+				user.PeerIP, skipUserID).Scan(&pwLessCount)
+			if err != nil {
+				return fmt.Errorf("failed to check shared IP passwords: %w", err)
+			}
+			if pwLessCount > 0 {
+				return fmt.Errorf("cannot set BGP password on peer %s: existing peers on same IP have no password", user.PeerIP)
+			}
 		}
 		// If any existing peer on same IP has a password, new peer's must match.
 		var existingPwd string

@@ -141,8 +141,10 @@ func (p *Peer) connectAndRun() error {
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
+	p.mu.Lock()
 	p.conn = conn
-	defer func() { p.conn = nil }()
+	p.mu.Unlock()
+	defer func() { p.mu.Lock(); p.conn = nil; p.mu.Unlock() }()
 	defer conn.Close()
 
 	// Deadlines for read/write
@@ -199,8 +201,11 @@ func (p *Peer) connectAndRun() error {
 		}
 	}
 
-	// Negotiate hold time: use the lower of local (90s) and remote
-	if remoteHold := time.Duration(openIn.HoldTime) * time.Second; remoteHold > 0 && remoteHold < 90*time.Second {
+	// Negotiate hold time per RFC 4271: use min(local, remote), 0 means disabled.
+	remoteHold := time.Duration(openIn.HoldTime) * time.Second
+	if openIn.HoldTime == 0 {
+		p.holdTime = 0 // no hold timer
+	} else if remoteHold < 90*time.Second {
 		p.holdTime = remoteHold
 	} else {
 		p.holdTime = 90 * time.Second
@@ -252,17 +257,21 @@ func (p *Peer) connectAndRun() error {
 func (p *Peer) mainLoop(conn net.Conn) error {
 	holdTime := p.holdTime
 	if holdTime <= 0 {
-		holdTime = 90 * time.Second
+		holdTime = 0 // disabled, no deadline (RFC 4271: 0 means no hold timer)
 	}
 
 	// Dedicated keepalive sender goroutine — writes keepalives at holdTime/3
 	// independently of the blocking read in the main goroutine.
 	kaStop := make(chan struct{})
 	defer close(kaStop)
-	go p.keepaliveLoop(conn, holdTime, kaStop)
+	if holdTime > 0 {
+		go p.keepaliveLoop(conn, holdTime, kaStop)
+	}
 
 	for !p.stopping.Load() {
-		conn.SetDeadline(time.Now().Add(holdTime)) // hold time
+		if holdTime > 0 {
+			conn.SetDeadline(time.Now().Add(holdTime)) // hold time
+		}
 
 		// Check for pending route updates
 		if p.needsUpdate.Swap(false) {
@@ -433,8 +442,10 @@ func (p *Peer) WithdrawRoutes(prefixes []netip.Prefix) {
 // Accept handles a passive BGP connection. Reads the OPEN, validates,
 // then delegates to AcceptWithOpen.
 func (p *Peer) Accept(conn net.Conn) {
+	p.mu.Lock()
 	p.conn = conn
-	defer func() { p.conn = nil }()
+	p.mu.Unlock()
+	defer func() { p.mu.Lock(); p.conn = nil; p.mu.Unlock() }()
 	defer conn.Close()
 
 	// Receive OPEN first (passive side)
@@ -455,8 +466,10 @@ func (p *Peer) Accept(conn net.Conn) {
 
 // AcceptWithOpen handles a passive connection with a pre-read OPEN message.
 func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
+	p.mu.Lock()
 	p.conn = conn
-	defer func() { p.conn = nil }()
+	p.mu.Unlock()
+	defer func() { p.mu.Lock(); p.conn = nil; p.mu.Unlock() }()
 
 	// Validate ASN — use four-octet ASN capability (RFC 6793) if present
 	remoteASN := openIn.MyASN32
@@ -500,10 +513,16 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		}
 	}
 
-	// Send OPEN
+	// Send OPEN — hold time negotiation per RFC 4271
 	holdTime := uint16(90)
-	if openIn.HoldTime > 0 && openIn.HoldTime < 90 {
+	if openIn.HoldTime == 0 {
+		holdTime = 0 // no hold timer
+		p.holdTime = 0
+	} else if openIn.HoldTime < 90 {
 		holdTime = openIn.HoldTime
+		p.holdTime = time.Duration(openIn.HoldTime) * time.Second
+	} else {
+		p.holdTime = 90 * time.Second
 	}
 	bgpID := p.spk.RouterID.As4()
 	var id [4]byte
@@ -584,10 +603,12 @@ func (p *Peer) sendNotification(conn net.Conn, code, subcode uint8, data []byte)
 
 func (p *Peer) Stop() {
 	p.stopping.Store(true)
+	p.mu.Lock()
 	if p.conn != nil {
 		p.conn.Close()
 		p.conn = nil
 	}
+	p.mu.Unlock()
 }
 
 func (p *Peer) setState(state string) {

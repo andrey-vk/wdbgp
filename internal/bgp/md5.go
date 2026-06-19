@@ -62,10 +62,10 @@ func applyListenerMD5(listener net.Listener, peers []PeerConfig) error {
 	// The kernel uses one key per remote address — different passwords
 	// at the same IP would leave one peer unable to authenticate.
 	addrPasswords := make(map[netip.Addr]string)
-	for _, pc := range peers {
-		if pc.Password == "" || pc.Address.IsLoopback() {
-			continue
-		}
+		for _, pc := range peers {
+			if pc.Password == "" || pc.Address.IsLoopback() || pc.Address.IsUnspecified() {
+				continue
+			}
 		if prev, ok := addrPasswords[pc.Address]; ok && prev != pc.Password {
 			return fmt.Errorf("tcp md5: peers at %s have different passwords; kernel uses one key per remote address", pc.Address)
 		}

@@ -1242,6 +1242,7 @@ func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
 	ctx := context.Background()
 	_, err = db.AddUser(ctx, store.User{
 		Name: "first-shared-pw", PeerIP: "10.0.4.1", PeerASN: 65101, Enabled: true,
+		BGPPassword: "shared-secret",
 		Networks: []string{"192.168.20.0/24"},
 	})
 	if err != nil {
