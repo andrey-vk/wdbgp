@@ -2,7 +2,6 @@ package bgp
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"syscall"
@@ -47,9 +46,8 @@ func setTCPMD5OnConn(conn net.Conn, addr netip.Addr, password string) error {
 // peers that have passwords. This must be called before accepting connections
 // so the kernel enforces MD5 during the TCP handshake (RFC 2385).
 //
-// IMPORTANT: The kernel picks one key per remote address. If two peers share
-// the same remote IP but have different passwords, only one will authenticate
-// correctly. A warning is logged when this is detected.
+// The kernel uses one key per remote address. Two peers at the same IP with
+// different passwords is unsupported and will return an error.
 func applyListenerMD5(listener net.Listener, peers []PeerConfig) error {
 	sc, ok := listener.(syscall.Conn)
 	if !ok {
@@ -60,17 +58,18 @@ func applyListenerMD5(listener net.Listener, peers []PeerConfig) error {
 		return fmt.Errorf("tcp md5: listener syscall conn: %w", err)
 	}
 
-	// Detect same-IP peers with different passwords and warn.
+	// Detect same-IP peers with different passwords and return error.
+	// The kernel uses one key per remote address — different passwords
+	// at the same IP would leave one peer unable to authenticate.
 	addrPasswords := make(map[netip.Addr]string)
 	for _, pc := range peers {
 		if pc.Password == "" || pc.Address.IsLoopback() {
 			continue
 		}
 		if prev, ok := addrPasswords[pc.Address]; ok && prev != pc.Password {
-			log.Printf("WARNING: tcp md5: multiple peers at %s have different passwords; kernel uses one key per remote address, only one peer will authenticate correctly\n", pc.Address)
-		} else {
-			addrPasswords[pc.Address] = pc.Password
+			return fmt.Errorf("tcp md5: peers at %s have different passwords; kernel uses one key per remote address", pc.Address)
 		}
+		addrPasswords[pc.Address] = pc.Password
 	}
 
 	var firstErr error

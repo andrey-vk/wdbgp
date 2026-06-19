@@ -72,8 +72,9 @@ func (s *Speaker) Start(ctx context.Context) error {
 		// Set TCP MD5 on listener BEFORE accepting connections so the
 		// kernel enforces MD5 during the TCP handshake (RFC 2385).
 		if err := applyListenerMD5(s.listener, s.peerConfigs); err != nil {
-			s.logger.Error("tcp md5 on listener failed", "error", err)
-			// Continue — MD5 is optional, connections still work without it.
+			s.listener.Close()
+			s.listener = nil
+			return fmt.Errorf("tcp md5 on listener failed: %w", err)
 		}
 
 		ctx, s.cancel = context.WithCancel(ctx)
@@ -107,7 +108,7 @@ func (s *Speaker) Stop() error {
 
 // SetPeers updates the configured peer list. New peers are started,
 // removed peers are stopped, existing peers are updated if changed.
-func (s *Speaker) SetPeers(peers []PeerConfig) {
+func (s *Speaker) SetPeers(peers []PeerConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -152,8 +153,10 @@ func (s *Speaker) SetPeers(peers []PeerConfig) {
 		_ = clearListenerMD5(s.listener, oldConfigs)
 		if err := applyListenerMD5(s.listener, peers); err != nil {
 			s.logger.Error("tcp md5 refresh on listener failed", "error", err)
+			return err
 		}
 	}
+	return nil
 }
 
 // PeerStates returns the BGP state for each configured peer.
@@ -261,6 +264,16 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 
 	if !ok {
 		s.logger.Warn("unknown peer", "addr", addr, "asn", remoteASN)
+		conn.Close()
+		return
+	}
+
+	// Prevent duplicate sessions: if this peer already has an established
+	// connection (e.g., both sides initiated simultaneously), keep the
+	// existing session and close the new one.
+	if peer.hasEstablishedConn() {
+		s.logger.Warn("duplicate connection rejected, peer already established",
+			"addr", addr, "asn", remoteASN)
 		conn.Close()
 		return
 	}

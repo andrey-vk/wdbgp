@@ -235,9 +235,11 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 						o.MyASN32 = binary.BigEndian.Uint32(capData[2 : 2+capLen])
 					}
 					if capCode == 1 && capLen == 4 {
-						// Multiprotocol Extension — check AFI/SAFI for IPv6 unicast
+						// Multiprotocol Extension — check AFI/SAFI for IPv6 unicast.
+						// Value: AFI(2) + Reserved(1) + SAFI(1) = 4 bytes.
+						// capData[2:4]=AFI, capData[4]=Reserved, capData[5]=SAFI.
 						afi := binary.BigEndian.Uint16(capData[2:4])
-						safi := capData[4]
+						safi := capData[5]
 						if afi == 2 && safi == 1 {
 							o.HasIPv6Unicast = true
 						}
@@ -351,6 +353,9 @@ func (o *OpenMessage) Serialize() []byte {
 
 	// 2-byte ASN field: use actual ASN (always fits in 16 bits since we use 2-byte AS_PATH).
 	o.OptParmLen = uint8(len(capParam) + len(pwParam))
+	if o.MyASN32 > 65535 {
+		log.Printf("ERROR: BGP ASN %d exceeds 65535 (2-byte BGP); truncation would corrupt OPEN", o.MyASN32)
+	}
 	o.MyASN = uint16(o.MyASN32)
 
 	body := make([]byte, 10+o.OptParmLen)

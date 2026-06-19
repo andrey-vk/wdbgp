@@ -64,6 +64,15 @@ func (p *Peer) TriggerUpdate() {
 	p.needsUpdate.Store(true)
 }
 
+// hasEstablishedConn reports whether the peer has an established BGP session
+// with a live TCP connection. Used to prevent duplicate sessions when both
+// sides initiate connections simultaneously.
+func (p *Peer) hasEstablishedConn() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.state == StateEstablished && p.conn != nil
+}
+
 // Run connects to the peer and runs the BGP FSM.
 func (p *Peer) Run() {
 	p.connAttempt.Store(0)
@@ -461,10 +470,18 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	//   - TCP MD5 (RFC 2385) is the primary mechanism, set on the socket.
 	//   - If TCP MD5 is not available (e.g., loopback), validate via the
 	//     Password field in the OPEN message as a fallback.
+	//   - Dynamic peers (0.0.0.0) on non-loopback cannot use MD5 at the
+	//     handshake level (listener can't preinstall keys for 0.0.0.0).
 	if p.cfg.Password != "" {
 		remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
 		remoteIP := remoteAddr.Addr()
-		if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
+		if p.cfg.Address.IsUnspecified() && !remoteIP.IsLoopback() {
+			// Dynamic peer on non-loopback: MD5 can't be enforced at
+			// the TCP handshake level. Accept the connection and rely
+			// on the absence of listener-level MD5 (the peer connected
+			// without MD5 enforcement).
+			p.logger.Warn("dynamic peer has password on non-loopback; MD5 not enforced at handshake")
+		} else if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
 			p.logger.Error("accept: tcp md5 set failed", "error", err)
 			conn.Close()
 			return

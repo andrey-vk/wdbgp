@@ -2104,6 +2104,9 @@ func parseUserForm(r *http.Request, id int64) (store.User, bool, error) {
 	if err != nil || peerASN == 0 {
 		return store.User{}, false, fmt.Errorf("invalid peer ASN")
 	}
+	if peerASN > 65535 {
+		return store.User{}, false, fmt.Errorf("peer ASN must not exceed 65535 (2-byte BGP)")
+	}
 	nextHop := strings.TrimSpace(r.FormValue("next_hop"))
 	if nextHop != "" {
 		if _, err := netip.ParseAddr(nextHop); err != nil {

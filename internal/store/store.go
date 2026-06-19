@@ -921,6 +921,12 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) error {
 	if id <= 3 {
 		return fmt.Errorf("built-in catalog modes cannot be deleted")
 	}
+	// Reassign users referencing this mode to the default mode (id=1)
+	// before deleting, to avoid foreign key violations.
+	if _, err := s.DB.ExecContext(ctx,
+		"UPDATE users SET catalog_mode_id = 1 WHERE catalog_mode_id = ?", id); err != nil {
+		return err
+	}
 	result, err := s.DB.ExecContext(ctx, "DELETE FROM catalog_modes WHERE id = ?", id)
 	if err != nil {
 		return err

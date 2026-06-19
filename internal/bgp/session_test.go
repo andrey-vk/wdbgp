@@ -51,7 +51,7 @@ func startSpeakerAndClient(t *testing.T, serverASN uint32, serverPeer PeerConfig
 	// accepts incoming connections via the speaker's listener).
 	serverPeer.Port = -1
 
-	speaker.SetPeers([]PeerConfig{serverPeer})
+	_ = speaker.SetPeers([]PeerConfig{serverPeer})
 
 	// Create client peer that connects to the speaker.
 	// cfg.ASN = speaker's ASN (received in OPEN and validated)
@@ -150,7 +150,7 @@ func TestSameIPDifferentASNs(t *testing.T) {
 		{ID: 1, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65001, Port: -1},
 		{ID: 2, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65002, Port: -1},
 	}
-	speaker.SetPeers(peers)
+	_ = speaker.SetPeers(peers)
 
 	// Client for ASN 65001
 	client1 := NewPeer(PeerConfig{
@@ -198,7 +198,7 @@ func TestDifferentIPSameASN(t *testing.T) {
 		{ID: 1, Address: netip.MustParseAddr("127.0.0.10"), ASN: 65001, Port: -1},
 		{ID: 2, Address: netip.MustParseAddr("127.0.0.20"), ASN: 65001, Port: -1},
 	}
-	speaker.SetPeers(peers)
+	_ = speaker.SetPeers(peers)
 
 	// Client for 127.0.0.10 — speaker uses remote address to find peer
 	client1 := NewPeer(PeerConfig{
@@ -401,7 +401,7 @@ func TestReconnect(t *testing.T) {
 		ID: 1, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65001,
 		Port: -1, // passive only
 	}
-	speaker.SetPeers([]PeerConfig{serverPeer})
+	_ = speaker.SetPeers([]PeerConfig{serverPeer})
 
 	clientCfg := PeerConfig{
 		ID: 2, Address: netip.MustParseAddr("127.0.0.1"), Port: port,
@@ -465,7 +465,7 @@ func TestPasswordAuthWrong(t *testing.T) {
 	t.Cleanup(func() { speaker.Stop() })
 
 	// Speaker expects password "secret"
-	speaker.SetPeers([]PeerConfig{
+	_ = speaker.SetPeers([]PeerConfig{
 		{ID: 1, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65001, Password: "secret", Port: -1},
 	})
 
@@ -603,7 +603,7 @@ func TestKeepaliveMaintainsSession(t *testing.T) {
 		ID: 1, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65001,
 		Port: -1, // passive only
 	}
-	speaker.SetPeers([]PeerConfig{serverPeer})
+	_ = speaker.SetPeers([]PeerConfig{serverPeer})
 
 	client := NewPeer(PeerConfig{
 		ID: 2, Address: netip.MustParseAddr("127.0.0.1"), Port: port,
@@ -654,7 +654,7 @@ func TestRouteAnnouncementToMultiplePeers(t *testing.T) {
 		{ID: 1, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65001, Port: -1},
 		{ID: 2, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65002, Port: -1},
 	}
-	speaker.SetPeers(peers)
+	_ = speaker.SetPeers(peers)
 
 	var mu sync.Mutex
 	received65001 := false

@@ -62,7 +62,7 @@ func TestSpeakerSetPeers(t *testing.T) {
 		},
 	}
 
-	speaker.SetPeers(peers)
+	_ = speaker.SetPeers(peers)
 
 	// Give peers a moment to start
 	time.Sleep(100 * time.Millisecond)

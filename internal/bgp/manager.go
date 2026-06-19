@@ -169,7 +169,9 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		logger.Debug("configured BGP peer", "peer_ip", u.PeerIP, "peer_asn", u.PeerASN)
 	}
 
-	speaker.SetPeers(peerConfigs)
+	if err := speaker.SetPeers(peerConfigs); err != nil {
+		return err
+	}
 
 	if err := m.reconcileLocked(ctx); err != nil {
 		return err
@@ -209,7 +211,9 @@ func (m *Manager) AddPeer(ctx context.Context, user store.User) error {
 		m.peerConfigs = m.peerConfigs[:len(m.peerConfigs)-1]
 		return err
 	}
-	m.speaker.SetPeers(cfgs)
+	if err := m.speaker.SetPeers(cfgs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -222,10 +226,12 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	// Find existing peer by user ID
 	found := false
 	var oldPeerKey string
+	var oldUser store.User
 	for i, u := range m.peerConfigs {
 		if u.ID == user.ID {
-			// Remember old key before update so we can clean up peerRoutes
+			// Remember old key and old user before update so we can roll back
 			oldPeerKey = fmt.Sprintf("%s:%d", u.PeerIP, u.PeerASN)
+			oldUser = u
 			m.peerConfigs[i] = user
 			found = true
 			break
@@ -245,9 +251,18 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	}
 	cfgs, err := m.buildPeerConfigs()
 	if err != nil {
+		// Rollback: restore old peer config to avoid inconsistency.
+		for i, u := range m.peerConfigs {
+			if u.ID == user.ID {
+				m.peerConfigs[i] = oldUser
+				break
+			}
+		}
 		return err
 	}
-	m.speaker.SetPeers(cfgs)
+	if err := m.speaker.SetPeers(cfgs); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -283,7 +298,9 @@ func (m *Manager) DeletePeer(ctx context.Context, peerIP string, userID int64) e
 	if err != nil {
 		return err
 	}
-	m.speaker.SetPeers(cfgs)
+	if err := m.speaker.SetPeers(cfgs); err != nil {
+		return err
+	}
 	return nil
 }
 
