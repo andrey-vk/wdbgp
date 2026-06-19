@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/store"
@@ -431,5 +432,57 @@ func assertPrefixes(t *testing.T, got, want []string) {
 		if got[index] != want[index] {
 			t.Fatalf("prefixes = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestDynamicPeerIsPassiveOnly(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Add a dynamic peer (0.0.0.0) — must be passive-only, never dial.
+	_, err = s.AddUser(ctx, store.User{
+		Name:        "dynamic-peer",
+		PeerIP:      "0.0.0.0",
+		PeerASN:     65001,
+		Enabled:     true,
+		BGPPassword: "secret",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// 1. Verify the peer exists in the speaker's peer map.
+	manager.speaker.mu.Lock()
+	p, ok := manager.speaker.peers["0.0.0.0:65001"]
+	manager.speaker.mu.Unlock()
+	if !ok {
+		t.Fatal("dynamic peer not found in speaker peers")
+	}
+
+	// 2. Verify Port=-1 (passive-only, never dials).
+	cfg := p.PeerConfig()
+	if cfg.Port != -1 {
+		t.Fatalf("dynamic peer Port should be -1 (passive only), got %d", cfg.Port)
+	}
+
+	// 3. Verify the peer does not actively dial: after a brief wait,
+	//    the state must not be ESTABLISHED (which requires a TCP connection).
+	time.Sleep(100 * time.Millisecond)
+	state := p.State()
+	if state == StateEstablished || state == StateOpenSent || state == StateOpenConfirm {
+		t.Fatalf("dynamic peer should not actively connect, state=%s", state)
 	}
 }
