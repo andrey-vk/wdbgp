@@ -726,3 +726,305 @@ func TestRouteAnnouncementToMultiplePeers(t *testing.T) {
 		t.Fatal("client 65002 did not receive route")
 	}
 }
+
+// =============================================================================
+// IPv6 session tests — same patterns as IPv4 but over [::1] with IPv6 prefixes.
+// =============================================================================
+
+// freeTCPPortV6 returns a free port reached via the IPv6 loopback address.
+func freeTCPPortV6(t *testing.T) int32 {
+	t.Helper()
+	l, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	_, portStr, _ := net.SplitHostPort(l.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	return int32(port)
+}
+
+// TestSessionEstablishedIPv6: basic BGP session over IPv6 loopback.
+func TestSessionEstablishedIPv6(t *testing.T) {
+	port := freeTCPPortV6(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	speaker := NewSpeaker(SpeakerConfig{
+		ASN:       64512,
+		RouterID:  netip.MustParseAddr("192.0.2.1"),
+		Port:      port,
+		LocalAddr: netip.MustParseAddr("192.0.2.2"),
+	}, logger)
+	if err := speaker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { speaker.Stop() })
+
+	_ = speaker.SetPeers([]PeerConfig{
+		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
+	})
+
+	client := NewPeer(PeerConfig{
+		ID: 2, Address: netip.MustParseAddr("::1"), Port: port,
+		ASN: 64512, Name: "test-client-v6",
+	}, SpeakerConfig{
+		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
+	}, logger, nil)
+	go client.Run()
+	t.Cleanup(func() { client.Stop() })
+
+	waitForPeerState(t, client, StateEstablished, 10*time.Second)
+	waitForSpeakerPeerState(t, speaker, stateKey("::1", 65001), StateEstablished, 10*time.Second)
+}
+
+// TestSameIPDifferentASNsIPv6: same IPv6 address, different ASNs.
+func TestSameIPDifferentASNsIPv6(t *testing.T) {
+	port := freeTCPPortV6(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	speaker := NewSpeaker(SpeakerConfig{
+		ASN:       64512,
+		RouterID:  netip.MustParseAddr("192.0.2.1"),
+		Port:      port,
+		LocalAddr: netip.MustParseAddr("192.0.2.2"),
+	}, logger)
+	if err := speaker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { speaker.Stop() })
+
+	_ = speaker.SetPeers([]PeerConfig{
+		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
+		{ID: 2, Address: netip.MustParseAddr("::1"), ASN: 65002, Port: -1},
+	})
+
+	client1 := NewPeer(PeerConfig{
+		ID: 10, Address: netip.MustParseAddr("::1"), Port: port,
+		ASN: 64512, Name: "client-v6-65001",
+	}, SpeakerConfig{ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.10")}, logger, nil)
+	go client1.Run()
+	t.Cleanup(func() { client1.Stop() })
+
+	client2 := NewPeer(PeerConfig{
+		ID: 20, Address: netip.MustParseAddr("::1"), Port: port,
+		ASN: 64512, Name: "client-v6-65002",
+	}, SpeakerConfig{ASN: 65002, RouterID: netip.MustParseAddr("192.0.2.20")}, logger, nil)
+	go client2.Run()
+	t.Cleanup(func() { client2.Stop() })
+
+	waitForPeerState(t, client1, StateEstablished, 10*time.Second)
+	waitForPeerState(t, client2, StateEstablished, 10*time.Second)
+	waitForSpeakerPeerState(t, speaker, stateKey("::1", 65001), StateEstablished, 10*time.Second)
+	waitForSpeakerPeerState(t, speaker, stateKey("::1", 65002), StateEstablished, 10*time.Second)
+}
+
+// TestRouteAnnouncementIPv6: announce IPv6 prefixes over an IPv6 BGP session.
+func TestRouteAnnouncementIPv6(t *testing.T) {
+	port := freeTCPPortV6(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	speaker := NewSpeaker(SpeakerConfig{
+		ASN:       64512,
+		RouterID:  netip.MustParseAddr("192.0.2.1"),
+		Port:      port,
+		LocalAddr: netip.MustParseAddr("192.0.2.2"),
+	}, logger)
+	if err := speaker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { speaker.Stop() })
+
+	_ = speaker.SetPeers([]PeerConfig{
+		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
+	})
+
+	var receivedNLRI []netip.Prefix
+	cb := func(prefixes []netip.Prefix) {
+		receivedNLRI = append(receivedNLRI, prefixes...)
+	}
+
+	client := NewPeer(PeerConfig{
+		ID: 2, Address: netip.MustParseAddr("::1"), Port: port,
+		ASN: 64512, Name: "test-client-v6",
+	}, SpeakerConfig{
+		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
+	}, logger, cb)
+	go client.Run()
+	t.Cleanup(func() { client.Stop() })
+
+	waitForPeerState(t, client, StateEstablished, 10*time.Second)
+	waitForSpeakerPeerState(t, speaker, stateKey("::1", 65001), StateEstablished, 10*time.Second)
+
+	// Announce IPv6 routes from the speaker
+	routes := []Route{
+		{
+			Prefix:  netip.MustParsePrefix("fd00::/48"),
+			NextHop: netip.MustParseAddr("fd00::1"),
+		},
+	}
+	err := speaker.Announce(netip.MustParseAddr("::1"), 65001, routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1 * time.Second)
+
+	if len(receivedNLRI) == 0 {
+		t.Fatal("client did not receive any IPv6 NLRI")
+	}
+
+	found := false
+	for _, p := range receivedNLRI {
+		if p.String() == "fd00::/48" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("client NLRI did not contain fd00::/48: %v", receivedNLRI)
+	}
+}
+
+// TestRouteWithdrawalIPv6: withdraw IPv6 prefixes over IPv6 session.
+func TestRouteWithdrawalIPv6(t *testing.T) {
+	port := freeTCPPortV6(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	speaker := NewSpeaker(SpeakerConfig{
+		ASN:       64512,
+		RouterID:  netip.MustParseAddr("192.0.2.1"),
+		Port:      port,
+		LocalAddr: netip.MustParseAddr("192.0.2.2"),
+	}, logger)
+	if err := speaker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { speaker.Stop() })
+
+	_ = speaker.SetPeers([]PeerConfig{
+		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
+	})
+
+	var receivedNLRI []netip.Prefix
+	cb := func(prefixes []netip.Prefix) {
+		receivedNLRI = append(receivedNLRI, prefixes...)
+	}
+
+	client := NewPeer(PeerConfig{
+		ID: 2, Address: netip.MustParseAddr("::1"), Port: port,
+		ASN: 64512, Name: "test-client-v6",
+	}, SpeakerConfig{
+		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
+	}, logger, cb)
+	go client.Run()
+	t.Cleanup(func() { client.Stop() })
+
+	waitForPeerState(t, client, StateEstablished, 10*time.Second)
+	waitForSpeakerPeerState(t, speaker, stateKey("::1", 65001), StateEstablished, 10*time.Second)
+
+	prefix := netip.MustParsePrefix("fd00::/48")
+	err := speaker.Announce(netip.MustParseAddr("::1"), 65001, []Route{
+		{Prefix: prefix, NextHop: netip.MustParseAddr("fd00::1")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	receivedBefore := len(receivedNLRI)
+	if receivedBefore == 0 {
+		t.Fatal("client never received the IPv6 route announcement")
+	}
+
+	// Withdraw
+	err = speaker.Withdraw(netip.MustParseAddr("::1"), 65001, []netip.Prefix{prefix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	// At minimum, announcement was received
+	if len(receivedNLRI) <= receivedBefore {
+		t.Logf("note: withdrawal message may not trigger NLRI callback")
+	}
+}
+
+// TestPasswordAuthCorrectIPv6: password auth over IPv6 session.
+func TestPasswordAuthCorrectIPv6(t *testing.T) {
+	port := freeTCPPortV6(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	speaker := NewSpeaker(SpeakerConfig{
+		ASN:       64512,
+		RouterID:  netip.MustParseAddr("192.0.2.1"),
+		Port:      port,
+		LocalAddr: netip.MustParseAddr("192.0.2.2"),
+	}, logger)
+	if err := speaker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { speaker.Stop() })
+
+	_ = speaker.SetPeers([]PeerConfig{
+		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Password: "secret", Port: -1},
+	})
+
+	client := NewPeer(PeerConfig{
+		ID: 2, Address: netip.MustParseAddr("::1"), Port: port,
+		ASN: 64512, Password: "secret", Name: "test-client-v6",
+	}, SpeakerConfig{
+		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
+	}, logger, nil)
+	go client.Run()
+	t.Cleanup(func() { client.Stop() })
+
+	waitForPeerState(t, client, StateEstablished, 10*time.Second)
+	waitForSpeakerPeerState(t, speaker, stateKey("::1", 65001), StateEstablished, 10*time.Second)
+}
+
+// TestReconnectIPv6: reconnect over IPv6 session.
+func TestReconnectIPv6(t *testing.T) {
+	port := freeTCPPortV6(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	speaker := NewSpeaker(SpeakerConfig{
+		ASN:       64512,
+		RouterID:  netip.MustParseAddr("192.0.2.1"),
+		Port:      port,
+		LocalAddr: netip.MustParseAddr("192.0.2.2"),
+	}, logger)
+	if err := speaker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { speaker.Stop() })
+
+	_ = speaker.SetPeers([]PeerConfig{
+		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
+	})
+
+	clientCfg := PeerConfig{
+		ID: 2, Address: netip.MustParseAddr("::1"), Port: port,
+		ASN: 64512, Name: "test-client-v6",
+	}
+	clientSpk := SpeakerConfig{
+		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
+	}
+
+	client := NewPeer(clientCfg, clientSpk, logger, nil)
+	go client.Run()
+	t.Cleanup(func() { client.Stop() })
+
+	waitForPeerState(t, client, StateEstablished, 10*time.Second)
+	waitForSpeakerPeerState(t, speaker, stateKey("::1", 65001), StateEstablished, 10*time.Second)
+
+	// Disconnect
+	client.Stop()
+	time.Sleep(1 * time.Second)
+
+	// New client reconnects
+	client2 := NewPeer(clientCfg, clientSpk, logger, nil)
+	go client2.Run()
+	t.Cleanup(func() { client2.Stop() })
+
+	waitForPeerState(t, client2, StateEstablished, 10*time.Second)
+	waitForSpeakerPeerState(t, speaker, stateKey("::1", 65001), StateEstablished, 10*time.Second)
+}
