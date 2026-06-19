@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -105,16 +106,24 @@ func (p *Peer) connectAndRun() error {
 	if p.spk.LocalAddr.IsValid() {
 		dialer.LocalAddr = &net.TCPAddr{IP: net.IP(p.spk.LocalAddr.AsSlice())}
 	}
+	// Set TCP MD5 before connect so the initial SYN carries the signature.
+	// Without this, routers that enforce MD5 will drop our SYN before we
+	// get a chance to set the option on the connected socket. RFC 2385.
+	if p.cfg.Password != "" {
+		dialer.Control = func(network, address string, c syscall.RawConn) error {
+			var md5Err error
+			ctrlErr := c.Control(func(fd uintptr) {
+				md5Err = setTCPMD5OnFd(int(fd), p.cfg.Address, p.cfg.Password)
+			})
+			if ctrlErr != nil {
+				return ctrlErr
+			}
+			return md5Err
+		}
+	}
 	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
-	}
-
-	// Set TCP MD5 after connect (not before, to avoid sending MD5 in the
-	// initial SYN to a listener that hasn't set MD5 yet). RFC 2385.
-	if err := setTCPMD5OnConn(conn, p.cfg.Address, p.cfg.Password); err != nil {
-		conn.Close()
-		return fmt.Errorf("tcp md5: %w", err)
 	}
 	p.conn = conn
 	defer conn.Close()
