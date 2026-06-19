@@ -59,6 +59,44 @@ func TestBuildRouteCarriesCommunities(t *testing.T) {
 	}
 }
 
+func TestBuildRouteHonorsUserNextHop(t *testing.T) {
+	manager := NewManager(config.Config{
+		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
+	}, nil)
+
+	// IPv4 prefix with user.NextHop override
+	user := store.User{ID: 7, NextHop: "10.0.0.1"}
+	v4prefix := netip.MustParsePrefix("8.8.8.0/24")
+	v4route, err := manager.buildRoute(v4prefix, user, "cat", "svc", map[string]uint32{"cat": 10000, "cat|svc": 10001})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v4route.NextHop.String() != "10.0.0.1" {
+		t.Fatalf("IPv4 next hop: expected 10.0.0.1 (user override), got %s", v4route.NextHop)
+	}
+
+	// IPv6 prefix with user.NextHop override
+	userV6 := store.User{ID: 8, NextHop: "fd00::2"}
+	v6prefix := netip.MustParsePrefix("2001:db8::/32")
+	v6route, err := manager.buildRoute(v6prefix, userV6, "cat", "svc", map[string]uint32{"cat": 10000, "cat|svc": 10001})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v6route.NextHop.String() != "fd00::2" {
+		t.Fatalf("IPv6 next hop: expected fd00::2 (user override), got %s", v6route.NextHop)
+	}
+
+	// User without NextHop set should still use config default
+	userDefault := store.User{ID: 9}
+	v4routeDefault, err := manager.buildRoute(v4prefix, userDefault, "cat", "svc", map[string]uint32{"cat": 10000, "cat|svc": 10001})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v4routeDefault.NextHop.String() != "172.16.0.1" {
+		t.Fatalf("IPv4 next hop without override: expected 172.16.0.1 (config default), got %s", v4routeDefault.NextHop)
+	}
+}
+
 func TestManagerStartsWithoutPeers(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
 	if err != nil {

@@ -453,7 +453,9 @@ func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, ser
 
 	// Determine next hop
 	nextHop := m.cfg.LocalAddressV4
-	if prefix.Addr().Is6() {
+	if user.NextHop != "" {
+		nextHop = user.NextHop
+	} else if prefix.Addr().Is6() {
 		nextHop = m.cfg.LocalAddressV6
 		if nextHop == "" {
 			return Route{}, fmt.Errorf("cannot build IPv6 route %s without local IPv6 address", prefix)
