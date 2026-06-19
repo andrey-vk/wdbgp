@@ -347,6 +347,48 @@ func TestPrefixEncodeDecode(t *testing.T) {
 	}
 }
 
+func TestDecodePathAttributeSkipsUnknown(t *testing.T) {
+	// Construct an UPDATE with an unknown path attribute (type 99, empty value)
+	// Path attribute TLV: flags=0xC0 (Optional|Transitive), type=99, length=0
+	pathAttr := []byte{0xC0, 99, 0}
+
+	// UPDATE body: 2-byte withdrawn len (0) + 2-byte path attr len + attrs + NLRI (empty)
+	body := []byte{
+		0, 0, // withdrawn routes length = 0
+		byte(len(pathAttr) >> 8), byte(len(pathAttr)), // path attr length = 3
+	}
+	body = append(body, pathAttr...)
+
+	// BGP header: marker (16 bytes of 0xFF) + length + type
+	totalLen := HeaderLen + len(body)
+	header := make([]byte, HeaderLen)
+	for i := 0; i < 16; i++ {
+		header[i] = 0xFF
+	}
+	header[16] = byte(totalLen >> 8)
+	header[17] = byte(totalLen)
+	header[18] = MsgUpdate
+
+	data := append(header, body...)
+
+	msg, err := ReadMessage(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ReadMessage with unknown path attribute should NOT error, got: %v", err)
+	}
+
+	update, ok := msg.(*UpdateMessage)
+	if !ok {
+		t.Fatalf("expected *UpdateMessage, got %T", msg)
+	}
+
+	// Unknown attribute should be skipped, so PathAttributes should be empty
+	if len(update.PathAttributes) != 0 {
+		t.Fatalf("PathAttributes len = %d, want 0 (unknown attrs skipped)", len(update.PathAttributes))
+	}
+
+	t.Log("Unknown path attribute (type 99) successfully skipped")
+}
+
 func TestReadMessageErrors(t *testing.T) {
 	// Invalid marker (all zeros instead of 0xFF)
 	invalidMarker := make([]byte, HeaderLen)

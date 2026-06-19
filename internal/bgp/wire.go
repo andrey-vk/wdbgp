@@ -480,17 +480,20 @@ func decodePathAttributes(data []byte) ([]PathAttribute, error) {
 		value := data[hdrLen : hdrLen+attrLen]
 		data = data[hdrLen+attrLen:]
 
-		attr, err := decodePathAttribute(typeCode, value)
+		attr, err := decodePathAttribute(flags, typeCode, value)
 		if err != nil {
 			return nil, err
 		}
-		attrs = append(attrs, attr)
+		if attr != nil {
+			attrs = append(attrs, attr)
+		}
 	}
 	return attrs, nil
 }
 
 // decodePathAttribute decodes a single path attribute value by type.
-func decodePathAttribute(typeCode uint8, value []byte) (PathAttribute, error) {
+// Returns (nil, nil) for unknown optional attributes, which are skipped.
+func decodePathAttribute(flags, typeCode uint8, value []byte) (PathAttribute, error) {
 	switch typeCode {
 	case AttrOrigin:
 		if len(value) != 1 {
@@ -529,7 +532,11 @@ func decodePathAttribute(typeCode uint8, value []byte) (PathAttribute, error) {
 		return &LargeCommunitiesAttribute{Communities: comms}, nil
 
 	default:
-		return nil, fmt.Errorf("bgp: unknown path attribute type: %d", typeCode)
+		// Unknown/unsupported attribute: skip it (return nil, nil).
+		// Real routers send attributes we don't use (standard communities,
+		// MED, LOCAL_PREF, etc.). Per RFC 4271, unrecognized optional
+		// attributes should be ignored.
+		return nil, nil
 	}
 }
 
