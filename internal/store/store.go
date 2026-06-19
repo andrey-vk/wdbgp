@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1874,9 +1875,12 @@ ORDER BY 1, 2`)
 			}
 			// Carry mode/category/service through the filter — find the best matching
 			// original route so that communities can be loaded from the correct mode.
-			if _, exists := prefixMeta[key]; !exists {
+			// Key includes userID so that two users in different catalog modes
+			// selecting the same CIDR each get their own mode/category/service metadata.
+			metaKey := prefix.String() + ":" + strconv.FormatInt(userID, 10)
+			if _, exists := prefixMeta[metaKey]; !exists {
 				if modeID, cat, svc, ok := findBestMatch(prefix, selUser.routes); ok {
-					prefixMeta[key] = PrefixRouteInfo{ModeID: modeID, Category: cat, Service: svc}
+					prefixMeta[metaKey] = PrefixRouteInfo{ModeID: modeID, Category: cat, Service: svc}
 				}
 			}
 		}

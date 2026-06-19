@@ -394,7 +394,8 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 				continue
 			}
 			prefix, _ := netip.ParsePrefix(rawPrefix)
-			meta, hasMeta := prefixMeta[rawPrefix]
+			metaKey := rawPrefix + ":" + strconv.FormatInt(user.ID, 10)
+			meta, hasMeta := prefixMeta[metaKey]
 			comms := map[string]uint32{}
 			if hasMeta {
 				comms = modeCommunities[meta.ModeID]
