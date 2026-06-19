@@ -13,6 +13,11 @@ import (
 // Used for passive (accepted) connections.
 // Skips loopback addresses because many kernels (including WSL2) do not
 // support TCP MD5 on loopback.
+//
+// NOTE: Prefer applyListenerMD5 for passive connections — it sets MD5 on the
+// listener socket before the TCP handshake, which is the correct timing per
+// RFC 2385. Setting MD5 on an already-accepted socket is too late for the
+// kernel to enforce during the handshake.
 func setTCPMD5OnConn(conn net.Conn, addr netip.Addr, password string) error {
 	if password == "" || addr.IsLoopback() {
 		return nil
@@ -35,6 +40,88 @@ func setTCPMD5OnConn(conn net.Conn, addr netip.Addr, password string) error {
 		return fmt.Errorf("tcp md5: control: %w", ctrlErr)
 	}
 	return setErr
+}
+
+// applyListenerMD5 sets TCP MD5 keys on the listener socket for all configured
+// peers that have passwords. This must be called before accepting connections
+// so the kernel enforces MD5 during the TCP handshake (RFC 2385).
+func applyListenerMD5(listener net.Listener, peers []PeerConfig) error {
+	sc, ok := listener.(syscall.Conn)
+	if !ok {
+		return fmt.Errorf("tcp md5: listener is not syscall.Conn")
+	}
+	rawConn, err := sc.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("tcp md5: listener syscall conn: %w", err)
+	}
+
+	var firstErr error
+	ctrlErr := rawConn.Control(func(fd uintptr) {
+		fdInt := int(fd)
+		for _, pc := range peers {
+			if pc.Password == "" || pc.Address.IsLoopback() {
+				continue
+			}
+			if err := setTCPMD5OnFd(fdInt, pc.Address, pc.Password); err != nil {
+				firstErr = fmt.Errorf("tcp md5 set on %s: %w", pc.Address, err)
+				return
+			}
+		}
+	})
+	if ctrlErr != nil {
+		return fmt.Errorf("tcp md5: listener control: %w", ctrlErr)
+	}
+	return firstErr
+}
+
+// clearTCPMD5OnFd removes a TCP MD5 signature for the given address from a
+// socket. On Linux, calling SetsockoptTCPMD5Sig with a zero-length key
+// deletes the MD5 entry from the kernel's key database.
+func clearTCPMD5OnFd(fd int, addr netip.Addr) error {
+	if addr.IsLoopback() {
+		return nil
+	}
+	af, err := getsocketFamily(fd)
+	if err != nil {
+		return fmt.Errorf("tcp md5 clear: getsockname: %w", err)
+	}
+	sa := buildSockaddrStorage(addr, af)
+	sig := unix.TCPMD5Sig{
+		Addr:   sa,
+		Keylen: 0,
+	}
+	return unix.SetsockoptTCPMD5Sig(fd, unix.IPPROTO_TCP, unix.TCP_MD5SIG, &sig)
+}
+
+// clearListenerMD5 removes TCP MD5 keys from the listener socket for the
+// given peers (those with passwords set). Used when peer configs change to
+// remove keys for peers that are being removed or whose passwords changed.
+func clearListenerMD5(listener net.Listener, peers []PeerConfig) error {
+	sc, ok := listener.(syscall.Conn)
+	if !ok {
+		return nil // not a syscall.Conn, nothing to clear
+	}
+	rawConn, err := sc.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	ctrlErr := rawConn.Control(func(fd uintptr) {
+		fdInt := int(fd)
+		for _, pc := range peers {
+			if pc.Password == "" || pc.Address.IsLoopback() {
+				continue
+			}
+			if err := clearTCPMD5OnFd(fdInt, pc.Address); err != nil {
+				firstErr = err
+				return
+			}
+		}
+	})
+	if ctrlErr != nil {
+		return ctrlErr
+	}
+	return firstErr
 }
 
 // setTCPMD5OnFd sets the TCP MD5 signature option on a raw file descriptor.

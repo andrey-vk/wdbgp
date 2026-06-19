@@ -69,6 +69,13 @@ func (s *Speaker) Start(ctx context.Context) error {
 		}
 		s.listener = l
 
+		// Set TCP MD5 on listener BEFORE accepting connections so the
+		// kernel enforces MD5 during the TCP handshake (RFC 2385).
+		if err := applyListenerMD5(s.listener, s.peerConfigs); err != nil {
+			s.logger.Error("tcp md5 on listener failed", "error", err)
+			// Continue — MD5 is optional, connections still work without it.
+		}
+
 		ctx, s.cancel = context.WithCancel(ctx)
 		go s.acceptLoop(ctx)
 	}
@@ -104,6 +111,8 @@ func (s *Speaker) SetPeers(peers []PeerConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	oldConfigs := s.peerConfigs
+
 	newSet := make(map[string]PeerConfig, len(peers))
 	for _, pc := range peers {
 		key := fmt.Sprintf("%s:%d", pc.Address.String(), pc.ASN)
@@ -136,6 +145,15 @@ func (s *Speaker) SetPeers(peers []PeerConfig) {
 	}
 
 	s.peerConfigs = peers
+
+	// Refresh listener MD5: clear keys from old configs, set keys from new configs.
+	// This ensures MD5 is applied to incoming connections before the TCP handshake.
+	if s.listener != nil {
+		_ = clearListenerMD5(s.listener, oldConfigs)
+		if err := applyListenerMD5(s.listener, peers); err != nil {
+			s.logger.Error("tcp md5 refresh on listener failed", "error", err)
+		}
+	}
 }
 
 // PeerStates returns the BGP state for each configured peer.
@@ -213,26 +231,6 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
 	addr := remoteAddr.Addr()
 
-	// Set TCP MD5 before reading OPEN when exactly one configured peer
-	// exists at this address (no ambiguity about which password to use).
-	s.mu.Lock()
-	var matchCount int
-	var matchPassword string
-	for _, pc := range s.peerConfigs {
-		if pc.Address == addr {
-			matchCount++
-			matchPassword = pc.Password
-		}
-	}
-	s.mu.Unlock()
-	if matchCount == 1 && matchPassword != "" {
-		if err := setTCPMD5OnConn(conn, addr, matchPassword); err != nil {
-			s.logger.Error("tcp md5 set failed on accept", "addr", addr, "error", err)
-			conn.Close()
-			return
-		}
-	}
-
 	// Read OPEN message to get the remote ASN
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	msg, err := ReadMessage(conn)
@@ -267,17 +265,8 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 		return
 	}
 
-	// Set TCP MD5 on the accepted socket AFTER identifying the correct peer,
-	// so that same-IP peers with different passwords get the right key.
-	// MD5 is skipped on loopback addresses (kernel limitation).
-	if pw := peer.PeerConfig().Password; pw != "" {
-		if err := setTCPMD5OnConn(conn, addr, pw); err != nil {
-			s.logger.Error("tcp md5 set failed on accept", "addr", addr, "error", err)
-			conn.Close()
-			return
-		}
-	}
-
-	// Hand over connection with pre-read OPEN message
+	// Hand over connection with pre-read OPEN message.
+	// TCP MD5 authentication is handled by the kernel on the listener
+	// socket (RFC 2385), set via applyListenerMD5 before accepting.
 	peer.AcceptWithOpen(conn, open)
 }
