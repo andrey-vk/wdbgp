@@ -1030,6 +1030,247 @@ func (fn testRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, er
 	return fn(request)
 }
 
+// =============================================================================
+// Peer uniqueness tests (Part A)
+// =============================================================================
+
+func TestAddUserRejectsSameIPAndSameASN(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	_, err = db.AddUser(ctx, store.User{
+		Name: "first", PeerIP: "10.0.1.1", PeerASN: 65100, Enabled: true,
+		Networks: []string{"192.168.1.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	form := url.Values{
+		"name":     {"second"},
+		"peer_ip":  {"10.0.1.1"},
+		"peer_asn": {"65100"},
+		"networks": {"192.168.2.0/24"},
+		"enabled":  {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for duplicate IP+ASN, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "already exists") {
+		t.Fatalf("response should mention already exists: %s", response.Body.String())
+	}
+}
+
+func TestAddUserAcceptsUniqueIPWithoutPassword(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	form := url.Values{
+		"name":     {"unique-peer"},
+		"peer_ip":  {"10.0.2.1"},
+		"peer_asn": {"65100"},
+		"networks": {"192.168.3.0/24"},
+		"enabled":  {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect for unique IP without password, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+}
+
+func TestAddUserRequiresPasswordForDynamicPeers(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Without password — should reject
+	form := url.Values{
+		"name":     {"dynamic-no-pw"},
+		"peer_ip":  {"0.0.0.0"},
+		"peer_asn": {"65100"},
+		"networks": {"0.0.0.0/0"},
+		"enabled":  {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for dynamic peer without password, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "dynamic") || !strings.Contains(response.Body.String(), "password") {
+		t.Fatalf("response should mention dynamic peer requiring password: %s", response.Body.String())
+	}
+
+	// With password — should succeed
+	form.Set("bgp_password", "secret123")
+	request = httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect for dynamic peer with password, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+}
+
+func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	_, err = db.AddUser(ctx, store.User{
+		Name: "first-dynamic", PeerIP: "0.0.0.0", PeerASN: 65100,
+		BGPPassword: "secret1", Enabled: true,
+		Networks: []string{"0.0.0.0/0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	form := url.Values{
+		"name":         {"second-dynamic"},
+		"peer_ip":      {"0.0.0.0"},
+		"peer_asn":     {"65100"},
+		"bgp_password": {"secret2"},
+		"networks":     {"0.0.0.0/0"},
+		"enabled":      {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for duplicate dynamic peer ASN, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	// Step A (same IP + same ASN) fires before Step B (globally unique ASN for dynamic).
+	// For 0.0.0.0, Step A catches it because the same IP (0.0.0.0) and same ASN (65100) are duplicated.
+	if !strings.Contains(response.Body.String(), "already exists") {
+		t.Fatalf("response should mention already exists: %s", response.Body.String())
+	}
+}
+
+func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	_, err = db.AddUser(ctx, store.User{
+		Name: "first-shared", PeerIP: "10.0.3.1", PeerASN: 65101, Enabled: true,
+		Networks: []string{"192.168.10.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.RequirePasswordForNonUniqueIP = true
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	form := url.Values{
+		"name":     {"second-shared"},
+		"peer_ip":  {"10.0.3.1"},
+		"peer_asn": {"65102"},
+		"networks": {"192.168.11.0/24"},
+		"enabled":  {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for shared IP without password, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "password required") {
+		t.Fatalf("response should mention password required: %s", response.Body.String())
+	}
+}
+
+func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	_, err = db.AddUser(ctx, store.User{
+		Name: "first-shared-pw", PeerIP: "10.0.4.1", PeerASN: 65101, Enabled: true,
+		Networks: []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	form := url.Values{
+		"name":         {"second-shared-pw"},
+		"peer_ip":      {"10.0.4.1"},
+		"peer_asn":     {"65102"},
+		"bgp_password": {"shared-secret"},
+		"networks":     {"192.168.21.0/24"},
+		"enabled":      {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect for shared IP with password, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+}
+
 func TestStatusEndpoint(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "status.sqlite3"))
 	if err != nil {

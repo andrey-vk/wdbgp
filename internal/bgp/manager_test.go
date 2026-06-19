@@ -122,6 +122,103 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Community export filter tests (Part B)
+// =============================================================================
+
+func TestBuildRouteHasUserCommunityButNotOtherUser(t *testing.T) {
+	manager := NewManager(config.Config{
+		LocalASN: 64512, LocalAddressV4: "172.16.0.1",
+	}, nil)
+	prefix := netip.MustParsePrefix("8.8.8.0/24")
+	comms := map[string]uint32{"cat": 10000, "cat|svc": 10001}
+
+	// Build route for user A (ID=1)
+	routeA, err := manager.buildRoute(prefix, store.User{ID: 1}, "cat", "svc", comms)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should have 3 communities: user A's ID, category, service
+	if len(routeA.Communities) != 3 {
+		t.Fatalf("expected 3 communities, got %d: %#v", len(routeA.Communities), routeA.Communities)
+	}
+
+	// Verify user A's community is present
+	hasUserA := false
+	hasUserB := false
+	for _, c := range routeA.Communities {
+		if c.GlobalAdmin == 64512 && c.LocalData1 == 1 && c.LocalData2 == 0 {
+			hasUserA = true
+		}
+		if c.GlobalAdmin == 64512 && c.LocalData1 == 2 && c.LocalData2 == 0 {
+			hasUserB = true
+		}
+	}
+	if !hasUserA {
+		t.Fatalf("route for user A missing user A's community: %#v", routeA.Communities)
+	}
+	if hasUserB {
+		t.Fatalf("route for user A should NOT have user B's community: %#v", routeA.Communities)
+	}
+}
+
+func TestBuildRouteIncludesCategoryAndServiceCommunities(t *testing.T) {
+	manager := NewManager(config.Config{
+		LocalASN: 64512, LocalAddressV4: "172.16.0.1",
+	}, nil)
+	prefix := netip.MustParsePrefix("149.154.160.0/20")
+	comms := map[string]uint32{"Messengers": 20000, "Messengers|Telegram": 20001}
+
+	route, err := manager.buildRoute(prefix, store.User{ID: 5}, "Messengers", "Telegram", comms)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(route.Communities) != 3 {
+		t.Fatalf("expected 3 communities, got %d: %#v", len(route.Communities), route.Communities)
+	}
+
+	var catFound, svcFound bool
+	for _, c := range route.Communities {
+		if c.LocalData1 == 0 && c.LocalData2 == 20000 {
+			catFound = true
+		}
+		if c.LocalData1 == 0 && c.LocalData2 == 20001 {
+			svcFound = true
+		}
+	}
+	if !catFound {
+		t.Fatalf("category community 20000 not found: %#v", route.Communities)
+	}
+	if !svcFound {
+		t.Fatalf("service community 20001 not found: %#v", route.Communities)
+	}
+}
+
+func TestBuildRouteSkipsCommunityForUnknownCategory(t *testing.T) {
+	manager := NewManager(config.Config{
+		LocalASN: 64512, LocalAddressV4: "172.16.0.1",
+	}, nil)
+	prefix := netip.MustParsePrefix("1.1.1.0/24")
+	// Category "Unknown" has no community in the map
+	comms := map[string]uint32{"Known": 10000}
+
+	route, err := manager.buildRoute(prefix, store.User{ID: 3}, "Unknown", "unknown-svc", comms)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should have only 1 community: user ID. Category/service are unknown so skipped.
+	if len(route.Communities) != 1 {
+		t.Fatalf("expected 1 community (user only), got %d: %#v", len(route.Communities), route.Communities)
+	}
+	if route.Communities[0].GlobalAdmin != 64512 || route.Communities[0].LocalData1 != 3 {
+		t.Fatalf("expected user community 64512:3:0, got %d:%d:%d",
+			route.Communities[0].GlobalAdmin, route.Communities[0].LocalData1, route.Communities[0].LocalData2)
+	}
+}
+
 func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
