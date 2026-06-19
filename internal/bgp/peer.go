@@ -86,7 +86,6 @@ func (p *Peer) connectAndRun() error {
 	p.connAttempt.Store(0)
 
 	// Connect to remote peer
-	dialer := net.Dialer{Timeout: 10 * time.Second}
 	port := int(p.cfg.Port)
 	if port < 0 {
 		// Port -1 means passive only (no active dialing — used for
@@ -100,6 +99,7 @@ func (p *Peer) connectAndRun() error {
 		port = 179
 	}
 	addr := net.JoinHostPort(p.cfg.Address.String(), strconv.Itoa(port))
+	dialer := net.Dialer{Timeout: 10 * time.Second}
 	// Bind to local address only if it's a loopback address (used for tests
 	// that need clients to appear from different 127.x.y.z addresses).
 	if p.spk.LocalAddr.IsValid() && p.spk.LocalAddr.IsLoopback() {
@@ -108,6 +108,13 @@ func (p *Peer) connectAndRun() error {
 	conn, err := dialer.Dial("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
+	}
+
+	// Set TCP MD5 after connect (not before, to avoid sending MD5 in the
+	// initial SYN to a listener that hasn't set MD5 yet). RFC 2385.
+	if err := setTCPMD5OnConn(conn, p.cfg.Address, p.cfg.Password); err != nil {
+		conn.Close()
+		return fmt.Errorf("tcp md5: %w", err)
 	}
 	p.conn = conn
 	defer conn.Close()
@@ -123,7 +130,6 @@ func (p *Peer) connectAndRun() error {
 		HoldTime:   90,
 		BGPID:      bgpID,
 		OptParmLen: 0,
-		Password:   p.cfg.Password,
 	}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		return fmt.Errorf("write open: %w", err)
@@ -144,12 +150,6 @@ func (p *Peer) connectAndRun() error {
 	if uint32(openIn.MyASN) != p.cfg.ASN {
 		p.sendNotification(conn, 2, 2, nil) // bad peer AS
 		return fmt.Errorf("peer ASN mismatch: got %d, want %d", openIn.MyASN, p.cfg.ASN)
-	}
-
-	// Validate remote password if client expects one
-	if p.cfg.Password != "" && openIn.Password != p.cfg.Password {
-		p.sendNotification(conn, 5, 0, nil)
-		return fmt.Errorf("peer password mismatch")
 	}
 
 	// Step 3: Send KEEPALIVE
@@ -349,18 +349,14 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		return
 	}
 
-	// Validate password if configured
-	if p.cfg.Password != "" && openIn.Password != p.cfg.Password {
-		p.sendNotification(conn, 5, 0, nil)
-		conn.Close()
-		return
-	}
+	// Password authentication is done at TCP level via TCP MD5 (RFC 2385),
+	// not in the OPEN message. No password validation needed here.
 
 	// Send OPEN
 	bgpID := p.spk.RouterID.As4()
 	var id [4]byte
 	copy(id[:], bgpID[:])
-	openOut := &OpenMessage{Version: 4, MyASN: uint16(p.spk.ASN), HoldTime: 90, BGPID: id, Password: p.cfg.Password}
+	openOut := &OpenMessage{Version: 4, MyASN: uint16(p.spk.ASN), HoldTime: 90, BGPID: id}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		p.logger.Error("accept: write open", "error", err)
 		conn.Close()

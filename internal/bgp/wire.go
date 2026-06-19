@@ -49,14 +49,14 @@ type Header struct {
 	Type   uint8
 }
 
-// OPEN message
+// OPEN message (RFC 4271 section 4.2). Password authentication is done
+// at the TCP level via TCP MD5 (RFC 2385), not in the OPEN message.
 type OpenMessage struct {
 	Version    uint8
 	MyASN      uint16
 	HoldTime   uint16
 	BGPID      [4]byte
 	OptParmLen uint8
-	Password   string // non-standard: carried in optional parameters
 }
 
 // UPDATE message
@@ -197,10 +197,8 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 	}
 	copy(o.BGPID[:], data[5:9])
 
-	// Parse password from optional parameter bytes
-	if o.OptParmLen > 0 && len(data) >= 10+int(o.OptParmLen) {
-		o.Password = string(data[10 : 10+int(o.OptParmLen)])
-	}
+	// Optional parameters are ignored (password auth is done at TCP level via TCP MD5).
+	// The OptParmLen field records the length but the body is not parsed further.
 
 	return o, nil
 }
@@ -266,16 +264,12 @@ func decodeNotification(data []byte) (*NotificationMessage, error) {
 
 // Serialize encodes the OPEN message to wire format including header.
 func (o *OpenMessage) Serialize() []byte {
-	pwBytes := []byte(o.Password)
-	body := make([]byte, 10+len(pwBytes))
+	body := make([]byte, 10)
 	body[0] = o.Version
 	binary.BigEndian.PutUint16(body[1:3], o.MyASN)
 	binary.BigEndian.PutUint16(body[3:5], o.HoldTime)
 	copy(body[5:9], o.BGPID[:])
-	body[9] = uint8(len(pwBytes))
-	if len(pwBytes) > 0 {
-		copy(body[10:], pwBytes)
-	}
+	body[9] = 0 // OptParmLen = 0 (no optional parameters)
 
 	return wrapMessage(MsgOpen, body)
 }

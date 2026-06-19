@@ -212,6 +212,16 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
 	addr := remoteAddr.Addr()
 
+	// Set TCP MD5 on the accepted socket as early as possible (before any
+	// data exchange). Look up the password by remote address.
+	if pw := s.passwordForAddr(addr); pw != "" {
+		if err := setTCPMD5OnConn(conn, addr, pw); err != nil {
+			s.logger.Error("tcp md5 set failed on accept", "addr", addr, "error", err)
+			conn.Close()
+			return
+		}
+	}
+
 	// Read OPEN message to get the remote ASN
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	msg, err := ReadMessage(conn)
@@ -245,4 +255,29 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 
 	// Hand over connection with pre-read OPEN message
 	peer.AcceptWithOpen(conn, open)
+}
+
+// passwordForAddr returns the MD5 password for a given remote address, or ""
+// if no configured peer with a password matches this address.
+func (s *Speaker) passwordForAddr(addr netip.Addr) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// First check for exact address match
+	for _, p := range s.peers {
+		cfg := p.PeerConfig()
+		if cfg.Address == addr && cfg.Password != "" {
+			return cfg.Password
+		}
+	}
+
+	// Fallback: dynamic peer (0.0.0.0) password
+	for _, p := range s.peers {
+		cfg := p.PeerConfig()
+		if cfg.Address.String() == "0.0.0.0" && cfg.Password != "" {
+			return cfg.Password
+		}
+	}
+
+	return ""
 }
