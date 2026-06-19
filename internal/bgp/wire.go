@@ -50,7 +50,8 @@ type Header struct {
 }
 
 // OPEN message (RFC 4271 section 4.2). Password authentication is done
-// at the TCP level via TCP MD5 (RFC 2385), not in the OPEN message.
+// at the TCP level via TCP MD5 (RFC 2385). The Password field is a fallback
+// for loopback connections where TCP MD5 is not enforced by the kernel.
 type OpenMessage struct {
 	Version    uint8
 	MyASN      uint16 // 2-byte ASN field (set to AS_TRANS=23456 when using 4-octet ASN capability)
@@ -58,6 +59,7 @@ type OpenMessage struct {
 	HoldTime   uint16
 	BGPID      [4]byte
 	OptParmLen uint8
+	Password   string // fallback auth for loopback (empty = none)
 }
 
 // UPDATE message
@@ -199,7 +201,8 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 	}
 	copy(o.BGPID[:], data[5:9])
 
-	// Parse optional parameters for Four-octet ASN Capability (RFC 6793).
+	// Parse optional parameters for Four-octet ASN Capability (RFC 6793)
+	// and password parameter (parameter type 1: opaque string).
 	if o.OptParmLen > 0 && len(data) >= 10+int(o.OptParmLen) {
 		opts := data[10 : 10+o.OptParmLen]
 		for len(opts) >= 2 {
@@ -217,6 +220,10 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 					// Four-octet ASN Capability
 					o.MyASN32 = binary.BigEndian.Uint32(paramData[2 : 2+capLen])
 				}
+			}
+			// Password parameter (type 1) — fallback for loopback
+			if paramType == 1 && paramLen > 0 {
+				o.Password = string(paramData)
 			}
 			opts = opts[2+paramLen:]
 		}
@@ -287,6 +294,8 @@ func decodeNotification(data []byte) (*NotificationMessage, error) {
 // Serialize encodes the OPEN message to wire format including header.
 // Includes the Four-octet ASN Capability (RFC 6793) to match the 4-byte
 // AS_PATH encoding used in UPDATE messages.
+// If Password is set, it is included as parameter type 1 (fallback auth
+// for loopback connections where TCP MD5 is not enforced).
 func (o *OpenMessage) Serialize() []byte {
 	// Build capability parameter for Four-octet ASN (RFC 6793)
 	// Parameter type: 2 (Capability)
@@ -301,9 +310,18 @@ func (o *OpenMessage) Serialize() []byte {
 	capParam[3] = 4    // Capability length: 4
 	binary.BigEndian.PutUint32(capParam[4:8], o.MyASN32)
 
+	// Build password parameter (type 1) if set
+	var pwParam []byte
+	if o.Password != "" {
+		pwParam = make([]byte, 2+len(o.Password))
+		pwParam[0] = 1 // Parameter type: password
+		pwParam[1] = uint8(len(o.Password))
+		copy(pwParam[2:], o.Password)
+	}
+
 	// 2-byte ASN field set to AS_TRANS (23456) per RFC 6793
 	// when four-octet ASN capability is used.
-	o.OptParmLen = uint8(len(capParam))
+	o.OptParmLen = uint8(len(capParam) + len(pwParam))
 	o.MyASN = 23456
 
 	body := make([]byte, 10+o.OptParmLen)
@@ -313,6 +331,9 @@ func (o *OpenMessage) Serialize() []byte {
 	copy(body[5:9], o.BGPID[:])
 	body[9] = o.OptParmLen
 	copy(body[10:], capParam)
+	if len(pwParam) > 0 {
+		copy(body[10+len(capParam):], pwParam)
+	}
 
 	return wrapMessage(MsgOpen, body)
 }

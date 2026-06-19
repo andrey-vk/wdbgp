@@ -11,8 +11,10 @@ import (
 
 // setTCPMD5OnConn sets the TCP MD5 signature on an already-connected socket.
 // Used for passive (accepted) connections.
+// Skips loopback addresses because many kernels (including WSL2) do not
+// support TCP MD5 on loopback.
 func setTCPMD5OnConn(conn net.Conn, addr netip.Addr, password string) error {
-	if password == "" {
+	if password == "" || addr.IsLoopback() {
 		return nil
 	}
 
@@ -36,7 +38,11 @@ func setTCPMD5OnConn(conn net.Conn, addr netip.Addr, password string) error {
 }
 
 // setTCPMD5OnFd sets the TCP MD5 signature option on a raw file descriptor.
+// Skips loopback addresses (see setTCPMD5OnConn).
 func setTCPMD5OnFd(fd int, addr netip.Addr, password string) error {
+	if password == "" || addr.IsLoopback() {
+		return nil
+	}
 	af, err := getsocketFamily(fd)
 	if err != nil {
 		return fmt.Errorf("tcp md5: getsockname: %w", err)

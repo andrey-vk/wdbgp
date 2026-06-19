@@ -138,6 +138,7 @@ func (p *Peer) connectAndRun() error {
 		MyASN32:  p.spk.ASN,
 		HoldTime: 90,
 		BGPID:    bgpID,
+		Password: p.cfg.Password, // fallback for loopback where TCP MD5 is not enforced
 	}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		return fmt.Errorf("write open: %w", err)
@@ -165,6 +166,14 @@ func (p *Peer) connectAndRun() error {
 		if remoteASN != p.cfg.ASN {
 			p.sendNotification(conn, 2, 2, nil) // bad peer AS
 			return fmt.Errorf("peer ASN mismatch: got %d, want %d", remoteASN, p.cfg.ASN)
+		}
+	}
+	// Validate remote password when loopback (TCP MD5 not enforced).
+	// On non-loopback, TCP MD5 handles authentication.
+	if p.cfg.Address.IsLoopback() && p.cfg.Password != "" {
+		if openIn.Password != p.cfg.Password {
+			p.sendNotification(conn, 5, 0, nil)
+			return fmt.Errorf("peer password mismatch")
 		}
 	}
 
@@ -391,14 +400,32 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		return
 	}
 
-	// Password authentication is done at TCP level via TCP MD5 (RFC 2385),
-	// not in the OPEN message. No password validation needed here.
+	// Password authentication:
+	//   - TCP MD5 (RFC 2385) is the primary mechanism, set on the socket.
+	//   - If TCP MD5 is not available (e.g., loopback), validate via the
+	//     Password field in the OPEN message as a fallback.
+	if p.cfg.Password != "" {
+		remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
+		remoteIP := remoteAddr.Addr()
+		if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
+			p.logger.Error("accept: tcp md5 set failed", "error", err)
+			conn.Close()
+			return
+		}
+		// Fallback: validate password from OPEN message when TCP MD5
+		// is skipped (e.g., on loopback where MD5 is not enforced).
+		if remoteIP.IsLoopback() && openIn.Password != p.cfg.Password {
+			p.sendNotification(conn, 5, 0, nil)
+			conn.Close()
+			return
+		}
+	}
 
 	// Send OPEN
 	bgpID := p.spk.RouterID.As4()
 	var id [4]byte
 	copy(id[:], bgpID[:])
-	openOut := &OpenMessage{Version: 4, MyASN32: p.spk.ASN, HoldTime: 90, BGPID: id}
+	openOut := &OpenMessage{Version: 4, MyASN32: p.spk.ASN, HoldTime: 90, BGPID: id, Password: p.cfg.Password}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		p.logger.Error("accept: write open", "error", err)
 		conn.Close()
