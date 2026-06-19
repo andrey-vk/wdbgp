@@ -100,9 +100,9 @@ func (p *Peer) connectAndRun() error {
 	}
 	addr := net.JoinHostPort(p.cfg.Address.String(), strconv.Itoa(port))
 	dialer := net.Dialer{Timeout: 10 * time.Second}
-	// Bind to local address only if it's a loopback address (used for tests
-	// that need clients to appear from different 127.x.y.z addresses).
-	if p.spk.LocalAddr.IsValid() && p.spk.LocalAddr.IsLoopback() {
+	// Bind to local address if one is configured (e.g., for multihomed hosts
+	// or tests that need clients to appear from specific source addresses).
+	if p.spk.LocalAddr.IsValid() {
 		dialer.LocalAddr = &net.TCPAddr{IP: net.IP(p.spk.LocalAddr.AsSlice())}
 	}
 	conn, err := dialer.Dial("tcp", addr)

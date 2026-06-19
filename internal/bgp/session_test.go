@@ -65,10 +65,9 @@ func startSpeakerAndClient(t *testing.T, serverASN uint32, serverPeer PeerConfig
 		Name:     "test-client",
 	}
 	clientPeer := NewPeer(clientCfg, SpeakerConfig{
-		ASN:       clientASN,
-		RouterID:  netip.MustParseAddr("192.0.2.3"),
-		Port:      0,
-		LocalAddr: netip.MustParseAddr("192.0.2.3"),
+		ASN:      clientASN,
+		RouterID: netip.MustParseAddr("192.0.2.3"),
+		Port:     0,
 	}, logger, clientRouteCB)
 
 	go clientPeer.Run()
@@ -157,7 +156,7 @@ func TestSameIPDifferentASNs(t *testing.T) {
 	client1 := NewPeer(PeerConfig{
 		ID: 10, Address: netip.MustParseAddr("127.0.0.1"), Port: port,
 		ASN: 64512, Name: "client-65001",
-	}, SpeakerConfig{ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.10"), LocalAddr: netip.MustParseAddr("192.0.2.10")}, logger, nil)
+	}, SpeakerConfig{ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.10")}, logger, nil)
 	go client1.Run()
 	t.Cleanup(func() { client1.Stop() })
 
@@ -165,7 +164,7 @@ func TestSameIPDifferentASNs(t *testing.T) {
 	client2 := NewPeer(PeerConfig{
 		ID: 20, Address: netip.MustParseAddr("127.0.0.1"), Port: port,
 		ASN: 64512, Name: "client-65002",
-	}, SpeakerConfig{ASN: 65002, RouterID: netip.MustParseAddr("192.0.2.20"), LocalAddr: netip.MustParseAddr("192.0.2.20")}, logger, nil)
+	}, SpeakerConfig{ASN: 65002, RouterID: netip.MustParseAddr("192.0.2.20")}, logger, nil)
 	go client2.Run()
 	t.Cleanup(func() { client2.Stop() })
 
@@ -410,7 +409,6 @@ func TestReconnect(t *testing.T) {
 	}
 	clientSpk := SpeakerConfig{
 		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
-		LocalAddr: netip.MustParseAddr("192.0.2.3"),
 	}
 
 	client := NewPeer(clientCfg, clientSpk, logger, nil)
@@ -481,9 +479,8 @@ func TestPasswordAuthWrong(t *testing.T) {
 		Name:     "test-client",
 	}
 	clientPeer := NewPeer(clientCfg, SpeakerConfig{
-		ASN:       65001,
-		RouterID:  netip.MustParseAddr("192.0.2.3"),
-		LocalAddr: netip.MustParseAddr("192.0.2.3"),
+		ASN:      65001,
+		RouterID: netip.MustParseAddr("192.0.2.3"),
 	}, logger, nil)
 
 	go clientPeer.Run()
@@ -613,7 +610,6 @@ func TestKeepaliveMaintainsSession(t *testing.T) {
 		ASN: 64512, Name: "keepalive-client",
 	}, SpeakerConfig{
 		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
-		LocalAddr: netip.MustParseAddr("192.0.2.3"),
 	}, logger, nil)
 	go client.Run()
 	t.Cleanup(func() { client.Stop() })
@@ -678,14 +674,14 @@ func TestRouteAnnouncementToMultiplePeers(t *testing.T) {
 	client1 := NewPeer(PeerConfig{
 		ID: 10, Address: netip.MustParseAddr("127.0.0.1"), Port: port,
 		ASN: 64512, Name: "client-65001",
-	}, SpeakerConfig{ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.10"), LocalAddr: netip.MustParseAddr("192.0.2.10")}, logger, cb65001)
+	}, SpeakerConfig{ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.10")}, logger, cb65001)
 	go client1.Run()
 	t.Cleanup(func() { client1.Stop() })
 
 	client2 := NewPeer(PeerConfig{
 		ID: 20, Address: netip.MustParseAddr("127.0.0.1"), Port: port,
 		ASN: 64512, Name: "client-65002",
-	}, SpeakerConfig{ASN: 65002, RouterID: netip.MustParseAddr("192.0.2.20"), LocalAddr: netip.MustParseAddr("192.0.2.20")}, logger, cb65002)
+	}, SpeakerConfig{ASN: 65002, RouterID: netip.MustParseAddr("192.0.2.20")}, logger, cb65002)
 	go client2.Run()
 	t.Cleanup(func() { client2.Stop() })
 
