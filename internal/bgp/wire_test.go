@@ -39,9 +39,9 @@ func TestEncodeDecodeOpen(t *testing.T) {
 	if decoded.BGPID != [4]byte{192, 0, 2, 1} {
 		t.Fatalf("bgp_id = %v, want {192, 0, 2, 1}", decoded.BGPID)
 	}
-	// OptParmLen now reflects capability parameter length
-	if decoded.OptParmLen != 8 {
-		t.Fatalf("opt_parm_len = %d, want 8", decoded.OptParmLen)
+	// OptParmLen now reflects capability parameter length (14: 2 header + 12 capability TLVs)
+	if decoded.OptParmLen != 14 {
+		t.Fatalf("opt_parm_len = %d, want 14", decoded.OptParmLen)
 	}
 }
 

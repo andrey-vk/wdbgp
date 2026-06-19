@@ -139,7 +139,12 @@ func (p *Peer) connectAndRun() error {
 		MyASN32:  p.spk.ASN,
 		HoldTime: 90,
 		BGPID:    bgpID,
-		Password: p.cfg.Password, // fallback for loopback where TCP MD5 is not enforced
+	}
+	// Only include Password in OPEN for loopback connections where TCP MD5
+	// is not enforced by the kernel. Real routers may reject unknown
+	// optional parameters, so this fallback is limited to loopback.
+	if p.cfg.Address.IsLoopback() {
+		openOut.Password = p.cfg.Password
 	}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		return fmt.Errorf("write open: %w", err)
@@ -432,7 +437,14 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	bgpID := p.spk.RouterID.As4()
 	var id [4]byte
 	copy(id[:], bgpID[:])
-	openOut := &OpenMessage{Version: 4, MyASN32: p.spk.ASN, HoldTime: 90, BGPID: id, Password: p.cfg.Password}
+	openOut := &OpenMessage{Version: 4, MyASN32: p.spk.ASN, HoldTime: 90, BGPID: id}
+	// Only include Password in OPEN for loopback connections.
+	if p.cfg.Password != "" {
+		remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
+		if remoteAddr.Addr().IsLoopback() {
+			openOut.Password = p.cfg.Password
+		}
+	}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		p.logger.Error("accept: write open", "error", err)
 		conn.Close()

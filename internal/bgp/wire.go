@@ -304,18 +304,24 @@ func decodeNotification(data []byte) (*NotificationMessage, error) {
 // If Password is set, it is included as parameter type 1 (fallback auth
 // for loopback connections where TCP MD5 is not enforced).
 func (o *OpenMessage) Serialize() []byte {
-	// Build capability parameter for Four-octet ASN (RFC 6793)
+	// Build capability parameter with two capabilities:
+	//   1. Four-octet ASN (RFC 6793): code 65, len 4
+	//   2. IPv6 unicast (RFC 4760): code 1, len 4 (AFI=2, SAFI=1)
 	// Parameter type: 2 (Capability)
-	// Parameter length: 6
-	//   Capability code: 65 (Four-octet ASN Capability)
-	//   Capability length: 4
-	//   Capability value: local ASN as 4 bytes
-	capParam := make([]byte, 8)
-	capParam[0] = 2    // Parameter type: Capability
-	capParam[1] = 6    // Parameter length: 2 + 4
-	capParam[2] = 65   // Capability code: Four-octet ASN
-	capParam[3] = 4    // Capability length: 4
+	capParam := make([]byte, 14)
+	capParam[0] = 2     // Parameter type: Capability
+	capParam[1] = 12    // Parameter length: 6 + 6 = 12
+	// Capability 1: Four-octet ASN
+	capParam[2] = 65    // Capability code: Four-octet ASN
+	capParam[3] = 4     // Capability length: 4
 	binary.BigEndian.PutUint32(capParam[4:8], o.MyASN32)
+	// Capability 2: Multiprotocol Extension for IPv6 unicast
+	capParam[8] = 1     // Capability code: Multiprotocol Extension
+	capParam[9] = 4     // Capability length: 4
+	capParam[10] = 0x00 // AFI high byte (IPv6=2)
+	capParam[11] = 0x02 // AFI low byte
+	capParam[12] = 0x00 // Reserved
+	capParam[13] = 0x01 // SAFI=1 (unicast)
 
 	// Build password parameter (type 1) if set
 	var pwParam []byte
@@ -435,9 +441,17 @@ func (a *ASPathAttribute) TypeCode() uint8 {
 }
 
 // Serialize encodes the AS_PATH path attribute value.
-// Uses 2-octet ASN format (AS_SEQUENCE, RFC 4271).
+// Uses 2-octet ASN format for ASN <= 65535, otherwise 4-octet (RFC 6793).
 func (a *ASPathAttribute) Serialize() []byte {
-	// AS_PATH segment: type=2 (AS_SEQUENCE), length=1, ASN as 2 bytes
+	if a.ASN > 65535 {
+		// 4-octet AS_SEQUENCE: type=2, length=1 (in ASNs), value=4 bytes
+		val := make([]byte, 6)
+		val[0] = 2 // AS_SEQUENCE
+		val[1] = 1 // one AS in segment
+		binary.BigEndian.PutUint32(val[2:6], a.ASN)
+		return encodePathAttribute(attrFlagTransitive, AttrASPath, val)
+	}
+	// 2-octet AS_SEQUENCE: type=2, length=1 (in ASNs), value=2 bytes
 	val := make([]byte, 4)
 	val[0] = 2 // AS_SEQUENCE
 	val[1] = 1 // one AS in segment
