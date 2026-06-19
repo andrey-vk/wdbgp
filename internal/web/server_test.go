@@ -64,7 +64,7 @@ func (f *fakeBGP) UpdatePeer(context.Context, store.User) error {
 	return nil
 }
 
-func (f *fakeBGP) DeletePeer(context.Context, string) error {
+func (f *fakeBGP) DeletePeer(context.Context, string, int64) error {
 	f.deletes++
 	return nil
 }

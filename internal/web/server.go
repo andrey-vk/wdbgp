@@ -35,7 +35,7 @@ type BGP interface {
 	PeerStates(context.Context) (map[string]string, error)
 	AddPeer(context.Context, store.User) error
 	UpdatePeer(context.Context, store.User) error
-	DeletePeer(context.Context, string) error
+	DeletePeer(context.Context, string, int64) error
 }
 
 type Server struct {
@@ -1658,7 +1658,7 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !user.Enabled {
-			err = s.bgp.DeletePeer(r.Context(), user.PeerIP)
+			err = s.bgp.DeletePeer(r.Context(), user.PeerIP, user.ID)
 		} else {
 			// Reload user to get correct BGPPassword preserved by store when field was empty.
 			user, err = s.store.User(r.Context(), id)
@@ -1728,7 +1728,7 @@ func (s *Server) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only delete peer if user exists (not already deleted)
 	if err == nil {
-		if err := s.bgp.DeletePeer(r.Context(), user.PeerIP); err != nil {
+		if err := s.bgp.DeletePeer(r.Context(), user.PeerIP, user.ID); err != nil {
 			s.internalError(w, r, err)
 			return
 		}

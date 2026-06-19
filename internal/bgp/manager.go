@@ -215,31 +215,34 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	return nil
 }
 
-func (m *Manager) DeletePeer(ctx context.Context, peerIP string) error {
+func (m *Manager) DeletePeer(ctx context.Context, peerIP string, userID int64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.speaker == nil {
 		return fmt.Errorf("BGP speaker is not running")
 	}
-	// Check if peer exists
-	found := false
-	for _, u := range m.peerConfigs {
-		if u.PeerIP == peerIP {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("peer %s does not exist", peerIP)
-	}
-	// Remove from configs
+	// Find exact peer by user ID (not just IP) to avoid deleting wrong
+	// same-IP different-ASN peer.
+	idx := -1
 	for i, u := range m.peerConfigs {
-		if u.PeerIP == peerIP {
-			m.peerConfigs = append(m.peerConfigs[:i], m.peerConfigs[i+1:]...)
+		if u.ID == userID {
+			idx = i
 			break
 		}
 	}
-	delete(m.peerRoutes, peerIP)
+	if idx < 0 {
+		return fmt.Errorf("peer %s with user ID %d does not exist", peerIP, userID)
+	}
+
+	removed := m.peerConfigs[idx]
+
+	// Remove from configs
+	m.peerConfigs = append(m.peerConfigs[:idx], m.peerConfigs[idx+1:]...)
+
+	// Clean up peer routes using ip:asn key (matches reconcileLocked key format).
+	peerKey := fmt.Sprintf("%s:%d", removed.PeerIP, removed.PeerASN)
+	delete(m.peerRoutes, peerKey)
+
 	m.speaker.SetPeers(m.buildPeerConfigs())
 	return nil
 }

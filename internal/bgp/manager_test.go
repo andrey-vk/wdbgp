@@ -336,6 +336,84 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	}
 }
 
+func TestDeletePeerHandlesSameIPDifferentASN(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Create two users at the same IP, different ASNs
+	userAID, err := s.AddUser(ctx, store.User{
+		Name: "userA", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userBID, err := s.AddUser(ctx, store.User{
+		Name: "userB", PeerIP: "192.0.2.2", PeerASN: 65002, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = userBID // used later in verification
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Simulate what reconcileLocked does: store routes with ip:asn keys
+	manager.mu.Lock()
+	manager.peerRoutes = map[string][]Route{
+		"192.0.2.2:65001": {{Prefix: netip.MustParsePrefix("8.8.8.0/24")}},
+		"192.0.2.2:65002": {{Prefix: netip.MustParsePrefix("8.8.4.0/24")}},
+	}
+	manager.mu.Unlock()
+
+	// Delete user A by peerIP + userID — must delete only userA, not userB
+	err = manager.DeletePeer(ctx, "192.0.2.2", userAID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	// Verify user A's peerRoutes are cleaned (using ip:asn key).
+	if _, ok := manager.peerRoutes["192.0.2.2:65001"]; ok {
+		t.Fatal("peerRoutes for user A (65001) should have been deleted")
+	}
+
+	// Verify user B's peerRoutes are preserved.
+	if _, ok := manager.peerRoutes["192.0.2.2:65002"]; !ok {
+		t.Fatal("peerRoutes for user B (65002) should still exist")
+	}
+
+	// Verify user A is removed from peerConfigs and user B remains.
+	foundA := false
+	foundB := false
+	for _, u := range manager.peerConfigs {
+		if u.ID == userAID {
+			foundA = true
+		}
+		if u.ID == userBID {
+			foundB = true
+		}
+	}
+	if foundA {
+		t.Fatal("user A should have been deleted from peerConfigs")
+	}
+	if !foundB {
+		t.Fatal("user B should still be in peerConfigs")
+	}
+}
+
 func routePrefixStrings(routes []Route) []string {
 	var out []string
 	for _, r := range routes {
