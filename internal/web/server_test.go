@@ -1288,7 +1288,7 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 
 	// Add a feed
-	err = db.AddFeedForModeAdapter(
+	_, err = db.AddFeedForModeAdapter(
 		context.Background(),
 		"test-feed",
 		"http://example.com/feed.json",

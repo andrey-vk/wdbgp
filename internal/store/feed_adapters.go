@@ -238,7 +238,7 @@ func (s *Store) ResetFeedAdapter(ctx context.Context, id int64) error {
 	}
 	result, err := s.DB.ExecContext(ctx, `
 UPDATE feed_adapters
-SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1
+SET name = ?, source = ?, allowed_hosts = ?, is_customized = 0, revision = revision + 1
 WHERE id = ?`,
 		adapter.name, normalizedBuiltInSource(adapter.source),
 		adapter.allowedHosts, id)

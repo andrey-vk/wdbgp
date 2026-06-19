@@ -287,9 +287,16 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	if err != nil {
 		return adapter.Revision, err
 	}
-	// Generate communities for newly added categories/services.
-	if _, genErr := s.Store.GenerateCommunities(ctx, feed.ModeID); genErr != nil {
-		logger.Warn("failed to generate communities after sync", "mode_id", feed.ModeID, "error", genErr)
+	// Generate communities for newly added categories/services across ALL modes the feed belongs to.
+	modeIDs, modeErr := s.Store.FeedModes(ctx, feed.ID)
+	if modeErr != nil {
+		logger.Warn("failed to get feed modes for community gen", "feed_id", feed.ID, "error", modeErr)
+	} else {
+		for _, mid := range modeIDs {
+			if _, genErr := s.Store.GenerateCommunities(ctx, mid); genErr != nil {
+				logger.Warn("failed to generate communities after sync", "mode_id", mid, "error", genErr)
+			}
+		}
 	}
 	return adapter.Revision, nil
 }

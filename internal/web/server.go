@@ -999,6 +999,10 @@ func (s *Server) modeFeedToggle(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_ = s.store.AddFeedToMode(r.Context(), modeID, feedID)
 	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		s.internalError(w, r, err)
+		return
+	}
 	http.Redirect(w, r, fmt.Sprintf("/admin/mode/%d", modeID), http.StatusSeeOther)
 }
 
@@ -1008,21 +1012,16 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.store.AddFeedForModeAdapter(
-		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data); err != nil {
+	feedID, err := s.store.AddFeedForModeAdapter(
+		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// Get the feed ID (last inserted) and set mode links
-	feeds, _ := s.store.Feeds(r.Context(), false)
-	var lastID int64
-	for _, f := range feeds {
-		if f.ID > lastID {
-			lastID = f.ID
+	if feedID > 0 {
+		if len(modeIDs) > 0 {
+			_ = s.store.SetFeedModes(r.Context(), feedID, modeIDs)
 		}
-	}
-	if lastID > 0 && len(modeIDs) > 0 {
-		_ = s.store.SetFeedModes(r.Context(), lastID, modeIDs)
 	}
 	http.Redirect(w, r, "/admin", http.StatusSeeOther)
 }
@@ -1331,9 +1330,7 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if len(modeIDs) > 0 {
-		_ = s.store.SetFeedModes(r.Context(), feed.ID, modeIDs)
-	}
+	_ = s.store.SetFeedModes(r.Context(), feed.ID, modeIDs)
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
 		s.internalError(w, r, err)
 		return
@@ -1389,7 +1386,9 @@ func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
 		(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
 		return store.Feed{}, nil, fmt.Errorf("feed URL must be an absolute HTTP or HTTPS URL")
 	}
-	// Parse mode_ids from checkboxes; fallback to catalog_mode_id if no checkboxes
+	// Parse mode_ids from checkboxes; only use catalog_mode_id as fallback
+	// when present. If neither is in the form, return empty (admin wants to
+	// unassign all modes).
 	var modeIDs []int64
 	if r.Form["mode_ids"] != nil {
 		for _, raw := range r.Form["mode_ids"] {
@@ -1398,7 +1397,7 @@ func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
 			}
 		}
 	}
-	if len(modeIDs) == 0 {
+	if len(modeIDs) == 0 && r.Form.Has("catalog_mode_id") {
 		modeID, err := formModeID(r, store.DefaultCatalogModeID)
 		if err != nil {
 			return store.Feed{}, nil, err
@@ -1416,8 +1415,12 @@ func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
 	if data != "" && !json.Valid([]byte(data)) {
 		return store.Feed{}, nil, fmt.Errorf("feed data must be valid JSON")
 	}
+	modeID := int64(0)
+	if len(modeIDs) > 0 {
+		modeID = modeIDs[0]
+	}
 	return store.Feed{
-		ID: id, Name: name, URL: rawURL, ModeID: modeIDs[0], AdapterID: adapterID,
+		ID: id, Name: name, URL: rawURL, ModeID: modeID, AdapterID: adapterID,
 		Enabled:      r.Form.Has("enabled"),
 		SyncInterval: formInt(r, "sync_interval"),
 		Data:         data,
@@ -1615,6 +1618,13 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		// Reload stored password if not clearing and field is empty
+		if user.BGPPassword == "" && !clearPassword {
+			current, _ := s.store.User(r.Context(), id)
+			if current.ID != 0 {
+				user.BGPPassword = current.BGPPassword
+			}
 		}
 		// Validate peer uniqueness (three-step), excluding self
 		if err := s.validatePeerUniqueness(r.Context(), user, id); err != nil {

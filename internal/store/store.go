@@ -2218,7 +2218,8 @@ func (s *Store) AddFeedForMode(
 	enabled bool,
 	syncInterval int,
 ) error {
-	return s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval, "")
+	_, err := s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval, "")
+	return err
 }
 
 func (s *Store) AddFeedForModeAdapter(
@@ -2230,15 +2231,16 @@ func (s *Store) AddFeedForModeAdapter(
 	enabled bool,
 	syncInterval int,
 	data string,
-) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
+) (int64, error) {
+	var feedID int64
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx,
 			"INSERT INTO feeds(name, url, adapter_id, enabled, sync_interval, data) VALUES (?, ?, ?, ?, ?, ?)",
 			name, url, adapterID, enabled, syncInterval, data)
 		if err != nil {
 			return err
 		}
-		feedID, err := result.LastInsertId()
+		feedID, err = result.LastInsertId()
 		if err != nil {
 			return err
 		}
@@ -2249,6 +2251,7 @@ func (s *Store) AddFeedForModeAdapter(
 		}
 		return err
 	})
+	return feedID, err
 }
 
 func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {

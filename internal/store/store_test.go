@@ -1693,7 +1693,7 @@ func TestMigrationReopenPreservesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddFeedForModeAdapter(
+	if _, err := s.AddFeedForModeAdapter(
 		ctx, "persist-feed", "https://example.test/persist", 1, 1, true, 0, ""); err != nil {
 		t.Fatal(err)
 	}
