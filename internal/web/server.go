@@ -130,6 +130,7 @@ type userEditView struct {
 	User        store.User
 	Selection   selectionView
 	Credentials []store.UserCredential
+	Error       string
 }
 
 type filterView struct {
@@ -2156,6 +2157,20 @@ func compileTemplates() map[locale]map[string]*template.Template {
 		result[lang] = make(map[string]*template.Template, len(bodies)+len(fragments)+1)
 		funcs := template.FuncMap{
 			"join": strings.Join,
+			"dict": func(values ...any) (map[string]any, error) {
+				if len(values)%2 != 0 {
+					return nil, fmt.Errorf("dict requires even number of arguments")
+				}
+				m := make(map[string]any, len(values)/2)
+				for i := 0; i < len(values); i += 2 {
+					key, ok := values[i].(string)
+					if !ok {
+						return nil, fmt.Errorf("dict keys must be strings")
+					}
+					m[key] = values[i+1]
+				}
+				return m, nil
+			},
 			"state": func(states map[string]string, peer string) string {
 				if value := states[peer]; value != "" {
 					return value

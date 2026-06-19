@@ -191,6 +191,9 @@ var translations = map[locale]map[string]string{
 		"users.peer_asn":             "Peer ASN",
 		"users.next_hop":             "Announcement next hop",
 		"users.bgp_password":         "BGP MD5 password",
+		"users.bgp_password_placeholder": "Leave empty to keep current password",
+		"users.bgp_section":         "BGP",
+		"users.access_section":      "Access",
 		"users.web_auth":              "Web auth",
 		"users.web_auth_network":      "Network (IP only)",
 		"users.web_auth_login":        "Login (credentials)",
@@ -239,6 +242,19 @@ var translations = map[locale]map[string]string{
 		"stats.feeds":                "Feeds enabled",
 		"stats.categories":           "Categories",
 		"stats.services":             "Services",
+
+		// Hint texts
+		"hints.feed_name":            "Short descriptive name for this feed",
+		"hints.feed_url":             "URL to fetch the prefix list from (HTTP or HTTPS)",
+		"hints.feed_sync_interval":   "Seconds between automatic syncs (0 = manual only)",
+		"hints.feed_data":            "JSON config string passed to the adapter script",
+		"hints.user_name":            "Display name for this BGP peer",
+		"hints.user_networks":        "Comma-separated CIDR blocks identifying this user on the web",
+		"hints.user_peer_ip":         "BGP neighbor IP address",
+		"hints.user_peer_asn":        "Autonomous System Number of the remote peer",
+		"hints.user_catalog_mode":    "Which catalog mode this user sees and selects from",
+		"hints.mode_name":            "Human-readable name for this catalog mode",
+		"hints.user_next_hop":        "Override the BGP next-hop address (optional, leave empty for auto)",
 
 		// Settings page
 		"settings.section_general":     "General",
@@ -503,6 +519,9 @@ var translations = map[locale]map[string]string{
 		"users.peer_asn":             "ASN peer",
 		"users.next_hop":             "Next hop для анонсов",
 		"users.bgp_password":         "BGP MD5 пароль",
+		"users.bgp_password_placeholder": "Оставьте пустым чтобы сохранить текущий пароль",
+		"users.bgp_section":         "BGP",
+		"users.access_section":      "Доступ",
 		"users.web_auth":              "Веб-аутентификация",
 		"users.web_auth_network":      "Сеть (только IP)",
 		"users.web_auth_login":        "Логин (учетные данные)",
@@ -551,6 +570,19 @@ var translations = map[locale]map[string]string{
 		"stats.feeds":                "Фидов активно",
 		"stats.categories":           "Категорий",
 		"stats.services":             "Сервисов",
+
+		// Hint texts
+		"hints.feed_name":            "Краткое название фида",
+		"hints.feed_url":             "URL для получения списка префиксов (HTTP или HTTPS)",
+		"hints.feed_sync_interval":   "Интервал автосинхронизации в секундах (0 = только вручную)",
+		"hints.feed_data":            "JSON-конфиг, передаваемый скрипту адаптера",
+		"hints.user_name":            "Отображаемое имя BGP-пира",
+		"hints.user_networks":        "CIDR-блоки пользователя через запятую",
+		"hints.user_peer_ip":         "IP-адрес BGP-соседа",
+		"hints.user_peer_asn":        "Номер автономной системы удалённого пира",
+		"hints.user_catalog_mode":    "Режим каталога, который видит пользователь",
+		"hints.mode_name":            "Человекочитаемое имя режима каталога",
+		"hints.user_next_hop":        "Переопределить BGP next-hop адрес (опционально, пусто = auto)",
 
 		// Settings page
 		"settings.section_general":     "Общие",

@@ -126,6 +126,12 @@ select:disabled,input:disabled{opacity:.5;cursor:not-allowed;background:var(--bg
 .card form + form{margin-top:1rem}
 `
 
+const sharedComponents = `{{define "error-message"}}{{if .}}<p class=error>{{.}}</p>{{end}}{{end}}
+{{define "section-header"}}<h3>{{.}}</h3>{{end}}
+{{define "back-link"}}<a href="{{.URL}}" class=back-link>← {{.Label}}</a>{{end}}
+{{define "checkbox-row"}}<label class=checkbox-row><input type=checkbox name="{{.Name}}" {{if .Checked}}checked{{end}} {{if .Disabled}}disabled{{end}}> {{.Label}}</label>{{if .Hint}}<p class=muted>{{.Hint}}</p>{{end}}{{end}}
+`
+
 const pageStart = `<!DOCTYPE html>
 <html lang="{{.Lang}}">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -321,24 +327,39 @@ updateSelectionCounts();
 
 const selectionTemplate = `{{with .Data}}` + selectionBody + `{{end}}`
 
-const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{with .Data}}
+const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}` + sharedComponents + `{{with .Data}}
 <header><h1>{{printf (tr "title.user") .User.Name}}</h1></header>
-<a href="/admin/users" class=back-link>← {{tr "nav.users"}}</a>
+{{template "back-link" dict "URL" "/admin/users" "Label" (tr "nav.users")}}
+{{template "error-message" .Error}}
 <div class=tab-bar>
   <button class="tab active" data-tab=settings>{{tr "user.settings"}}</button>
   <button class=tab data-tab=selection>{{tr "selection.heading"}}</button>
   <button class=tab data-tab=filters>{{tr "filters.heading"}}</button>
 </div>
 <div class="tab-content tab-settings">
-<section class=card><h2>{{tr "user.settings"}}</h2><form method=post action="{{if .User.ID}}/admin/user/{{.User.ID}}{{else}}/admin/user{{end}}">
+<section class=card>
+{{template "section-header" (tr "users.bgp_section")}}
+<form method=post action="{{if .User.ID}}/admin/user/{{.User.ID}}{{else}}/admin/user{{end}}">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
-<input type=hidden name=action value=settings><div class=grid>
-<label>{{tr "feeds.name"}} <input name=name value="{{.User.Name}}" required></label><label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
-<label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" required></label><label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn value="{{.User.PeerASN}}" required></label>
-<label>{{tr "users.next_hop"}} <input name=next_hop value="{{.User.NextHop}}"></label><label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{if .User.BGPPassword}}{{tr "user.password_set"}}{{else}}{{tr "user.password_not_set"}}{{end}}"></label></div>
+<input type=hidden name=action value=settings>
+<div class=form-grid>
+<label>{{tr "feeds.name"}} <input name=name value="{{.User.Name}}" required></label>
+<p class=muted>{{tr "hints.user_name"}}</p>
+<label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
+<p class=muted>{{tr "hints.user_networks"}}</p>
+<label>{{tr "users.peer_ip"}} <input name=peer_ip value="{{.User.PeerIP}}" required></label>
+<p class=muted>{{tr "hints.user_peer_ip"}}</p>
+<label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn value="{{.User.PeerASN}}" required></label>
+<p class=muted>{{tr "hints.user_peer_asn"}}</p>
+<label>{{tr "users.next_hop"}} <input name=next_hop value="{{.User.NextHop}}" placeholder="auto"></label>
+<p class=muted>{{tr "hints.user_next_hop"}}</p>
+<label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{tr "users.bgp_password_placeholder"}}"></label>
+</div>
 <label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Selection.Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.User.CatalogModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
-<label><input type=checkbox name=clear_bgp_password> {{tr "user.clear_password"}}</label>
-<label><input type=checkbox name=enabled {{if .User.Enabled}}checked{{end}}> {{tr "user.enabled"}}</label>
+<p class=muted>{{tr "hints.user_catalog_mode"}}</p>
+{{template "checkbox-row" dict "Name" "enabled" "Checked" .User.Enabled "Label" (tr "user.enabled")}}
+{{template "checkbox-row" dict "Name" "clear_bgp_password" "Label" (tr "user.clear_password")}}
+{{template "section-header" (tr "users.access_section")}}
 <label>{{tr "users.web_auth"}} <select name=web_auth>
 <option value=network {{if eq .User.WebAuth "network"}}selected{{end}}>{{tr "users.web_auth_network"}}</option>
 <option value=login {{if eq .User.WebAuth "login"}}selected{{end}}>{{tr "users.web_auth_login"}}</option>
@@ -360,9 +381,9 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}{{wi
 <label>{{tr "user.password"}} <input type=password name=cred_password_new></label>
 </div>
 </section>{{end}}
-<label><input type=checkbox name=locked {{if .User.SelectionLocked}}checked{{end}}> {{tr "user.lock_selection"}}</label>
-<label><input type=checkbox name=filter_editable {{if .User.FilterEditable}}checked{{end}}> {{tr "users.allow_filter_editing"}}</label>
-<label><input type=checkbox name=catalog_mode_editable {{if .User.CatalogEditable}}checked{{end}}> {{tr "users.allow_mode_editing"}}</label>
+{{template "checkbox-row" dict "Name" "locked" "Checked" .User.SelectionLocked "Label" (tr "user.lock_selection")}}
+{{template "checkbox-row" dict "Name" "filter_editable" "Checked" .User.FilterEditable "Label" (tr "users.allow_filter_editing")}}
+{{template "checkbox-row" dict "Name" "catalog_mode_editable" "Checked" .User.CatalogEditable "Label" (tr "users.allow_mode_editing")}}
 <input type=hidden name=filter_mode value="{{.User.FilterMode}}">
 <button class=primary>{{tr "user.save"}}</button></form>
 {{if .User.ID}}<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form>{{end}}</section></div>
@@ -766,7 +787,7 @@ const usersListTemplate = `{{with .Data}}
 <td><a href="/admin/user/{{.User.ID}}">{{.User.Name}}</a></td>
 <td><code>{{.Networks}}</code></td>
 <td>{{.User.CatalogModeName}}</td>
-<td><span class="status-dot {{if eq .PeerState "ESTABLISHED"}}up{{else}}down{{end}}" title="{{if eq .PeerState "ESTABLISHED"}}{{tr "bgp.established"}}{{else if eq .PeerState "UNKNOWN"}}{{tr "bgp.unknown"}}{{else}}{{.PeerState}}{{end}}"></span> <code>{{.User.PeerIP}}</code></td>
+<td><span class="status-dot {{if eq .PeerState "ESTABLISHED"}}up{{else}}down{{end}}" title="{{.PeerState}}"></span> <code>{{.User.PeerIP}}</code></td>
 <td>{{.User.PeerASN}}</td>
 <td>{{.User.WebAuth}}</td>
 <td>{{if .User.Enabled}}<span class=ok>enabled</span>{{else}}<span class=error>disabled</span>{{end}}</td>
@@ -878,15 +899,19 @@ const modeEditTemplate = `{{with .Data}}
 </div>
 {{end}}`
 
-const feedEditTemplate = `{{with .Data}}
+const feedEditTemplate = sharedComponents + `{{with .Data}}
 <a href="/admin/feeds" class=back-link>← {{tr "nav.feeds"}}</a>
 <h1>{{if .IsNew}}{{tr "feeds.add"}}{{else}}{{tr "feeds.edit"}}{{end}}</h1>
 <div class=card>
+{{template "section-header" (tr "feeds.edit")}}
 <form method=post action="{{if .IsNew}}/admin/feed{{else}}/admin/feed/{{.Feed.ID}}{{end}}">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <label>{{tr "feeds.name"}} <input name=name value="{{.Feed.Name}}" required></label>
-	<label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
+<p class=muted>{{tr "hints.feed_name"}}</p>
+<label>{{tr "feeds.url"}} <input name=url value="{{.Feed.URL}}" required></label>
+<p class=muted>{{tr "hints.feed_url"}}</p>
 <label>{{tr "feeds.data"}} <textarea name=data rows=4 placeholder='{"category": "Russia", "service": "geoip-ru"}' class=mono>{{.Feed.Data}}</textarea></label>
+<p class=muted>{{tr "hints.feed_data"}}</p>
 	<label>{{tr "catalog.modes"}}</label>
 	<div style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:8px">
 	{{range .Modes}}<label class=checkbox-row><input type=checkbox name=mode_ids value="{{.ID}}" {{if index $.Data.FeedModeIDs .ID}}checked{{end}}> {{.Name}}</label>{{end}}
@@ -898,6 +923,7 @@ const feedEditTemplate = `{{with .Data}}
 </select></label>
 </div>
 <label>{{tr "feeds.sync_interval"}} <input type=number name=sync_interval value="{{.Feed.SyncInterval}}" placeholder="{{tr "feeds.default_interval"}}"></label>
+<p class=muted>{{tr "hints.feed_sync_interval"}}</p>
 <div class=checkbox-row><label><input type=checkbox name=enabled {{if .Feed.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label></div>
 <button type=submit class=primary>{{tr "common.save"}}</button>
 </form>
