@@ -525,10 +525,12 @@ CREATE TABLE IF NOT EXISTS users_new (
     catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
     web_auth TEXT NOT NULL DEFAULT 'network'
 );
+-- Only insert if users_new is empty (idempotent: safe for retry after partial run)
 INSERT INTO users_new SELECT id, name, peer_ip, peer_asn, next_hop, bgp_password,
     selection_locked, enabled, filter_override_enabled, filter_editable,
     COALESCE(filter_mode, 'global'), catalog_mode_id, catalog_mode_editable,
-    COALESCE(web_auth, 'network') FROM users;
+    COALESCE(web_auth, 'network') FROM users
+WHERE NOT EXISTS (SELECT 1 FROM users_new LIMIT 1);
 DROP TABLE IF EXISTS users;
 ALTER TABLE users_new RENAME TO users;
 PRAGMA foreign_keys = ON;
@@ -698,6 +700,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if migration.Version <= len(applied) {
 			continue
 		}
+		// Run NoTxSQL BEFORE the transaction so that a failure does not
+		// leave the DB in a partial state with the version already committed.
+		// NoTxSQL must be idempotent so it is safe to re-run on retry.
+		if migration.NoTxSQL != "" {
+			if _, err := s.DB.ExecContext(ctx, migration.NoTxSQL); err != nil {
+				return fmt.Errorf("migration %d NoTxSQL (%s): %w", migration.Version, migration.Name, err)
+			}
+		}
 		tx, err := s.DB.BeginTx(ctx, nil)
 		if err != nil {
 			return err
@@ -717,12 +727,6 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		}
 		if err := tx.Commit(); err != nil {
 			return err
-		}
-		// Run NoTxSQL after the transaction commits.
-		if migration.NoTxSQL != "" {
-			if _, err := s.DB.ExecContext(ctx, migration.NoTxSQL); err != nil {
-				return fmt.Errorf("migration %d NoTxSQL (%s): %w", migration.Version, migration.Name, err)
-			}
 		}
 	}
 	return s.seedBuiltInAdapters(ctx)
