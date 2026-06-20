@@ -49,6 +49,15 @@ type Server struct {
 	loginLimiter  *rateLimiter
 	adminLimiter  *rateLimiter
 	startTime     time.Time
+	degraded      bool
+	degradedInfo  DegradedInfo
+}
+
+// DegradedInfo carries version mismatch details for the degraded-mode page.
+type DegradedInfo struct {
+	CurrentVersion int
+	ServerVersion  int
+	Reason         string // why degraded (e.g. "no backup found")
 }
 
 type categoryView struct {
@@ -226,13 +235,62 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	// Apply admin rate limiting to admin endpoints
 	handler = server.adminRateLimitMiddleware(handler)
 	handler = logging.HTTPMiddleware(handler)
-	
+	// Degraded mode: check before any routing
+	handler = server.degradedMiddleware(handler)
+
 	server.handler = handler
 	return server
 }
 
 func (s *Server) Handler() http.Handler {
 	return s.handler
+}
+
+// SetDegraded enables degraded mode with version mismatch info.
+func (s *Server) SetDegraded(info DegradedInfo) {
+	s.degraded = true
+	s.degradedInfo = info
+}
+
+// degradedMiddleware serves the degraded error page on all routes when
+// the database schema version doesn't match the server version.
+func (s *Server) degradedMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.degraded {
+			s.degradedHandler(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) degradedHandler(w http.ResponseWriter, r *http.Request) {
+	lang, persist := requestLocale(r, s.defaultLang)
+	if persist {
+		http.SetCookie(w, &http.Cookie{
+			Name: languageCookieName, Value: string(lang), Path: "/",
+			MaxAge: 365 * 24 * 60 * 60, SameSite: http.SameSiteLaxMode,
+		})
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusServiceUnavailable)
+
+	info := struct {
+		CurrentVersion int
+		ServerVersion  int
+		Reason         string
+		Lang           locale
+	}{
+		CurrentVersion: s.degradedInfo.CurrentVersion,
+		ServerVersion:  s.degradedInfo.ServerVersion,
+		Reason:         s.degradedInfo.Reason,
+		Lang:           lang,
+	}
+
+	if err := s.templates[lang]["degraded"].Execute(w, info); err != nil {
+		logger := logging.FromContext(r.Context())
+		logger.Error("failed to render degraded template", "error", err)
+	}
 }
 
 func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
@@ -2311,6 +2369,7 @@ func compileTemplates() map[locale]map[string]*template.Template {
 		"login":         loginTemplate,
 		"selection":     selectionTemplate,
 		"user-login":    userLoginTemplate,
+		"degraded":      degradedTemplate,
 	}
 	// Fragment templates (body only, no pageStart/pageEnd) for htmx and shell embedding
 	fragments := map[string]string{
@@ -3290,9 +3349,10 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	globalFilters, _ := s.store.GlobalRouteFilters(ctx)
 
 	s.renderAdmin(w, r, http.StatusOK, "Settings", "settings", map[string]any{
-		"Sections": sections,
-		"Saved":    r.URL.Query().Get("saved") == "1",
-		"AllowDynamicPeers": s.cfg.AllowDynamicPeers,
+		"Sections":           sections,
+		"Saved":              r.URL.Query().Get("saved") == "1",
+		"AllowDynamicPeers":  s.cfg.AllowDynamicPeers,
+		"AutoRestoreEnabled": s.cfg.AutoRestoreEnabled,
 		"GlobalFilters": globalFiltersView{
 			Allow: strings.Join(globalFilters.Allow, "\n"),
 			Deny:  strings.Join(globalFilters.Deny, "\n"),

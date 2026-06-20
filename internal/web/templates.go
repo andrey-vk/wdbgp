@@ -1025,6 +1025,18 @@ const settingsTemplate = `{{with .Data}}
   </div>
   </div>
 </div>
+<div class=setting-row x-data="{hint:false}">
+  <div class=setting-label><label for="s_auto_restore_enabled">{{tr "settings.auto_restore_enabled"}}</label>
+  <button type=button class="hint-btn" @click="hint=!hint" :aria-expanded="hint" aria-label="{{tr "settings.help"}}">?</button>
+  </div>
+  <div class=setting-field>
+  <label class=checkbox-row><input type=checkbox value="true" {{if .AutoRestoreEnabled}}checked{{end}} disabled title="{{tr "settings.auto_restore_enabled_hint"}}"> {{tr "settings.auto_restore_enabled"}}</label>
+  <div class=hint-popup x-show="hint" @click.away="hint=false" x-transition x-cloak>
+    <p>{{tr "settings.auto_restore_enabled_hint"}}</p>
+    <code>WDBGP_AUTO_RESTORE_ENABLED</code>
+  </div>
+  </div>
+</div>
 {{if .GlobalFilters}}
 <div class=section-head><h2>{{tr "settings.section_filters"}}</h2></div>
 <div style="grid-column:1/-1;padding:.5rem 0;border-bottom:1px solid var(--border)">
@@ -1039,3 +1051,10 @@ const settingsTemplate = `{{with .Data}}
 </div>
 </form>
 {{end}}`
+
+const degradedTemplate = `<h1>{{tr "title.db_mismatch"}}</h1>
+<section class=card>
+<p>{{printf (tr "error.db_too_new") .CurrentVersion .ServerVersion}}</p>
+{{if .Reason}}<p class=muted>{{.Reason}}</p>{{end}}
+<p class=muted>{{tr "error.db_too_new_hint"}}</p>
+</section>`

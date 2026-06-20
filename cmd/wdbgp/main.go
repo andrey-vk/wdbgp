@@ -75,6 +75,10 @@ func run() error {
 }
 
 func serve(cfg config.Config, db *store.Store) error {
+	if db.Degraded {
+		return serveDegraded(cfg, db)
+	}
+
 	if err := cfg.ValidateServe(); err != nil {
 		return err
 	}
@@ -116,6 +120,50 @@ func serve(cfg config.Config, db *store.Store) error {
 			"address", cfg.ListenAddress(),
 			"bgp_asn", cfg.LocalASN,
 			"bgp_port", cfg.BGPListenPort,
+		)
+		serverErrors <- httpServer.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		logging.Info("shutdown signal received")
+	case err := <-serverErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	}
+
+	logging.Info("shutting down HTTP server")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	return httpServer.Shutdown(shutdownCtx)
+}
+
+// serveDegraded starts an HTTP server that only shows the DB version mismatch page.
+func serveDegraded(cfg config.Config, db *store.Store) error {
+	logging.Warn("starting in degraded mode",
+		"db_version", db.DBVersion, "server_version", db.ServerVersion)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	srv := web.New(cfg, db, nil, nil)
+	srv.SetDegraded(web.DegradedInfo{
+		CurrentVersion: db.DBVersion,
+		ServerVersion:  db.ServerVersion,
+		Reason:         db.DegradedReason,
+	})
+
+	httpServer := &http.Server{
+		Addr:              cfg.ListenAddress(),
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	serverErrors := make(chan error, 1)
+	go func() {
+		logging.Info("HTTP server starting in degraded mode",
+			"address", cfg.ListenAddress(),
 		)
 		serverErrors <- httpServer.ListenAndServe()
 	}()

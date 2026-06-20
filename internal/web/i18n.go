@@ -305,6 +305,7 @@ var translations = map[locale]map[string]string{
 		"settings.host":                "HTTP host",
 		"settings.port":                "HTTP port",
 		"settings.allow_dynamic_peers": "Allow dynamic peers",
+		"settings.auto_restore_enabled": "Auto-restore from backup",
 
 		"settings.default_language_hint": "Default interface language for new visitors. Environment variable: WDBGP_DEFAULT_LANGUAGE.",
 		"settings.session_max_age_hint": "Maximum session lifetime in seconds (default 28800 = 8 hours). Environment variable: WDBGP_SESSION_MAX_AGE.",
@@ -334,6 +335,7 @@ var translations = map[locale]map[string]string{
 		"settings.host_hint": "IP address or hostname the HTTP server binds to. Environment variable: WDBGP_HOST.",
 		"settings.port_hint": "TCP port the HTTP server listens on. Environment variable: WDBGP_PORT.",
 		"settings.allow_dynamic_peers_hint": "Controlled by WDBGP_ALLOW_DYNAMIC_PEERS. Cannot be changed via UI.",
+		"settings.auto_restore_enabled_hint": "Automatically restore database from a matching backup when the DB schema is newer than the server. Controlled by WDBGP_AUTO_RESTORE_ENABLED. Cannot be changed via UI.",
 
 		"settings.default":            "Default",
 		"settings.saved":              "Settings saved.",
@@ -365,6 +367,11 @@ var translations = map[locale]map[string]string{
 		"settings.adapter_backup_max": "Max backup copies per adapter",
 		"settings.adapter_backup_max_hint": "Maximum backup files kept per adapter. Oldest are deleted first. 0 = unlimited. Environment variable: WDBGP_ADAPTER_BACKUP_MAX.",
 		"settings.adapter_backup_max_placeholder": "Default: 10",
+
+		"error.db_too_new":     "Database schema version %d is newer than server version %d.",
+		"error.db_too_new_hint": "Set WDBGP_AUTO_RESTORE_ENABLED=true to auto-restore from a backup.",
+		"error.db_no_backup":    "Auto-restore enabled but no matching backup found.",
+		"title.db_mismatch":     "Database Version Mismatch",
 	},
 	localeRussian: {
 		"language.label":             "Язык",
@@ -646,6 +653,7 @@ var translations = map[locale]map[string]string{
 		"settings.host":                "HTTP хост",
 		"settings.port":                "HTTP порт",
 		"settings.allow_dynamic_peers": "Разрешить динамические пиры",
+		"settings.auto_restore_enabled": "Автовосстановление из бэкапа",
 
 		"settings.default_language_hint": "Язык интерфейса по умолчанию для новых посетителей. Переменная окружения: WDBGP_DEFAULT_LANGUAGE.",
 		"settings.session_max_age_hint": "Максимальное время жизни сессии в секундах (по умолчанию 28800 = 8 часов). Переменная окружения: WDBGP_SESSION_MAX_AGE.",
@@ -675,6 +683,7 @@ var translations = map[locale]map[string]string{
 		"settings.host_hint": "IP-адрес или имя хоста, к которому привязывается HTTP-сервер. Переменная окружения: WDBGP_HOST.",
 		"settings.port_hint": "TCP-порт, на котором слушает HTTP-сервер. Переменная окружения: WDBGP_PORT.",
 		"settings.allow_dynamic_peers_hint": "Управляется через WDBGP_ALLOW_DYNAMIC_PEERS. Нельзя изменить через интерфейс.",
+		"settings.auto_restore_enabled_hint": "Автоматически восстанавливать базу данных из подходящего бэкапа, если схема БД новее сервера. Управляется через WDBGP_AUTO_RESTORE_ENABLED. Нельзя изменить через интерфейс.",
 
 		"settings.default":            "По умолчанию",
 		"settings.saved":              "Настройки сохранены.",
@@ -706,6 +715,11 @@ var translations = map[locale]map[string]string{
 		"settings.adapter_backup_max": "Макс. копий на адаптер",
 		"settings.adapter_backup_max_hint": "Максимальное количество хранимых бэкапов для одного адаптера. Старые удаляются первыми. 0 = без ограничений. Переменная окружения: WDBGP_ADAPTER_BACKUP_MAX.",
 		"settings.adapter_backup_max_placeholder": "По умолчанию: 10",
+
+		"error.db_too_new":     "Версия схемы базы данных %d новее, чем версия сервера %d.",
+		"error.db_too_new_hint": "Установите WDBGP_AUTO_RESTORE_ENABLED=true для автовосстановления из бэкапа.",
+		"error.db_no_backup":    "Автовосстановление включено, но подходящий бэкап не найден.",
+		"title.db_mismatch":     "Несоответствие версии базы данных",
 	},
 }
 

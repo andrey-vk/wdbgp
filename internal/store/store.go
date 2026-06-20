@@ -603,11 +603,18 @@ PRAGMA foreign_keys = ON;
 	},
 }
 
+var ErrDBTooNew = errors.New("database schema is newer than this server version")
+
 type Store struct {
 	DB            *sql.DB
 	dbPath        string // DB file path for backup
 	backupEnabled bool
 	backupDir     string
+	autoRestore   bool // auto-restore from backup when DB is newer than server
+	Degraded       bool   // true when DB is newer and auto-restore didn't run
+	DBVersion      int    // current DB schema version (when degraded)
+	ServerVersion  int    // expected server schema version (when degraded)
+	DegradedReason string // why degraded: "no backup found", "auto-restore disabled", etc.
 }
 
 type Feed struct {
@@ -717,7 +724,7 @@ func Open(path string, cfg config.Config) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{DB: db, dbPath: path, backupEnabled: cfg.BackupEnabled, backupDir: cfg.BackupDir}
+	s := &Store{DB: db, dbPath: path, backupEnabled: cfg.BackupEnabled, backupDir: cfg.BackupDir, autoRestore: cfg.AutoRestoreEnabled}
 	if err := s.Migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -729,6 +736,117 @@ func (s *Store) Close() error {
 	return s.DB.Close()
 }
 
+func (s *Store) readAppliedMigrations(ctx context.Context) ([]int, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT version FROM schema_migrations ORDER BY version")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var applied []int
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return nil, err
+		}
+		applied = append(applied, version)
+	}
+	return applied, rows.Err()
+}
+
+func (s *Store) tryRestore(ctx context.Context, applied []int) error {
+	targetVersion := len(migrations)
+	currentVersion := applied[len(applied)-1]
+
+	backupDir := s.backupDir
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		return fmt.Errorf("scan backup dir %s: %w", backupDir, err)
+	}
+
+	type candidate struct {
+		path    string
+		version int
+		modTime time.Time
+	}
+	var candidates []candidate
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".sqlite3") || !strings.HasPrefix(e.Name(), "wdbgp-backup-") {
+			continue
+		}
+		backupPath := filepath.Join(backupDir, e.Name())
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		backupDB, err := sql.Open("sqlite", backupPath)
+		if err != nil {
+			continue
+		}
+		backupDB.SetMaxOpenConns(1)
+		rows, err := backupDB.QueryContext(ctx, "SELECT version FROM schema_migrations ORDER BY version")
+		if err != nil {
+			backupDB.Close()
+			continue
+		}
+		var versions []int
+		for rows.Next() {
+			var v int
+			if err := rows.Scan(&v); err != nil {
+				rows.Close()
+				backupDB.Close()
+				continue
+			}
+			versions = append(versions, v)
+		}
+		rows.Close()
+		backupDB.Close()
+		if len(versions) == 0 {
+			continue
+		}
+		maxVersion := versions[len(versions)-1]
+		if maxVersion != targetVersion {
+			continue
+		}
+		candidates = append(candidates, candidate{backupPath, maxVersion, info.ModTime()})
+	}
+
+	if len(candidates) == 0 {
+		return fmt.Errorf("no backup found matching server version %d in %s", targetVersion, backupDir)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
+	best := candidates[0]
+
+	// Save current (newer) DB with distinctive name
+	savedPath := strings.TrimSuffix(s.dbPath, ".sqlite3") + ".incompatible-v" + strconv.Itoa(currentVersion) + ".sqlite3"
+	if err := os.Rename(s.dbPath, savedPath); err != nil {
+		return fmt.Errorf("save current DB: %w", err)
+	}
+
+	// Copy backup into place
+	src, err := os.Open(best.path)
+	if err != nil {
+		return fmt.Errorf("open backup: %w", err)
+	}
+	dst, err := os.Create(s.dbPath)
+	if err != nil {
+		src.Close()
+		return fmt.Errorf("create new DB: %w", err)
+	}
+	if _, err := dst.ReadFrom(src); err != nil {
+		src.Close()
+		dst.Close()
+		return fmt.Errorf("copy backup: %w", err)
+	}
+	src.Close()
+	dst.Close()
+
+	log.Printf("DB auto-restored from %s (saved incompatible DB as %s)", best.path, savedPath)
+	return nil
+}
+
 func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.DB.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -738,20 +856,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 )`); err != nil {
 		return err
 	}
-	rows, err := s.DB.QueryContext(ctx, "SELECT version FROM schema_migrations ORDER BY version")
+	applied, err := s.readAppliedMigrations(ctx)
 	if err != nil {
-		return err
-	}
-	var applied []int
-	for rows.Next() {
-		var version int
-		if err := rows.Scan(&version); err != nil {
-			rows.Close()
-			return err
-		}
-		applied = append(applied, version)
-	}
-	if err := rows.Close(); err != nil {
 		return err
 	}
 	for index, version := range applied {
@@ -761,8 +867,47 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		}
 	}
 	if len(applied) > len(migrations) {
-		return fmt.Errorf("database schema version %d is newer than supported version %d",
-			applied[len(applied)-1], len(migrations))
+		if s.autoRestore {
+			if err := s.tryRestore(ctx, applied); err != nil {
+				// Auto-restore failed — enter degraded mode so the UI
+				// can show the error with instructions.
+				s.Degraded = true
+				s.DBVersion = applied[len(applied)-1]
+				s.ServerVersion = len(migrations)
+				s.DegradedReason = err.Error()
+				return nil
+			}
+			// Re-open the restored DB
+			s.DB.Close()
+			db, err := sql.Open("sqlite", s.dbPath)
+			if err != nil {
+				return fmt.Errorf("reopen after restore: %w", err)
+			}
+			db.SetMaxOpenConns(1)
+			if _, err := db.Exec(`
+				PRAGMA foreign_keys = ON;
+				PRAGMA journal_mode = WAL;
+				PRAGMA synchronous = NORMAL;
+				PRAGMA cache_size = -2000;
+				PRAGMA temp_store = MEMORY;
+				PRAGMA busy_timeout = 30000;
+			`); err != nil {
+				db.Close()
+				return fmt.Errorf("reopen pragmas: %w", err)
+			}
+			s.DB = db
+			// Re-read applied migrations from restored DB
+			applied, err = s.readAppliedMigrations(ctx)
+			if err != nil {
+				return err
+			}
+		} else {
+			s.Degraded = true
+			s.DegradedReason = "auto-restore disabled (set WDBGP_AUTO_RESTORE_ENABLED=true)"
+			s.DBVersion = applied[len(applied)-1]
+			s.ServerVersion = len(migrations)
+			return nil
+		}
 	}
 
 	// Backup DB before running pending migrations.
