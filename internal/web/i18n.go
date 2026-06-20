@@ -263,6 +263,9 @@ var translations = map[locale]map[string]string{
 		"hints.mode_name":            "Human-readable name for this catalog mode",
 		"hints.user_next_hop":        "Override the BGP next-hop address (optional, leave empty for auto)",
 		"hints.user_dynamic_ip":      "Accept connections from any IP address (the peer must authenticate via password+ASN)",
+		"hint.dynamic_peers_disabled": "Dynamic peers disabled. Set WDBGP_ALLOW_DYNAMIC_PEERS=true to use.",
+		"hint.dynamic_no_password":    "TCP MD5 requires known peer IP. No authentication for wildcard addresses.",
+		"hint.same_ip_password":       "Kernel supports one MD5 key per IP. All peers at this address must share the same password.",
 
 		// Settings page
 		"settings.section_general":     "General",
@@ -301,6 +304,7 @@ var translations = map[locale]map[string]string{
 		"settings.local_address_v6":    "Local IPv6 address",
 		"settings.host":                "HTTP host",
 		"settings.port":                "HTTP port",
+		"settings.allow_dynamic_peers": "Allow dynamic peers",
 
 		"settings.default_language_hint": "Default interface language for new visitors. Environment variable: WDBGP_DEFAULT_LANGUAGE.",
 		"settings.session_max_age_hint": "Maximum session lifetime in seconds (default 28800 = 8 hours). Environment variable: WDBGP_SESSION_MAX_AGE.",
@@ -329,6 +333,7 @@ var translations = map[locale]map[string]string{
 		"settings.local_address_v6_hint": "IPv6 address used for BGP sessions. Empty = no IPv6 BGP. Environment variable: WDBGP_BGP_LOCAL_ADDRESS_V6.",
 		"settings.host_hint": "IP address or hostname the HTTP server binds to. Environment variable: WDBGP_HOST.",
 		"settings.port_hint": "TCP port the HTTP server listens on. Environment variable: WDBGP_PORT.",
+		"settings.allow_dynamic_peers_hint": "Controlled by WDBGP_ALLOW_DYNAMIC_PEERS. Cannot be changed via UI.",
 
 		"settings.default":            "Default",
 		"settings.saved":              "Settings saved.",
@@ -599,6 +604,9 @@ var translations = map[locale]map[string]string{
 		"hints.mode_name":            "Человекочитаемое имя режима каталога",
 		"hints.user_next_hop":        "Переопределить BGP next-hop адрес (опционально, пусто = auto)",
 		"hints.user_dynamic_ip":      "Принимать подключения с любого IP-адреса (пир должен подтвердить пароль+ASN)",
+		"hint.dynamic_peers_disabled": "Динамические пиры отключены. Установите WDBGP_ALLOW_DYNAMIC_PEERS=true.",
+		"hint.dynamic_no_password":    "TCP MD5 требует известный IP пира. Аутентификация для wildcard-адресов невозможна.",
+		"hint.same_ip_password":       "Ядро поддерживает один MD5 ключ на IP. Все пиры на этом адресе должны использовать одинаковый пароль.",
 
 		// Settings page
 		"settings.section_general":     "Общие",
@@ -637,6 +645,7 @@ var translations = map[locale]map[string]string{
 		"settings.local_address_v6":    "Локальный IPv6 адрес",
 		"settings.host":                "HTTP хост",
 		"settings.port":                "HTTP порт",
+		"settings.allow_dynamic_peers": "Разрешить динамические пиры",
 
 		"settings.default_language_hint": "Язык интерфейса по умолчанию для новых посетителей. Переменная окружения: WDBGP_DEFAULT_LANGUAGE.",
 		"settings.session_max_age_hint": "Максимальное время жизни сессии в секундах (по умолчанию 28800 = 8 часов). Переменная окружения: WDBGP_SESSION_MAX_AGE.",
@@ -665,6 +674,7 @@ var translations = map[locale]map[string]string{
 		"settings.local_address_v6_hint": "IPv6-адрес, используемый для BGP-сессий. Пусто = нет IPv6 BGP. Переменная окружения: WDBGP_BGP_LOCAL_ADDRESS_V6.",
 		"settings.host_hint": "IP-адрес или имя хоста, к которому привязывается HTTP-сервер. Переменная окружения: WDBGP_HOST.",
 		"settings.port_hint": "TCP-порт, на котором слушает HTTP-сервер. Переменная окружения: WDBGP_PORT.",
+		"settings.allow_dynamic_peers_hint": "Управляется через WDBGP_ALLOW_DYNAMIC_PEERS. Нельзя изменить через интерфейс.",
 
 		"settings.default":            "По умолчанию",
 		"settings.saved":              "Настройки сохранены.",
