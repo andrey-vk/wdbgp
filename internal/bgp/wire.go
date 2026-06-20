@@ -691,13 +691,42 @@ func decodeMpUnreachNLRI(value []byte) (PathAttribute, error) {
 }
 
 // decodeASPath decodes an AS_PATH attribute value.
+// Parses AS_SEQUENCE segments (type 1 = 2-byte, type 2 = 4-byte).
+// Returns the first ASN from the first segment.
 func decodeASPath(value []byte) (PathAttribute, error) {
 	if len(value) < 2 {
 		return nil, fmt.Errorf("bgp: as_path too short: %d bytes", len(value))
 	}
-	// We accept the attribute without fully decoding it — just validate.
-	// Return a zero ASPathAttribute.
-	return &ASPathAttribute{}, nil
+
+	segType := value[0]
+	segLen := int(value[1]) // number of ASNs in this segment
+
+	switch segType {
+	case 1: // 2-byte AS_SEQUENCE
+		if len(value) < 2+segLen*2 {
+			return nil, fmt.Errorf("bgp: as_path 2-byte segment truncated: need %d, have %d",
+				2+segLen*2, len(value))
+		}
+		if segLen == 0 {
+			return nil, fmt.Errorf("bgp: as_path segment has zero length")
+		}
+		asn := uint32(binary.BigEndian.Uint16(value[2:4]))
+		return &ASPathAttribute{ASN: asn}, nil
+
+	case 2: // 4-byte AS_SEQUENCE
+		if len(value) < 2+segLen*4 {
+			return nil, fmt.Errorf("bgp: as_path 4-byte segment truncated: need %d, have %d",
+				2+segLen*4, len(value))
+		}
+		if segLen == 0 {
+			return nil, fmt.Errorf("bgp: as_path segment has zero length")
+		}
+		asn := binary.BigEndian.Uint32(value[2:6])
+		return &ASPathAttribute{ASN: asn}, nil
+
+	default:
+		return nil, fmt.Errorf("bgp: unknown as_path segment type: %d", segType)
+	}
 }
 
 // encodePathAttributes serializes a slice of path attributes into wire format.

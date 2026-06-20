@@ -1028,3 +1028,57 @@ func TestReconnectIPv6(t *testing.T) {
 	waitForPeerState(t, client2, StateEstablished, 10*time.Second)
 	waitForSpeakerPeerState(t, speaker, stateKey("::1", 65001), StateEstablished, 10*time.Second)
 }
+
+// =============================================================================
+// Test: 4-byte ASN session with AS4 capability negotiation
+// =============================================================================
+
+func TestSessionWith4ByteASN(t *testing.T) {
+	serverPeer := PeerConfig{
+		ID:      1,
+		Address: netip.MustParseAddr("127.0.0.1"),
+		ASN:     65001,
+	}
+
+	var receivedNLRI []netip.Prefix
+	cb := func(prefixes []netip.Prefix) {
+		receivedNLRI = append(receivedNLRI, prefixes...)
+	}
+
+	// Speaker ASN = 196608 (4-byte ASN > 65535), client ASN = 65001 (2-byte)
+	speaker, client := startSpeakerAndClient(t, 196608, serverPeer, 65001, cb)
+
+	waitForPeerState(t, client, StateEstablished, 10*time.Second)
+	waitForSpeakerPeerState(t, speaker, stateKey("127.0.0.1", 65001), StateEstablished, 10*time.Second)
+
+	// Announce a route from the speaker
+	routes := []Route{
+		{
+			Prefix:  netip.MustParsePrefix("10.0.0.0/8"),
+			NextHop: netip.MustParseAddr("192.0.2.2"),
+		},
+	}
+	err := speaker.Announce(serverPeer.Address, serverPeer.ASN, routes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	if len(receivedNLRI) == 0 {
+		t.Fatal("client did not receive any NLRI")
+	}
+
+	found := false
+	for _, p := range receivedNLRI {
+		if p.String() == "10.0.0.0/8" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("client NLRI did not contain 10.0.0.0/8: %v", receivedNLRI)
+	}
+	t.Logf("4-byte ASN session verified: speaker ASN=%d, client ASN=%d, route delivered",
+		196608, 65001)
+}

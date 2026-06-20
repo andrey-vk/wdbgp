@@ -386,6 +386,50 @@ func TestASPath4ByteEncoding(t *testing.T) {
 	t.Logf("2-byte AS_PATH encoding verified for ASN 64512")
 }
 
+func TestDecodeASPath2Byte(t *testing.T) {
+	attr := &ASPathAttribute{ASN: 64512}
+	serialized := attr.Serialize()
+
+	attrs, err := decodePathAttributes(serialized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attrs) != 1 {
+		t.Fatalf("attrs len = %d, want 1", len(attrs))
+	}
+
+	decoded, ok := attrs[0].(*ASPathAttribute)
+	if !ok {
+		t.Fatalf("expected *ASPathAttribute, got %T", attrs[0])
+	}
+	if decoded.ASN != 64512 {
+		t.Fatalf("decoded ASN = %d, want 64512", decoded.ASN)
+	}
+	t.Logf("2-byte AS_PATH round-trip verified: ASN=%d", decoded.ASN)
+}
+
+func TestDecodeASPath4Byte(t *testing.T) {
+	attr := &ASPathAttribute{ASN: 196608}
+	serialized := attr.Serialize()
+
+	attrs, err := decodePathAttributes(serialized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attrs) != 1 {
+		t.Fatalf("attrs len = %d, want 1", len(attrs))
+	}
+
+	decoded, ok := attrs[0].(*ASPathAttribute)
+	if !ok {
+		t.Fatalf("expected *ASPathAttribute, got %T", attrs[0])
+	}
+	if decoded.ASN != 196608 {
+		t.Fatalf("decoded ASN = %d, want 196608", decoded.ASN)
+	}
+	t.Logf("4-byte AS_PATH round-trip verified: ASN=%d", decoded.ASN)
+}
+
 func TestLargeCommunitiesRoundTrip(t *testing.T) {
 	comms := []LargeCommunity{
 		{GlobalAdmin: 64512, LocalData1: 7, LocalData2: 0},
