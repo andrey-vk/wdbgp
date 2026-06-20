@@ -196,12 +196,10 @@ func (m *Manager) AddPeer(ctx context.Context, user store.User) error {
 	// Check if peer already exists
 	for _, u := range m.peerConfigs {
 		if u.PeerIP == user.PeerIP && u.PeerASN == user.PeerASN {
-			if user.PeerIP == "0.0.0.0" && u.BGPPassword == user.BGPPassword {
+			if user.PeerIP == "0.0.0.0" || user.PeerIP == "::" {
 				return fmt.Errorf("dynamic peer with ASN %d already exists", user.PeerASN)
 			}
-			if user.PeerIP != "0.0.0.0" {
-				return fmt.Errorf("peer %s with ASN %d already exists", user.PeerIP, user.PeerASN)
-			}
+			return fmt.Errorf("peer %s with ASN %d already exists", user.PeerIP, user.PeerASN)
 		}
 	}
 	m.peerConfigs = append(m.peerConfigs, user)

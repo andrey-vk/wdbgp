@@ -503,9 +503,9 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	//     Password field in the OPEN message as a fallback.
 	//   - Dynamic peers (0.0.0.0) on non-loopback cannot use MD5 at the
 	//     handshake level (listener can't preinstall keys for 0.0.0.0).
+	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
+	remoteIP := remoteAddr.Addr()
 	if p.cfg.Password != "" {
-		remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
-		remoteIP := remoteAddr.Addr()
 		if p.cfg.Address.IsUnspecified() && !remoteIP.IsLoopback() {
 			// Dynamic peer on non-loopback: cannot authenticate.
 			// TCP MD5 cannot be preinstalled for wildcard addresses,
@@ -541,8 +541,7 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	openOut := &OpenMessage{Version: 4, MyASN32: p.spk.ASN, HoldTime: holdTime, BGPID: id}
 	// Only include Password in OPEN for loopback connections.
 	if p.cfg.Password != "" {
-		remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
-		if remoteAddr.Addr().IsLoopback() {
+		if remoteIP.IsLoopback() {
 			openOut.Password = p.cfg.Password
 		}
 	}
