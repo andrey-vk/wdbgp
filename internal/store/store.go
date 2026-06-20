@@ -712,6 +712,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		backupName := "wdbgp-backup-" + time.Now().UTC().Format("20060102150405") + ".sqlite3"
 		backupPath := filepath.Join(s.backupDir, backupName)
 
+		// Checkpoint WAL so the file copy includes all committed changes.
+		if _, err := s.DB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			return fmt.Errorf("backup: wal checkpoint: %w", err)
+		}
+
 		// Copy the DB file
 		src, err := os.Open(s.dbPath)
 		if err != nil {
