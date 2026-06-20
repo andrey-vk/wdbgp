@@ -1458,3 +1458,109 @@ func TestStatusEndpoint(t *testing.T) {
 		t.Error("database should show as connected")
 	}
 }
+
+func TestDegradedModeShowsErrorPage(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	cfg.DefaultLanguage = "en"
+	srv := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
+	srv.SetDegraded(DegradedInfo{
+		CurrentVersion: 999,
+		ServerVersion:  20,
+		Reason:         "test reason",
+	})
+	handler := srv.Handler()
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.Code)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "999") {
+		t.Fatalf("body missing current DB version 999: %s", body)
+	}
+	if !strings.Contains(body, "20") {
+		t.Fatalf("body missing server version 20: %s", body)
+	}
+	if !strings.Contains(body, "Mismatch") {
+		t.Fatalf("body missing 'Mismatch' from title.db_mismatch: %s", body)
+	}
+}
+
+func TestDegradedModeAllRoutesShowError(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	cfg.DefaultLanguage = "en"
+	srv := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
+	srv.SetDegraded(DegradedInfo{
+		CurrentVersion: 999,
+		ServerVersion:  20,
+		Reason:         "test reason",
+	})
+	handler := srv.Handler()
+
+	for _, path := range []string{"/admin", "/login", "/healthz"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s: status = %d, want 503", path, response.Code)
+		}
+		if !strings.Contains(response.Body.String(), "Mismatch") {
+			t.Errorf("%s: body missing degraded page content", path)
+		}
+	}
+}
+
+func TestDegradedModeLanguageSwitch(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	srv := New(testConfig(), db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
+	srv.SetDegraded(DegradedInfo{
+		CurrentVersion: 999,
+		ServerVersion:  20,
+		Reason:         "test reason",
+	})
+	handler := srv.Handler()
+
+	// Russian
+	request := httptest.NewRequest(http.MethodGet, "/?lang=ru", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ru: status = %d, want 503", response.Code)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "Несоответствие версии базы данных") {
+		t.Fatalf("ru: body missing Russian title: %s", body)
+	}
+
+	// English
+	request = httptest.NewRequest(http.MethodGet, "/?lang=en", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("en: status = %d, want 503", response.Code)
+	}
+	body = response.Body.String()
+	if !strings.Contains(body, "Database Version Mismatch") {
+		t.Fatalf("en: body missing English title: %s", body)
+	}
+}

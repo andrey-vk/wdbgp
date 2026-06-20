@@ -275,16 +275,28 @@ func (s *Server) degradedHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusServiceUnavailable)
 
+	baseURL := r.URL.Query()
+	baseURL.Set("lang", "en")
+	englishURL := "?" + baseURL.Encode()
+	baseURL.Set("lang", "ru")
+	russianURL := "?" + baseURL.Encode()
+
 	info := struct {
+		Title         string
 		CurrentVersion int
 		ServerVersion  int
 		Reason         string
-		Lang           locale
+		Lang           string
+		EnglishURL     string
+		RussianURL     string
 	}{
+		Title:         translate(lang, "title.db_mismatch"),
 		CurrentVersion: s.degradedInfo.CurrentVersion,
 		ServerVersion:  s.degradedInfo.ServerVersion,
 		Reason:         s.degradedInfo.Reason,
-		Lang:           lang,
+		Lang:           string(lang),
+		EnglishURL:     englishURL,
+		RussianURL:     russianURL,
 	}
 
 	if err := s.templates[lang]["degraded"].Execute(w, info); err != nil {
