@@ -208,6 +208,9 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 		HoldTime:   binary.BigEndian.Uint16(data[3:5]),
 		OptParmLen: data[9],
 	}
+	if o.Version != 4 {
+		return nil, fmt.Errorf("bgp: unsupported version %d", o.Version)
+	}
 	copy(o.BGPID[:], data[5:9])
 
 	// Parse optional parameters for Four-octet ASN Capability (RFC 6793),
@@ -778,7 +781,7 @@ func encodePrefixes(prefixes []netip.Prefix) []byte {
 // afi is the Address Family Identifier (1=IPv4, 2=IPv6).
 func decodePrefixes(data []byte, afi uint16) ([]netip.Prefix, error) {
 	var prefixes []netip.Prefix
-	is6 := afi == 2 || afi == 0x0200
+	is6 := afi == 2
 	for len(data) > 0 {
 		prefixLen := int(data[0])
 		data = data[1:]
@@ -803,10 +806,7 @@ func decodePrefixes(data []byte, afi uint16) ([]netip.Prefix, error) {
 			addr = netip.AddrFrom4(ip)
 		}
 
-		prefix, err := netip.ParsePrefix(fmt.Sprintf("%s/%d", addr.String(), prefixLen))
-		if err != nil {
-			return nil, fmt.Errorf("bgp: invalid prefix %s/%d: %w", addr.String(), prefixLen, err)
-		}
+		prefix := netip.PrefixFrom(addr, prefixLen)
 		prefixes = append(prefixes, prefix)
 	}
 	return prefixes, nil
