@@ -798,6 +798,9 @@ func decodePrefixes(data []byte, afi uint16) ([]netip.Prefix, error) {
 		}
 
 		prefix := netip.PrefixFrom(addr, prefixLen)
+		if !prefix.IsValid() {
+			return nil, fmt.Errorf("bgp: invalid prefix %s/%d", addr.String(), prefixLen)
+		}
 		prefixes = append(prefixes, prefix)
 	}
 	return prefixes, nil

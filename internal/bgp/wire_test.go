@@ -571,6 +571,14 @@ func TestPrefixEncodeDecode(t *testing.T) {
 	}
 }
 
+func TestDecodePrefixesRejectsInvalidPrefixLength(t *testing.T) {
+	data := []byte{40, 192, 0, 2, 0}
+	_, err := decodePrefixes(data, 1)
+	if err == nil {
+		t.Fatal("expected error for invalid prefix length /40")
+	}
+}
+
 func TestDecodePathAttributeSkipsUnknown(t *testing.T) {
 	// Construct an UPDATE with an unknown path attribute (type 99, empty value)
 	// Path attribute TLV: flags=0xC0 (Optional|Transitive), type=99, length=0

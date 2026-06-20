@@ -76,7 +76,7 @@ func applyListenerMD5(listener net.Listener, peers []PeerConfig) error {
 	ctrlErr := rawConn.Control(func(fd uintptr) {
 		fdInt := int(fd)
 		for _, pc := range peers {
-			if pc.Password == "" || pc.Address.IsLoopback() {
+			if pc.Password == "" || pc.Address.IsLoopback() || pc.Address.IsUnspecified() {
 				continue
 			}
 			if err := setTCPMD5OnFd(fdInt, pc.Address, pc.Password); err != nil {
