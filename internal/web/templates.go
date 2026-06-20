@@ -349,13 +349,13 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}` + 
 <p class=muted>{{tr "hints.user_networks"}}</p>
 <label>{{tr "users.peer_ip"}} <input name=peer_ip id=peer-ip value="{{.User.PeerIP}}" required {{if eq .User.PeerIP "0.0.0.0"}}readonly{{end}}></label>
 <p class=muted>{{tr "hints.user_peer_ip"}}</p>
-<label class=checkbox-row><input type=checkbox id=dynamic-ip {{if eq .User.PeerIP "0.0.0.0"}}checked{{end}}> {{tr "users.dynamic_ip"}}</label>
+<label class=checkbox-row><input type=checkbox id=dynamic-ip {{if .DynamicChecked}}checked{{end}} {{if .DynamicReadonly}}readonly title="{{tr "hint.dynamic_peers_disabled"}}"{{end}}> {{tr "users.dynamic_ip"}}</label>
 <p class=muted>{{tr "hints.user_dynamic_ip"}}</p>
 <label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn value="{{.User.PeerASN}}" required></label>
 <p class=muted>{{tr "hints.user_peer_asn"}}</p>
 <label>{{tr "users.next_hop"}} <input name=next_hop value="{{.User.NextHop}}" placeholder="auto"></label>
 <p class=muted>{{tr "hints.user_next_hop"}}</p>
-<label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{tr "users.bgp_password_placeholder"}}"></label>
+<label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{tr "users.bgp_password_placeholder"}}" {{if .PasswordDisabled}}disabled title="{{tr "hint.dynamic_no_password"}}"{{else if .PasswordHint}}title="{{tr .PasswordHint}}"{{end}}></label>
 </div>
 <label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Selection.Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.User.CatalogModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
 <p class=muted>{{tr "hints.user_catalog_mode"}}</p>
@@ -1012,6 +1012,19 @@ const settingsTemplate = `{{with .Data}}
 </div>
 {{end}}
 {{end}}
+<div class=section-head><h2>{{tr "settings.section_bgp"}}</h2></div>
+<div class=setting-row x-data="{hint:false}">
+  <div class=setting-label><label for="s_allow_dynamic_peers">{{tr "settings.allow_dynamic_peers"}}</label>
+  <button type=button class="hint-btn" @click="hint=!hint" :aria-expanded="hint" aria-label="{{tr "settings.help"}}">?</button>
+  </div>
+  <div class=setting-field>
+  <label class=checkbox-row><input type=checkbox value="true" {{if .AllowDynamicPeers}}checked{{end}} disabled title="{{tr "settings.allow_dynamic_peers_hint"}}"> {{tr "settings.allow_dynamic_peers"}}</label>
+  <div class=hint-popup x-show="hint" @click.away="hint=false" x-transition x-cloak>
+    <p>{{tr "settings.allow_dynamic_peers_hint"}}</p>
+    <code>WDBGP_ALLOW_DYNAMIC_PEERS</code>
+  </div>
+  </div>
+</div>
 {{if .GlobalFilters}}
 <div class=section-head><h2>{{tr "settings.section_filters"}}</h2></div>
 <div style="grid-column:1/-1;padding:.5rem 0;border-bottom:1px solid var(--border)">

@@ -131,6 +131,10 @@ type userEditView struct {
 	Selection   selectionView
 	Credentials []store.UserCredential
 	Error       string
+	DynamicReadonly  bool   // true when AllowDynamicPeers==false
+	DynamicChecked   bool   // true when User.PeerIP is 0.0.0.0 or ::
+	PasswordDisabled bool   // true when PeerIP is wildcard (0.0.0.0 or ::)
+	PasswordHint     string // tooltip hint for password field
 }
 
 type filterView struct {
@@ -1638,8 +1642,12 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 			CatalogModeID: store.DefaultCatalogModeID,
 			Enabled:       true,
 		}
+		var dynamicReadonly bool
+		if !s.cfg.AllowDynamicPeers {
+			dynamicReadonly = true
+		}
 		s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), translate(lang, "common.add")), "user-edit",
-			userEditView{User: emptyUser})
+			userEditView{User: emptyUser, DynamicReadonly: dynamicReadonly})
 		return
 	}
 	user, err := s.store.User(r.Context(), id)
@@ -1670,8 +1678,29 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	
 	credentials, _ := s.store.GetUserCredentials(r.Context(), id)
 	lang, _ := requestLocale(r, s.defaultLang)
+	var dynamicReadonly bool
+	var dynamicChecked bool
+	var passwordDisabled bool
+	var passwordHint string
+	if !s.cfg.AllowDynamicPeers {
+		dynamicReadonly = true
+	}
+	if user.PeerIP == "0.0.0.0" || user.PeerIP == "::" {
+		dynamicChecked = true
+		passwordDisabled = true
+	} else if user.PeerIP != "" {
+		var sameIPCount int
+		s.store.DB.QueryRowContext(r.Context(),
+			"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ?",
+			user.PeerIP, id).Scan(&sameIPCount)
+		if sameIPCount > 0 {
+			passwordHint = "hint.same_ip_password"
+		}
+	}
 	s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
-		userEditView{User: user, Selection: selection, Credentials: credentials})
+		userEditView{User: user, Selection: selection, Credentials: credentials,
+			DynamicReadonly: dynamicReadonly, DynamicChecked: dynamicChecked,
+			PasswordDisabled: passwordDisabled, PasswordHint: passwordHint})
 }
 
 func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
@@ -3340,6 +3369,7 @@ func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	s.renderAdmin(w, r, http.StatusOK, "Settings", "settings", map[string]any{
 		"Sections": sections,
 		"Saved":    r.URL.Query().Get("saved") == "1",
+		"AllowDynamicPeers": s.cfg.AllowDynamicPeers,
 		"GlobalFilters": globalFiltersView{
 			Allow: strings.Join(globalFilters.Allow, "\n"),
 			Deny:  strings.Join(globalFilters.Deny, "\n"),
