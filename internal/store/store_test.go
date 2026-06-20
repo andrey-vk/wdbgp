@@ -1841,15 +1841,14 @@ func TestBackupConfigDefaults(t *testing.T) {
 func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	backupDir := filepath.Join(tmpDir, "backups")
 
-	// Step 1: Create a pre-existing DB with some user data (simulates upgrade scenario).
-	// Open once to run all migrations, add data, then close.
+	// Step 1: Create a pre-existing DB with user data.
 	{
 		s, err := Open(dbPath, config.Config{BackupEnabled: false})
 		if err != nil {
 			t.Fatal(err)
 		}
-		// Add a user to have meaningful data in the backup.
 		_, err = s.AddUser(context.Background(), User{
 			Name: "test-user", PeerIP: "192.0.2.1", PeerASN: 65001,
 			Enabled:  true,
@@ -1859,37 +1858,34 @@ func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
 			s.Close()
 			t.Fatal(err)
 		}
-		// Add catalog entries so we can verify they are stripped.
-		_, err = s.DB.ExecContext(context.Background(),
-			"INSERT INTO catalog_entries (feed_id, category, service, cidr) VALUES (1, 'test', 'svc', '10.0.0.0/8')")
-		if err != nil {
-			s.Close()
-			t.Fatal(err)
-		}
 		s.Close()
 	}
 
-	// Step 2: Open the same DB again with backup enabled.
-	// This simulates opening an existing DB (no pending migrations).
-	// But we need pending migrations to trigger the backup. The schema is already
-	// up to date, so no backup will be created.
-	//
-	// Instead, test that when migrations ARE pending, a backup IS created.
-	// Use a fresh DB for the actual migration+pending test:
-	dbPath2 := filepath.Join(tmpDir, "test2.sqlite3")
-	backupDir2 := filepath.Join(tmpDir, "backups2")
+	// Step 2: Simulate an upgrade — remove the last migration to create pending work.
+	{
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.Exec("DELETE FROM schema_migrations WHERE version = (SELECT MAX(version) FROM schema_migrations)"); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		db.Close()
+	}
 
-	s2, err := Open(dbPath2, config.Config{
+	// Step 3: Reopen with backup enabled — migrations are pending → backup created.
+	s, err := Open(dbPath, config.Config{
 		BackupEnabled: true,
-		BackupDir:     backupDir2,
+		BackupDir:     backupDir,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s2.Close()
+	defer s.Close()
 
-	// Verify exactly one backup file exists.
-	entries, err := os.ReadDir(backupDir2)
+	entries, err := os.ReadDir(backupDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1899,9 +1895,8 @@ func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
 	if !strings.HasSuffix(entries[0].Name(), ".sqlite3") {
 		t.Fatalf("backup file missing .sqlite3 extension: %s", entries[0].Name())
 	}
-	backupPath := filepath.Join(backupDir2, entries[0].Name())
+	backupPath := filepath.Join(backupDir, entries[0].Name())
 
-	// Verify backup file is non-zero.
 	info, err := os.Stat(backupPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1910,21 +1905,19 @@ func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
 		t.Fatal("backup file is empty")
 	}
 
-	// Verify backup can be opened as SQLite.
+	// Verify backup can be opened and contains pre-migration data.
 	backupDB, err := sql.Open("sqlite", backupPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer backupDB.Close()
 
-	// Backup was taken BEFORE migrations — only schema_migrations table exists.
-	// Verify the backup is a valid SQLite file with schema_migrations.
-	var tableCount int
-	if err := backupDB.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").Scan(&tableCount); err != nil {
+	var userCount int
+	if err := backupDB.QueryRow("SELECT COUNT(*) FROM users").Scan(&userCount); err != nil {
 		t.Fatal(err)
 	}
-	if tableCount < 1 {
-		t.Fatal("backup should have at least schema_migrations table")
+	if userCount != 1 {
+		t.Errorf("backup should have 1 user (pre-migration data), got %d", userCount)
 	}
 }
 
@@ -1933,6 +1926,17 @@ func TestBackupNotCreatedWhenUpToDate(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.sqlite3")
 	backupDir := filepath.Join(tmpDir, "backups")
 
+	// Step 1: Create a DB with migrations applied (disable backup so no backup now).
+	{
+		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+
+	// Step 2: Reopen with backup enabled — all migrations already applied,
+	// so the "len(applied) < len(migrations)" check is false → no backup.
 	s, err := Open(dbPath, config.Config{
 		BackupEnabled: true,
 		BackupDir:     backupDir,
@@ -1944,28 +1948,16 @@ func TestBackupNotCreatedWhenUpToDate(t *testing.T) {
 
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
+		// Dir might not exist at all when no backup was created — that's fine.
+		if os.IsNotExist(err) {
+			return
+		}
 		t.Fatal(err)
 	}
-	firstCount := len(entries)
-	if firstCount != 1 {
-		t.Fatalf("expected 1 backup after first open, got %d", firstCount)
-	}
-
-	s2, err := Open(dbPath, config.Config{
-		BackupEnabled: true,
-		BackupDir:     backupDir,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s2.Close()
-
-	afterEntries, err := os.ReadDir(backupDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(afterEntries) != firstCount {
-		t.Fatalf("expected %d backups after reopen, got %d", firstCount, len(afterEntries))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sqlite3") {
+			t.Fatalf("unexpected backup when already up-to-date: %s", e.Name())
+		}
 	}
 }
 
@@ -1997,11 +1989,65 @@ func TestBackupNotCreatedWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestBackupNotCreatedOnFreshInstall(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	backupDir := filepath.Join(tmpDir, "backups")
+
+	// Fresh install — no existing data, no backups needed.
+	s, err := Open(dbPath, config.Config{
+		BackupEnabled: true,
+		BackupDir:     backupDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	entries, err := os.ReadDir(backupDir)
+	if os.IsNotExist(err) {
+		return // dir not created — correct, no backup
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sqlite3") {
+			t.Fatalf("unexpected backup on fresh install: %s", e.Name())
+		}
+	}
+}
+
 func TestBackupDirAutoCreated(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.sqlite3")
 	backupDir := filepath.Join(tmpDir, "non-existent", "backups")
 
+	// Step 1: Create a DB with all migrations applied.
+	{
+		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+
+	// Step 2: Simulate an upgrade by removing the last migration record.
+	{
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.Exec("DELETE FROM schema_migrations WHERE version = (SELECT MAX(version) FROM schema_migrations)"); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		db.Close()
+	}
+
+	// Step 3: Reopen with backup enabled + non-existent backup dir.
+	// Pending migrations trigger backup → dir must be auto-created.
 	s, err := Open(dbPath, config.Config{
 		BackupEnabled: true,
 		BackupDir:     backupDir,
