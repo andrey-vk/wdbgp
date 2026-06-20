@@ -17,7 +17,7 @@
 and announces prefixes selected by each user to that user's router over BGP.
 
 It is a single statically linked Go binary containing the HTTP server, SQLite
-storage, and a custom BGP speaker. Python and BIRD are no longer required. Routes
+storage, and a custom BGP speaker. Routes
 are announced per-peer directly from the in-memory route table.
 
 ## Catalog modes
