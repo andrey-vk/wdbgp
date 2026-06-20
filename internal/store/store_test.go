@@ -4,8 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"net/netip"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/andrey-vk/wdbgp/internal/config"
 
 	_ "modernc.org/sqlite"
 )
@@ -129,7 +134,7 @@ INSERT INTO feeds(name, url) VALUES
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +204,7 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +275,7 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +311,7 @@ func TestRejectNewerDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
-	if _, err := Open(path); err == nil {
+	if _, err := Open(path, config.Config{}); err == nil {
 		t.Fatal("Open accepted a newer database schema")
 	}
 }
@@ -339,7 +344,7 @@ INSERT INTO catalog_entries VALUES
 	}
 	db.Close()
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +433,7 @@ INSERT INTO user_networks(user_id, cidr) VALUES (7, '192.168.20.0/24');
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +487,7 @@ VALUES (7, 'Messengers', 'Telegram');
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +547,7 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +555,8 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 	var feedID, modeID, feedCount, entryCount int64
 	var name, feedURL string
 	if err := s.DB.QueryRow(`
-SELECT id, name, url, mode_id FROM feeds
+SELECT f.id, f.name, f.url, cmf.mode_id FROM feeds f
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 WHERE name = 'ipranges' OR url = 'https://github.com/antonme/ipranges'
 `).Scan(&feedID, &name, &feedURL, &modeID); err != nil {
 		t.Fatal(err)
@@ -656,11 +662,11 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	}
 
 	var openCCKFeedID, ipRangesFeedID int64
-	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").
+	if err := s.DB.QueryRow(	"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").
 		Scan(&openCCKFeedID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = ?", ipranges.ID).
+	if err := s.DB.QueryRow(		"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = ?", ipranges.ID).
 		Scan(&ipRangesFeedID); err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1155,7 @@ func TestCountSelectionPrefixes(t *testing.T) {
 
 	// Get a feed ID for mode 1 (opencck, already enabled)
 	var feedID int64
-	if err := s.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").Scan(&feedID); err != nil {
+	if err := s.DB.QueryRow(	"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1193,9 +1199,1113 @@ func TestCountSelectionPrefixes(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// Migration 20 idempotency tests (Part C)
+// =============================================================================
+
+// TestMigration20Idempotency verifies that migration 20 can be re-run after a
+// crash that left the DB in an intermediate state. The NoTxSQL in migration 20
+// drops the original tables and renames *_new copies. If the crash happened
+// after the transactional part (which creates *_new tables) but before the
+// NoTxSQL completed, the Go func rebuilds the missing *_new tables and the
+// NoTxSQL safely retries the DROP+RENAME.
+func TestMigration20Idempotency(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "crash.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create a database with all migrations 1-19 already applied so that
+	// only migration 20 runs when Open() is called.
+	_, err = db.Exec(`
+		CREATE TABLE schema_migrations (
+			version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+		);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Insert all migrations 1-19
+	for v := 1; v <= 19; v++ {
+		if _, err := db.Exec(
+			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+			v, "migration-"+strconv.Itoa(v), "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Create all tables as they would exist after migration 19 (with mode_id on feeds)
+	_, err = db.Exec(`
+		CREATE TABLE feeds (
+			id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, url TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1, last_success TEXT, last_error TEXT,
+			mode_id INTEGER,
+			adapter_id INTEGER, sync_interval INTEGER NOT NULL DEFAULT 0,
+			data TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE catalog_entries (
+			feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+			category TEXT NOT NULL, service TEXT NOT NULL, cidr TEXT NOT NULL,
+			PRIMARY KEY (feed_id, category, service, cidr)
+		);
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+			peer_ip TEXT NOT NULL UNIQUE, peer_asn INTEGER NOT NULL,
+			next_hop TEXT, bgp_password TEXT,
+			selection_locked INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+			filter_editable INTEGER NOT NULL DEFAULT 0,
+			filter_mode TEXT NOT NULL DEFAULT 'global',
+			catalog_mode_id INTEGER, catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
+			web_auth TEXT NOT NULL DEFAULT 'network'
+		);
+		CREATE TABLE user_networks (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			cidr TEXT NOT NULL UNIQUE,
+			PRIMARY KEY (user_id, cidr)
+		);
+		CREATE TABLE selected_categories (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			mode_id INTEGER NOT NULL, category TEXT NOT NULL,
+			PRIMARY KEY (user_id, mode_id, category)
+		);
+		CREATE TABLE selected_services (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			mode_id INTEGER NOT NULL, category TEXT NOT NULL, service TEXT NOT NULL,
+			PRIMARY KEY (user_id, mode_id, category, service)
+		);
+		CREATE TABLE catalog_modes (
+			id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 1
+		);
+		CREATE TABLE feed_adapters (
+			id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE, language TEXT NOT NULL DEFAULT 'javascript',
+			api_version INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT '',
+			allowed_hosts TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1
+		);
+		CREATE TABLE catalog_communities (
+			mode_id INTEGER NOT NULL, category TEXT NOT NULL,
+			service TEXT NOT NULL DEFAULT '', community INTEGER NOT NULL,
+			PRIMARY KEY (mode_id, category, service)
+		);
+		CREATE TABLE user_credentials (
+			user_id INTEGER NOT NULL, login TEXT NOT NULL,
+			password_hash TEXT NOT NULL, PRIMARY KEY (user_id, login)
+		);
+		CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL,
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+		CREATE TABLE global_route_filters (
+			action TEXT NOT NULL, cidr TEXT NOT NULL,
+			PRIMARY KEY (action, cidr)
+		);
+		CREATE TABLE user_route_filters (
+			user_id INTEGER NOT NULL, action TEXT NOT NULL, cidr TEXT NOT NULL,
+			PRIMARY KEY (user_id, action, cidr)
+		);
+		INSERT INTO catalog_modes(id, key, name, enabled) VALUES
+			(1, 'opencck', 'OpenCCK', 1);
+		INSERT INTO feed_adapters(id, key, name) VALUES
+			(1, 'canonical-json', 'Canonical JSON');
+		INSERT INTO feeds(id, name, url, enabled, adapter_id) VALUES
+			(1, 'test-feed', 'https://example.test/feed', 1, 1);
+		INSERT INTO users(id, name, peer_ip, peer_asn, enabled) VALUES
+			(1, 'testuser', '10.0.0.1', 65001, 1);
+		INSERT INTO user_networks(user_id, cidr) VALUES (1, '1.1.1.0/24');
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Now open — this triggers migration 20. It should succeed.
+	s, err := Open(path, config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Verify migration 20 was applied
+	var version int
+	if err := s.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version < 20 {
+		t.Fatalf("expected at least migration 20 applied, got %d", version)
+	}
+
+	// Verify data survived: migration 20 should not lose users or feeds
+	var userCount, feedCount, networkCount int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&userCount); err != nil {
+		t.Fatal(err)
+	}
+	if userCount != 1 {
+		t.Fatalf("user count = %d, want 1", userCount)
+	}
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM feeds").Scan(&feedCount); err != nil {
+		t.Fatal(err)
+	}
+	if feedCount != 1 {
+		t.Fatalf("feed count = %d, want 1", feedCount)
+	}
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM user_networks").Scan(&networkCount); err != nil {
+		t.Fatal(err)
+	}
+	if networkCount != 1 {
+		t.Fatalf("user_networks count = %d, want 1", networkCount)
+	}
+
+	// Verify we can insert two users with same peer_ip but different ASN
+	// (proving peer_ip UNIQUE constraint is gone)
+	if _, err := s.DB.Exec(
+		"INSERT INTO users(name, peer_ip, peer_asn, enabled) VALUES ('dup-test', '10.0.0.1', 65002, 1)"); err != nil {
+		t.Fatalf("should be able to add second user with same IP: %v", err)
+	}
+
+	// Verify catalog_mode_feeds table exists
+	var tableCount int
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='catalog_mode_feeds'").Scan(&tableCount); err != nil {
+		t.Fatal(err)
+	}
+	if tableCount != 1 {
+		t.Fatal("catalog_mode_feeds table not created")
+	}
+}
+
+// TestMigration20NoTxSQLFailureRollsBack verifies that if migration 20's
+// NoTxSQL fails, version 20 is NOT recorded in schema_migrations.
+// This prevents the database from being left in a partial state where
+// the version is committed but the user-table rebuild never happened,
+// with no retry on next startup.
+func TestMigration20NoTxSQLFailureRollsBack(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "notxsql-fail.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create schema_migrations with all migrations 1-19 applied, so only
+	// migration 20 runs on Open().
+	_, err = db.Exec(`CREATE TABLE schema_migrations (
+		version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for v := 1; v <= 19; v++ {
+		if _, err := db.Exec(
+			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+			v, "migration-"+strconv.Itoa(v), "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Build a pre-migration-20 database with a users table intentionally
+	// missing the catalog_mode_editable column.  The SQL part of migration 20
+	// does not touch users, but NoTxSQL expects that column in the source
+	// table.  This simulates any NoTxSQL parse/constraint failure.
+	_, err = db.Exec(`
+		CREATE TABLE feeds (
+			id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, url TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1, last_success TEXT, last_error TEXT,
+			mode_id INTEGER,
+			adapter_id INTEGER, sync_interval INTEGER NOT NULL DEFAULT 0,
+			data TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE feed_adapters (
+			id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE, language TEXT NOT NULL DEFAULT 'javascript',
+			api_version INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT '',
+			allowed_hosts TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1
+		);
+		CREATE TABLE catalog_modes (
+			id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 1
+		);
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+			peer_ip TEXT NOT NULL UNIQUE, peer_asn INTEGER NOT NULL,
+			next_hop TEXT, bgp_password TEXT,
+			selection_locked INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+			filter_editable INTEGER NOT NULL DEFAULT 0,
+			filter_mode TEXT NOT NULL DEFAULT 'global',
+			catalog_mode_id INTEGER,
+			-- catalog_mode_editable intentionally omitted to make NoTxSQL fail
+			web_auth TEXT NOT NULL DEFAULT 'network'
+		);
+		CREATE TABLE user_networks (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			cidr TEXT NOT NULL UNIQUE, PRIMARY KEY (user_id, cidr)
+		);
+		CREATE TABLE selected_categories (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			mode_id INTEGER NOT NULL, category TEXT NOT NULL,
+			PRIMARY KEY (user_id, mode_id, category)
+		);
+		CREATE TABLE selected_services (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			mode_id INTEGER NOT NULL, category TEXT NOT NULL, service TEXT NOT NULL,
+			PRIMARY KEY (user_id, mode_id, category, service)
+		);
+		CREATE TABLE catalog_communities (
+			mode_id INTEGER NOT NULL, category TEXT NOT NULL,
+			service TEXT NOT NULL DEFAULT '', community INTEGER NOT NULL,
+			PRIMARY KEY (mode_id, category, service)
+		);
+		CREATE TABLE user_credentials (
+			user_id INTEGER NOT NULL, login TEXT NOT NULL,
+			password_hash TEXT NOT NULL, PRIMARY KEY (user_id, login)
+		);
+		CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL,
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+		CREATE TABLE global_route_filters (
+			action TEXT NOT NULL, cidr TEXT NOT NULL,
+			PRIMARY KEY (action, cidr)
+		);
+		CREATE TABLE user_route_filters (
+			user_id INTEGER NOT NULL, action TEXT NOT NULL, cidr TEXT NOT NULL,
+			PRIMARY KEY (user_id, action, cidr)
+		);
+		CREATE TABLE catalog_entries (
+			feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+			category TEXT NOT NULL, service TEXT NOT NULL, cidr TEXT NOT NULL,
+			PRIMARY KEY (feed_id, category, service, cidr)
+		);
+		INSERT INTO catalog_modes(id, key, name, enabled) VALUES
+			(1, 'opencck', 'OpenCCK', 1);
+		INSERT INTO feed_adapters(id, key, name) VALUES
+			(1, 'canonical-json', 'Canonical JSON');
+		INSERT INTO feeds(id, name, url, enabled, adapter_id, mode_id) VALUES
+			(1, 'test-feed', 'https://example.test/feed', 1, 1, 1);
+		INSERT INTO users(id, name, peer_ip, peer_asn, enabled) VALUES
+			(1, 'testuser', '10.0.0.1', 65001, 1);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Open the DB — this triggers migration 20.  The transactional SQL
+	// part (feed_adapters columns, catalog_mode_feeds table) will succeed,
+	// but the NoTxSQL (users table rebuild) MUST fail because the source
+	// users table is missing the catalog_mode_editable column.
+	s, err := Open(path, config.Config{})
+	if err == nil {
+		defer s.Close()
+		t.Fatal("expected Open to fail because NoTxSQL should fail, but got no error")
+	}
+	t.Logf("Open correctly returned error: %v", err)
+
+	// Re-query the DB manually to check whether version 20 was recorded
+	// despite the failure.
+	db2, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Close()
+
+	var version int
+	err = db2.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").Scan(&version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version >= 20 {
+		t.Errorf("BUG: migration version %d recorded despite NoTxSQL failure; "+
+			"DB is left in partial state with no retry path", version)
+	}
+}
+
+// TestMigration20FeedAdapterUpgrade verifies that migration 20 adds
+// the builtin_version and is_customized columns to feed_adapters.
+func TestMigration20FeedAdapterUpgrade(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "adapter-upgrade.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create schema_migrations with all migrations 1-19 applied, so only
+	// migration 20 runs on Open().
+	_, err = db.Exec(`CREATE TABLE schema_migrations (
+		version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for v := 1; v <= 19; v++ {
+		if _, err := db.Exec(
+			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+			v, "migration-"+strconv.Itoa(v), "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Build a pre-migration-20 database with feed_adapters (without builtin_version/is_customized)
+	_, err = db.Exec(`
+		CREATE TABLE feed_adapters (
+			id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE, language TEXT NOT NULL DEFAULT 'javascript',
+			api_version INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT '',
+			allowed_hosts TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1
+		);
+		INSERT INTO feed_adapters(id, key, name) VALUES
+			(1, 'canonical-json', 'Canonical JSON'),
+			(2, 'custom-adapter', 'Custom Adapter');
+		CREATE TABLE feeds (
+			id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, url TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1, last_success TEXT, last_error TEXT,
+			adapter_id INTEGER, sync_interval INTEGER NOT NULL DEFAULT 0,
+			data TEXT NOT NULL DEFAULT '',
+			mode_id INTEGER
+		);
+		CREATE TABLE catalog_modes (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 1);
+		INSERT INTO catalog_modes(id, key, name, enabled) VALUES (1, 'test', 'Test', 1);
+		INSERT INTO feeds(id, name, url, enabled, adapter_id, mode_id) VALUES
+			(1, 'feed1', 'https://example.test/1', 1, 1, 1);
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+			peer_ip TEXT NOT NULL UNIQUE, peer_asn INTEGER NOT NULL,
+			next_hop TEXT, bgp_password TEXT,
+			selection_locked INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+			filter_editable INTEGER NOT NULL DEFAULT 0,
+			filter_mode TEXT NOT NULL DEFAULT 'global',
+			catalog_mode_id INTEGER, catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
+			web_auth TEXT NOT NULL DEFAULT 'network'
+		);
+		CREATE TABLE user_networks (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			cidr TEXT NOT NULL UNIQUE, PRIMARY KEY (user_id, cidr)
+		);
+		CREATE TABLE selected_categories (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			mode_id INTEGER NOT NULL, category TEXT NOT NULL,
+			PRIMARY KEY (user_id, mode_id, category)
+		);
+		CREATE TABLE selected_services (
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			mode_id INTEGER NOT NULL, category TEXT NOT NULL, service TEXT NOT NULL,
+			PRIMARY KEY (user_id, mode_id, category, service)
+		);
+		CREATE TABLE catalog_communities (
+			mode_id INTEGER NOT NULL, category TEXT NOT NULL,
+			service TEXT NOT NULL DEFAULT '', community INTEGER NOT NULL,
+			PRIMARY KEY (mode_id, category, service)
+		);
+		CREATE TABLE user_credentials (
+			user_id INTEGER NOT NULL, login TEXT NOT NULL,
+			password_hash TEXT NOT NULL, PRIMARY KEY (user_id, login)
+		);
+		CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL,
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')));
+		CREATE TABLE global_route_filters (
+			action TEXT NOT NULL, cidr TEXT NOT NULL,
+			PRIMARY KEY (action, cidr)
+		);
+		CREATE TABLE user_route_filters (
+			user_id INTEGER NOT NULL, action TEXT NOT NULL, cidr TEXT NOT NULL,
+			PRIMARY KEY (user_id, action, cidr)
+		);
+		CREATE TABLE catalog_entries (
+			feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+			category TEXT NOT NULL, service TEXT NOT NULL, cidr TEXT NOT NULL,
+			PRIMARY KEY (feed_id, category, service, cidr)
+		);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	s, err := Open(path, config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Verify builtin_version and is_customized columns exist
+	var cnt int
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('feed_adapters') WHERE name = 'builtin_version'").Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatal("builtin_version column not added to feed_adapters")
+	}
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('feed_adapters') WHERE name = 'is_customized'").Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatal("is_customized column not added to feed_adapters")
+	}
+
+	// Verify existing adapter data survived
+	adapters, err := s.FeedAdapters(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adapters) < 2 {
+		t.Fatalf("adapter count = %d, want at least 2", len(adapters))
+	}
+
+	// Verify catalog_mode_feeds migration happened — feeds.mode_id removed
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name = 'mode_id'").Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 0 {
+		t.Fatal("mode_id column should have been dropped from feeds")
+	}
+
+	// Verify feed still exists with data
+	feed, err := s.Feed(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feed.Name != "feed1" {
+		t.Fatalf("feed name = %q, want 'feed1'", feed.Name)
+	}
+
+	// Verify the feed's mode assignment migrated to junction table
+	var modeFeedCount int
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM catalog_mode_feeds WHERE feed_id = 1 AND mode_id = 1").Scan(&modeFeedCount); err != nil {
+		t.Fatal(err)
+	}
+	if modeFeedCount != 1 {
+		t.Fatalf("catalog_mode_feeds count = %d, want 1", modeFeedCount)
+	}
+}
+
+// TestMigrationReopenPreservesData verifies that re-opening a fully migrated
+// database preserves all data.
+func TestMigrationReopenPreservesData(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "reopen.sqlite3")
+	s, err := Open(dbPath, config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Add some data
+	_, err = s.AddUser(ctx, User{
+		Name: "persist", PeerIP: "10.0.1.1", PeerASN: 65001, Enabled: true,
+		Networks: []string{"192.168.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddFeedForModeAdapter(
+		ctx, "persist-feed", "https://example.test/persist", 1, 1, true, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	// Reopen the same database
+	s2, err := Open(dbPath, config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	var userCount, feedCount int
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM users").Scan(&userCount); err != nil {
+		t.Fatal(err)
+	}
+	if userCount < 1 {
+		t.Fatal("user data lost on reopen")
+	}
+	if err := s2.DB.QueryRow("SELECT COUNT(*) FROM feeds").Scan(&feedCount); err != nil {
+		t.Fatal(err)
+	}
+	if feedCount < 1 {
+		t.Fatal("feed data lost on reopen")
+	}
+}
+
+// TestMigration20PreservesAdapterCustomizations verifies that migration 20 and
+// seedBuiltInAdapters do NOT overwrite admin-customized built-in adapter sources.
+func TestMigration20PreservesAdapterCustomizations(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "adapter-custom.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create schema_migrations with all migrations 1-19 applied, so only
+	// migration 20 runs on Open().
+	_, err = db.Exec(`CREATE TABLE schema_migrations (
+		version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for v := 1; v <= 19; v++ {
+		if _, err := db.Exec(
+			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+			v, "migration-"+strconv.Itoa(v), "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	customSource := "// CUSTOMIZED BY ADMIN\nfunction sync(feed, api) { return []; }\n"
+
+	// Build a pre-migration-20 database with a customized built-in adapter and
+	// minimal other tables required by migration 20's DDL.
+	_, err = db.Exec(`
+		CREATE TABLE feed_adapters (
+			id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE, language TEXT NOT NULL DEFAULT 'javascript',
+			api_version INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL DEFAULT '',
+			allowed_hosts TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1
+		);
+		INSERT INTO feed_adapters(id, key, name, source) VALUES
+			(1, 'canonical-json', 'Canonical JSON', ?);
+		CREATE TABLE catalog_modes (
+			id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL UNIQUE, enabled INTEGER NOT NULL DEFAULT 1
+		);
+		INSERT INTO catalog_modes(id, key, name, enabled) VALUES (1, 'test', 'Test', 1);
+		CREATE TABLE feeds (
+			id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, url TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1, last_success TEXT, last_error TEXT,
+			adapter_id INTEGER, sync_interval INTEGER NOT NULL DEFAULT 0,
+			data TEXT NOT NULL DEFAULT '', mode_id INTEGER
+		);
+		CREATE TABLE users (
+			id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+			peer_ip TEXT NOT NULL UNIQUE, peer_asn INTEGER NOT NULL,
+			next_hop TEXT, bgp_password TEXT,
+			selection_locked INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+			filter_editable INTEGER NOT NULL DEFAULT 0,
+			filter_mode TEXT NOT NULL DEFAULT 'global',
+			catalog_mode_id INTEGER, catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
+			web_auth TEXT NOT NULL DEFAULT 'network'
+		);
+	`, customSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	// Open triggers migration 20 + seedBuiltInAdapters.
+	s, err := Open(path, config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Verify the custom source was NOT overwritten by seedBuiltInAdapters.
+	var storedSource string
+	err = s.DB.QueryRow("SELECT source FROM feed_adapters WHERE key = 'canonical-json'").Scan(&storedSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedSource != customSource {
+		t.Errorf("custom source was overwritten by seedBuiltInAdapters!\ngot:  %q\nwant: %q", storedSource, customSource)
+	}
+
+	// Verify is_customized was set to 1 to protect from future overwrites.
+	var isCustomized int
+	err = s.DB.QueryRow("SELECT is_customized FROM feed_adapters WHERE key = 'canonical-json'").Scan(&isCustomized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isCustomized != 1 {
+		t.Errorf("is_customized = %d, want 1 (custom adapter not protected from overwrites)", isCustomized)
+	}
+}
+
+func TestBackupConfigDefaults(t *testing.T) {
+	t.Setenv("WDBGP_BACKUP_ENABLED", "")
+	t.Setenv("WDBGP_BACKUP_DIR", "")
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	t.Setenv("WDBGP_DB", dbPath)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.BackupEnabled {
+		t.Error("BackupEnabled default should be true")
+	}
+	if cfg.BackupDir != tmpDir {
+		t.Errorf("BackupDir = %q, want %q", cfg.BackupDir, tmpDir)
+	}
+}
+
+func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	backupDir := filepath.Join(tmpDir, "backups")
+
+	// Step 1: Create a pre-existing DB with user data.
+	{
+		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.AddUser(context.Background(), User{
+			Name: "test-user", PeerIP: "192.0.2.1", PeerASN: 65001,
+			Enabled:  true,
+			Networks: []string{"10.0.0.0/8"},
+		})
+		if err != nil {
+			s.Close()
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+
+	// Step 2: Simulate an upgrade — remove the last migration to create pending work.
+	{
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.Exec("DELETE FROM schema_migrations WHERE version = (SELECT MAX(version) FROM schema_migrations)"); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		db.Close()
+	}
+
+	// Step 3: Reopen with backup enabled — migrations are pending → backup created.
+	s, err := Open(dbPath, config.Config{
+		BackupEnabled: true,
+		BackupDir:     backupDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 backup file, got %d: %v", len(entries), entries)
+	}
+	if !strings.HasSuffix(entries[0].Name(), ".sqlite3") {
+		t.Fatalf("backup file missing .sqlite3 extension: %s", entries[0].Name())
+	}
+	backupPath := filepath.Join(backupDir, entries[0].Name())
+
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("backup file is empty")
+	}
+
+	// Verify backup can be opened and contains pre-migration data.
+	backupDB, err := sql.Open("sqlite", backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backupDB.Close()
+
+	var userCount int
+	if err := backupDB.QueryRow("SELECT COUNT(*) FROM users").Scan(&userCount); err != nil {
+		t.Fatal(err)
+	}
+	if userCount != 1 {
+		t.Errorf("backup should have 1 user (pre-migration data), got %d", userCount)
+	}
+}
+
+func TestBackupNotCreatedWhenUpToDate(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	backupDir := filepath.Join(tmpDir, "backups")
+
+	// Step 1: Create a DB with migrations applied (disable backup so no backup now).
+	{
+		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+
+	// Step 2: Reopen with backup enabled — all migrations already applied,
+	// so the "len(applied) < len(migrations)" check is false → no backup.
+	s, err := Open(dbPath, config.Config{
+		BackupEnabled: true,
+		BackupDir:     backupDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		// Dir might not exist at all when no backup was created — that's fine.
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sqlite3") {
+			t.Fatalf("unexpected backup when already up-to-date: %s", e.Name())
+		}
+	}
+}
+
+func TestBackupNotCreatedWhenDisabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	backupDir := filepath.Join(tmpDir, "backups")
+
+	s, err := Open(dbPath, config.Config{
+		BackupEnabled: false,
+		BackupDir:     backupDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	entries, err := os.ReadDir(backupDir)
+	if os.IsNotExist(err) {
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sqlite3") {
+			t.Fatalf("unexpected backup file when disabled: %s", e.Name())
+		}
+	}
+}
+
+func TestBackupNotCreatedOnFreshInstall(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	backupDir := filepath.Join(tmpDir, "backups")
+
+	// Fresh install — no existing data, no backups needed.
+	s, err := Open(dbPath, config.Config{
+		BackupEnabled: true,
+		BackupDir:     backupDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	entries, err := os.ReadDir(backupDir)
+	if os.IsNotExist(err) {
+		return // dir not created — correct, no backup
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sqlite3") {
+			t.Fatalf("unexpected backup on fresh install: %s", e.Name())
+		}
+	}
+}
+
+func TestBackupDirAutoCreated(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	backupDir := filepath.Join(tmpDir, "non-existent", "backups")
+
+	// Step 1: Create a DB with all migrations applied.
+	{
+		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+
+	// Step 2: Simulate an upgrade by removing the last migration record.
+	{
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.Exec("DELETE FROM schema_migrations WHERE version = (SELECT MAX(version) FROM schema_migrations)"); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		db.Close()
+	}
+
+	// Step 3: Reopen with backup enabled + non-existent backup dir.
+	// Pending migrations trigger backup → dir must be auto-created.
+	s, err := Open(dbPath, config.Config{
+		BackupEnabled: true,
+		BackupDir:     backupDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	info, err := os.Stat(backupDir)
+	if err != nil {
+		t.Fatalf("backup dir was not auto-created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal("backup path is not a directory")
+	}
+
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasSQLite := false
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".sqlite3") {
+			hasSQLite = true
+			break
+		}
+	}
+	if !hasSQLite {
+		t.Fatal("no .sqlite3 backup file found in auto-created directory")
+	}
+}
+
+func TestAutoRestoreEnvDefaultFalse(t *testing.T) {
+	t.Setenv("WDBGP_AUTO_RESTORE_ENABLED", "")
+	tmpDir := t.TempDir()
+	t.Setenv("WDBGP_DB", filepath.Join(tmpDir, "test.sqlite3"))
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoRestoreEnabled {
+		t.Error("AutoRestoreEnabled should be false when env is unset")
+	}
+}
+
+func TestRestoreFromBackup(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	backupDir := filepath.Join(tmpDir, "backups")
+	ctx := context.Background()
+
+	// Step 1: Create a DB, add a user, close.
+	{
+		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.AddUser(ctx, User{
+			Name: "restore-user", PeerIP: "10.0.1.1", PeerASN: 65100,
+			Enabled:  true,
+			Networks: []string{"192.168.1.0/24"},
+		})
+		if err != nil {
+			s.Close()
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+
+	// Step 2: Take a manual backup.
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(backupDir, "wdbgp-backup-20240101000000.sqlite3")
+	{
+		src, err := os.Open(dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dst, err := os.Create(backupPath)
+		if err != nil {
+			src.Close()
+			t.Fatal(err)
+		}
+		if _, err := dst.ReadFrom(src); err != nil {
+			src.Close()
+			dst.Close()
+			t.Fatal(err)
+		}
+		src.Close()
+		dst.Close()
+	}
+
+	// Step 3: Add a fake higher migration to simulate "newer version".
+	extraVersion := len(migrations) + 1
+	{
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, 'future', 'now')`, extraVersion); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		db.Close()
+	}
+
+	// Step 4: Reopen with auto-restore enabled.
+	s, err := Open(dbPath, config.Config{
+		AutoRestoreEnabled: true,
+		BackupDir:          backupDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Verify restored DB is not degraded.
+	if s.Degraded {
+		t.Fatal("restored DB should not be degraded")
+	}
+	var version int
+	if err := s.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != len(migrations) {
+		t.Fatalf("restored DB version = %d, want %d", version, len(migrations))
+	}
+
+	// Verify restored DB has 1 user.
+	users, err := s.Users(ctx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("restored DB should have 1 user, got %d", len(users))
+	}
+
+	// Verify old DB was saved.
+	incompatiblePath := strings.TrimSuffix(dbPath, ".sqlite3") + ".incompatible-v" + strconv.Itoa(extraVersion) + ".sqlite3"
+	if _, err := os.Stat(incompatiblePath); err != nil {
+		t.Fatalf("incompatible save file not found at %s: %v", incompatiblePath, err)
+	}
+}
+
+func TestDegradedWhenAutoRestoreDisabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	ctx := context.Background()
+
+	{
+		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.AddUser(ctx, User{
+			Name: "degraded-user", PeerIP: "10.0.2.1", PeerASN: 65100,
+			Enabled:  true,
+			Networks: []string{"192.168.2.0/24"},
+		})
+		if err != nil {
+			s.Close()
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+
+	{
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, 'future', 'now')`, len(migrations)+1); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		db.Close()
+	}
+
+	s, err := Open(dbPath, config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if !s.Degraded {
+		t.Fatal("Store.Degraded should be true")
+	}
+	if s.DBVersion != len(migrations)+1 {
+		t.Fatalf("DBVersion = %d, want %d", s.DBVersion, len(migrations)+1)
+	}
+	if !strings.Contains(s.DegradedReason, "auto-restore disabled") {
+		t.Fatalf("DegradedReason = %q, want to contain 'auto-restore disabled'", s.DegradedReason)
+	}
+}
+
+func TestDegradedWhenNoBackupFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.sqlite3")
+	backupDir := filepath.Join(tmpDir, "empty-backups")
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	{
+		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.AddUser(ctx, User{
+			Name: "no-backup-user", PeerIP: "10.0.3.1", PeerASN: 65100,
+			Enabled:  true,
+			Networks: []string{"192.168.3.0/24"},
+		})
+		if err != nil {
+			s.Close()
+			t.Fatal(err)
+		}
+		s.Close()
+	}
+
+	{
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, 'future', 'now')`, len(migrations)+1); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+		db.Close()
+	}
+
+	s, err := Open(dbPath, config.Config{
+		AutoRestoreEnabled: true,
+		BackupDir:          backupDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if !s.Degraded {
+		t.Fatal("Store.Degraded should be true")
+	}
+	if !strings.Contains(s.DegradedReason, "no backup") {
+		t.Fatalf("DegradedReason = %q, want to contain 'no backup'", s.DegradedReason)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
+	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

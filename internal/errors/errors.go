@@ -166,8 +166,8 @@ func NewDatabaseError(operation, query, message string, err error) *DatabaseErro
 // BGPRerror represents a BGP-related error.
 type BGPRerror struct {
 	*Error
-	PeerIP  string
-	PeerASN uint32
+	PeerIP    string
+	PeerASN   uint32
 	Operation string
 }
 

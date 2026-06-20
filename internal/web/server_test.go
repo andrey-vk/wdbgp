@@ -64,13 +64,13 @@ func (f *fakeBGP) UpdatePeer(context.Context, store.User) error {
 	return nil
 }
 
-func (f *fakeBGP) DeletePeer(context.Context, string) error {
+func (f *fakeBGP) DeletePeer(context.Context, string, int64) error {
 	f.deletes++
 	return nil
 }
 
 func TestUserSelectionAndAdminPages(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 }
 
 func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 }
 
 func TestLockedUserCanChangeEditableCatalogMode(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +347,7 @@ func TestLockedUserCanChangeEditableCatalogMode(t *testing.T) {
 }
 
 func TestCategorySelectionDisablesContainedServices(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 }
 
 func TestAdminCanManageFeeds(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 }
 
 func TestAdminCanEditFeedAdapter(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +591,7 @@ func TestAdminCanEditFeedAdapter(t *testing.T) {
 }
 
 func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +683,7 @@ func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
 }
 
 func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +793,7 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 }
 
 func TestLocalizedPages(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +951,7 @@ func TestSelectionFromValuesDropsServicesInsideSelectedCategory(t *testing.T) {
 }
 
 func TestAdminCookieSecureAutoAllowsPlainHTTP(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -996,7 +996,7 @@ func TestAdminCookieSecureAutoAllowsPlainHTTP(t *testing.T) {
 }
 
 func TestAdminCookieSecureAutoHonorsTrustedForwardedProto(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1030,8 +1030,342 @@ func (fn testRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, er
 	return fn(request)
 }
 
+// =============================================================================
+// Peer uniqueness tests (Part A)
+// =============================================================================
+
+func TestAddUserRejectsSameIPAndSameASN(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	_, err = db.AddUser(ctx, store.User{
+		Name: "first", PeerIP: "10.0.1.1", PeerASN: 65100, Enabled: true,
+		Networks: []string{"192.168.1.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	form := url.Values{
+		"name":     {"second"},
+		"peer_ip":  {"10.0.1.1"},
+		"peer_asn": {"65100"},
+		"networks": {"192.168.2.0/24"},
+		"enabled":  {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for duplicate IP+ASN, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "already exists") {
+		t.Fatalf("response should mention already exists: %s", response.Body.String())
+	}
+}
+
+func TestAddUserAcceptsUniqueIPWithoutPassword(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	form := url.Values{
+		"name":     {"unique-peer"},
+		"peer_ip":  {"10.0.2.1"},
+		"peer_asn": {"65100"},
+		"networks": {"192.168.3.0/24"},
+		"enabled":  {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect for unique IP without password, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+}
+
+func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Without password — should succeed (password is not required for dynamic peers)
+	form := url.Values{
+		"name":     {"dynamic-no-pw"},
+		"peer_ip":  {"0.0.0.0"},
+		"peer_asn": {"65100"},
+		"networks": {"0.0.0.0/0"},
+		"enabled":  {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect for dynamic peer without password, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+
+	// With password — should also succeed
+	form.Set("name", "dynamic-with-pw")
+	form.Set("peer_asn", "65101")
+	form.Set("bgp_password", "secret123")
+	form.Set("networks", "10.0.0.0/8")
+	request = httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect for dynamic peer with password, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+}
+
+func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	_, err = db.AddUser(ctx, store.User{
+		Name: "first-dynamic", PeerIP: "0.0.0.0", PeerASN: 65100,
+		BGPPassword: "secret1", Enabled: true,
+		Networks: []string{"0.0.0.0/0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	form := url.Values{
+		"name":         {"second-dynamic"},
+		"peer_ip":      {"0.0.0.0"},
+		"peer_asn":     {"65100"},
+		"bgp_password": {"secret2"},
+		"networks":     {"0.0.0.0/0"},
+		"enabled":      {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for duplicate dynamic peer ASN, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	// Step A (same IP + same ASN) fires before Step B (globally unique ASN for dynamic).
+	// For 0.0.0.0, Step A catches it because the same IP (0.0.0.0) and same ASN (65100) are duplicated.
+	if !strings.Contains(response.Body.String(), "already exists") {
+		t.Fatalf("response should mention already exists: %s", response.Body.String())
+	}
+}
+
+func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	_, err = db.AddUser(ctx, store.User{
+		Name: "first-shared", PeerIP: "10.0.3.1", PeerASN: 65101, Enabled: true,
+		Networks: []string{"192.168.10.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.RequirePasswordForNonUniqueIP = true
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	form := url.Values{
+		"name":     {"second-shared"},
+		"peer_ip":  {"10.0.3.1"},
+		"peer_asn": {"65102"},
+		"networks": {"192.168.11.0/24"},
+		"enabled":  {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for shared IP without password, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "password required") {
+		t.Fatalf("response should mention password required: %s", response.Body.String())
+	}
+}
+
+func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	_, err = db.AddUser(ctx, store.User{
+		Name: "first-shared-pw", PeerIP: "10.0.4.1", PeerASN: 65101, Enabled: true,
+		BGPPassword: "shared-secret",
+		Networks: []string{"192.168.20.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	form := url.Values{
+		"name":         {"second-shared-pw"},
+		"peer_ip":      {"10.0.4.1"},
+		"peer_asn":     {"65102"},
+		"bgp_password": {"shared-secret"},
+		"networks":     {"192.168.21.0/24"},
+		"enabled":      {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect for shared IP with password, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+}
+
+func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv4-pw.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	// Add first peer with password "apple"
+	_, err = db.AddUser(ctx, store.User{
+		Name: "alice", PeerIP: "192.0.2.1", PeerASN: 65001,
+		BGPPassword: "apple", Enabled: true,
+		Networks: []string{"192.168.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Try to add second peer with different password "banana"
+	form := url.Values{
+		"name":         {"bob"},
+		"peer_ip":      {"192.0.2.1"},
+		"peer_asn":     {"65002"},
+		"bgp_password": {"banana"},
+		"networks":     {"192.168.101.0/24"},
+		"enabled":      {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for mismatched password on shared IP, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "password must match") {
+		t.Fatalf("response should mention password must match: %s", response.Body.String())
+	}
+}
+
+func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv6-pw.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	// Add first peer with password "apple"
+	_, err = db.AddUser(ctx, store.User{
+		Name: "alice6", PeerIP: "fd00::1", PeerASN: 65101,
+		BGPPassword: "apple", Enabled: true,
+		Networks: []string{"fd00:cafe::/48"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Try to add second peer with different password "banana"
+	form := url.Values{
+		"name":         {"bob6"},
+		"peer_ip":      {"fd00::1"},
+		"peer_asn":     {"65102"},
+		"bgp_password": {"banana"},
+		"networks":     {"fd00:babe::/48"},
+		"enabled":      {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for mismatched password on shared IPv6, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "password must match") {
+		t.Fatalf("response should mention password must match: %s", response.Body.String())
+	}
+}
+
 func TestStatusEndpoint(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "status.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "status.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1047,7 +1381,7 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 
 	// Add a feed
-	err = db.AddFeedForModeAdapter(
+	_, err = db.AddFeedForModeAdapter(
 		context.Background(),
 		"test-feed",
 		"http://example.com/feed.json",
@@ -1122,5 +1456,111 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 	if connected, ok := dbData["connected"].(bool); !ok || !connected {
 		t.Error("database should show as connected")
+	}
+}
+
+func TestDegradedModeShowsErrorPage(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	cfg.DefaultLanguage = "en"
+	srv := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
+	srv.SetDegraded(DegradedInfo{
+		CurrentVersion: 999,
+		ServerVersion:  20,
+		Reason:         "test reason",
+	})
+	handler := srv.Handler()
+
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.Code)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "999") {
+		t.Fatalf("body missing current DB version 999: %s", body)
+	}
+	if !strings.Contains(body, "20") {
+		t.Fatalf("body missing server version 20: %s", body)
+	}
+	if !strings.Contains(body, "Mismatch") {
+		t.Fatalf("body missing 'Mismatch' from title.db_mismatch: %s", body)
+	}
+}
+
+func TestDegradedModeAllRoutesShowError(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	cfg.DefaultLanguage = "en"
+	srv := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
+	srv.SetDegraded(DegradedInfo{
+		CurrentVersion: 999,
+		ServerVersion:  20,
+		Reason:         "test reason",
+	})
+	handler := srv.Handler()
+
+	for _, path := range []string{"/admin", "/login", "/healthz"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s: status = %d, want 503", path, response.Code)
+		}
+		if !strings.Contains(response.Body.String(), "Mismatch") {
+			t.Errorf("%s: body missing degraded page content", path)
+		}
+	}
+}
+
+func TestDegradedModeLanguageSwitch(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	srv := New(testConfig(), db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
+	srv.SetDegraded(DegradedInfo{
+		CurrentVersion: 999,
+		ServerVersion:  20,
+		Reason:         "test reason",
+	})
+	handler := srv.Handler()
+
+	// Russian
+	request := httptest.NewRequest(http.MethodGet, "/?lang=ru", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ru: status = %d, want 503", response.Code)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "Несоответствие версии базы данных") {
+		t.Fatalf("ru: body missing Russian title: %s", body)
+	}
+
+	// English
+	request = httptest.NewRequest(http.MethodGet, "/?lang=en", nil)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("en: status = %d, want 503", response.Code)
+	}
+	body = response.Body.String()
+	if !strings.Contains(body, "Database Version Mismatch") {
+		t.Fatalf("en: body missing English title: %s", body)
 	}
 }

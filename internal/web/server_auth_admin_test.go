@@ -20,7 +20,7 @@ import (
 // =============================================================================
 
 func TestUserLoginPageReturnsLoginForm(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestUserLoginPageReturnsLoginForm(t *testing.T) {
 }
 
 func TestUserLoginSuccess(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestUserLoginSuccess(t *testing.T) {
 }
 
 func TestUserLoginWrongPassword(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestUserLoginWrongPassword(t *testing.T) {
 }
 
 func TestUserPageRedirectsToLoginWhenWebAuthIsLoginAndNoSession(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "login-redirect.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "login-redirect.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestUserPageRedirectsToLoginWhenWebAuthIsLoginAndNoSession(t *testing.T) {
 // =============================================================================
 
 func TestAdminCommunitiesPageLoads(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestAdminCommunitiesPageLoads(t *testing.T) {
 }
 
 func TestAdminCommunitiesPageRequiresAuth(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestAdminCommunitiesPageRequiresAuth(t *testing.T) {
 }
 
 func TestAdminCommunitiesSaves(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestAdminCommunitiesSaves(t *testing.T) {
 // =============================================================================
 
 func TestAdminSettingsPageRequiresAuth(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestAdminSettingsPageRequiresAuth(t *testing.T) {
 }
 
 func TestAdminSettingsPageLoads(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestAdminSettingsPageLoads(t *testing.T) {
 }
 
 func TestAdminSettingsSavesAndRedirects(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestAdminSettingsSavesAndRedirects(t *testing.T) {
 }
 
 func TestAdminSettingsIncludesGlobalRouteFilters(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings-filters.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings-filters.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func TestAdminSettingsIncludesGlobalRouteFilters(t *testing.T) {
 }
 
 func TestAdminSettingsSavesGlobalRouteFilters(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings-filters-save.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings-filters-save.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,12 +433,148 @@ func TestAdminSettingsSavesGlobalRouteFilters(t *testing.T) {
 	}
 }
 
+func TestSettingsPageDynamicPeersFieldAndHint(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings-dynamic.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := adminAuthCookie(t, cfg)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/settings", nil)
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /admin/settings: status=%d body=%s", response.Code, body)
+	}
+
+	if !strings.Contains(body, `for="s_allow_dynamic_peers"`) {
+		t.Fatalf("dynamic peers checkbox not found: %s", body)
+	}
+	if !strings.Contains(body, `disabled title="`) {
+		t.Fatalf("dynamic peers checkbox not disabled: %s", body)
+	}
+	if !strings.Contains(body, `WDBGP_ALLOW_DYNAMIC_PEERS`) {
+		t.Fatalf("env var name not rendered: %s", body)
+	}
+}
+
+func TestUserFormDynamicCheckboxReadonlyWhenDisabled(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "user-dyn-readonly.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := adminAuthCookie(t, cfg)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/user/0", nil)
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /admin/user/0: status=%d body=%s", response.Code, body)
+	}
+	if !strings.Contains(body, `id=dynamic-ip`) {
+		t.Fatalf("dynamic-ip checkbox not found: %s", body)
+	}
+	if !strings.Contains(body, `readonly`) {
+		t.Fatalf("dynamic-ip checkbox missing readonly: %s", body)
+	}
+}
+
+func TestUserFormPasswordDisabledDynamicIPv4(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "user-pw-dis-v4.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	userID, err := db.AddUser(ctx, store.User{
+		Name:        "dynamic-v4",
+		PeerIP:      "0.0.0.0",
+		PeerASN:     65100,
+		BGPPassword: "secret",
+		Enabled:     true,
+		Networks:    []string{"0.0.0.0/0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := adminAuthCookie(t, cfg)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/user/"+strconv.FormatInt(userID, 10), nil)
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /admin/user/%d: status=%d body=%s", userID, response.Code, body)
+	}
+	if !strings.Contains(body, `disabled title="`) || !strings.Contains(body, `name=bgp_password`) {
+		t.Fatalf("bgp_password field should be disabled for dynamic peer: %s", body)
+	}
+}
+
+func TestUserFormPasswordDisabledDynamicIPv6(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "user-pw-dis-v6.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	userID, err := db.AddUser(ctx, store.User{
+		Name:        "dynamic-v6",
+		PeerIP:      "::",
+		PeerASN:     65101,
+		BGPPassword: "secret6",
+		Enabled:     true,
+		Networks:    []string{"::/0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := adminAuthCookie(t, cfg)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/user/"+strconv.FormatInt(userID, 10), nil)
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /admin/user/%d: status=%d body=%s", userID, response.Code, body)
+	}
+	if !strings.Contains(body, `disabled title="`) || !strings.Contains(body, `name=bgp_password`) {
+		t.Fatalf("bgp_password field should be disabled for dynamic IPv6 peer: %s", body)
+	}
+}
+
 // =============================================================================
 // Selection count endpoint
 // =============================================================================
 
 func TestSelectionCountEndpoint(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "selcount.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "selcount.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +584,7 @@ func TestSelectionCountEndpoint(t *testing.T) {
 
 	// Get a feed in mode 1
 	var feedID int64
-	err = db.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").Scan(&feedID)
+	err = db.DB.QueryRow("SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +644,7 @@ func TestSelectionCountEndpoint(t *testing.T) {
 }
 
 func TestSelectionCountWithEmptySelection(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "selcount-empty.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "selcount-empty.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +694,7 @@ func adminAuthCookie(t *testing.T, cfg config.Config) *http.Cookie {
 func addCommunityTestData(t *testing.T, db *store.Store) {
 	t.Helper()
 	var feedID int64
-	err := db.DB.QueryRow("SELECT id FROM feeds WHERE mode_id = 1 ORDER BY id LIMIT 1").Scan(&feedID)
+	err := db.DB.QueryRow("SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +717,7 @@ func addCommunityTestData(t *testing.T, db *store.Store) {
 
 func TestUserLoginRateLimited(t *testing.T) {
 	// Rate limiting (loginLimiter) is applied to both admin and user login.
-	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

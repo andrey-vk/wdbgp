@@ -236,7 +236,7 @@ func TestCIDRDebugJSONIncludesZeroPostFilterCoverage(t *testing.T) {
 
 func debugTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	db, err := store.Open(filepath.Join(t.TempDir(), "debug.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "debug.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

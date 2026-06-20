@@ -144,32 +144,80 @@ type builtInAdapter struct {
 	name         string
 	source       string
 	allowedHosts string
+	builtinVersion int
 }
 
 var builtInAdapters = map[string]builtInAdapter{
 	"canonical-json": {
 		name: "Canonical JSON", source: canonicalJSONAdapter,
+		builtinVersion: 1,
 	},
 	"opencck": {
 		name: "OpenCCK", source: openCCKAdapter,
+		builtinVersion: 1,
 	},
 	"ipranges": {
 		name: "IPRanges", source: ipRangesAdapter,
 		allowedHosts: "raw.githubusercontent.com",
+		builtinVersion: 1,
 	},
 	"singbox-srs": {
 		name: "sing-box SRS", source: singboxSRSAdapter,
+		builtinVersion: 1,
 	},
 }
 
 func (s *Store) seedBuiltInAdapters(ctx context.Context) error {
 	for key, adapter := range builtInAdapters {
+		// First, INSERT OR IGNORE any built-in adapters that don't exist yet.
 		if _, err := s.DB.ExecContext(ctx, `
-UPDATE feed_adapters
-SET source = ?
-WHERE key = ? AND source = ''`,
-			normalizedBuiltInSource(adapter.source), key); err != nil {
+INSERT OR IGNORE INTO feed_adapters(key, name, language, api_version, source, allowed_hosts, builtin_version)
+VALUES (?, ?, 'javascript', 1, ?, ?, ?)`,
+			key, adapter.name, normalizedBuiltInSource(adapter.source),
+			adapter.allowedHosts, adapter.builtinVersion); err != nil {
 			return err
+		}
+		// Then, read current state of the adapter.
+		var isCustomized, builtinVersion int
+		var storedSource, currentName, currentAllowedHosts string
+		err := s.DB.QueryRowContext(ctx,
+			"SELECT is_customized, builtin_version, source, name, COALESCE(allowed_hosts, '') FROM feed_adapters WHERE key = ?", key).
+			Scan(&isCustomized, &builtinVersion, &storedSource, &currentName, &currentAllowedHosts)
+		if err != nil {
+			continue
+		}
+
+		normBuiltIn := normalizedBuiltInSource(adapter.source)
+
+		if isCustomized == 1 {
+			// Only update builtin_version; preserve user edits.
+			if _, err := s.DB.ExecContext(ctx,
+				"UPDATE feed_adapters SET builtin_version = ? WHERE key = ?",
+				adapter.builtinVersion, key); err != nil {
+				return err
+			}
+		} else if builtinVersion == 0 && storedSource != "" && (strings.TrimSpace(storedSource) != strings.TrimSpace(normBuiltIn) ||
+			currentName != adapter.name ||
+			currentAllowedHosts != adapter.allowedHosts) {
+			// Freshly migrated adapter (builtin_version == 0) whose source
+			// differs from the built-in default. This adapter was customized
+			// before migration 20 added the is_customized column.
+			// Mark as customized so future seed runs don't overwrite it.
+			if _, err := s.DB.ExecContext(ctx,
+				"UPDATE feed_adapters SET is_customized = 1, builtin_version = ? WHERE key = ?",
+				adapter.builtinVersion, key); err != nil {
+				return err
+			}
+		} else {
+			// Not customized: update name, source, allowed_hosts, builtin_version.
+			if _, err := s.DB.ExecContext(ctx, `
+UPDATE feed_adapters
+SET name = ?, source = ?, allowed_hosts = ?, builtin_version = ?
+WHERE key = ?`,
+				adapter.name, normBuiltIn,
+				adapter.allowedHosts, adapter.builtinVersion, key); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -192,7 +240,7 @@ func (s *Store) ResetFeedAdapter(ctx context.Context, id int64) error {
 	}
 	result, err := s.DB.ExecContext(ctx, `
 UPDATE feed_adapters
-SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1
+SET name = ?, source = ?, allowed_hosts = ?, is_customized = 0, revision = revision + 1
 WHERE id = ?`,
 		adapter.name, normalizedBuiltInSource(adapter.source),
 		adapter.allowedHosts, id)
@@ -239,7 +287,7 @@ func (s *Store) DeleteFeedAdapter(ctx context.Context, id int64) error {
 func (s *Store) UpdateFeedAdapter(ctx context.Context, adapter FeedAdapter) error {
 	result, err := s.DB.ExecContext(ctx, `
 UPDATE feed_adapters
-SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1
+SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1, is_customized = 1
 WHERE id = ?`,
 		adapter.Name, adapter.Source, adapter.AllowedHosts, adapter.ID)
 	if err != nil {

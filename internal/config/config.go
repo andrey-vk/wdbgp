@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -41,10 +42,15 @@ type Config struct {
 	JSMaxRequests      int
 	JSMaxCallStack     int
 	DefaultWebAuth     string
-	StatusAllowed      []string // comma-separated CIDRs for /status access
-	StatusToken        string   // Bearer token for /status access
-	AdapterBackupDir   string   // backup directory for adapter sources (empty = disabled)
-	AdapterBackupMax   int      // max backup copies per adapter
+	StatusAllowed      []string            // comma-separated CIDRs for /status access
+	StatusToken        string              // Bearer token for /status access
+	AdapterBackupDir   string              // backup directory for adapter sources (empty = disabled)
+	AdapterBackupMax   int                 // max backup copies per adapter
+	RequirePasswordForNonUniqueIP bool     // require BGP password when sharing IP with different ASN
+	AllowDynamicPeers             bool     // allow dynamic peers (0.0.0.0/0) via WDBGP_ALLOW_DYNAMIC_PEERS
+	BackupEnabled      bool   // WDBGP_BACKUP_ENABLED (default true)
+	BackupDir          string // WDBGP_BACKUP_DIR (default: same dir as DB)
+	AutoRestoreEnabled bool   // WDBGP_AUTO_RESTORE_ENABLED (default false)
 }
 
 func Load() (Config, error) {
@@ -177,6 +183,11 @@ func Load() (Config, error) {
 		StatusToken:        os.Getenv("WDBGP_STATUS_TOKEN"),
 		AdapterBackupDir:   env("WDBGP_ADAPTER_BACKUP_DIR", filepath.Dir(dbPath)+"/backup/adapters"),
 		AdapterBackupMax:   validateBackupMax("WDBGP_ADAPTER_BACKUP_MAX", 10),
+		RequirePasswordForNonUniqueIP: envBool("WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP", true),
+		AllowDynamicPeers:             envBool("WDBGP_ALLOW_DYNAMIC_PEERS", false),
+		BackupEnabled:      envBool("WDBGP_BACKUP_ENABLED", true),
+		BackupDir:          env("WDBGP_BACKUP_DIR", filepath.Dir(dbPath)),
+		AutoRestoreEnabled: envBool("WDBGP_AUTO_RESTORE_ENABLED", false),
 	}
 	return cfg, nil
 }
@@ -224,39 +235,27 @@ func integer(name string, fallback int) (int, error) {
 	return int(number), nil
 }
 
-func integer32(name string, fallback int32) (int32, error) {
-	value := os.Getenv(name)
-	if value == "" {
-		return fallback, nil
-	}
-	number, err := strconv.ParseInt(value, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be an integer: %w", name, err)
-	}
-	return int32(number), nil
-}
-
-func unsignedInteger32(name string, fallback uint32) (uint32, error) {
-	value := os.Getenv(name)
-	if value == "" {
-		return fallback, nil
-	}
-	if strings.HasPrefix(strings.TrimSpace(value), "-") {
-		return 0, fmt.Errorf("%s must be between 1 and %d", name, uint64(^uint32(0)))
-	}
-	number, err := strconv.ParseUint(value, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be an integer: %w", name, err)
-	}
-	return uint32(number), nil
-}
-
 func boolean(name string) bool {
 	switch strings.ToLower(os.Getenv(name)) {
 	case "1", "true", "yes", "on":
 		return true
 	default:
 		return false
+	}
+}
+
+func envBool(name string, fallback bool) bool {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
 	}
 }
 
@@ -322,7 +321,7 @@ func validateSyncInterval(name string, fallback int) (int, error) {
 	}
 	// Warn about extremely short intervals but don't reject them
 	if number < 60 {
-		// This is just a warning, not an error
+		log.Printf("WARNING: %s=%d is extremely short (less than 60 seconds)", name, number)
 	}
 	return int(number), nil
 }
@@ -480,10 +479,9 @@ func validateDBPath(name string, fallback string) (string, error) {
 				if stat.Mode().Perm()&0200 == 0 {
 					return "", fmt.Errorf("%s: cannot create directory %s - parent %s is not writable", name, dir, grandDir)
 				}
-			} else if os.IsNotExist(err) {
-				// Keep going up until we find an existing directory or hit root
-				// For now, just return a warning
-			}
+		} else if os.IsNotExist(err) {
+			log.Printf("WARNING: %s: parent directory %s does not exist", name, dir)
+		}
 		}
 	} else {
 		// Other error (permission denied, etc.)

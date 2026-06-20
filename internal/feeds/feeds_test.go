@@ -392,7 +392,7 @@ func TestSyncAllSkipsDisabledFeeds(t *testing.T) {
 		}, nil
 	})}
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ WHERE f.name = 'disabled'`).Scan(&disabledEntries); err != nil {
 
 func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +494,7 @@ FROM feeds WHERE id = ?`, feed.ID).Scan(&url, &lastSuccess, &lastError); err != 
 
 func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 
 func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "ipranges.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "ipranges.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +559,7 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.DB.Exec(
-		"UPDATE feeds SET enabled = CASE WHEN mode_id = ? THEN 1 ELSE 0 END",
+		"UPDATE feeds SET enabled = CASE WHEN id IN (SELECT feed_id FROM catalog_mode_feeds WHERE mode_id = ?) THEN 1 ELSE 0 END",
 		store.IPRangesCatalogModeID); err != nil {
 		t.Fatal(err)
 	}
@@ -598,7 +598,8 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	if err := db.DB.QueryRow(`
 SELECT COUNT(*)
 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
-WHERE f.mode_id != ? AND ce.cidr IN ('203.0.113.0/24', '2001:db8::/32')`,
+WHERE f.id NOT IN (SELECT feed_id FROM catalog_mode_feeds WHERE mode_id = ?)
+  AND ce.cidr IN ('203.0.113.0/24', '2001:db8::/32')`,
 		store.IPRangesCatalogModeID).Scan(&wrongModeEntries); err != nil {
 		t.Fatal(err)
 	}

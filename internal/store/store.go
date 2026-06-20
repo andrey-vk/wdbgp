@@ -5,13 +5,16 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/prefixfilter"
 	"github.com/andrey-vk/wdbgp/internal/retry"
 
@@ -21,10 +24,11 @@ import (
 )
 
 type Migration struct {
-	Version int
-	Name    string
-	SQL     string
-	Go      func(*sql.Tx) error // optional post-SQL migration function
+	Version  int
+	Name     string
+	SQL      string
+	Go       func(*sql.Tx) error // optional post-SQL migration function
+	NoTxSQL  string              // optional SQL to run outside the migration transaction
 }
 
 var migrations = []Migration{
@@ -476,10 +480,141 @@ WHERE EXISTS (SELECT 1 FROM catalog_modes WHERE key = 'singbox-srs')
   AND EXISTS (SELECT 1 FROM feed_adapters WHERE key = 'singbox-srs');
 `,
 	},
+	{
+		Version: 20,
+		Name:    "add adapter upgrade support, catalog mode M:M",
+		// DDL is idempotent — checks column/table existence before each operation
+		// to allow safe re-run when migration record is replayed (e.g. after backup
+		// restore or test scenarios that remove the migration marker).
+		Go: func(tx *sql.Tx) error {
+			// --- feed_adapters columns ---
+			rows, err := tx.Query("SELECT name FROM pragma_table_info('feed_adapters')")
+			if err != nil {
+				return err
+			}
+			hasBuiltinVersion := false
+			hasIsCustomized := false
+			for rows.Next() {
+				var name string
+				if err := rows.Scan(&name); err != nil {
+					rows.Close()
+					return err
+				}
+				switch name {
+				case "builtin_version":
+					hasBuiltinVersion = true
+				case "is_customized":
+					hasIsCustomized = true
+				}
+			}
+			rows.Close()
+			if !hasBuiltinVersion {
+				if _, err := tx.Exec("ALTER TABLE feed_adapters ADD COLUMN builtin_version INTEGER NOT NULL DEFAULT 0"); err != nil {
+					return err
+				}
+			}
+			if !hasIsCustomized {
+				if _, err := tx.Exec("ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0"); err != nil {
+					return err
+				}
+			}
+
+			// --- catalog_mode_feeds junction table ---
+			var hasCMF int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='catalog_mode_feeds'").Scan(&hasCMF); err != nil {
+				return err
+			}
+			if hasCMF == 0 {
+				if _, err := tx.Exec(`CREATE TABLE catalog_mode_feeds (
+					mode_id INTEGER NOT NULL REFERENCES catalog_modes(id) ON DELETE CASCADE,
+					feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+					PRIMARY KEY (mode_id, feed_id)
+				)`); err != nil {
+					return err
+				}
+				if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_catalog_mode_feeds_feed ON catalog_mode_feeds(feed_id)"); err != nil {
+					return err
+				}
+				// Migrate existing feed→mode assignments (only when mode_id still exists)
+				var hasModeID int
+				if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name='mode_id'").Scan(&hasModeID); err != nil {
+					return err
+				}
+				if hasModeID > 0 {
+					if _, err := tx.Exec(`INSERT INTO catalog_mode_feeds (mode_id, feed_id)
+						SELECT mode_id, id FROM feeds WHERE mode_id IS NOT NULL`); err != nil {
+						return err
+					}
+				}
+			}
+
+			// --- Drop legacy feeds.mode_id column ---
+			var hasModeID int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('feeds') WHERE name='mode_id'").Scan(&hasModeID); err != nil {
+				return err
+			}
+			if hasModeID > 0 {
+				if _, err := tx.Exec("DROP INDEX IF EXISTS idx_feeds_mode"); err != nil {
+					return err
+				}
+				if _, err := tx.Exec("DROP INDEX IF EXISTS idx_feeds_enabled_mode"); err != nil {
+					return err
+				}
+				if _, err := tx.Exec("ALTER TABLE feeds DROP COLUMN mode_id"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		// NoTxSQL: remove peer_ip UNIQUE constraint (issue #17)
+		// must run outside migration transaction because SQLite doesn't support
+		// ALTER TABLE DROP CONSTRAINT inside a transaction in some configurations.
+		// We use PRAGMA foreign_keys = OFF to prevent cascading deletes during rebuild.
+		NoTxSQL: `
+PRAGMA foreign_keys = OFF;
+CREATE TABLE IF NOT EXISTS users_new (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    peer_ip TEXT NOT NULL,
+    peer_asn INTEGER NOT NULL,
+    next_hop TEXT,
+    bgp_password TEXT,
+    selection_locked INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    filter_override_enabled INTEGER NOT NULL DEFAULT 0,
+    filter_editable INTEGER NOT NULL DEFAULT 0,
+    filter_mode TEXT NOT NULL DEFAULT 'global'
+        CHECK (filter_mode IN ('global', 'extend', 'override')),
+    catalog_mode_id INTEGER REFERENCES catalog_modes(id),
+    catalog_mode_editable INTEGER NOT NULL DEFAULT 0,
+    web_auth TEXT NOT NULL DEFAULT 'network',
+    UNIQUE(peer_ip, peer_asn)
+);
+-- Only insert if users_new is empty (idempotent: safe for retry after partial run)
+INSERT INTO users_new SELECT id, name, peer_ip, peer_asn, next_hop, bgp_password,
+    selection_locked, enabled, filter_override_enabled, filter_editable,
+    COALESCE(filter_mode, 'global'), catalog_mode_id, catalog_mode_editable,
+    COALESCE(web_auth, 'network') FROM users
+WHERE NOT EXISTS (SELECT 1 FROM users_new LIMIT 1);
+DROP TABLE IF EXISTS users;
+ALTER TABLE users_new RENAME TO users;
+PRAGMA foreign_keys = ON;
+`,
+	},
 }
 
+var ErrDBTooNew = errors.New("database schema is newer than this server version")
+
 type Store struct {
-	DB *sql.DB
+	DB            *sql.DB
+	dbPath        string // DB file path for backup
+	backupEnabled bool
+	backupDir     string
+	autoRestore   bool // auto-restore from backup when DB is newer than server
+	Degraded       bool   // true when DB is newer and auto-restore didn't run
+	DBVersion      int    // current DB schema version (when degraded)
+	ServerVersion  int    // expected server schema version (when degraded)
+	DegradedReason string // why degraded: "no backup found", "auto-restore disabled", etc.
 }
 
 type Feed struct {
@@ -567,7 +702,7 @@ type RouteFilters struct {
 	Deny  []string
 }
 
-func Open(path string) (*Store, error) {
+func Open(path string, cfg config.Config) (*Store, error) {
 	if parent := filepath.Dir(path); parent != "." {
 		if err := os.MkdirAll(parent, 0o755); err != nil {
 			return nil, err
@@ -589,7 +724,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{DB: db}
+	s := &Store{DB: db, dbPath: path, backupEnabled: cfg.BackupEnabled, backupDir: cfg.BackupDir, autoRestore: cfg.AutoRestoreEnabled}
 	if err := s.Migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -601,6 +736,117 @@ func (s *Store) Close() error {
 	return s.DB.Close()
 }
 
+func (s *Store) readAppliedMigrations(ctx context.Context) ([]int, error) {
+	rows, err := s.DB.QueryContext(ctx, "SELECT version FROM schema_migrations ORDER BY version")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var applied []int
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return nil, err
+		}
+		applied = append(applied, version)
+	}
+	return applied, rows.Err()
+}
+
+func (s *Store) tryRestore(ctx context.Context, applied []int) error {
+	targetVersion := len(migrations)
+	currentVersion := applied[len(applied)-1]
+
+	backupDir := s.backupDir
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		return fmt.Errorf("scan backup dir %s: %w", backupDir, err)
+	}
+
+	type candidate struct {
+		path    string
+		version int
+		modTime time.Time
+	}
+	var candidates []candidate
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".sqlite3") || !strings.HasPrefix(e.Name(), "wdbgp-backup-") {
+			continue
+		}
+		backupPath := filepath.Join(backupDir, e.Name())
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		backupDB, err := sql.Open("sqlite", backupPath)
+		if err != nil {
+			continue
+		}
+		backupDB.SetMaxOpenConns(1)
+		rows, err := backupDB.QueryContext(ctx, "SELECT version FROM schema_migrations ORDER BY version")
+		if err != nil {
+			backupDB.Close()
+			continue
+		}
+		var versions []int
+		for rows.Next() {
+			var v int
+			if err := rows.Scan(&v); err != nil {
+				rows.Close()
+				backupDB.Close()
+				continue
+			}
+			versions = append(versions, v)
+		}
+		rows.Close()
+		backupDB.Close()
+		if len(versions) == 0 {
+			continue
+		}
+		maxVersion := versions[len(versions)-1]
+		if maxVersion != targetVersion {
+			continue
+		}
+		candidates = append(candidates, candidate{backupPath, maxVersion, info.ModTime()})
+	}
+
+	if len(candidates) == 0 {
+		return fmt.Errorf("no backup found matching server version %d in %s", targetVersion, backupDir)
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
+	best := candidates[0]
+
+	// Save current (newer) DB with distinctive name
+	savedPath := strings.TrimSuffix(s.dbPath, ".sqlite3") + ".incompatible-v" + strconv.Itoa(currentVersion) + ".sqlite3"
+	if err := os.Rename(s.dbPath, savedPath); err != nil {
+		return fmt.Errorf("save current DB: %w", err)
+	}
+
+	// Copy backup into place
+	src, err := os.Open(best.path)
+	if err != nil {
+		return fmt.Errorf("open backup: %w", err)
+	}
+	dst, err := os.Create(s.dbPath)
+	if err != nil {
+		src.Close()
+		return fmt.Errorf("create new DB: %w", err)
+	}
+	if _, err := dst.ReadFrom(src); err != nil {
+		src.Close()
+		dst.Close()
+		return fmt.Errorf("copy backup: %w", err)
+	}
+	src.Close()
+	dst.Close()
+
+	log.Printf("DB auto-restored from %s (saved incompatible DB as %s)", best.path, savedPath)
+	return nil
+}
+
 func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.DB.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -610,20 +856,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 )`); err != nil {
 		return err
 	}
-	rows, err := s.DB.QueryContext(ctx, "SELECT version FROM schema_migrations ORDER BY version")
+	applied, err := s.readAppliedMigrations(ctx)
 	if err != nil {
-		return err
-	}
-	var applied []int
-	for rows.Next() {
-		var version int
-		if err := rows.Scan(&version); err != nil {
-			rows.Close()
-			return err
-		}
-		applied = append(applied, version)
-	}
-	if err := rows.Close(); err != nil {
 		return err
 	}
 	for index, version := range applied {
@@ -633,12 +867,110 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		}
 	}
 	if len(applied) > len(migrations) {
-		return fmt.Errorf("database schema version %d is newer than supported version %d",
-			applied[len(applied)-1], len(migrations))
+		if s.autoRestore {
+			if err := s.tryRestore(ctx, applied); err != nil {
+				// Auto-restore failed — enter degraded mode so the UI
+				// can show the error with instructions.
+				s.Degraded = true
+				s.DBVersion = applied[len(applied)-1]
+				s.ServerVersion = len(migrations)
+				s.DegradedReason = err.Error()
+				return nil
+			}
+			// Re-open the restored DB
+			s.DB.Close()
+			db, err := sql.Open("sqlite", s.dbPath)
+			if err != nil {
+				return fmt.Errorf("reopen after restore: %w", err)
+			}
+			db.SetMaxOpenConns(1)
+			if _, err := db.Exec(`
+				PRAGMA foreign_keys = ON;
+				PRAGMA journal_mode = WAL;
+				PRAGMA synchronous = NORMAL;
+				PRAGMA cache_size = -2000;
+				PRAGMA temp_store = MEMORY;
+				PRAGMA busy_timeout = 30000;
+			`); err != nil {
+				db.Close()
+				return fmt.Errorf("reopen pragmas: %w", err)
+			}
+			s.DB = db
+			// Re-read applied migrations from restored DB
+			applied, err = s.readAppliedMigrations(ctx)
+			if err != nil {
+				return err
+			}
+		} else {
+			s.Degraded = true
+			s.DegradedReason = "auto-restore disabled (set WDBGP_AUTO_RESTORE_ENABLED=true)"
+			s.DBVersion = applied[len(applied)-1]
+			s.ServerVersion = len(migrations)
+			return nil
+		}
 	}
+
+	// Backup DB before running pending migrations.
+	// Only backup when there are existing applied migrations — fresh
+	// installs have nothing to preserve.
+	if s.backupEnabled && len(applied) > 0 && len(applied) < len(migrations) {
+		if err := os.MkdirAll(s.backupDir, 0755); err != nil {
+			return fmt.Errorf("backup: create dir: %w", err)
+		}
+		backupName := "wdbgp-backup-" + time.Now().UTC().Format("20060102150405") + ".sqlite3"
+		backupPath := filepath.Join(s.backupDir, backupName)
+
+		// Checkpoint WAL so the file copy includes all committed changes.
+		if _, err := s.DB.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+			return fmt.Errorf("backup: wal checkpoint: %w", err)
+		}
+
+		// Copy the DB file
+		src, err := os.Open(s.dbPath)
+		if err != nil {
+			return fmt.Errorf("backup: open source: %w", err)
+		}
+		srcInfo, _ := src.Stat()
+		dst, err := os.Create(backupPath)
+		if err != nil {
+			src.Close()
+			return fmt.Errorf("backup: create backup: %w", err)
+		}
+		if _, err := dst.ReadFrom(src); err != nil {
+			src.Close()
+			dst.Close()
+			return fmt.Errorf("backup: copy: %w", err)
+		}
+		src.Close()
+		dst.Close()
+		if srcInfo != nil {
+			os.Chmod(backupPath, srcInfo.Mode())
+		}
+
+		// Strip catalog_entries from backup (recreatable by feed sync)
+		backupDB, err := sql.Open("sqlite", backupPath)
+		if err != nil {
+			return fmt.Errorf("backup: open backup DB: %w", err)
+		}
+		backupDB.SetMaxOpenConns(1)
+		backupDB.Exec("DELETE FROM catalog_entries")
+		backupDB.Exec("VACUUM")
+		backupDB.Close()
+
+		log.Printf("DB backup saved to %s", backupPath)
+	}
+
 	for _, migration := range migrations {
 		if migration.Version <= len(applied) {
 			continue
+		}
+		// Run NoTxSQL BEFORE the transaction so that a failure does not
+		// leave the DB in a partial state with the version already committed.
+		// NoTxSQL must be idempotent so it is safe to re-run on retry.
+		if migration.NoTxSQL != "" {
+			if _, err := s.DB.ExecContext(ctx, migration.NoTxSQL); err != nil {
+				return fmt.Errorf("migration %d NoTxSQL (%s): %w", migration.Version, migration.Name, err)
+			}
 		}
 		tx, err := s.DB.BeginTx(ctx, nil)
 		if err != nil {
@@ -660,6 +992,19 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+	}
+	// Migration 20 backfill: ensure UNIQUE(peer_ip, peer_asn) exists (for DBs
+	// that were already migrated before the constraint was added to the DDL).
+	if _, err := s.DB.ExecContext(ctx,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ip_asn ON users(peer_ip, peer_asn)`,
+	); err != nil {
+		return fmt.Errorf("users UNIQUE(peer_ip, peer_asn) index: %w", err)
+	}
+	// Backfill: index for filtering enabled users by catalog mode.
+	if _, err := s.DB.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id)`,
+	); err != nil {
+		return fmt.Errorf("users enabled+catalog_mode index: %w", err)
 	}
 	return s.seedBuiltInAdapters(ctx)
 }
@@ -691,15 +1036,19 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 }
 
 func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
-	query := `SELECT f.id, f.name, f.url, f.mode_id, f.adapter_id, f.enabled,
+	query := `SELECT f.id, f.name, f.url,
+	                 COALESCE((SELECT cmf.mode_id FROM catalog_mode_feeds cmf WHERE cmf.feed_id = f.id LIMIT 1), 0) as mode_id,
+	                 f.adapter_id, f.enabled,
 	                 COALESCE(f.sync_interval, 0),
 	                 COALESCE(f.data, ''),
 	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
 	          FROM feeds f
-	          JOIN catalog_modes m ON m.id = f.mode_id
 	          JOIN feed_adapters a ON a.id = f.adapter_id`
 	if enabledOnly {
-		query += " WHERE f.enabled = 1 AND m.enabled = 1"
+		query += ` WHERE f.enabled = 1
+		           AND EXISTS (SELECT 1 FROM catalog_mode_feeds cmf
+		                       JOIN catalog_modes m ON m.id = cmf.mode_id
+		                       WHERE cmf.feed_id = f.id AND m.enabled = 1)`
 	}
 	query += " ORDER BY f.id"
 	rows, err := s.DB.QueryContext(ctx, query)
@@ -724,7 +1073,9 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 func (s *Store) Feed(ctx context.Context, id int64) (Feed, error) {
 	var feed Feed
 	err := s.DB.QueryRowContext(ctx, `
-SELECT id, name, url, mode_id, adapter_id, enabled,
+SELECT id, name, url,
+       COALESCE((SELECT cmf.mode_id FROM catalog_mode_feeds cmf WHERE cmf.feed_id = feeds.id LIMIT 1), 0) as mode_id,
+       adapter_id, enabled,
        COALESCE(sync_interval, 0),
        COALESCE(data, ''),
        COALESCE(last_success, ''), COALESCE(last_error, '')
@@ -809,6 +1160,106 @@ func (s *Store) UpdateCatalogMode(ctx context.Context, mode CatalogMode) error {
 	result, err := s.DB.ExecContext(ctx,
 		"UPDATE catalog_modes SET name = ?, enabled = ? WHERE id = ?",
 		mode.Name, mode.Enabled, mode.ID)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) AddCatalogMode(ctx context.Context, key, name string, enabled bool) (int64, error) {
+	result, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_modes(key, name, enabled) VALUES (?, ?, ?)",
+		key, name, enabled)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) error {
+	if id <= 3 {
+		return fmt.Errorf("built-in catalog modes cannot be deleted")
+	}
+	// Reassign users referencing this mode to the default mode (id=1)
+	// before deleting, to avoid foreign key violations.
+	if _, err := s.DB.ExecContext(ctx,
+		"UPDATE users SET catalog_mode_id = 1 WHERE catalog_mode_id = ?", id); err != nil {
+		return err
+	}
+	result, err := s.DB.ExecContext(ctx, "DELETE FROM catalog_modes WHERE id = ?", id)
+	if err != nil {
+		return err
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ModeFeedCounts returns a map of mode_id→feed count.
+func (s *Store) ModeFeedCounts(ctx context.Context) (map[int64]int, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT mode_id, COUNT(*) FROM catalog_mode_feeds GROUP BY mode_id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := make(map[int64]int)
+	for rows.Next() {
+		var modeID int64
+		var count int
+		if err := rows.Scan(&modeID, &count); err != nil {
+			return nil, err
+		}
+		counts[modeID] = count
+	}
+	return counts, rows.Err()
+}
+
+// ModeFeeds returns all feeds associated with a catalog mode.
+func (s *Store) ModeFeeds(ctx context.Context, modeID int64) ([]Feed, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT f.id, f.name, f.url, f.adapter_id, f.enabled,
+       COALESCE(f.sync_interval, 0),
+       COALESCE(f.data, ''),
+       COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
+FROM feeds f
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = ?
+ORDER BY f.id`, modeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var feeds []Feed
+	for rows.Next() {
+		var feed Feed
+		feed.ModeID = modeID
+		if err := rows.Scan(
+			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
+			&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
+		); err != nil {
+			return nil, err
+		}
+		feeds = append(feeds, feed)
+	}
+	return feeds, rows.Err()
+}
+
+func (s *Store) AddFeedToMode(ctx context.Context, modeID, feedID int64) error {
+	_, err := s.DB.ExecContext(ctx,
+		"INSERT OR IGNORE INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
+		modeID, feedID)
+	return err
+}
+
+func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) error {
+	result, err := s.DB.ExecContext(ctx,
+		"DELETE FROM catalog_mode_feeds WHERE mode_id = ? AND feed_id = ?",
+		modeID, feedID)
 	if err != nil {
 		return err
 	}
@@ -955,7 +1406,8 @@ func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisable
 SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE (f.enabled = 1 OR ? = 1) AND f.mode_id = ?
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE (f.enabled = 1 OR ? = 1) AND cmf.mode_id = ?
 ORDER BY ce.category, ce.service`, includeDisabledInt, modeID)
 	if err != nil {
 		return nil, err
@@ -977,8 +1429,9 @@ func (s *Store) EnabledCatalogPrefixes(ctx context.Context, modeID int64) ([]Cat
 SELECT DISTINCT ce.category, ce.service, ce.cidr
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-JOIN catalog_modes m ON m.id = f.mode_id
-WHERE f.enabled = 1 AND m.enabled = 1 AND f.mode_id = ?
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+JOIN catalog_modes m ON m.id = cmf.mode_id
+WHERE f.enabled = 1 AND m.enabled = 1 AND cmf.mode_id = ?
 ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 	if err != nil {
 		return nil, err
@@ -1000,7 +1453,8 @@ func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (v4 map[
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT ce.category, ce.cidr
 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
-WHERE f.mode_id = ? AND f.enabled = 1
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = ? AND f.enabled = 1
 GROUP BY ce.category, ce.cidr
 ORDER BY ce.category`, modeID)
 	if err != nil {
@@ -1041,7 +1495,8 @@ func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (v4 map[string]m
 SELECT ce.category, ce.service, ce.cidr
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
-WHERE f.mode_id = ? AND f.enabled = 1
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = ? AND f.enabled = 1
 GROUP BY ce.category, ce.service, ce.cidr
 ORDER BY ce.category, ce.service`, modeID)
 	if err != nil {
@@ -1200,13 +1655,15 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
-      WHERE ce.category = sc.category AND f.mode_id = sc.mode_id AND f.enabled = 0
+      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+      WHERE ce.category = sc.category AND cmf.mode_id = sc.mode_id AND f.enabled = 0
   )
   AND NOT EXISTS (
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
-      WHERE ce.category = sc.category AND f.mode_id = sc.mode_id AND f.enabled = 1
+      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+      WHERE ce.category = sc.category AND cmf.mode_id = sc.mode_id AND f.enabled = 1
   )`, userID, modeID)
 	if err != nil {
 		return err
@@ -1231,18 +1688,20 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
+      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
       WHERE ce.category = ss.category
         AND ce.service = ss.service
-        AND f.mode_id = ss.mode_id
+        AND cmf.mode_id = ss.mode_id
         AND f.enabled = 0
   )
   AND NOT EXISTS (
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
+      JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
       WHERE ce.category = ss.category
         AND ce.service = ss.service
-        AND f.mode_id = ss.mode_id
+        AND cmf.mode_id = ss.mode_id
         AND f.enabled = 1
   )`, userID, modeID)
 	if err != nil {
@@ -1340,9 +1799,10 @@ func (s *Store) CountPrefixes(ctx context.Context, modeID int64, categories []st
 		queryParts = append(queryParts, fmt.Sprintf(`
 SELECT DISTINCT ce.cidr
 FROM feeds f
-JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
-WHERE f.mode_id = ?1
+WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
   AND ce.category IN (%s)`, strings.Join(placeholders, ", ")))
@@ -1357,9 +1817,10 @@ WHERE f.mode_id = ?1
 		queryParts = append(queryParts, fmt.Sprintf(`
 SELECT DISTINCT ce.cidr
 FROM feeds f
-JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
-WHERE f.mode_id = ?1
+WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
   AND (ce.category, ce.service) IN (%s)`, strings.Join(pairs, ", ")))
@@ -1458,9 +1919,10 @@ func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64) (v4, v
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT DISTINCT ce.cidr
 FROM feeds f
-JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
-WHERE f.mode_id = ?1
+WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
   AND EXISTS (
@@ -1472,9 +1934,10 @@ WHERE f.mode_id = ?1
 UNION
 SELECT DISTINCT ce.cidr
 FROM feeds f
-JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
-WHERE f.mode_id = ?1
+WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
   AND EXISTS (
@@ -1556,10 +2019,11 @@ func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, map[st
 	rows, err := s.DB.QueryContext(ctx, `
 -- Simpler UNION-based approach without CTEs
 SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
-       ce.category, ce.service, f.mode_id
+       ce.category, ce.service, cmf.mode_id
 FROM users u
-JOIN feeds f ON f.mode_id = u.catalog_mode_id
-JOIN catalog_modes m ON m.id = f.mode_id  
+JOIN catalog_mode_feeds cmf ON cmf.mode_id = u.catalog_mode_id
+JOIN feeds f ON f.id = cmf.feed_id
+JOIN catalog_modes m ON m.id = cmf.mode_id  
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE u.enabled = 1
   AND f.enabled = 1
@@ -1572,10 +2036,11 @@ WHERE u.enabled = 1
   )
 UNION
 SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
-       ce.category, ce.service, f.mode_id
+       ce.category, ce.service, cmf.mode_id
 FROM users u
-JOIN feeds f ON f.mode_id = u.catalog_mode_id
-JOIN catalog_modes m ON m.id = f.mode_id
+JOIN catalog_mode_feeds cmf ON cmf.mode_id = u.catalog_mode_id
+JOIN feeds f ON f.id = cmf.feed_id
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
 WHERE u.enabled = 1
   AND f.enabled = 1
@@ -1684,9 +2149,12 @@ ORDER BY 1, 2`)
 			}
 			// Carry mode/category/service through the filter — find the best matching
 			// original route so that communities can be loaded from the correct mode.
-			if _, exists := prefixMeta[key]; !exists {
+			// Key includes userID so that two users in different catalog modes
+			// selecting the same CIDR each get their own mode/category/service metadata.
+			metaKey := prefix.String() + ":" + strconv.FormatInt(userID, 10)
+			if _, exists := prefixMeta[metaKey]; !exists {
 				if modeID, cat, svc, ok := findBestMatch(prefix, selUser.routes); ok {
-					prefixMeta[key] = PrefixRouteInfo{ModeID: modeID, Category: cat, Service: svc}
+					prefixMeta[metaKey] = PrefixRouteInfo{ModeID: modeID, Category: cat, Service: svc}
 				}
 			}
 		}
@@ -2028,7 +2496,8 @@ func (s *Store) AddFeedForMode(
 	enabled bool,
 	syncInterval int,
 ) error {
-	return s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval, "")
+	_, err := s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval, "")
+	return err
 }
 
 func (s *Store) AddFeedForModeAdapter(
@@ -2040,11 +2509,27 @@ func (s *Store) AddFeedForModeAdapter(
 	enabled bool,
 	syncInterval int,
 	data string,
-) error {
-	_, err := s.DB.ExecContext(ctx,
-		"INSERT INTO feeds(name, url, mode_id, adapter_id, enabled, sync_interval, data) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		name, url, modeID, adapterID, enabled, syncInterval, data)
-	return err
+) (int64, error) {
+	var feedID int64
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx,
+			"INSERT INTO feeds(name, url, adapter_id, enabled, sync_interval, data) VALUES (?, ?, ?, ?, ?, ?)",
+			name, url, adapterID, enabled, syncInterval, data)
+		if err != nil {
+			return err
+		}
+		feedID, err = result.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if modeID > 0 {
+			_, err = tx.ExecContext(ctx,
+				"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
+				modeID, feedID)
+		}
+		return err
+	})
+	return feedID, err
 }
 
 func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
@@ -2060,9 +2545,9 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE feeds
-			 SET name = ?, url = ?, mode_id = ?, adapter_id = ?, enabled = ?, sync_interval = ?, data = ?
+			 SET name = ?, url = ?, adapter_id = ?, enabled = ?, sync_interval = ?, data = ?
 			 WHERE id = ?`,
-			feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
+			feed.Name, feed.URL, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
 			return err
 		}
 		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name {
@@ -2076,6 +2561,46 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 			"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", feed.ID)
 		return err
 	})
+}
+
+// SetFeedModes replaces all mode assignments for a feed with the given mode IDs.
+func (s *Store) SetFeedModes(ctx context.Context, feedID int64, modeIDs []int64) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM catalog_mode_feeds WHERE feed_id = ?", feedID); err != nil {
+			return err
+		}
+		for _, modeID := range modeIDs {
+			if modeID <= 0 {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx,
+				"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
+				modeID, feedID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// FeedModes returns the mode IDs associated with a feed.
+func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT mode_id FROM catalog_mode_feeds WHERE feed_id = ? ORDER BY mode_id", feedID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var modeIDs []int64
+	for rows.Next() {
+		var modeID int64
+		if err := rows.Scan(&modeID); err != nil {
+			return nil, err
+		}
+		modeIDs = append(modeIDs, modeID)
+	}
+	return modeIDs, rows.Err()
 }
 
 func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
@@ -2095,8 +2620,9 @@ func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
 DELETE FROM selected_categories
 WHERE NOT EXISTS (
     SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
+    JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
     WHERE ce.category = selected_categories.category
-      AND f.mode_id = selected_categories.mode_id
+      AND cmf.mode_id = selected_categories.mode_id
 )`); err != nil {
 			return err
 		}
@@ -2104,9 +2630,10 @@ WHERE NOT EXISTS (
 DELETE FROM selected_services
 WHERE NOT EXISTS (
     SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
+    JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
     WHERE ce.category = selected_services.category
       AND ce.service = selected_services.service
-      AND f.mode_id = selected_services.mode_id
+      AND cmf.mode_id = selected_services.mode_id
 )`)
 		return err
 	})
@@ -2587,10 +3114,149 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, err
 		}
 
 		var err2 error
-		count, err2 = genCommunities(tx, existing, modeID)
+		count, err2 = genCommunitiesRuntime(tx, existing, modeID)
 		return err2
 	})
 	return count, err
+}
+
+// genCommunitiesRuntime generates communities using catalog_mode_feeds (post-migration-20).
+// Used by GenerateCommunities during normal runtime operation.
+func genCommunitiesRuntime(tx *sql.Tx, existing map[string]bool, modeID int64) (int, error) {
+	var modeIDs []int64
+	if modeID > 0 {
+		modeIDs = []int64{modeID}
+	} else {
+		modes, err := tx.Query("SELECT DISTINCT id FROM catalog_modes ORDER BY id")
+		if err != nil {
+			return 0, err
+		}
+		defer modes.Close()
+
+		for modes.Next() {
+			var id int64
+			if err := modes.Scan(&id); err != nil {
+				return 0, err
+			}
+			modeIDs = append(modeIDs, id)
+		}
+		if err := modes.Err(); err != nil {
+			return 0, err
+		}
+	}
+
+	generated := 0
+	for _, mid := range modeIDs {
+		commRows, err := tx.Query(
+			"SELECT category, service, community FROM catalog_communities WHERE mode_id = ? ORDER BY community",
+			mid)
+		if err != nil {
+			return 0, err
+		}
+		used := make(map[uint32]bool)
+		keyComm := make(map[string]uint32)
+		for commRows.Next() {
+			var category, service string
+			var community uint32
+			if err := commRows.Scan(&category, &service, &community); err != nil {
+				commRows.Close()
+				return 0, err
+			}
+			used[community] = true
+			if service == "" {
+				keyComm["grp:"+category] = community
+			} else {
+				keyComm["svc:"+category+"|"+service] = community
+			}
+		}
+		commRows.Close()
+
+		catRows, err := tx.Query(`
+SELECT DISTINCT ce.category
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = ?
+ORDER BY ce.category`, mid)
+		if err != nil {
+			return 0, err
+		}
+
+		var categories []string
+		for catRows.Next() {
+			var cat string
+			if err := catRows.Scan(&cat); err != nil {
+				catRows.Close()
+				return 0, err
+			}
+			categories = append(categories, cat)
+		}
+		catRows.Close()
+
+		groupIndex := 0
+		for _, category := range categories {
+			groupKey := "grp:" + category
+
+			var groupCommunity uint32
+			if existing != nil && existing[groupKey] {
+				var ok bool
+				groupCommunity, ok = keyComm[groupKey]
+				if !ok {
+					groupIndex++
+					continue
+				}
+			} else {
+				groupCommunity = findFirstFree(uint32((groupIndex+1)*10000), used)
+				if _, err := tx.Exec(
+					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, '', ?)",
+					mid, category, groupCommunity); err != nil {
+					return generated, err
+				}
+				used[groupCommunity] = true
+				generated++
+			}
+
+			svcRows, err := tx.Query(`
+SELECT DISTINCT ce.service
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
+WHERE cmf.mode_id = ? AND ce.category = ?
+ORDER BY ce.service`, mid, category)
+			if err != nil {
+				return generated, err
+			}
+
+			var services []string
+			for svcRows.Next() {
+				var svc string
+				if err := svcRows.Scan(&svc); err != nil {
+					svcRows.Close()
+					return generated, err
+				}
+				services = append(services, svc)
+			}
+			svcRows.Close()
+
+			for _, service := range services {
+				svcKey := "svc:" + category + "|" + service
+				if existing != nil && existing[svcKey] {
+					continue
+				}
+				svcCommunity := findFirstFree(groupCommunity+1, used)
+
+				if _, err := tx.Exec(
+					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)",
+					mid, category, service, svcCommunity); err != nil {
+					return generated, err
+				}
+				used[svcCommunity] = true
+				generated++
+			}
+			groupIndex++
+		}
+	}
+	return generated, nil
 }
 
 // GetAllSettings returns all rows from app_settings as a map[key]value.

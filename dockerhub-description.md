@@ -3,4 +3,4 @@ wdbgp downloads categorized IPv4/IPv6 CIDR feeds, builds a service catalog, and 
 **GitHub:** https://github.com/andrey-vk/wdbgp
 **README:** https://github.com/andrey-vk/wdbgp#readme
 
-Single statically linked Go binary with embedded HTTP server, SQLite storage, and GoBGP. No Python or BIRD required.
+Single statically linked Go binary with embedded HTTP server, SQLite storage, and custom BGP speaker.

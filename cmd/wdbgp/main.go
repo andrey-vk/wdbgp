@@ -29,10 +29,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Configure logging based on config
 	logging.Configure(cfg.LogLevel, cfg.LogFormat)
-	
+
 	command := "serve"
 	if len(os.Args) > 1 {
 		command = os.Args[1]
@@ -41,7 +41,7 @@ func run() error {
 		return healthcheck(cfg)
 	}
 
-	db, err := store.Open(cfg.DBPath)
+	db, err := store.Open(cfg.DBPath, cfg)
 	if err != nil {
 		return err
 	}
@@ -75,17 +75,21 @@ func run() error {
 }
 
 func serve(cfg config.Config, db *store.Store) error {
+	if db.Degraded {
+		return serveDegraded(cfg, db)
+	}
+
 	if err := cfg.ValidateServe(); err != nil {
 		return err
 	}
-	
+
 	logging.Info("starting application",
 		"bgp_asn", cfg.LocalASN,
 		"bgp_port", cfg.BGPListenPort,
 		"http_address", cfg.ListenAddress(),
 		"sync_interval", cfg.SyncInterval,
 	)
-	
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -128,7 +132,51 @@ func serve(cfg config.Config, db *store.Store) error {
 			return err
 		}
 	}
-	
+
+	logging.Info("shutting down HTTP server")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	return httpServer.Shutdown(shutdownCtx)
+}
+
+// serveDegraded starts an HTTP server that only shows the DB version mismatch page.
+func serveDegraded(cfg config.Config, db *store.Store) error {
+	logging.Warn("starting in degraded mode",
+		"db_version", db.DBVersion, "server_version", db.ServerVersion)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	srv := web.New(cfg, db, nil, nil)
+	srv.SetDegraded(web.DegradedInfo{
+		CurrentVersion: db.DBVersion,
+		ServerVersion:  db.ServerVersion,
+		Reason:         db.DegradedReason,
+	})
+
+	httpServer := &http.Server{
+		Addr:              cfg.ListenAddress(),
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	serverErrors := make(chan error, 1)
+	go func() {
+		logging.Info("HTTP server starting in degraded mode",
+			"address", cfg.ListenAddress(),
+		)
+		serverErrors <- httpServer.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		logging.Info("shutdown signal received")
+	case err := <-serverErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	}
+
 	logging.Info("shutting down HTTP server")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
@@ -139,7 +187,7 @@ func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer,
 	syncNow := func() {
 		logger := logging.FromContext(ctx)
 		logger.Info("starting feed sync")
-		
+
 		errors := syncer.SyncAll(ctx)
 		if len(errors) > 0 {
 			for _, err := range errors {
@@ -149,7 +197,7 @@ func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer,
 		} else {
 			logger.Info("feed sync completed successfully")
 		}
-		
+
 		if err := manager.Reconcile(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("BGP reconcile error", "error", err)
 		} else if ctx.Err() == nil {
@@ -175,19 +223,19 @@ func printStats(ctx context.Context, db *store.Store) error {
 	if err != nil {
 		return err
 	}
-	
+
 	logger := logging.FromContext(ctx)
 	logger.Info("catalog statistics",
 		"categories", categories,
 		"services", services,
 		"entries", entries,
 	)
-	
+
 	feedList, err := db.Feeds(ctx, false)
 	if err != nil {
 		return err
 	}
-	
+
 	for _, feed := range feedList {
 		status := feed.LastSuccess
 		if status == "" {
