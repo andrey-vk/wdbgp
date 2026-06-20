@@ -98,7 +98,7 @@ func TestBuildRouteHonorsUserNextHop(t *testing.T) {
 }
 
 func TestManagerStartsWithoutPeers(t *testing.T) {
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestManagerStartsWithoutPeers(t *testing.T) {
 
 func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestBuildRouteIPv6NoPanic(t *testing.T) {
 
 func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +377,7 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 
 func TestDeletePeerHandlesSameIPDifferentASN(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +475,7 @@ func assertPrefixes(t *testing.T, got, want []string) {
 
 func TestDynamicPeerIsPassiveOnly(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"))
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

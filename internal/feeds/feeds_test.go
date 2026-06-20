@@ -392,7 +392,7 @@ func TestSyncAllSkipsDisabledFeeds(t *testing.T) {
 		}, nil
 	})}
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ WHERE f.name = 'disabled'`).Scan(&disabledEntries); err != nil {
 
 func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +494,7 @@ FROM feeds WHERE id = ?`, feed.ID).Scan(&url, &lastSuccess, &lastError); err != 
 
 func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 
 func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "ipranges.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "ipranges.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

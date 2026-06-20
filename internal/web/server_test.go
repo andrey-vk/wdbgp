@@ -70,7 +70,7 @@ func (f *fakeBGP) DeletePeer(context.Context, string, int64) error {
 }
 
 func TestUserSelectionAndAdminPages(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 }
 
 func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +289,7 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 }
 
 func TestLockedUserCanChangeEditableCatalogMode(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +347,7 @@ func TestLockedUserCanChangeEditableCatalogMode(t *testing.T) {
 }
 
 func TestCategorySelectionDisablesContainedServices(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 }
 
 func TestAdminCanManageFeeds(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestAdminCanManageFeeds(t *testing.T) {
 }
 
 func TestAdminCanEditFeedAdapter(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -591,7 +591,7 @@ func TestAdminCanEditFeedAdapter(t *testing.T) {
 }
 
 func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,7 +683,7 @@ func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
 }
 
 func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +793,7 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 }
 
 func TestLocalizedPages(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +951,7 @@ func TestSelectionFromValuesDropsServicesInsideSelectedCategory(t *testing.T) {
 }
 
 func TestAdminCookieSecureAutoAllowsPlainHTTP(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -996,7 +996,7 @@ func TestAdminCookieSecureAutoAllowsPlainHTTP(t *testing.T) {
 }
 
 func TestAdminCookieSecureAutoHonorsTrustedForwardedProto(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1035,7 +1035,7 @@ func (fn testRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, er
 // =============================================================================
 
 func TestAddUserRejectsSameIPAndSameASN(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1075,7 +1075,7 @@ func TestAddUserRejectsSameIPAndSameASN(t *testing.T) {
 }
 
 func TestAddUserAcceptsUniqueIPWithoutPassword(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1104,7 +1104,7 @@ func TestAddUserAcceptsUniqueIPWithoutPassword(t *testing.T) {
 }
 
 func TestAddUserRequiresPasswordForDynamicPeers(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1149,7 +1149,7 @@ func TestAddUserRequiresPasswordForDynamicPeers(t *testing.T) {
 }
 
 func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1193,7 +1193,7 @@ func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
 }
 
 func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1234,7 +1234,7 @@ func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
 }
 
 func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1273,7 +1273,7 @@ func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
 }
 
 func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv4-pw.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv4-pw.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1319,7 +1319,7 @@ func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
 }
 
 func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv6-pw.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv6-pw.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1365,7 +1365,7 @@ func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
 }
 
 func TestStatusEndpoint(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "status.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "status.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

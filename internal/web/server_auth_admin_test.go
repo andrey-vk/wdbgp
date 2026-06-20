@@ -20,7 +20,7 @@ import (
 // =============================================================================
 
 func TestUserLoginPageReturnsLoginForm(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestUserLoginPageReturnsLoginForm(t *testing.T) {
 }
 
 func TestUserLoginSuccess(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestUserLoginSuccess(t *testing.T) {
 }
 
 func TestUserLoginWrongPassword(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestUserLoginWrongPassword(t *testing.T) {
 }
 
 func TestUserPageRedirectsToLoginWhenWebAuthIsLoginAndNoSession(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "login-redirect.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "login-redirect.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestUserPageRedirectsToLoginWhenWebAuthIsLoginAndNoSession(t *testing.T) {
 // =============================================================================
 
 func TestAdminCommunitiesPageLoads(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestAdminCommunitiesPageLoads(t *testing.T) {
 }
 
 func TestAdminCommunitiesPageRequiresAuth(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestAdminCommunitiesPageRequiresAuth(t *testing.T) {
 }
 
 func TestAdminCommunitiesSaves(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "communities.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestAdminCommunitiesSaves(t *testing.T) {
 // =============================================================================
 
 func TestAdminSettingsPageRequiresAuth(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestAdminSettingsPageRequiresAuth(t *testing.T) {
 }
 
 func TestAdminSettingsPageLoads(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestAdminSettingsPageLoads(t *testing.T) {
 }
 
 func TestAdminSettingsSavesAndRedirects(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestAdminSettingsSavesAndRedirects(t *testing.T) {
 }
 
 func TestAdminSettingsIncludesGlobalRouteFilters(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings-filters.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings-filters.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func TestAdminSettingsIncludesGlobalRouteFilters(t *testing.T) {
 }
 
 func TestAdminSettingsSavesGlobalRouteFilters(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings-filters-save.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings-filters-save.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestAdminSettingsSavesGlobalRouteFilters(t *testing.T) {
 }
 
 func TestSettingsPageDynamicPeersFieldAndHint(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "settings-dynamic.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings-dynamic.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestSettingsPageDynamicPeersFieldAndHint(t *testing.T) {
 }
 
 func TestUserFormDynamicCheckboxReadonlyWhenDisabled(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "user-dyn-readonly.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "user-dyn-readonly.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,7 +494,7 @@ func TestUserFormDynamicCheckboxReadonlyWhenDisabled(t *testing.T) {
 }
 
 func TestUserFormPasswordDisabledDynamicIPv4(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "user-pw-dis-v4.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "user-pw-dis-v4.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +532,7 @@ func TestUserFormPasswordDisabledDynamicIPv4(t *testing.T) {
 }
 
 func TestUserFormPasswordDisabledDynamicIPv6(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "user-pw-dis-v6.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "user-pw-dis-v6.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +574,7 @@ func TestUserFormPasswordDisabledDynamicIPv6(t *testing.T) {
 // =============================================================================
 
 func TestSelectionCountEndpoint(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "selcount.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "selcount.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +644,7 @@ func TestSelectionCountEndpoint(t *testing.T) {
 }
 
 func TestSelectionCountWithEmptySelection(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "selcount-empty.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "selcount-empty.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +717,7 @@ func addCommunityTestData(t *testing.T, db *store.Store) {
 
 func TestUserLoginRateLimited(t *testing.T) {
 	// Rate limiting (loginLimiter) is applied to both admin and user login.
-	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"))
+	db, err := store.Open(filepath.Join(t.TempDir(), "login.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

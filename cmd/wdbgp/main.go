@@ -41,7 +41,7 @@ func run() error {
 		return healthcheck(cfg)
 	}
 
-	db, err := store.Open(cfg.DBPath)
+	db, err := store.Open(cfg.DBPath, cfg)
 	if err != nil {
 		return err
 	}

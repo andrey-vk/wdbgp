@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/prefixfilter"
 	"github.com/andrey-vk/wdbgp/internal/retry"
 
@@ -541,7 +543,10 @@ PRAGMA foreign_keys = ON;
 }
 
 type Store struct {
-	DB *sql.DB
+	DB            *sql.DB
+	dbPath        string // DB file path for backup
+	backupEnabled bool
+	backupDir     string
 }
 
 type Feed struct {
@@ -629,7 +634,7 @@ type RouteFilters struct {
 	Deny  []string
 }
 
-func Open(path string) (*Store, error) {
+func Open(path string, cfg config.Config) (*Store, error) {
 	if parent := filepath.Dir(path); parent != "." {
 		if err := os.MkdirAll(parent, 0o755); err != nil {
 			return nil, err
@@ -651,7 +656,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{DB: db}
+	s := &Store{DB: db, dbPath: path, backupEnabled: cfg.BackupEnabled, backupDir: cfg.BackupDir}
 	if err := s.Migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -698,6 +703,50 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		return fmt.Errorf("database schema version %d is newer than supported version %d",
 			applied[len(applied)-1], len(migrations))
 	}
+
+	// Backup DB before running pending migrations
+	if s.backupEnabled && len(applied) < len(migrations) {
+		if err := os.MkdirAll(s.backupDir, 0755); err != nil {
+			return fmt.Errorf("backup: create dir: %w", err)
+		}
+		backupName := "wdbgp-backup-" + time.Now().UTC().Format("20060102150405") + ".sqlite3"
+		backupPath := filepath.Join(s.backupDir, backupName)
+
+		// Copy the DB file
+		src, err := os.Open(s.dbPath)
+		if err != nil {
+			return fmt.Errorf("backup: open source: %w", err)
+		}
+		srcInfo, _ := src.Stat()
+		dst, err := os.Create(backupPath)
+		if err != nil {
+			src.Close()
+			return fmt.Errorf("backup: create backup: %w", err)
+		}
+		if _, err := dst.ReadFrom(src); err != nil {
+			src.Close()
+			dst.Close()
+			return fmt.Errorf("backup: copy: %w", err)
+		}
+		src.Close()
+		dst.Close()
+		if srcInfo != nil {
+			os.Chmod(backupPath, srcInfo.Mode())
+		}
+
+		// Strip catalog_entries from backup (recreatable by feed sync)
+		backupDB, err := sql.Open("sqlite", backupPath)
+		if err != nil {
+			return fmt.Errorf("backup: open backup DB: %w", err)
+		}
+		backupDB.SetMaxOpenConns(1)
+		backupDB.Exec("DELETE FROM catalog_entries")
+		backupDB.Exec("VACUUM")
+		backupDB.Close()
+
+		log.Printf("DB backup saved to %s", backupPath)
+	}
+
 	for _, migration := range migrations {
 		if migration.Version <= len(applied) {
 			continue

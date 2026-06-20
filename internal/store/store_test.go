@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/andrey-vk/wdbgp/internal/config"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -130,7 +132,7 @@ INSERT INTO feeds(name, url) VALUES
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +273,7 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +309,7 @@ func TestRejectNewerDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
-	if _, err := Open(path); err == nil {
+	if _, err := Open(path, config.Config{}); err == nil {
 		t.Fatal("Open accepted a newer database schema")
 	}
 }
@@ -340,7 +342,7 @@ INSERT INTO catalog_entries VALUES
 	}
 	db.Close()
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +431,7 @@ INSERT INTO user_networks(user_id, cidr) VALUES (7, '192.168.20.0/24');
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +485,7 @@ VALUES (7, 'Messengers', 'Telegram');
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +545,7 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		t.Fatal(err)
 	}
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1315,7 +1317,7 @@ func TestMigration20Idempotency(t *testing.T) {
 	db.Close()
 
 	// Now open — this triggers migration 20. It should succeed.
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1486,7 +1488,7 @@ func TestMigration20NoTxSQLFailureRollsBack(t *testing.T) {
 	// part (feed_adapters columns, catalog_mode_feeds table) will succeed,
 	// but the NoTxSQL (users table rebuild) MUST fail because the source
 	// users table is missing the catalog_mode_editable column.
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err == nil {
 		defer s.Close()
 		t.Fatal("expected Open to fail because NoTxSQL should fail, but got no error")
@@ -1614,7 +1616,7 @@ func TestMigration20FeedAdapterUpgrade(t *testing.T) {
 	}
 	db.Close()
 
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1679,7 +1681,7 @@ func TestMigration20FeedAdapterUpgrade(t *testing.T) {
 // database preserves all data.
 func TestMigrationReopenPreservesData(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "reopen.sqlite3")
-	s, err := Open(dbPath)
+	s, err := Open(dbPath, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1700,7 +1702,7 @@ func TestMigrationReopenPreservesData(t *testing.T) {
 	s.Close()
 
 	// Reopen the same database
-	s2, err := Open(dbPath)
+	s2, err := Open(dbPath, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1788,7 +1790,7 @@ func TestMigration20PreservesAdapterCustomizations(t *testing.T) {
 	db.Close()
 
 	// Open triggers migration 20 + seedBuiltInAdapters.
-	s, err := Open(path)
+	s, err := Open(path, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1817,7 +1819,7 @@ func TestMigration20PreservesAdapterCustomizations(t *testing.T) {
 
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"))
+	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
