@@ -433,6 +433,142 @@ func TestAdminSettingsSavesGlobalRouteFilters(t *testing.T) {
 	}
 }
 
+func TestSettingsPageDynamicPeersFieldAndHint(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "settings-dynamic.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := adminAuthCookie(t, cfg)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/settings", nil)
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /admin/settings: status=%d body=%s", response.Code, body)
+	}
+
+	if !strings.Contains(body, `for="s_allow_dynamic_peers"`) {
+		t.Fatalf("dynamic peers checkbox not found: %s", body)
+	}
+	if !strings.Contains(body, `disabled title="`) {
+		t.Fatalf("dynamic peers checkbox not disabled: %s", body)
+	}
+	if !strings.Contains(body, `WDBGP_ALLOW_DYNAMIC_PEERS`) {
+		t.Fatalf("env var name not rendered: %s", body)
+	}
+}
+
+func TestUserFormDynamicCheckboxReadonlyWhenDisabled(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "user-dyn-readonly.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := adminAuthCookie(t, cfg)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/user/0", nil)
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /admin/user/0: status=%d body=%s", response.Code, body)
+	}
+	if !strings.Contains(body, `id=dynamic-ip`) {
+		t.Fatalf("dynamic-ip checkbox not found: %s", body)
+	}
+	if !strings.Contains(body, `readonly`) {
+		t.Fatalf("dynamic-ip checkbox missing readonly: %s", body)
+	}
+}
+
+func TestUserFormPasswordDisabledDynamicIPv4(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "user-pw-dis-v4.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	userID, err := db.AddUser(ctx, store.User{
+		Name:        "dynamic-v4",
+		PeerIP:      "0.0.0.0",
+		PeerASN:     65100,
+		BGPPassword: "secret",
+		Enabled:     true,
+		Networks:    []string{"0.0.0.0/0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := adminAuthCookie(t, cfg)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/user/"+strconv.FormatInt(userID, 10), nil)
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /admin/user/%d: status=%d body=%s", userID, response.Code, body)
+	}
+	if !strings.Contains(body, `disabled title="`) || !strings.Contains(body, `name=bgp_password`) {
+		t.Fatalf("bgp_password field should be disabled for dynamic peer: %s", body)
+	}
+}
+
+func TestUserFormPasswordDisabledDynamicIPv6(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "user-pw-dis-v6.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	userID, err := db.AddUser(ctx, store.User{
+		Name:        "dynamic-v6",
+		PeerIP:      "::",
+		PeerASN:     65101,
+		BGPPassword: "secret6",
+		Enabled:     true,
+		Networks:    []string{"::/0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := adminAuthCookie(t, cfg)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/user/"+strconv.FormatInt(userID, 10), nil)
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	body := response.Body.String()
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /admin/user/%d: status=%d body=%s", userID, response.Code, body)
+	}
+	if !strings.Contains(body, `disabled title="`) || !strings.Contains(body, `name=bgp_password`) {
+		t.Fatalf("bgp_password field should be disabled for dynamic IPv6 peer: %s", body)
+	}
+}
+
 // =============================================================================
 // Selection count endpoint
 // =============================================================================

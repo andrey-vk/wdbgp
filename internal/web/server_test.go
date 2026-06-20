@@ -1272,6 +1272,98 @@ func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
 	}
 }
 
+func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv4-pw.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	// Add first peer with password "apple"
+	_, err = db.AddUser(ctx, store.User{
+		Name: "alice", PeerIP: "192.0.2.1", PeerASN: 65001,
+		BGPPassword: "apple", Enabled: true,
+		Networks: []string{"192.168.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Try to add second peer with different password "banana"
+	form := url.Values{
+		"name":         {"bob"},
+		"peer_ip":      {"192.0.2.1"},
+		"peer_asn":     {"65002"},
+		"bgp_password": {"banana"},
+		"networks":     {"192.168.101.0/24"},
+		"enabled":      {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for mismatched password on shared IP, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "password must match") {
+		t.Fatalf("response should mention password must match: %s", response.Body.String())
+	}
+}
+
+func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv6-pw.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	// Add first peer with password "apple"
+	_, err = db.AddUser(ctx, store.User{
+		Name: "alice6", PeerIP: "fd00::1", PeerASN: 65101,
+		BGPPassword: "apple", Enabled: true,
+		Networks: []string{"fd00:cafe::/48"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+
+	// Try to add second peer with different password "banana"
+	form := url.Values{
+		"name":         {"bob6"},
+		"peer_ip":      {"fd00::1"},
+		"peer_asn":     {"65102"},
+		"bgp_password": {"banana"},
+		"networks":     {"fd00:babe::/48"},
+		"enabled":      {"on"},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.AddCookie(adminCookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for mismatched password on shared IPv6, got %d body=%s",
+			response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "password must match") {
+		t.Fatalf("response should mention password must match: %s", response.Body.String())
+	}
+}
+
 func TestStatusEndpoint(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "status.sqlite3"))
 	if err != nil {
