@@ -191,12 +191,32 @@ cookie и после правильного пароля снова переки
 | `WDBGP_JS_MAX_CALL_STACK` | `1000` |
 | `WDBGP_ADAPTER_BACKUP_DIR` | `<db_dir>/backup/adapters` |
 | `WDBGP_ADAPTER_BACKUP_MAX` | `10` |
+| `WDBGP_BACKUP_ENABLED` | `true` |
+| `WDBGP_BACKUP_DIR` | `<db_dir>` |
+| `WDBGP_AUTO_RESTORE_ENABLED` | `false` |
+| `WDBGP_ALLOW_DYNAMIC_PEERS` | `false` |
 
 `WDBGP_ADMIN_PASSWORD` и `WDBGP_SESSION_SECRET` обязательны для `serve`.
 Старые имена `WDBGP_BIRD_LOCAL_ADDRESS` и
 `WDBGP_BIRD_LOCAL_ADDRESS_V6` пока принимаются как совместимые aliases.
 Если `WDBGP_BGP_LOCAL_ADDRESS_V6` не задан, IPv6-выбор сохраняется в базе, но
 анонсируются только IPv4-префиксы.
+
+### Резервное копирование и автовосстановление базы данных
+
+Перед выполнением ожидающих миграций схемы сервер создаёт копию текущей базы
+в `WDBGP_BACKUP_DIR`. Из копии исключаются кешированные данные фидов
+(`catalog_entries`), которые можно восстановить синхронизацией. Отключить
+можно через `WDBGP_BACKUP_ENABLED=false`.
+
+Если база была создана более новой версией ПО, при запуске включается
+**degraded mode**: веб-интерфейс показывает страницу с ошибкой версии (RU/EN),
+BGP и синхронизация не запускаются.
+
+При `WDBGP_AUTO_RESTORE_ENABLED=true` сервер ищет в `WDBGP_BACKUP_DIR` бэкап,
+соответствующий текущей версии, и восстанавливает его. Несовместимая база
+сохраняется с суффиксом `.incompatible-v<N>.sqlite3`. Если подходящий бэкап
+не найден — degraded mode с описанием ошибки.
 
 Эндпоинт `/status` возвращает операционные данные в JSON. Доступ требует
 либо IP клиента из `WDBGP_STATUS_ALLOWED` (CIDR через запятую), либо
