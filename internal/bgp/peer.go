@@ -508,9 +508,13 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		remoteIP := remoteAddr.Addr()
 		if p.cfg.Address.IsUnspecified() && !remoteIP.IsLoopback() {
 			// Dynamic peer on non-loopback: TCP MD5 cannot be preinstalled
-			// for wildcard addresses. Standard peers use MD5 only, not OPEN
-			// password — accept the session with best-effort auth.
-			p.logger.Warn("dynamic peer on non-loopback: TCP MD5 not enforced at handshake level")
+			// for wildcard addresses. Validate password from OPEN message
+			// as the only available authentication for this case.
+			if openIn.Password != p.cfg.Password {
+				p.sendNotification(conn, 5, 0, nil)
+				conn.Close()
+				return
+			}
 		} else if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
 			p.logger.Error("accept: tcp md5 set failed", "error", err)
 			conn.Close()

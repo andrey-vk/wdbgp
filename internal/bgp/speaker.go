@@ -154,9 +154,22 @@ func (s *Speaker) SetPeers(peers []PeerConfig) error {
 
 	s.peerConfigs = peers
 
-	// Clear old MD5 keys now that new keys are installed.
+	// Clear old MD5 keys only for addresses no longer in the new set.
+	// Keys for surviving peers were already re-applied above.
 	if s.listener != nil {
-		_ = clearListenerMD5(s.listener, oldConfigs)
+		newAddrSet := make(map[netip.Addr]bool)
+		for _, pc := range peers {
+			newAddrSet[pc.Address] = true
+		}
+		var toClear []PeerConfig
+		for _, oc := range oldConfigs {
+			if !newAddrSet[oc.Address] {
+				toClear = append(toClear, oc)
+			}
+		}
+		if len(toClear) > 0 {
+			_ = clearListenerMD5(s.listener, toClear)
+		}
 	}
 	return nil
 }

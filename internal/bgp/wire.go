@@ -480,20 +480,19 @@ func (a *ASPathAttribute) TypeCode() uint8 {
 }
 
 // Serialize encodes the AS_PATH path attribute value.
-// Uses 4-byte AS_SEQUENCE (type code 2) for ASNs > 65535 (RFC 6793),
-// or 2-byte AS_SEQUENCE (type code 1) for ASNs ≤ 65535.
+// Uses AS_SEQUENCE (type code 2) for both 2-byte and 4-byte ASNs.
 func (a *ASPathAttribute) Serialize() []byte {
 	if a.ASN > 65535 {
 		// 4-octet AS_SEQUENCE: segment type=2, length=1 (in ASNs), value=4 bytes
 		val := make([]byte, 6)
-		val[0] = 2 // AS_SEQUENCE (4-byte)
+		val[0] = 2 // AS_SEQUENCE
 		val[1] = 1 // one AS in segment
 		binary.BigEndian.PutUint32(val[2:6], a.ASN)
 		return encodePathAttribute(attrFlagTransitive, AttrASPath, val)
 	}
-	// 2-octet AS_SEQUENCE: segment type=1, length=1 (in ASNs), value=2 bytes
+	// 2-octet AS_SEQUENCE: segment type=2, length=1 (in ASNs), value=2 bytes
 	val := make([]byte, 4)
-	val[0] = 1 // AS_SEQUENCE (2-byte)
+	val[0] = 2 // AS_SEQUENCE
 	val[1] = 1 // one AS in segment
 	binary.BigEndian.PutUint16(val[2:4], uint16(a.ASN))
 	return encodePathAttribute(attrFlagTransitive, AttrASPath, val)
@@ -701,32 +700,27 @@ func decodeASPath(value []byte) (PathAttribute, error) {
 	segType := value[0]
 	segLen := int(value[1]) // number of ASNs in this segment
 
-	switch segType {
-	case 1: // 2-byte AS_SEQUENCE
-		if len(value) < 2+segLen*2 {
-			return nil, fmt.Errorf("bgp: as_path 2-byte segment truncated: need %d, have %d",
-				2+segLen*2, len(value))
-		}
-		if segLen == 0 {
-			return nil, fmt.Errorf("bgp: as_path segment has zero length")
-		}
-		asn := uint32(binary.BigEndian.Uint16(value[2:4]))
-		return &ASPathAttribute{ASN: asn}, nil
-
-	case 2: // 4-byte AS_SEQUENCE
-		if len(value) < 2+segLen*4 {
-			return nil, fmt.Errorf("bgp: as_path 4-byte segment truncated: need %d, have %d",
-				2+segLen*4, len(value))
-		}
-		if segLen == 0 {
-			return nil, fmt.Errorf("bgp: as_path segment has zero length")
-		}
-		asn := binary.BigEndian.Uint32(value[2:6])
-		return &ASPathAttribute{ASN: asn}, nil
-
-	default:
+	if segType != 1 && segType != 2 {
 		return nil, fmt.Errorf("bgp: unknown as_path segment type: %d", segType)
 	}
+	if segLen == 0 {
+		return nil, fmt.Errorf("bgp: as_path segment has zero length")
+	}
+
+	// Determine ASN width from the total segment value length.
+	// 2 bytes (header) + segLen * 2 (2-byte ASNs) or + segLen * 4 (4-byte ASNs).
+	var asn uint32
+	if len(value) >= 2+segLen*4 {
+		// 4-byte ASNs
+		asn = binary.BigEndian.Uint32(value[2:6])
+	} else if len(value) >= 2+segLen*2 {
+		// 2-byte ASNs
+		asn = uint32(binary.BigEndian.Uint16(value[2:4]))
+	} else {
+		return nil, fmt.Errorf("bgp: as_path segment truncated: need at least %d, have %d",
+			2+segLen*2, len(value))
+	}
+	return &ASPathAttribute{ASN: asn}, nil
 }
 
 // encodePathAttributes serializes a slice of path attributes into wire format.

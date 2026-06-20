@@ -1024,6 +1024,16 @@ func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// Validate all mode IDs before inserting the feed.
+	for _, mid := range modeIDs {
+		if _, err := s.store.CatalogMode(r.Context(), mid); store.IsNotFound(err) {
+			http.Error(w, fmt.Sprintf("mode %d not found", mid), http.StatusBadRequest)
+			return
+		} else if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
+	}
 	feedID, err := s.store.AddFeedForModeAdapter(
 		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data)
 	if err != nil {
@@ -2143,9 +2153,6 @@ func parseUserForm(r *http.Request, id int64) (store.User, bool, error) {
 	peerASN, err := strconv.ParseUint(r.FormValue("peer_asn"), 10, 32)
 	if err != nil || peerASN == 0 {
 		return store.User{}, false, fmt.Errorf("invalid peer ASN")
-	}
-	if peerASN > 65535 {
-		return store.User{}, false, fmt.Errorf("peer ASN must not exceed 65535 (2-byte BGP)")
 	}
 	nextHop := strings.TrimSpace(r.FormValue("next_hop"))
 	if nextHop != "" {

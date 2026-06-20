@@ -263,6 +263,19 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 		return err
 	}
 	if err := m.speaker.SetPeers(cfgs); err != nil {
+		// Rollback: restore old peer config and route caches.
+		for i, u := range m.peerConfigs {
+			if u.ID == user.ID {
+				m.peerConfigs[i] = oldUser
+				break
+			}
+		}
+		if oldPeerKey != "" {
+			m.peerRoutes[oldPeerKey] = nil // placeholder for reconcile to repopulate
+		}
+		if peerKey != oldPeerKey {
+			delete(m.peerRoutes, peerKey)
+		}
 		return err
 	}
 	return nil

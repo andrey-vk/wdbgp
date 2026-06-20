@@ -380,8 +380,8 @@ func TestASPath4ByteEncoding(t *testing.T) {
 	if len(smallValue) != 4 {
 		t.Fatalf("value length = %d, want 4 (2-byte AS_SEQUENCE)", len(smallValue))
 	}
-	if smallValue[0] != 1 {
-		t.Fatalf("segment type = %d, want 1 (AS_SEQUENCE 2-byte)", smallValue[0])
+	if smallValue[0] != 2 {
+		t.Fatalf("segment type = %d, want 2 (AS_SEQUENCE 2-byte)", smallValue[0])
 	}
 	t.Logf("2-byte AS_PATH encoding verified for ASN 64512")
 }
