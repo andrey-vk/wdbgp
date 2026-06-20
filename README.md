@@ -7,7 +7,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/wh1ted/wdbgp)](https://hub.docker.com/r/wh1ted/wdbgp)
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8)
 ![Alpine](https://img.shields.io/badge/Alpine-3.23-0d597f)
-![GoBGP](https://img.shields.io/badge/GoBGP-3.x-green)
+![Custom BGP](https://img.shields.io/badge/BGP-Custom%20Speaker-blue)
 ![RouterOS](https://img.shields.io/badge/RouterOS-container-blue)
 ![Dual Stack](https://img.shields.io/badge/IP-IPv4%20%2B%20IPv6-blueviolet)
 
@@ -17,9 +17,8 @@
 and announces prefixes selected by each user to that user's router over BGP.
 
 It is a single statically linked Go binary containing the HTTP server, SQLite
-storage, and GoBGP. Python and BIRD are no longer required. A unique prefix is
-installed in the in-memory GoBGP RIB once; per-peer export policies determine
-which clients receive it.
+storage, and a custom BGP speaker. Python and BIRD are no longer required. Routes
+are announced per-peer directly from the in-memory route table.
 
 ## Catalog modes
 
