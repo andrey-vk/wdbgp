@@ -46,6 +46,7 @@ type Config struct {
 	AdapterBackupDir   string              // backup directory for adapter sources (empty = disabled)
 	AdapterBackupMax   int                 // max backup copies per adapter
 	RequirePasswordForNonUniqueIP bool     // require BGP password when sharing IP with different ASN
+	AllowDynamicPeers             bool     // allow dynamic peers (0.0.0.0/0) via WDBGP_ALLOW_DYNAMIC_PEERS
 }
 
 func Load() (Config, error) {
@@ -179,6 +180,7 @@ func Load() (Config, error) {
 		AdapterBackupDir:   env("WDBGP_ADAPTER_BACKUP_DIR", filepath.Dir(dbPath)+"/backup/adapters"),
 		AdapterBackupMax:   validateBackupMax("WDBGP_ADAPTER_BACKUP_MAX", 10),
 		RequirePasswordForNonUniqueIP: envBool("WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP", true),
+		AllowDynamicPeers:             envBool("WDBGP_ALLOW_DYNAMIC_PEERS", false),
 	}
 	return cfg, nil
 }

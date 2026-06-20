@@ -365,3 +365,24 @@ func TestLoadValidatesAdminCookieSecureAndDefaultLanguage(t *testing.T) {
 		})
 	}
 }
+
+func TestAllowDynamicPeersEnvDefaultFalse(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AllowDynamicPeers {
+		t.Fatalf("AllowDynamicPeers = true, want false (default)")
+	}
+}
+
+func TestAllowDynamicPeersEnvTrue(t *testing.T) {
+	t.Setenv("WDBGP_ALLOW_DYNAMIC_PEERS", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AllowDynamicPeers {
+		t.Fatalf("AllowDynamicPeers = false, want true (env set to \"true\")")
+	}
+}
