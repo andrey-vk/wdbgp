@@ -102,8 +102,10 @@ func (p *Peer) connectAndRun() error {
 	if port < 0 {
 		// Port -1 means passive only (no active dialing — used for
 		// server-side peers that accept incoming connections).
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
 		for !p.stopping.Load() {
-			time.Sleep(1 * time.Second)
+			<-ticker.C
 		}
 		return fmt.Errorf("passive peer stopped")
 	}
@@ -608,6 +610,8 @@ func (p *Peer) sendNotification(conn net.Conn, code, subcode uint8, data []byte)
 		Data:         data,
 	}
 	conn.Write(notif.Serialize())
+	// Write error is intentionally ignored — the session is being torn down
+	// and the connection may already be closed by the peer.
 }
 
 func (p *Peer) Stop() {

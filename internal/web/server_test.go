@@ -1103,7 +1103,7 @@ func TestAddUserAcceptsUniqueIPWithoutPassword(t *testing.T) {
 	}
 }
 
-func TestAddUserRequiresPasswordForDynamicPeers(t *testing.T) {
+func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -1114,7 +1114,7 @@ func TestAddUserRequiresPasswordForDynamicPeers(t *testing.T) {
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
 
-	// Without password — should reject
+	// Without password — should succeed (password is not required for dynamic peers)
 	form := url.Values{
 		"name":     {"dynamic-no-pw"},
 		"peer_ip":  {"0.0.0.0"},
@@ -1127,16 +1127,16 @@ func TestAddUserRequiresPasswordForDynamicPeers(t *testing.T) {
 	request.AddCookie(adminCookie)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for dynamic peer without password, got %d body=%s",
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect for dynamic peer without password, got %d body=%s",
 			response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "dynamic") || !strings.Contains(response.Body.String(), "password") {
-		t.Fatalf("response should mention dynamic peer requiring password: %s", response.Body.String())
-	}
 
-	// With password — should succeed
+	// With password — should also succeed
+	form.Set("name", "dynamic-with-pw")
+	form.Set("peer_asn", "65101")
 	form.Set("bgp_password", "secret123")
+	form.Set("networks", "10.0.0.0/8")
 	request = httptest.NewRequest(http.MethodPost, "/admin/user", strings.NewReader(form.Encode()))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	request.AddCookie(adminCookie)

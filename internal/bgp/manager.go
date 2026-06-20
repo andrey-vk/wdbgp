@@ -591,10 +591,10 @@ func routePrefixSet(routes []Route) map[string]bool {
 }
 
 // peerPort returns the destination port for a peer connection.
-// Dynamic peers (0.0.0.0) are passive-only: Port=-1 prevents active dialing.
+// Dynamic peers (0.0.0.0/::) are passive-only: Port=-1 prevents active dialing.
 // All other peers use Port=0 (defaults to 179 in connectAndRun).
 func peerPort(peerIP string) int32 {
-	if peerIP == "0.0.0.0" {
+	if peerIP == "0.0.0.0" || peerIP == "::" {
 		return -1
 	}
 	return 0

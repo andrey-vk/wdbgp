@@ -1600,7 +1600,7 @@ func (s *Server) saveGlobalFilters(w http.ResponseWriter, r *http.Request) {
 // validatePeerUniqueness validates a user's BGP peer configuration against
 // existing peers. skipUserID is the user's own ID (0 for new users).
 // Step A: Same IP + same ASN → reject (UNIQUE constraint)
-// Step B: Dynamic peers (0.0.0.0) require password + globally unique ASN
+// Step B: Dynamic peers (0.0.0.0 or ::) require globally unique ASN
 // Step C: Shared IP + different ASN → password required when RequirePasswordForNonUniqueIP is ON
 func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, skipUserID int64) error {
 	// Step A: Same IP + same ASN → reject
@@ -1616,11 +1616,8 @@ func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, sk
 		return fmt.Errorf("failed to check peer uniqueness: %w", err)
 	}
 
-	// Step B: Dynamic peers (0.0.0.0) require password + globally unique ASN
-	if user.PeerIP == "0.0.0.0" {
-		if user.BGPPassword == "" {
-			return fmt.Errorf("dynamic peers (0.0.0.0) require a BGP MD5 password")
-		}
+	// Step B: Dynamic peers (0.0.0.0 or ::) require globally unique ASN
+	if user.PeerIP == "0.0.0.0" || user.PeerIP == "::" {
 		var count int
 		err := s.store.DB.QueryRowContext(ctx,
 			"SELECT COUNT(*) FROM users WHERE peer_asn = ? AND id != ?",
