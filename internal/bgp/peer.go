@@ -34,7 +34,6 @@ type Peer struct {
 	routes      []Route          // current announced routes
 	state       string
 	holdTime    time.Duration
-	remoteID    netip.Addr
 	stopping    atomic.Bool
 	needsUpdate atomic.Bool
 	connAttempt atomic.Int64

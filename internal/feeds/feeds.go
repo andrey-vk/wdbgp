@@ -301,51 +301,6 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	return adapter.Revision, nil
 }
 
-func (s *Syncer) categoryLookup(ctx context.Context, feed store.Feed) (map[string][]string, error) {
-	lookup := map[string][]string{}
-	rows, err := s.Store.DB.QueryContext(ctx, `
-SELECT DISTINCT ce.category, ce.service
-FROM catalog_entries ce
-JOIN feeds f ON f.id = ce.feed_id
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-WHERE ce.feed_id != ? AND f.enabled = 1 AND cmf.mode_id = ?`, feed.ID, feed.ModeID)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var category, service string
-		if err := rows.Scan(&category, &service); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		if isLegacyOpenCCKFeedCategory(category) {
-			continue
-		}
-		lookup[service] = appendUnique(lookup[service], category)
-	}
-	rows.Close()
-
-	metadata := MetadataURL(feed.URL)
-	if metadata == feed.URL {
-		return lookup, nil
-	}
-	payload, err := s.download(ctx, metadata)
-	if err != nil {
-		return nil, err
-	}
-	var groups map[string]string
-	if err := json.Unmarshal(payload, &groups); err != nil {
-		return nil, fmt.Errorf("parse OpenCCK group metadata: %w", err)
-	}
-	for service, category := range groups {
-		if service == "" || category == "" {
-			return nil, fmt.Errorf("OpenCCK group response contains an empty service or category")
-		}
-		lookup[service] = appendUnique(lookup[service], category)
-	}
-	return lookup, nil
-}
-
 func isLegacyOpenCCKFeedCategory(category string) bool {
 	switch category {
 	case "opencck-main", "opencck-beta", "opencck-main-v4", "opencck-beta-v4",
@@ -599,13 +554,4 @@ func deduplicate(entries []Entry) []Entry {
 		return result[i].CIDR < result[j].CIDR
 	})
 	return result
-}
-
-func appendUnique(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
-	}
-	return append(values, value)
 }

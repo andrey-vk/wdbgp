@@ -32,11 +32,11 @@ type Manager struct {
 
 func NewManager(cfg config.Config, s *store.Store) *Manager {
 	return &Manager{
-		cfg:        cfg,
-		store:      s,
-		installed:  map[string]instPrefix{},
+		cfg:         cfg,
+		store:       s,
+		installed:   map[string]instPrefix{},
 		peerConfigs: []store.User{},
-		peerRoutes: map[string][]Route{},
+		peerRoutes:  map[string][]Route{},
 	}
 }
 
@@ -362,48 +362,6 @@ func (m *Manager) buildPeerConfigs() ([]PeerConfig, error) {
 	return configs, nil
 }
 
-// findPeer matches an incoming BGP session to a user.
-// Step 1: exact IP match — if exactly one user matches, verify password if set.
-// Step 2: multiple IP matches — narrow by ASN, then verify password if set.
-// Step 3: dynamic (IP 0.0.0.0) — match by ASN + password (password mandatory).
-func (m *Manager) findPeer(peerIP string, peerASN uint32, password string) (store.User, bool) {
-	// Step 1: exact IP match
-	var matches []store.User
-	for _, u := range m.peerConfigs {
-		if u.Enabled && u.PeerIP == peerIP {
-			matches = append(matches, u)
-		}
-	}
-
-	if len(matches) == 1 {
-		if matches[0].BGPPassword == "" || matches[0].BGPPassword == password {
-			return matches[0], true
-		}
-		return store.User{}, false
-	}
-
-	if len(matches) > 1 {
-		// Step 2: multiple IP matches — narrow by ASN
-		for _, u := range matches {
-			if uint32(u.PeerASN) == peerASN {
-				if u.BGPPassword == "" || u.BGPPassword == password {
-					return u, true
-				}
-			}
-		}
-		return store.User{}, false
-	}
-
-	// Step 3: dynamic (IP 0.0.0.0) — match by ASN + password
-	for _, u := range m.peerConfigs {
-		if u.Enabled && u.PeerIP == "0.0.0.0" && uint32(u.PeerASN) == peerASN && u.BGPPassword != "" && u.BGPPassword == password {
-			return u, true
-		}
-	}
-
-	return store.User{}, false
-}
-
 func (m *Manager) reconcileLocked(ctx context.Context) error {
 	if m.speaker == nil {
 		return fmt.Errorf("BGP speaker is not running")
@@ -566,10 +524,6 @@ func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, ser
 		Communities: comms,
 		NextHop:     nh,
 	}, nil
-}
-
-func largeCommunity(asn uint32, userID int64) string {
-	return fmt.Sprintf("%d:%d:0", asn, userID)
 }
 
 func signature(userIDs []int64) string {

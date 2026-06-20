@@ -29,10 +29,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	
+
 	// Configure logging based on config
 	logging.Configure(cfg.LogLevel, cfg.LogFormat)
-	
+
 	command := "serve"
 	if len(os.Args) > 1 {
 		command = os.Args[1]
@@ -78,14 +78,14 @@ func serve(cfg config.Config, db *store.Store) error {
 	if err := cfg.ValidateServe(); err != nil {
 		return err
 	}
-	
+
 	logging.Info("starting application",
 		"bgp_asn", cfg.LocalASN,
 		"bgp_port", cfg.BGPListenPort,
 		"http_address", cfg.ListenAddress(),
 		"sync_interval", cfg.SyncInterval,
 	)
-	
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
@@ -128,7 +128,7 @@ func serve(cfg config.Config, db *store.Store) error {
 			return err
 		}
 	}
-	
+
 	logging.Info("shutting down HTTP server")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
@@ -139,7 +139,7 @@ func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer,
 	syncNow := func() {
 		logger := logging.FromContext(ctx)
 		logger.Info("starting feed sync")
-		
+
 		errors := syncer.SyncAll(ctx)
 		if len(errors) > 0 {
 			for _, err := range errors {
@@ -149,7 +149,7 @@ func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer,
 		} else {
 			logger.Info("feed sync completed successfully")
 		}
-		
+
 		if err := manager.Reconcile(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("BGP reconcile error", "error", err)
 		} else if ctx.Err() == nil {
@@ -175,19 +175,19 @@ func printStats(ctx context.Context, db *store.Store) error {
 	if err != nil {
 		return err
 	}
-	
+
 	logger := logging.FromContext(ctx)
 	logger.Info("catalog statistics",
 		"categories", categories,
 		"services", services,
 		"entries", entries,
 	)
-	
+
 	feedList, err := db.Feeds(ctx, false)
 	if err != nil {
 		return err
 	}
-	
+
 	for _, feed := range feedList {
 		status := feed.LastSuccess
 		if status == "" {

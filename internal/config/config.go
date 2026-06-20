@@ -228,33 +228,6 @@ func integer(name string, fallback int) (int, error) {
 	return int(number), nil
 }
 
-func integer32(name string, fallback int32) (int32, error) {
-	value := os.Getenv(name)
-	if value == "" {
-		return fallback, nil
-	}
-	number, err := strconv.ParseInt(value, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be an integer: %w", name, err)
-	}
-	return int32(number), nil
-}
-
-func unsignedInteger32(name string, fallback uint32) (uint32, error) {
-	value := os.Getenv(name)
-	if value == "" {
-		return fallback, nil
-	}
-	if strings.HasPrefix(strings.TrimSpace(value), "-") {
-		return 0, fmt.Errorf("%s must be between 1 and %d", name, uint64(^uint32(0)))
-	}
-	number, err := strconv.ParseUint(value, 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be an integer: %w", name, err)
-	}
-	return uint32(number), nil
-}
-
 func boolean(name string) bool {
 	switch strings.ToLower(os.Getenv(name)) {
 	case "1", "true", "yes", "on":

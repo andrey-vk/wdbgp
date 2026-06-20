@@ -125,15 +125,6 @@ type NotificationMessage struct {
 	Data         []byte
 }
 
-// encodeHeader serializes a BGP message header to wire format.
-func encodeHeader(h *Header) []byte {
-	buf := make([]byte, HeaderLen)
-	copy(buf[0:16], h.Marker[:])
-	binary.BigEndian.PutUint16(buf[16:18], h.Length)
-	buf[18] = h.Type
-	return buf
-}
-
 // decodeHeader parses a BGP message header from wire format.
 func decodeHeader(data []byte) (*Header, error) {
 	if len(data) < HeaderLen {
