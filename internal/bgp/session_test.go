@@ -240,6 +240,52 @@ func TestDynamicPeer(t *testing.T) {
 }
 
 // =============================================================================
+// Test: Dynamic peer (:: IPv6 wildcard)
+// =============================================================================
+
+func TestDynamicPeerSessionIPv6(t *testing.T) {
+	port := freeTCPPortV6(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	speaker := NewSpeaker(SpeakerConfig{
+		ASN:       64512,
+		RouterID:  netip.MustParseAddr("192.0.2.1"),
+		Port:      port,
+		LocalAddr: netip.MustParseAddr("192.0.2.2"),
+	}, logger)
+	if err := speaker.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { speaker.Stop() })
+
+	// Register :: as a dynamic peer (IPv6 wildcard)
+	_ = speaker.SetPeers([]PeerConfig{
+		{ID: 1, Address: netip.MustParseAddr("::"), ASN: 65001, Port: -1},
+	})
+
+	// Client connects from ::1 with matching ASN
+	client := NewPeer(PeerConfig{
+		ID: 2, Address: netip.MustParseAddr("::1"), Port: port,
+		ASN: 64512, Name: "test-client-v6-dyn",
+	}, SpeakerConfig{
+		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
+	}, logger, nil)
+	go client.Run()
+	t.Cleanup(func() { client.Stop() })
+
+	waitForPeerState(t, client, StateEstablished, 10*time.Second)
+
+	// The speaker should map this to :: dynamic peer, not ::1
+	waitForSpeakerPeerState(t, speaker, stateKey("::", 65001), StateEstablished, 10*time.Second)
+
+	// Double-check: ::1 should NOT be in the peer states
+	states := speaker.PeerStates()
+	if _, ok := states[stateKey("::1", 65001)]; ok {
+		t.Error("speaker has ::1:65001 in peer states; expected only :::65001 (dynamic)")
+	}
+}
+
+// =============================================================================
 // Test 5: ASN mismatch
 // =============================================================================
 

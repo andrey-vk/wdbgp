@@ -271,8 +271,13 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 	key := fmt.Sprintf("%s:%d", addr.String(), remoteASN)
 	peer, ok := s.peers[key]
 	if !ok {
-		// Fallback: try 0.0.0.0 dynamic peer
+		// Fallback: try 0.0.0.0 dynamic peer (IPv4)
 		key = fmt.Sprintf("%s:%d", "0.0.0.0", remoteASN)
+		peer, ok = s.peers[key]
+	}
+	if !ok {
+		// Fallback: try :: dynamic peer (IPv6 wildcard)
+		key = fmt.Sprintf("%s:%d", "::", remoteASN)
 		peer, ok = s.peers[key]
 	}
 	s.mu.Unlock()
