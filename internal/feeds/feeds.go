@@ -509,7 +509,11 @@ func parseOpenCCKFlat(value map[string]any, lookup map[string][]string, defaultC
 		if len(categories) == 0 {
 			categories = []string{defaultCategory}
 		}
-		for _, rawCIDR := range rawCIDRs.([]any) {
+		rawCIDRList, ok := rawCIDRs.([]any)
+		if !ok {
+			return nil, fmt.Errorf("CIDR list must be an array")
+		}
+		for _, rawCIDR := range rawCIDRList {
 			cidr, ok := rawCIDR.(string)
 			if !ok {
 				return nil, fmt.Errorf("CIDR must be a string")

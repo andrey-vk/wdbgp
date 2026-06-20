@@ -2623,7 +2623,11 @@ func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
 	// Build feed→mode multi-mapping
 	feedModes := make(map[int64][]int64)
 	for _, f := range feeds {
-		modeIDs, _ := s.store.FeedModes(ctx, f.ID)
+		modeIDs, err := s.store.FeedModes(ctx, f.ID)
+		if err != nil {
+			s.internalError(w, r, err)
+			return
+		}
 		feedModes[f.ID] = modeIDs
 	}
 

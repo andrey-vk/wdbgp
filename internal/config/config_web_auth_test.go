@@ -37,8 +37,8 @@ func TestDefaultWebAuthValidation(t *testing.T) {
 			if !test.wantError && cfg.DefaultWebAuth != test.wantValue {
 				t.Fatalf("DefaultWebAuth = %q, want %q", cfg.DefaultWebAuth, test.wantValue)
 			}
-			if test.wantError && err != nil && !strings.Contains(err.Error(), "network, login, or both") {
-				t.Fatalf("error = %v, want network/login/both message", err)
+			if test.wantError && err != nil && !strings.Contains(err.Error(), "network, login, both, or any") {
+				t.Fatalf("error = %v, want network/login/both/any message", err)
 			}
 		})
 	}

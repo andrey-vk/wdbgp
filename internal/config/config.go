@@ -575,7 +575,7 @@ func validateWebAuthMode(name string, fallback string) (string, error) {
 	case "network", "login", "both", "any":
 		return value, nil
 	default:
-		return "", fmt.Errorf("%s must be network, login, or both", name)
+		return "", fmt.Errorf("%s must be network, login, both, or any", name)
 	}
 }
 
@@ -600,7 +600,9 @@ func (c *Config) ApplyDBOverrides(settings map[string]string) {
 	}
 	if os.Getenv("WDBGP_SESSION_MAX_AGE") == "" {
 		if v, ok := settings["session_max_age"]; ok && v != "" {
-			c.SessionMaxAge, _ = strconv.Atoi(v)
+			if n, err := strconv.Atoi(v); err == nil {
+				c.SessionMaxAge = n
+			}
 		}
 	}
 	if os.Getenv("WDBGP_ADMIN_COOKIE_SECURE") == "" {
@@ -625,12 +627,16 @@ func (c *Config) ApplyDBOverrides(settings map[string]string) {
 	}
 	if os.Getenv("WDBGP_RATE_LIMIT_LOGIN") == "" {
 		if v, ok := settings["rate_limit_login"]; ok && v != "" {
-			c.RateLimitLogin, _ = strconv.Atoi(v)
+			if n, err := strconv.Atoi(v); err == nil {
+				c.RateLimitLogin = n
+			}
 		}
 	}
 	if os.Getenv("WDBGP_RATE_LIMIT_ADMIN") == "" {
 		if v, ok := settings["rate_limit_admin"]; ok && v != "" {
-			c.RateLimitAdmin, _ = strconv.Atoi(v)
+			if n, err := strconv.Atoi(v); err == nil {
+				c.RateLimitAdmin = n
+			}
 		}
 	}
 	if os.Getenv("WDBGP_SYNC_INTERVAL") == "" {
