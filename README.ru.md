@@ -7,7 +7,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/wh1ted/wdbgp)](https://hub.docker.com/r/wh1ted/wdbgp)
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8)
 ![Alpine](https://img.shields.io/badge/Alpine-3.23-0d597f)
-![GoBGP](https://img.shields.io/badge/GoBGP-3.x-green)
+![Custom BGP](https://img.shields.io/badge/BGP-Custom%20Speaker-blue)
 ![RouterOS](https://img.shields.io/badge/RouterOS-container-blue)
 ![Dual Stack](https://img.shields.io/badge/IP-IPv4%20%2B%20IPv6-blueviolet)
 
@@ -17,9 +17,8 @@
 сервисов и анонсирует выбранные пользователями префиксы их роутерам через BGP.
 
 Это один статически собранный Go-бинарник со встроенными HTTP-сервером,
-SQLite-хранилищем и GoBGP. BIRD и Python больше не требуются. Маршруты хранятся
-в памяти GoBGP: одинаковый префикс создаётся один раз, а отдельные export policy
-определяют, каким клиентам он доступен.
+SQLite-хранилищем и собственным BGP-спикером. BIRD и Python больше не требуются.
+Маршруты анонсируются каждому пиру напрямую из таблицы маршрутов в памяти.
 
 ## Режимы каталогов
 
