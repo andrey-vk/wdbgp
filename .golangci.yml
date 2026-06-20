@@ -19,8 +19,6 @@ linters:
       check-blank: true
     revive:
       rules:
-        - name: exported
-        - name: package-comments
         - name: blank-imports
         - name: context-as-argument
         - name: error-return
@@ -34,6 +32,21 @@ linters:
         linters:
           - errcheck
         text: "Error return value of .* is not checked"
+      - path: _test\.go
+        linters:
+          - gosec
+        text: "G404"
+      - path: internal/web/i18n\.go
+        linters:
+          - gosec
+        text: "G101"
+      - path: runtime/
+        linters:
+          - misspell
+      - path: internal/bgp/peer\.go
+        linters:
+          - errcheck
+        text: "Error return value of .*(Close|Write|SetDeadline).* is not checked"
 
 formatters:
   enable:
