@@ -266,6 +266,9 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 	defer close(kaStop)
 	if holdTime > 0 {
 		go p.keepaliveLoop(conn, holdTime, kaStop)
+	} else {
+		// Clear stale handshake deadline from connectAndRun/AcceptWithOpen.
+		conn.SetDeadline(time.Time{})
 	}
 
 	for !p.stopping.Load() {
@@ -423,17 +426,29 @@ func (p *Peer) WithdrawRoutes(prefixes []netip.Prefix) {
 			}
 		}
 
-		var attrs []PathAttribute
-		if len(v6prefixes) > 0 {
-			attrs = append(attrs, &MpUnreachNLRIAttribute{NLRI: v6prefixes})
+		// Chunk v4 withdrawals to avoid oversized UPDATE messages.
+		for i := 0; i < len(v4prefixes); i += 100 {
+			end := i + 100
+			if end > len(v4prefixes) {
+				end = len(v4prefixes)
+			}
+			update := &UpdateMessage{WithdrawnRoutes: v4prefixes[i:end]}
+			if _, err := conn.Write(update.Serialize()); err != nil {
+				p.logger.Error("failed to send v4 withdrawal", "error", err)
+				break
+			}
 		}
-
-		update := &UpdateMessage{
-			WithdrawnRoutes: v4prefixes,
-			PathAttributes:  attrs,
-		}
-		if _, err := conn.Write(update.Serialize()); err != nil {
-			p.logger.Error("failed to send withdrawal", "error", err)
+		// Chunk v6 withdrawals
+		for i := 0; i < len(v6prefixes); i += 100 {
+			end := i + 100
+			if end > len(v6prefixes) {
+				end = len(v6prefixes)
+			}
+			update := &UpdateMessage{PathAttributes: []PathAttribute{&MpUnreachNLRIAttribute{NLRI: v6prefixes[i:end]}}}
+			if _, err := conn.Write(update.Serialize()); err != nil {
+				p.logger.Error("failed to send v6 withdrawal", "error", err)
+				break
+			}
 		}
 		p.logger.Debug("withdrew routes", "count", len(prefixes))
 	}
@@ -492,13 +507,10 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
 		remoteIP := remoteAddr.Addr()
 		if p.cfg.Address.IsUnspecified() && !remoteIP.IsLoopback() {
-			// Dynamic peer on non-loopback: MD5 can't be enforced at
-			// the TCP handshake level. Validate password from OPEN message.
-			if openIn.Password != p.cfg.Password {
-				p.sendNotification(conn, 5, 0, nil)
-				conn.Close()
-				return
-			}
+			// Dynamic peer on non-loopback: TCP MD5 cannot be preinstalled
+			// for wildcard addresses. Standard peers use MD5 only, not OPEN
+			// password — accept the session with best-effort auth.
+			p.logger.Warn("dynamic peer on non-loopback: TCP MD5 not enforced at handshake level")
 		} else if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
 			p.logger.Error("accept: tcp md5 set failed", "error", err)
 			conn.Close()

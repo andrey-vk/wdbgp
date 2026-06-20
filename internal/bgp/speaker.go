@@ -120,6 +120,13 @@ func (s *Speaker) SetPeers(peers []PeerConfig) error {
 		newSet[key] = pc
 	}
 
+	// Validate and apply MD5 BEFORE mutating peers.
+	if s.listener != nil {
+		if err := applyListenerMD5(s.listener, peers); err != nil {
+			return fmt.Errorf("tcp md5 refresh: %w", err)
+		}
+	}
+
 	// Stop peers that were removed
 	for key, p := range s.peers {
 		if _, ok := newSet[key]; !ok {
@@ -147,14 +154,9 @@ func (s *Speaker) SetPeers(peers []PeerConfig) error {
 
 	s.peerConfigs = peers
 
-	// Refresh listener MD5: clear keys from old configs, set keys from new configs.
-	// This ensures MD5 is applied to incoming connections before the TCP handshake.
+	// Clear old MD5 keys now that new keys are installed.
 	if s.listener != nil {
 		_ = clearListenerMD5(s.listener, oldConfigs)
-		if err := applyListenerMD5(s.listener, peers); err != nil {
-			s.logger.Error("tcp md5 refresh on listener failed", "error", err)
-			return err
-		}
 	}
 	return nil
 }

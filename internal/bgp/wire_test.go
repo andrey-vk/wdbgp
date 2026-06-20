@@ -39,9 +39,9 @@ func TestEncodeDecodeOpen(t *testing.T) {
 	if decoded.BGPID != [4]byte{192, 0, 2, 1} {
 		t.Fatalf("bgp_id = %v, want {192, 0, 2, 1}", decoded.BGPID)
 	}
-	// OptParmLen reflects IPv6 unicast capability only (8 bytes: 2 header + 6 capability TLV)
-	if decoded.OptParmLen != 8 {
-		t.Fatalf("opt_parm_len = %d, want 8", decoded.OptParmLen)
+	// OptParmLen reflects IPv6 unicast + AS4 capabilities (14 bytes: 2 header + 12 TLV data)
+	if decoded.OptParmLen != 14 {
+		t.Fatalf("opt_parm_len = %d, want 14", decoded.OptParmLen)
 	}
 }
 
@@ -183,31 +183,207 @@ func TestOpenIncludesIPv6UnicastCapability(t *testing.T) {
 		t.Fatalf("param type = %d, want 2 (Capability)", paramType)
 	}
 	paramLen := int(opts[1])
-	if paramLen < 6 {
-		t.Fatalf("param length = %d, want at least 6 (code + len + 4 bytes)", paramLen)
+	if paramLen < 12 {
+		t.Fatalf("param length = %d, want at least 12 (IPv6 + AS4 capabilities)", paramLen)
 	}
 
 	capData := opts[2 : 2+paramLen]
-	capCode := capData[0]
-	capLen := capData[1]
 
-	if capCode != 1 {
-		t.Fatalf("capability code = %d, want 1 (Multiprotocol Extension)", capCode)
-	}
-	if capLen != 4 {
-		t.Fatalf("capability length = %d, want 4", capLen)
+	// Find IPv6 unicast capability (code 1) and AS4 capability (code 65)
+	foundIPv6 := false
+	foundAS4 := false
+	for len(capData) >= 2 {
+		capCode := capData[0]
+		capLen := int(capData[1])
+		if 2+capLen > len(capData) {
+			break
+		}
+		if capCode == 1 && capLen == 4 {
+			// Multiprotocol Extension — verify IPv6 unicast
+			afi := binary.BigEndian.Uint16(capData[2:4])
+			safi := capData[5]
+			if afi == 2 && safi == 1 {
+				foundIPv6 = true
+				t.Logf("IPv6 unicast capability verified: AFI=%d SAFI=%d", afi, safi)
+			}
+		}
+		if capCode == 65 && capLen == 4 {
+			// Four-octet ASN capability — verify value
+			as4 := binary.BigEndian.Uint32(capData[2:6])
+			if as4 == 64512 {
+				foundAS4 = true
+				t.Logf("AS4 capability verified: ASN=%d", as4)
+			} else {
+				t.Errorf("AS4 capability has wrong ASN: %d, want 64512", as4)
+			}
+		}
+		capData = capData[2+capLen:]
 	}
 
-	afi := binary.BigEndian.Uint16(capData[2:4])
-	safi := capData[5]
-	if afi != 2 {
-		t.Fatalf("AFI = %d, want 2 (IPv6)", afi)
+	if !foundIPv6 {
+		t.Error("IPv6 unicast capability not found in OPEN message")
 	}
-	if safi != 1 {
-		t.Fatalf("SAFI = %d, want 1 (unicast)", safi)
+	if !foundAS4 {
+		t.Error("Four-octet ASN capability not found in OPEN message")
+	}
+}
+
+func TestOpenIncludesAS4Capability(t *testing.T) {
+	open := &OpenMessage{
+		Version:  4,
+		MyASN:    23456, // AS_TRANS — the 2-byte field
+		MyASN32:  196608, // 4-octet ASN (3 * 65536)
+		HoldTime: 90,
+		BGPID:    [4]byte{192, 0, 2, 1},
 	}
 
-	t.Logf("IPv6 unicast capability verified: AFI=%d SAFI=%d", afi, safi)
+	data := open.Serialize()
+
+	// BGP header is 19 bytes, OPEN body is 10 + opt parms
+	if len(data) < 19+10 {
+		t.Fatalf("serialized OPEN too short: %d bytes", len(data))
+	}
+
+	body := data[19:] // skip BGP header
+
+	// 2-byte ASN field at offset 1-2 of body should be AS_TRANS (23456)
+	myasn2 := binary.BigEndian.Uint16(body[1:3])
+	if myasn2 != 23456 {
+		t.Fatalf("2-byte ASN field = %d, want 23456 (AS_TRANS)", myasn2)
+	}
+	t.Logf("2-byte ASN field is AS_TRANS: %d", myasn2)
+
+	// OptParmLen at offset 9 of body
+	optParmLen := body[9]
+	if optParmLen == 0 {
+		t.Fatal("OptParmLen is 0, expected AS4 capability in optional parameters")
+	}
+
+	// Optional parameters start at body[10]
+	opts := body[10:]
+
+	// Find AS4 capability (code 65)
+	foundAS4 := false
+	for len(opts) >= 2 {
+		paramType := opts[0]
+		paramLen := int(opts[1])
+		if 2+paramLen > len(opts) {
+			break
+		}
+		if paramType == 2 { // Capability parameter
+			capData := opts[2 : 2+paramLen]
+			for len(capData) >= 2 {
+				capCode := capData[0]
+				capLen := int(capData[1])
+				if 2+capLen > len(capData) {
+					break
+				}
+				if capCode == 65 && capLen == 4 {
+					as4 := binary.BigEndian.Uint32(capData[2:6])
+					if as4 == 196608 {
+						foundAS4 = true
+						t.Logf("AS4 capability with large ASN verified: %d", as4)
+					} else {
+						t.Errorf("AS4 capability has wrong ASN: %d, want 196608", as4)
+					}
+				}
+				capData = capData[2+capLen:]
+			}
+		}
+		opts = opts[2+paramLen:]
+	}
+
+	if !foundAS4 {
+		t.Error("Four-octet ASN capability not found for large ASN")
+	}
+
+	// Verify round-trip via ReadMessage
+	msg, err := ReadMessage(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ReadMessage failed for AS4 OPEN: %v", err)
+	}
+	decoded, ok := msg.(*OpenMessage)
+	if !ok {
+		t.Fatalf("expected *OpenMessage, got %T", msg)
+	}
+	if decoded.MyASN != 23456 {
+		t.Fatalf("decoded 2-byte ASN = %d, want 23456", decoded.MyASN)
+	}
+	if decoded.MyASN32 != 196608 {
+		t.Fatalf("decoded MyASN32 = %d, want 196608", decoded.MyASN32)
+	}
+	t.Logf("AS4 OPEN round-trip verified: MyASN=%d, MyASN32=%d", decoded.MyASN, decoded.MyASN32)
+}
+
+func TestASPath4ByteEncoding(t *testing.T) {
+	// Test that ASNs > 65535 produce 4-byte AS_SEQUENCE encoding
+	attr := &ASPathAttribute{ASN: 196608}
+
+	serialized := attr.Serialize()
+
+	// Decode with decodePathAttributes
+	attrs, err := decodePathAttributes(serialized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attrs) != 1 {
+		t.Fatalf("attrs len = %d, want 1", len(attrs))
+	}
+
+	// Verify the type code from the raw bytes
+	// Path attribute format: flags(1) + type(1) + len(1|2) + value
+	// The value is: segment_type(1) + segment_len(1) + ASN bytes
+	// For 4-byte AS: segment_type=2, segment_len=1, value=4 bytes → total value=6
+	// Verify raw bytes contain type 2 AS_SEQUENCE (4-byte)
+	flags := serialized[0]
+	t.Logf("path attr flags: 0x%02x", flags)
+
+	// Calculate value offset and size
+	var valOffset, valLen int
+	if flags&attrFlagExtendedLength != 0 {
+		valOffset = 4
+		valLen = int(binary.BigEndian.Uint16(serialized[2:4]))
+	} else {
+		valOffset = 3
+		valLen = int(serialized[2])
+	}
+
+	value := serialized[valOffset : valOffset+valLen]
+	if len(value) != 6 {
+		t.Fatalf("value length = %d, want 6 (4-byte AS_SEQUENCE)", len(value))
+	}
+	if value[0] != 2 {
+		t.Fatalf("segment type = %d, want 2 (AS_SEQUENCE 4-byte)", value[0])
+	}
+	if value[1] != 1 {
+		t.Fatalf("segment length = %d, want 1", value[1])
+	}
+	decodedASN := binary.BigEndian.Uint32(value[2:6])
+	if decodedASN != 196608 {
+		t.Fatalf("decoded ASN = %d, want 196608", decodedASN)
+	}
+	t.Logf("4-byte AS_PATH encoding verified for ASN %d", decodedASN)
+
+	// Test that ASNs ≤ 65535 still produce 2-byte encoding
+	smallAttr := &ASPathAttribute{ASN: 64512}
+	smallSerialized := smallAttr.Serialize()
+	smallFlags := smallSerialized[0]
+	var smallValOffset, smallValLen int
+	if smallFlags&attrFlagExtendedLength != 0 {
+		smallValOffset = 4
+		smallValLen = int(binary.BigEndian.Uint16(smallSerialized[2:4]))
+	} else {
+		smallValOffset = 3
+		smallValLen = int(smallSerialized[2])
+	}
+	smallValue := smallSerialized[smallValOffset : smallValOffset+smallValLen]
+	if len(smallValue) != 4 {
+		t.Fatalf("value length = %d, want 4 (2-byte AS_SEQUENCE)", len(smallValue))
+	}
+	if smallValue[0] != 1 {
+		t.Fatalf("segment type = %d, want 1 (AS_SEQUENCE 2-byte)", smallValue[0])
+	}
+	t.Logf("2-byte AS_PATH encoding verified for ASN 64512")
 }
 
 func TestLargeCommunitiesRoundTrip(t *testing.T) {

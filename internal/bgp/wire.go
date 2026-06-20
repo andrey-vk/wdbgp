@@ -57,7 +57,7 @@ type Header struct {
 type OpenMessage struct {
 	Version        uint8
 	MyASN          uint16 // 2-byte ASN field
-	MyASN32        uint32 // 4-byte local ASN (for decode only; no longer advertised)
+	MyASN32        uint32 // 4-byte local ASN (advertised via Four-octet ASN capability, RFC 6793)
 	HoldTime       uint16
 	BGPID          [4]byte
 	OptParmLen     uint8
@@ -213,7 +213,7 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 	// Parse optional parameters for Four-octet ASN Capability (RFC 6793),
 	// IPv6 unicast capability (RFC 4760), and password parameter.
 	if o.OptParmLen > 0 && len(data) >= 10+int(o.OptParmLen) {
-		opts := data[10 : 10+o.OptParmLen]
+		opts := data[10 : 10+int(o.OptParmLen)]
 		for len(opts) >= 2 {
 			paramType := opts[0]
 			paramLen := int(opts[1])
@@ -318,31 +318,37 @@ func decodeNotification(data []byte) (*NotificationMessage, error) {
 }
 
 // Serialize encodes the OPEN message to wire format including header.
-// Advertises only the IPv6 unicast capability (RFC 4760). Uses 2-byte AS_PATH
-// encoding, so no Four-octet ASN capability is advertised.
+// Advertises IPv6 unicast (RFC 4760) and Four-octet ASN (RFC 6793)
+// capabilities. Uses either 2-byte or 4-byte AS_PATH encoding depending
+// on the local ASN value (AS_TRANS=23456 for >65535 in the 2-byte field).
 // If Password is set, it is included as parameter type 1 (fallback auth
 // for loopback connections where TCP MD5 is not enforced).
 func (o *OpenMessage) Serialize() []byte {
-	// Build capability parameter with one capability:
-	//   IPv6 unicast (RFC 4760): code 1, len 4 (AFI=2, SAFI=1)
+	// Build capability parameter with two capabilities:
+	//   1) IPv6 unicast (RFC 4760): code 1, len 4 (AFI=2, SAFI=1)
+	//   2) Four-octet ASN (RFC 6793): code 65, len 4 (MyASN32 in network byte order)
 	// Parameter type: 2 (Capability)
-	capParam := make([]byte, 8)
+	capParam := make([]byte, 14)
 	capParam[0] = 2     // Parameter type: Capability
-	capParam[1] = 6     // Parameter length: 2 + 4 = 6
-	// Capability: Multiprotocol Extension for IPv6 unicast
+	capParam[1] = 12    // Parameter length: two capabilities, 6 bytes each = 12
+	// Capability 1: Multiprotocol Extension for IPv6 unicast
 	capParam[2] = 1     // Capability code: Multiprotocol Extension
 	capParam[3] = 4     // Capability length: 4
 	capParam[4] = 0x00  // AFI high byte (IPv6=2)
 	capParam[5] = 0x02  // AFI low byte
 	capParam[6] = 0x00  // Reserved
 	capParam[7] = 0x01  // SAFI=1 (unicast)
+	// Capability 2: Four-octet ASN (RFC 6793)
+	capParam[8] = 65    // Capability code: Four-octet ASN
+	capParam[9] = 4     // Capability length: 4
+	binary.BigEndian.PutUint32(capParam[10:14], o.MyASN32)
 
 	// Build password parameter (type 1) if set and fits in OPEN message.
-	// Max password length is 245 bytes: OptParmLen (255) - capParam (8) - pwParam header (2).
+	// Max password length is 239 bytes: OptParmLen (255) - capParam (14) - pwParam header (2).
 	var pwParam []byte
 	if o.Password != "" {
-		if len(o.Password) > 245 {
-			log.Printf("WARNING: BGP password too long (%d bytes > 245), omitting from OPEN", len(o.Password))
+		if len(o.Password) > 239 {
+			log.Printf("WARNING: BGP password too long (%d bytes > 239), omitting from OPEN", len(o.Password))
 		} else {
 			pwParam = make([]byte, 2+len(o.Password))
 			pwParam[0] = 1 // Parameter type: password
@@ -351,14 +357,13 @@ func (o *OpenMessage) Serialize() []byte {
 		}
 	}
 
-	// 2-byte ASN field: clamp to 16-bit range for safety.
+	// 2-byte ASN field: use AS_TRANS (23456) for ASNs > 65535 (RFC 6793).
 	o.OptParmLen = uint8(len(capParam) + len(pwParam))
-	myASN32 := o.MyASN32
-	if myASN32 > 65535 {
-		log.Printf("ERROR: BGP ASN %d exceeds 65535 (2-byte BGP), clamping", myASN32)
-		myASN32 = 65535
+	if o.MyASN32 > 65535 {
+		o.MyASN = 23456 // AS_TRANS — real ASN in Four-octet ASN capability
+	} else {
+		o.MyASN = uint16(o.MyASN32)
 	}
-	o.MyASN = uint16(myASN32)
 
 	body := make([]byte, 10+o.OptParmLen)
 	body[0] = o.Version
@@ -475,11 +480,20 @@ func (a *ASPathAttribute) TypeCode() uint8 {
 }
 
 // Serialize encodes the AS_PATH path attribute value.
-// Uses 2-octet ASN encoding since all our ASNs fit in 16 bits.
+// Uses 4-byte AS_SEQUENCE (type code 2) for ASNs > 65535 (RFC 6793),
+// or 2-byte AS_SEQUENCE (type code 1) for ASNs ≤ 65535.
 func (a *ASPathAttribute) Serialize() []byte {
-	// 2-octet AS_SEQUENCE: type=2, length=1 (in ASNs), value=2 bytes
+	if a.ASN > 65535 {
+		// 4-octet AS_SEQUENCE: segment type=2, length=1 (in ASNs), value=4 bytes
+		val := make([]byte, 6)
+		val[0] = 2 // AS_SEQUENCE (4-byte)
+		val[1] = 1 // one AS in segment
+		binary.BigEndian.PutUint32(val[2:6], a.ASN)
+		return encodePathAttribute(attrFlagTransitive, AttrASPath, val)
+	}
+	// 2-octet AS_SEQUENCE: segment type=1, length=1 (in ASNs), value=2 bytes
 	val := make([]byte, 4)
-	val[0] = 2 // AS_SEQUENCE
+	val[0] = 1 // AS_SEQUENCE (2-byte)
 	val[1] = 1 // one AS in segment
 	binary.BigEndian.PutUint16(val[2:4], uint16(a.ASN))
 	return encodePathAttribute(attrFlagTransitive, AttrASPath, val)
