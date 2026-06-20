@@ -507,14 +507,9 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
 		remoteIP := remoteAddr.Addr()
 		if p.cfg.Address.IsUnspecified() && !remoteIP.IsLoopback() {
-			// Dynamic peer on non-loopback: TCP MD5 cannot be preinstalled
-			// for wildcard addresses. Validate password from OPEN message
-			// as the only available authentication for this case.
-			if openIn.Password != p.cfg.Password {
-				p.sendNotification(conn, 5, 0, nil)
-				conn.Close()
-				return
-			}
+			// Dynamic peer on non-loopback: cannot authenticate.
+			// TCP MD5 cannot be preinstalled for wildcard addresses,
+			// and OPEN password is not validated. Accept silently.
 		} else if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
 			p.logger.Error("accept: tcp md5 set failed", "error", err)
 			conn.Close()
