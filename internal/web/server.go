@@ -290,7 +290,7 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 	}
 	// Add CSRF token to selection view for the template
 	csrfToken := ""
-	if tokenVal := r.Context().Value("csrf_token"); tokenVal != nil {
+	if tokenVal := r.Context().Value(csrfCtxKey{}); tokenVal != nil {
 		csrfToken = tokenVal.(string)
 	}
 	view.CSRFToken = csrfToken
@@ -378,14 +378,15 @@ func (s *Server) userLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) userLogout(w http.ResponseWriter, r *http.Request) {
 	// Clear the user session cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     userSessionCookieName,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+		http.SetCookie(w, &http.Cookie{
+			Name:     userSessionCookieName,
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+			Secure:   s.userCookieSecure(r),
+			SameSite: http.SameSiteStrictMode,
+		})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -1671,7 +1672,7 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	}
 	// Add CSRF token to selection view for the template
 	csrfToken := ""
-	if tokenVal := r.Context().Value("csrf_token"); tokenVal != nil {
+	if tokenVal := r.Context().Value(csrfCtxKey{}); tokenVal != nil {
 		csrfToken = tokenVal.(string)
 	}
 	selection.CSRFToken = csrfToken
@@ -2393,7 +2394,7 @@ func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int,
 	
 	// Get CSRF token from context
 	csrfToken := ""
-	if tokenVal := r.Context().Value("csrf_token"); tokenVal != nil {
+	if tokenVal := r.Context().Value(csrfCtxKey{}); tokenVal != nil {
 		csrfToken = tokenVal.(string)
 	}
 	
@@ -2424,7 +2425,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, status int,
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 
-	csrfToken, _ := r.Context().Value("csrf_token").(string)
+	csrfToken, _ := r.Context().Value(csrfCtxKey{}).(string)
 
 	// Render content fragment to buffer
 	var contentBuf strings.Builder
@@ -2964,6 +2965,9 @@ func panicRecovery(next http.Handler) http.Handler {
 	})
 }
 
+// csrfCtxKey is the context key for CSRF tokens.
+type csrfCtxKey struct{}
+
 // rateLimiter implements per-IP rate limiting
 type rateLimiter struct {
 	mu         sync.RWMutex
@@ -3024,7 +3028,7 @@ func csrfProtection(next http.Handler, secret string) http.Handler {
 				token = csrfToken(secret)
 			}
 		}
-		ctx := context.WithValue(r.Context(), "csrf_token", token)
+		ctx := context.WithValue(r.Context(), csrfCtxKey{}, token)
 		
 		// Skip CSRF validation for test secret or empty secret
 		if secret == "" || secret == "test-secret" {

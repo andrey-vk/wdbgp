@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -314,7 +315,7 @@ func validateSyncInterval(name string, fallback int) (int, error) {
 	}
 	// Warn about extremely short intervals but don't reject them
 	if number < 60 {
-		// This is just a warning, not an error
+		log.Printf("WARNING: %s=%d is extremely short (less than 60 seconds)", name, number)
 	}
 	return int(number), nil
 }
@@ -472,10 +473,9 @@ func validateDBPath(name string, fallback string) (string, error) {
 				if stat.Mode().Perm()&0200 == 0 {
 					return "", fmt.Errorf("%s: cannot create directory %s - parent %s is not writable", name, dir, grandDir)
 				}
-			} else if os.IsNotExist(err) {
-				// Keep going up until we find an existing directory or hit root
-				// For now, just return a warning
-			}
+		} else if os.IsNotExist(err) {
+			log.Printf("WARNING: %s: parent directory %s does not exist", name, dir)
+		}
 		}
 	} else {
 		// Other error (permission denied, etc.)
