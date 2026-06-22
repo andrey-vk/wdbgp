@@ -48,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Python and BIRD dependencies (no longer referenced in docs).
 - 10 dead functions/fields (~300 lines).
 
+
+## [0.14.1-alpha] — 2026-06-22
+
+### Fixed
+- Added IPv4 unicast capability (AFI=1, SAFI=1) to BGP OPEN message for MikroTik RouterOS compatibility. MikroTik requires explicit IPv4 unicast advertisement to accept IPv4 routes.
+
 ## [0.12.6-alpha] — prior release
 
 ### Added
