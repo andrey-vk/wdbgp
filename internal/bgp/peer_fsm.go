@@ -92,8 +92,6 @@ func (p *Peer) Run() {
 }
 
 func (p *Peer) connectAndRun() error {
-	p.setState(StateConnect)
-
 	// If a session is already active from an inbound accept, don't dial.
 	if p.hasEstablishedConn() {
 		for !p.stopping.Load() {
@@ -114,6 +112,8 @@ func (p *Peer) connectAndRun() error {
 		}
 		return fmt.Errorf("passive peer stopped")
 	}
+	p.setState(StateConnect)
+
 	if port == 0 {
 		port = 179
 	}
