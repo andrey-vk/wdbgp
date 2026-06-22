@@ -51,7 +51,9 @@ func (s *Store) UpdateCatalogMode(ctx context.Context, mode CatalogMode) error {
 	if err != nil {
 		return err
 	}
-	if count, _ := result.RowsAffected(); count == 0 {
+	if count, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	} else if count == 0 {
 		return sql.ErrNoRows
 	}
 	return nil
@@ -81,7 +83,9 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if count, _ := result.RowsAffected(); count == 0 {
+	if count, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	} else if count == 0 {
 		return sql.ErrNoRows
 	}
 	return nil
@@ -151,7 +155,9 @@ func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) er
 	if err != nil {
 		return err
 	}
-	if count, _ := result.RowsAffected(); count == 0 {
+	if count, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	} else if count == 0 {
 		return sql.ErrNoRows
 	}
 	return nil

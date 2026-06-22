@@ -286,7 +286,10 @@ func pruneAdapterBackups(key, dir string, max int) {
 	if max <= 0 {
 		return
 	}
-	entries, _ := os.ReadDir(dir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // no entries to prune
+	}
 	var files []string
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), key+"_") {

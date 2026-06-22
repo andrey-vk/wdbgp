@@ -385,7 +385,7 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	//     Password field in the OPEN message as a fallback.
 	//   - Dynamic peers (0.0.0.0) on non-loopback cannot use MD5 at the
 	//     handshake level (listener can't preinstall keys for 0.0.0.0).
-	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
+	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String()) //nolint:errcheck // always valid from kernel accept()
 	remoteIP := remoteAddr.Addr()
 	if p.cfg.Password != "" {
 		if p.cfg.Address.IsUnspecified() && !remoteIP.IsLoopback() {

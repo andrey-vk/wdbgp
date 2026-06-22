@@ -126,7 +126,10 @@ func intersectCIDRs(groups ...[]string) []string {
 		var ib netipx.IPSetBuilder
 		ib.AddSet(result)
 		ib.Intersect(s)
-		result, _ = ib.IPSet()
+		result, err = ib.IPSet()
+		if err != nil {
+			return nil
+		}
 	}
 
 	prefixes := result.Prefixes()

@@ -251,7 +251,7 @@ func (s *Speaker) acceptLoop(ctx context.Context) {
 
 // handleConnection processes a new incoming TCP connection.
 func (s *Speaker) handleConnection(conn net.Conn) {
-	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
+	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String()) //nolint:errcheck // always valid from kernel accept()
 	addr := remoteAddr.Addr()
 
 	// Read OPEN message to get the remote ASN

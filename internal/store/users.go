@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/netip"
 	"sort"
 
@@ -221,7 +222,9 @@ func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) e
 		if err != nil {
 			return err
 		}
-		if count, _ := result.RowsAffected(); count == 0 {
+		if count, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		} else if count == 0 {
 			return sql.ErrNoRows
 		}
 		return replaceNetworks(ctx, tx, user.ID, user.Networks)
@@ -233,7 +236,9 @@ func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if count, _ := result.RowsAffected(); count == 0 {
+	if count, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	} else if count == 0 {
 		return sql.ErrNoRows
 	}
 	return nil
@@ -544,7 +549,9 @@ WHERE id = ?
 	if err != nil {
 		return err
 	}
-	if count, _ := result.RowsAffected(); count == 0 {
+	if count, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	} else if count == 0 {
 		return sql.ErrNoRows
 	}
 	return nil
@@ -572,7 +579,9 @@ WHERE id = ?
 		if err != nil {
 			return err
 		}
-		if count, _ := result.RowsAffected(); count == 0 {
+		if count, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		} else if count == 0 {
 			return sql.ErrNoRows
 		}
 		return SetVisibleUserModeSelection(

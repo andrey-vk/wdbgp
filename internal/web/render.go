@@ -59,7 +59,7 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, status int,
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 
-	csrfToken, _ := r.Context().Value(csrfCtxKey{}).(string)
+	csrfToken, _ := r.Context().Value(csrfCtxKey{}).(string) // ok if empty — CSRF middleware handles it
 
 	// Render content fragment to buffer
 	var contentBuf strings.Builder

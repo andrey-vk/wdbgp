@@ -292,7 +292,11 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if err != nil {
 			return fmt.Errorf("backup: open source: %w", err)
 		}
-		srcInfo, _ := src.Stat()
+		srcInfo, err := src.Stat()
+		if err != nil {
+			src.Close()
+			return fmt.Errorf("backup: stat source: %w", err)
+		}
 		dst, err := os.Create(backupPath)
 		if err != nil {
 			_ = src.Close()
@@ -315,8 +319,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			return fmt.Errorf("backup: open backup DB: %w", err)
 		}
 		backupDB.SetMaxOpenConns(1)
-		_, _ = backupDB.Exec("DELETE FROM catalog_entries")
-		_, _ = backupDB.Exec("VACUUM")
+		if _, err := backupDB.Exec("DELETE FROM catalog_entries"); err != nil {
+			log.Printf("WARNING: backup cleanup DELETE: %v", err)
+		}
+		if _, err := backupDB.Exec("VACUUM"); err != nil {
+			log.Printf("WARNING: backup cleanup VACUUM: %v", err)
+		}
 		_ = backupDB.Close()
 
 		log.Printf("DB backup saved to %s", backupPath)

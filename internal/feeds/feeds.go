@@ -427,7 +427,11 @@ func Parse(payload []byte, lookup map[string][]string, defaultCategory string) (
 func parseCanonical(items []any) ([]Entry, error) {
 	var entries []Entry
 	for _, item := range items {
-		encoded, _ := json.Marshal(item)
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			log.Printf("WARNING: json marshal item: %v", err)
+			continue
+		}
 		var value canonicalEntry
 		if err := json.Unmarshal(encoded, &value); err != nil {
 			return nil, err

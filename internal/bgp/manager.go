@@ -331,7 +331,10 @@ func (m *Manager) buildPeerConfigs() ([]PeerConfig, error) {
 	}
 	var localAddrV6 netip.Addr
 	if m.cfg.LocalAddressV6 != "" {
-		localAddrV6, _ = netip.ParseAddr(m.cfg.LocalAddressV6)
+		localAddrV6, err = netip.ParseAddr(m.cfg.LocalAddressV6)
+		if err != nil {
+			return configs, fmt.Errorf("parse local IPv6 address %q: %w", m.cfg.LocalAddressV6, err)
+		}
 	}
 	for _, u := range m.peerConfigs {
 		addr, err := netip.ParseAddr(u.PeerIP)
@@ -358,6 +361,7 @@ func (m *Manager) buildPeerConfigs() ([]PeerConfig, error) {
 }
 
 func (m *Manager) reconcileLocked(ctx context.Context) error {
+	logger := logging.FromContext(ctx)
 	if m.speaker == nil {
 		return fmt.Errorf("BGP speaker is not running")
 	}
@@ -379,7 +383,10 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	modeCommunities := make(map[int64]map[string]uint32)
 	for _, info := range prefixMeta {
 		if _, ok := modeCommunities[info.ModeID]; !ok {
-			comms, _ := m.store.GetCommunities(ctx, info.ModeID)
+			comms, err := m.store.GetCommunities(ctx, info.ModeID)
+			if err != nil {
+				logger.Warn("get communities failed", "mode", info.ModeID, "error", err)
+			}
 			modeCommunities[info.ModeID] = comms
 		}
 	}
@@ -406,7 +413,10 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			if !containsID(userIDs, user.ID) {
 				continue
 			}
-			prefix, _ := netip.ParsePrefix(rawPrefix)
+			prefix, err := netip.ParsePrefix(rawPrefix)
+			if err != nil {
+				continue // skip invalid prefix, already logged elsewhere
+			}
 			metaKey := rawPrefix + ":" + strconv.FormatInt(user.ID, 10)
 			meta, hasMeta := prefixMeta[metaKey]
 			comms := map[string]uint32{}

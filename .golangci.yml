@@ -43,10 +43,6 @@ linters:
       - path: runtime/
         linters:
           - misspell
-      - path: internal/bgp/peer\.go
-        linters:
-          - errcheck
-        text: "Error return value of .*(Close|Write|SetDeadline).* is not checked"
 
 formatters:
   enable:

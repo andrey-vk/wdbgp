@@ -332,7 +332,9 @@ func (s *Store) SetUserRouteFilterConfig(ctx context.Context, userID int64, mode
 		if err != nil {
 			return err
 		}
-		if count, _ := result.RowsAffected(); count == 0 {
+		if count, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		} else if count == 0 {
 			return sql.ErrNoRows
 		}
 		return nil
@@ -349,7 +351,9 @@ func (s *Store) SetUserFilterOverride(ctx context.Context, userID int64, enabled
 	if err != nil {
 		return err
 	}
-	if count, _ := result.RowsAffected(); count == 0 {
+	if count, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	} else if count == 0 {
 		return sql.ErrNoRows
 	}
 	return nil

@@ -308,17 +308,23 @@ func (c *Config) ApplyDBOverrides(settings map[string]string) {
 	}
 	if os.Getenv("WDBGP_JS_MAX_ENTRIES") == "" {
 		if v, ok := settings["js_max_entries"]; ok && v != "" {
-			c.JSMaxEntries, _ = strconv.Atoi(v)
+			if n, err := strconv.Atoi(v); err == nil {
+				c.JSMaxEntries = n
+			}
 		}
 	}
 	if os.Getenv("WDBGP_JS_MAX_REQUESTS") == "" {
 		if v, ok := settings["js_max_requests"]; ok && v != "" {
-			c.JSMaxRequests, _ = strconv.Atoi(v)
+			if n, err := strconv.Atoi(v); err == nil {
+				c.JSMaxRequests = n
+			}
 		}
 	}
 	if os.Getenv("WDBGP_JS_MAX_CALL_STACK") == "" {
 		if v, ok := settings["js_max_call_stack"]; ok && v != "" {
-			c.JSMaxCallStack, _ = strconv.Atoi(v)
+			if n, err := strconv.Atoi(v); err == nil {
+				c.JSMaxCallStack = n
+			}
 		}
 	}
 	if os.Getenv("WDBGP_ADAPTER_BACKUP_DIR") == "" {
@@ -328,7 +334,9 @@ func (c *Config) ApplyDBOverrides(settings map[string]string) {
 	}
 	if os.Getenv("WDBGP_ADAPTER_BACKUP_MAX") == "" {
 		if v, ok := settings["adapter_backup_max"]; ok && v != "" {
-			c.AdapterBackupMax, _ = strconv.Atoi(v)
+			if n, err := strconv.Atoi(v); err == nil {
+				c.AdapterBackupMax = n
+			}
 		}
 	}
 }
