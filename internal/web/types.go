@@ -4,6 +4,8 @@ import (
 	"context"
 	"html/template"
 	"net/http"
+	"net/netip"
+	"sync"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/config"
@@ -33,6 +35,11 @@ type Server struct {
 	startTime    time.Time
 	degraded     bool
 	degradedInfo DegradedInfo
+
+	// Runtime-mutable settings cache (reloaded from DB on save)
+	mu          sync.RWMutex
+	statusCIDRs []netip.Prefix
+	statusToken string
 }
 
 // DegradedInfo carries version mismatch details for the degraded-mode page.

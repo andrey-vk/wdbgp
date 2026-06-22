@@ -47,6 +47,12 @@ func newRateLimiter(window time.Duration, maxRequests int) *rateLimiter {
 	}
 }
 
+func (rl *rateLimiter) SetMax(n int) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.maxRequests = n
+}
+
 func (rl *rateLimiter) allow(ip string) bool {
 	// Disable rate limiting if maxRequests <= 0
 	if rl.maxRequests <= 0 {

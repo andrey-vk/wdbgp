@@ -1,7 +1,11 @@
 package web
 
 import (
+	"context"
 	"net/http"
+	"net/netip"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/config"
@@ -90,7 +94,69 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	handler = server.degradedMiddleware(handler)
 
 	server.handler = handler
+
+	// Load runtime-mutable settings from DB so they match persisted values
+	server.reloadRuntimeSettings(context.Background())
+
 	return server
+}
+
+// reloadRuntimeSettings reads runtime-mutable settings from DB and updates the
+// Server fields under mutex. Called once at startup and after every saveSettings.
+func (s *Server) reloadRuntimeSettings(ctx context.Context) {
+	settings, err := s.store.GetAllSettings(ctx)
+	if err != nil {
+		return // keep old values
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// StatusAllowed: comma-separated CIDRs, fall back to config if DB empty
+	if v, ok := settings["status_allowed"]; ok && v != "" {
+		s.statusCIDRs = parseCIDRs(v)
+	} else if len(s.cfg.StatusAllowed) > 0 {
+		s.statusCIDRs = parseCIDRs(strings.Join(s.cfg.StatusAllowed, ","))
+	}
+	// StatusToken: Bearer token for /status, fall back to config if DB empty
+	if v, ok := settings["status_token"]; ok && v != "" {
+		s.statusToken = v
+	} else {
+		s.statusToken = s.cfg.StatusToken
+	}
+	// Rate limits, fall back to config if DB empty
+	if v, ok := settings["rate_limit_login"]; ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			s.loginLimiter.SetMax(n)
+		}
+	} else {
+		s.loginLimiter.SetMax(s.cfg.RateLimitLogin)
+	}
+	if v, ok := settings["rate_limit_admin"]; ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			s.adminLimiter.SetMax(n)
+		}
+	} else {
+		s.adminLimiter.SetMax(s.cfg.RateLimitAdmin)
+	}
+}
+
+// parseCIDRs parses comma-separated CIDR strings into []netip.Prefix.
+func parseCIDRs(s string) []netip.Prefix {
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+	var out []netip.Prefix
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(p)
+		if err != nil {
+			continue
+		}
+		out = append(out, prefix)
+	}
+	return out
 }
 
 func (s *Server) Handler() http.Handler {
