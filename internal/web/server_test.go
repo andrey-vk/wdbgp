@@ -24,11 +24,11 @@ func testConfig() config.Config {
 		SessionSecret:     "test-secret",
 		AdminCookieSecure: "true",
 		DefaultLanguage:   "ru",
-		RateLimitLogin:    0,  // Disable rate limiting in tests
-		RateLimitAdmin:    0,  // Disable rate limiting in tests
-		SessionMaxAge:     28800, // 8 hours
-		SecurityHeaders:   false, // Disable security headers in tests to avoid CSP issues
-		StatusAllowed:    []string{"0.0.0.0/0"}, // Allow all IPs for tests
+		RateLimitLogin:    0,                     // Disable rate limiting in tests
+		RateLimitAdmin:    0,                     // Disable rate limiting in tests
+		SessionMaxAge:     28800,                 // 8 hours
+		SecurityHeaders:   false,                 // Disable security headers in tests to avoid CSP issues
+		StatusAllowed:     []string{"0.0.0.0/0"}, // Allow all IPs for tests
 	}
 }
 
@@ -74,7 +74,7 @@ func TestUserSelectionAndAdminPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup //nolint:errcheck,gosec // test cleanup
 	userID, err := db.AddUser(context.Background(), store.User{
 		Name: "client", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
 		Networks: []string{"192.168.20.0/24"},
@@ -219,7 +219,7 @@ func TestUserCatalogModeChangeRequiresPermission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup //nolint:errcheck,gosec // test cleanup
 	ctx := context.Background()
 	modes, err := db.CatalogModes(ctx, false)
 	if err != nil {
@@ -293,7 +293,7 @@ func TestLockedUserCanChangeEditableCatalogMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup //nolint:errcheck,gosec // test cleanup
 	ctx := context.Background()
 	modes, err := db.CatalogModes(ctx, false)
 	if err != nil {
@@ -351,7 +351,7 @@ func TestCategorySelectionDisablesContainedServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 	userID, err := db.AddUser(context.Background(), store.User{
 		Name: "client", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
 		Networks: []string{"192.168.20.0/24"},
@@ -408,12 +408,12 @@ func TestAdminCanManageFeeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	bgp := &fakeBGP{}
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	addForm := url.Values{
 		"name":    {"custom"},
@@ -515,11 +515,11 @@ func TestAdminCanEditFeedAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 	adapter, err := db.FeedAdapter(context.Background(), 1)
 	if err != nil {
 		t.Fatal(err)
@@ -595,7 +595,7 @@ func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +625,7 @@ func TestAdminCanTestUnsavedFeedAdapterWithoutWritingCatalog(t *testing.T) {
 	})}
 	cfg := testConfig()
 	handler := New(cfg, db, syncer, &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 	form := url.Values{
 		"name":          {"Unsaved name"},
 		"allowed_hosts": {adapter.AllowedHosts},
@@ -687,7 +687,7 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
@@ -722,7 +722,7 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 	cfg := testConfig()
 	bgp := &fakeBGP{}
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), bgp).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	tests := []struct {
 		name       string
@@ -738,7 +738,7 @@ func TestSelectionSavesPreserveDisabledFeedSelections(t *testing.T) {
 			userID, err := db.AddUser(context.Background(), store.User{
 				Name:    "client-" + strconv.Itoa(index),
 				PeerIP:  "172.16.0." + strconv.Itoa(index+2),
-				PeerASN: 65001 + uint32(index), Enabled: true,
+				PeerASN: 65001 + uint32(index), Enabled: true, //nolint:gosec // test value in safe range
 				Networks: []string{test.network},
 			})
 			if err != nil {
@@ -797,7 +797,7 @@ func TestLocalizedPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	tests := []struct {
 		name            string
@@ -849,7 +849,7 @@ func TestLocalizedPages(t *testing.T) {
 			name:     "Cookie overrides browser",
 			target:   "/",
 			accept:   "en",
-			cookie:   &http.Cookie{Name: languageCookieName, Value: "ru"},
+			cookie:   &http.Cookie{Name: languageCookieName, Value: "ru"}, //nolint:gosec // test cookie
 			wantLang: "ru",
 			wantText: "Нет доступа",
 		},
@@ -955,7 +955,7 @@ func TestAdminCookieSecureAutoAllowsPlainHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := config.Config{AdminPassword: "admin", SessionSecret: "secret", AdminCookieSecure: "auto"}
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
@@ -1000,7 +1000,7 @@ func TestAdminCookieSecureAutoHonorsTrustedForwardedProto(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := config.Config{
 		AdminPassword: "admin", SessionSecret: "secret",
@@ -1039,7 +1039,7 @@ func TestAddUserRejectsSameIPAndSameASN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 	ctx := context.Background()
 	_, err = db.AddUser(ctx, store.User{
 		Name: "first", PeerIP: "10.0.1.1", PeerASN: 65100, Enabled: true,
@@ -1051,7 +1051,7 @@ func TestAddUserRejectsSameIPAndSameASN(t *testing.T) {
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	form := url.Values{
 		"name":     {"second"},
@@ -1079,11 +1079,11 @@ func TestAddUserAcceptsUniqueIPWithoutPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	form := url.Values{
 		"name":     {"unique-peer"},
@@ -1108,11 +1108,11 @@ func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	// Without password — should succeed (password is not required for dynamic peers)
 	form := url.Values{
@@ -1153,7 +1153,7 @@ func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 	ctx := context.Background()
 	_, err = db.AddUser(ctx, store.User{
 		Name: "first-dynamic", PeerIP: "0.0.0.0", PeerASN: 65100,
@@ -1166,7 +1166,7 @@ func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	form := url.Values{
 		"name":         {"second-dynamic"},
@@ -1197,7 +1197,7 @@ func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 	ctx := context.Background()
 	_, err = db.AddUser(ctx, store.User{
 		Name: "first-shared", PeerIP: "10.0.3.1", PeerASN: 65101, Enabled: true,
@@ -1210,7 +1210,7 @@ func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
 	cfg := testConfig()
 	cfg.RequirePasswordForNonUniqueIP = true
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	form := url.Values{
 		"name":     {"second-shared"},
@@ -1238,12 +1238,12 @@ func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 	ctx := context.Background()
 	_, err = db.AddUser(ctx, store.User{
 		Name: "first-shared-pw", PeerIP: "10.0.4.1", PeerASN: 65101, Enabled: true,
 		BGPPassword: "shared-secret",
-		Networks: []string{"192.168.20.0/24"},
+		Networks:    []string{"192.168.20.0/24"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1251,7 +1251,7 @@ func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	form := url.Values{
 		"name":         {"second-shared-pw"},
@@ -1277,7 +1277,7 @@ func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 	ctx := context.Background()
 
 	// Add first peer with password "apple"
@@ -1292,7 +1292,7 @@ func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	// Try to add second peer with different password "banana"
 	form := url.Values{
@@ -1323,7 +1323,7 @@ func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 	ctx := context.Background()
 
 	// Add first peer with password "apple"
@@ -1338,7 +1338,7 @@ func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	// Try to add second peer with different password "banana"
 	form := url.Values{
@@ -1369,7 +1369,7 @@ func TestStatusEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	// Create some test data
 	_, err = db.AddUser(context.Background(), store.User{
@@ -1464,7 +1464,7 @@ func TestDegradedModeShowsErrorPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	cfg.DefaultLanguage = "en"
@@ -1500,7 +1500,7 @@ func TestDegradedModeAllRoutesShowError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	cfg.DefaultLanguage = "en"
@@ -1530,7 +1530,7 @@ func TestDegradedModeLanguageSwitch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	srv := New(testConfig(), db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
 	srv.SetDegraded(DegradedInfo{

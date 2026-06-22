@@ -73,15 +73,15 @@ var DatabaseCircuitBreakerConfig = CircuitBreakerConfig{
 
 // CircuitBreaker implements the circuit breaker pattern.
 type CircuitBreaker struct {
-	mu sync.RWMutex
+	mu  sync.RWMutex
 	cfg CircuitBreakerConfig
-	
-	state          State
-	failureCount   int
-	successCount   int
-	halfOpenCount  int
-	lastFailure    time.Time
-	openUntil      time.Time
+
+	state         State
+	failureCount  int
+	successCount  int
+	halfOpenCount int
+	lastFailure   time.Time
+	openUntil     time.Time
 }
 
 // NewCircuitBreaker creates a new circuit breaker with the given configuration.
@@ -98,13 +98,13 @@ func (cb *CircuitBreaker) Execute(ctx context.Context, fn func() error) error {
 	if !cb.allowRequest() {
 		return errors.New("circuit breaker is open")
 	}
-	
+
 	// Execute the function
 	err := fn()
-	
+
 	// Record result
 	cb.recordResult(err)
-	
+
 	return err
 }
 
@@ -115,13 +115,13 @@ func (cb *CircuitBreaker) ExecuteWithResult(ctx context.Context, fn func() (inte
 	if !cb.allowRequest() {
 		return nil, errors.New("circuit breaker is open")
 	}
-	
+
 	// Execute the function
 	result, err := fn()
-	
+
 	// Record result
 	cb.recordResult(err)
-	
+
 	return result, err
 }
 
@@ -150,20 +150,20 @@ func (cb *CircuitBreaker) Reset() {
 func (cb *CircuitBreaker) allowRequest() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	
+
 	now := time.Now()
-	
+
 	switch cb.state {
 	case StateClosed:
 		return true
-		
+
 	case StateHalfOpen:
 		if cb.halfOpenCount >= cb.cfg.HalfOpenMaxAttempts {
 			return false
 		}
 		cb.halfOpenCount++
 		return true
-		
+
 	case StateOpen:
 		if now.After(cb.openUntil) {
 			// Move to half-open state
@@ -173,7 +173,7 @@ func (cb *CircuitBreaker) allowRequest() bool {
 			return true
 		}
 		return false
-		
+
 	default:
 		return false
 	}
@@ -183,15 +183,15 @@ func (cb *CircuitBreaker) allowRequest() bool {
 func (cb *CircuitBreaker) recordResult(err error) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	
+
 	now := time.Now()
-	
+
 	switch cb.state {
 	case StateClosed:
 		if err != nil && TransientError(err) {
 			cb.failureCount++
 			cb.lastFailure = now
-			
+
 			if cb.failureCount >= cb.cfg.FailureThreshold {
 				// Open the circuit
 				cb.state = StateOpen
@@ -202,7 +202,7 @@ func (cb *CircuitBreaker) recordResult(err error) {
 			cb.failureCount = 0
 			cb.successCount++
 		}
-		
+
 	case StateHalfOpen:
 		if err != nil && TransientError(err) {
 			// Failure in half-open state -> back to open
@@ -220,7 +220,7 @@ func (cb *CircuitBreaker) recordResult(err error) {
 				cb.successCount = 0
 			}
 		}
-		
+
 	case StateOpen:
 		// Nothing to do in open state
 	}
@@ -238,7 +238,7 @@ func (cb *CircuitBreaker) reset() {
 
 // Manager manages multiple circuit breakers.
 type CircuitBreakerManager struct {
-	mu    sync.RWMutex
+	mu       sync.RWMutex
 	breakers map[string]*CircuitBreaker
 }
 
@@ -253,11 +253,11 @@ func NewCircuitBreakerManager() *CircuitBreakerManager {
 func (m *CircuitBreakerManager) GetOrCreate(name string, cfg CircuitBreakerConfig) *CircuitBreaker {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if breaker, exists := m.breakers[name]; exists {
 		return breaker
 	}
-	
+
 	cfg.Name = name
 	breaker := NewCircuitBreaker(cfg)
 	m.breakers[name] = breaker
@@ -275,7 +275,7 @@ func (m *CircuitBreakerManager) Get(name string) *CircuitBreaker {
 func (m *CircuitBreakerManager) ResetAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	for _, breaker := range m.breakers {
 		breaker.Reset()
 	}

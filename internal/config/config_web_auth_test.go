@@ -72,7 +72,7 @@ func TestLogLevelAllValidLevels(t *testing.T) {
 			if expected == "WARNING" {
 				expected = "WARN"
 			}
-			if cfg.LogLevel != strings.ToUpper(expected) {
+			if cfg.LogLevel != strings.ToUpper(expected) { //nolint:staticcheck // legacy test
 				// WARNING is mapped to WARNING not WARN - depends on config logic
 			}
 		})

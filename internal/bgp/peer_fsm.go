@@ -31,7 +31,7 @@ type Peer struct {
 	spk         SpeakerConfig
 	logger      *slog.Logger
 	conn        net.Conn
-	routes      []Route          // current announced routes
+	routes      []Route // current announced routes
 	state       string
 	holdTime    time.Duration
 	stopping    atomic.Bool
@@ -58,10 +58,6 @@ func (p *Peer) State() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.state
-}
-
-func (p *Peer) TriggerUpdate() {
-	p.needsUpdate.Store(true)
 }
 
 // hasEstablishedConn reports whether the peer has any BGP session in progress
@@ -155,10 +151,14 @@ func (p *Peer) connectAndRun() error {
 	p.conn = conn
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); p.conn = nil; p.mu.Unlock() }()
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
+	}()
 
 	// Deadlines for read/write
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 
 	// Step 1: Send OPEN
 	bgpID := p.spk.RouterID.As4()
@@ -180,7 +180,7 @@ func (p *Peer) connectAndRun() error {
 	p.setState(StateOpenSent)
 
 	// Step 2: Receive OPEN
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	msg, err := ReadMessage(conn)
 	if err != nil {
 		return fmt.Errorf("read open: %w", err)
@@ -213,7 +213,7 @@ func (p *Peer) connectAndRun() error {
 
 	// Negotiate hold time per RFC 4271: use min(local, remote), 0 means disabled.
 	remoteHold := time.Duration(openIn.HoldTime) * time.Second
-	if openIn.HoldTime == 0 {
+	if openIn.HoldTime == 0 { //nolint:gocritic // switch doesn't improve clarity with time.Duration comparisons
 		p.holdTime = 0 // no hold timer
 	} else if remoteHold < 90*time.Second {
 		p.holdTime = remoteHold
@@ -234,17 +234,17 @@ func (p *Peer) connectAndRun() error {
 	p.setState(StateOpenConfirm)
 
 	// Step 4: Receive KEEPALIVE
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	msg, err = ReadMessage(conn)
 	if err != nil {
 		return fmt.Errorf("read keepalive: %w", err)
 	}
 
-	switch msg.(type) {
+	switch msg.(type) { //nolint:gocritic,staticcheck // 1 case benefits from type switch with assignment but explicit cast is clearer
 	case *KeepaliveMessage:
 		// All good, established
 	case *NotificationMessage:
-		nm := msg.(*NotificationMessage)
+		nm := msg.(*NotificationMessage) //nolint:errcheck,staticcheck // guarded by type switch
 		return fmt.Errorf("received notification: code=%d sub=%d", nm.ErrorCode, nm.ErrorSubcode)
 	default:
 		p.sendNotification(conn, 5, 0, nil) // FSM error
@@ -279,12 +279,12 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 		go p.keepaliveLoop(conn, holdTime, kaStop)
 	} else {
 		// Clear stale handshake deadline from connectAndRun/AcceptWithOpen.
-		conn.SetDeadline(time.Time{})
+		conn.SetDeadline(time.Time{}) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	}
 
 	for !p.stopping.Load() {
 		if holdTime > 0 {
-			conn.SetDeadline(time.Now().Add(holdTime)) // hold time
+			conn.SetDeadline(time.Now().Add(holdTime)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 		}
 
 		// Check for pending route updates
@@ -306,13 +306,13 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 			return fmt.Errorf("read: %w", err)
 		}
 
-		switch msg.(type) {
+		switch msg.(type) { //nolint:gocritic,staticcheck // single-case type switch is intentional for extensibility
 		case *KeepaliveMessage:
 			// Received keepalive — reset hold timer
 		case *UpdateMessage:
 			// Invoke route callback if set
 			if p.routeCB != nil {
-				upd := msg.(*UpdateMessage)
+				upd := msg.(*UpdateMessage) //nolint:errcheck // guarded by type switch
 				nlri := upd.NLRI
 				// Extract NLRI from MP_REACH attributes for IPv6 (RFC 4760).
 				for _, attr := range upd.PathAttributes {
@@ -323,146 +323,11 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 				p.routeCB(nlri)
 			}
 		case *NotificationMessage:
-			nm := msg.(*NotificationMessage)
+			nm := msg.(*NotificationMessage) //nolint:errcheck,staticcheck // guarded by type switch
 			return fmt.Errorf("received notification: code=%d sub=%d", nm.ErrorCode, nm.ErrorSubcode)
 		}
 	}
 	return nil
-}
-
-// keepaliveLoop sends periodic keepalive messages on conn at the configured
-// interval (holdTime/3). Exits when the stop channel is closed or a write
-// fails (connection is down).
-func (p *Peer) keepaliveLoop(conn net.Conn, holdTime time.Duration, stop <-chan struct{}) {
-	ticker := time.NewTicker(holdTime / 3)
-	defer ticker.Stop()
-	ka := &KeepaliveMessage{}
-	for {
-		select {
-		case <-ticker.C:
-			if _, err := conn.Write(ka.Serialize()); err != nil {
-				return
-			}
-		case <-stop:
-			return
-		}
-	}
-}
-
-func (p *Peer) sendRoutes(conn net.Conn) {
-	p.mu.Lock()
-	routes := p.routes
-	p.mu.Unlock()
-
-	if len(routes) == 0 {
-		return
-	}
-
-	for _, r := range routes {
-		var attrs []PathAttribute
-		var update *UpdateMessage
-
-		if r.Prefix.Addr().Is6() {
-			// Skip IPv6 routes if remote peer didn't advertise IPv6 unicast capability.
-			if !p.hasIPv6Cap {
-				p.logger.Debug("skipping IPv6 route to IPv4-only peer", "prefix", r.Prefix)
-				continue
-			}
-			// IPv6: NLRI goes inside MP_REACH per RFC 4760.
-			// UPDATE.NLRI must be empty.
-			attrs = []PathAttribute{
-				OriginAttribute(OriginIGP),
-				&ASPathAttribute{ASN: p.spk.ASN, FourOctet: p.hasAS4Cap},
-				&MpReachNLRIAttribute{
-					NextHop: r.NextHop,
-					NLRI:    []netip.Prefix{r.Prefix},
-				},
-				&LargeCommunitiesAttribute{Communities: r.Communities},
-			}
-			update = &UpdateMessage{
-				PathAttributes: attrs,
-			}
-		} else {
-			// IPv4: NLRI in UPDATE.NLRI field + NextHopAttribute (RFC 4271).
-			attrs = []PathAttribute{
-				OriginAttribute(OriginIGP),
-				&ASPathAttribute{ASN: p.spk.ASN, FourOctet: p.hasAS4Cap},
-				&NextHopAttribute{NextHop: r.NextHop},
-				&LargeCommunitiesAttribute{Communities: r.Communities},
-			}
-			update = &UpdateMessage{
-				PathAttributes: attrs,
-				NLRI:           []netip.Prefix{r.Prefix},
-			}
-		}
-		if _, err := conn.Write(update.Serialize()); err != nil {
-			p.logger.Error("failed to send update", "error", err)
-			return
-		}
-	}
-
-	p.logger.Debug("announced routes", "count", len(routes))
-}
-
-// AnnounceRoutes stores routes and triggers an update if the session is established.
-func (p *Peer) AnnounceRoutes(routes []Route) {
-	p.mu.Lock()
-	p.routes = routes
-	conn := p.conn
-	state := p.state
-	p.mu.Unlock()
-
-	if conn != nil && state == StateEstablished {
-		p.sendRoutes(conn)
-	} else {
-		p.needsUpdate.Store(true)
-	}
-}
-
-// WithdrawRoutes sends withdrawals for the given prefixes over an established session.
-func (p *Peer) WithdrawRoutes(prefixes []netip.Prefix) {
-	p.mu.Lock()
-	p.routes = nil
-	conn := p.conn
-	state := p.state
-	p.mu.Unlock()
-
-	if conn != nil && state == StateEstablished {
-		var v4prefixes, v6prefixes []netip.Prefix
-		for _, pf := range prefixes {
-			if pf.Addr().Is6() {
-				v6prefixes = append(v6prefixes, pf)
-			} else {
-				v4prefixes = append(v4prefixes, pf)
-			}
-		}
-
-		// Chunk v4 withdrawals to avoid oversized UPDATE messages.
-		for i := 0; i < len(v4prefixes); i += 100 {
-			end := i + 100
-			if end > len(v4prefixes) {
-				end = len(v4prefixes)
-			}
-			update := &UpdateMessage{WithdrawnRoutes: v4prefixes[i:end]}
-			if _, err := conn.Write(update.Serialize()); err != nil {
-				p.logger.Error("failed to send v4 withdrawal", "error", err)
-				break
-			}
-		}
-		// Chunk v6 withdrawals
-		for i := 0; i < len(v6prefixes); i += 100 {
-			end := i + 100
-			if end > len(v6prefixes) {
-				end = len(v6prefixes)
-			}
-			update := &UpdateMessage{PathAttributes: []PathAttribute{&MpUnreachNLRIAttribute{NLRI: v6prefixes[i:end]}}}
-			if _, err := conn.Write(update.Serialize()); err != nil {
-				p.logger.Error("failed to send v6 withdrawal", "error", err)
-				break
-			}
-		}
-		p.logger.Debug("withdrew routes", "count", len(prefixes))
-	}
 }
 
 // Accept handles a passive BGP connection. Reads the OPEN, validates,
@@ -472,10 +337,14 @@ func (p *Peer) Accept(conn net.Conn) {
 	p.conn = conn
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); p.conn = nil; p.mu.Unlock() }()
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
+	}()
 
 	// Receive OPEN first (passive side)
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	msg, err := ReadMessage(conn)
 	if err != nil {
 		p.logger.Error("accept: read open", "error", err)
@@ -504,7 +373,9 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	}
 	if remoteASN != p.cfg.ASN {
 		p.sendNotification(conn, 2, 2, nil)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	}
 
@@ -514,7 +385,7 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	//     Password field in the OPEN message as a fallback.
 	//   - Dynamic peers (0.0.0.0) on non-loopback cannot use MD5 at the
 	//     handshake level (listener can't preinstall keys for 0.0.0.0).
-	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
+	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String()) //nolint:errcheck // always valid from kernel accept()
 	remoteIP := remoteAddr.Addr()
 	if p.cfg.Password != "" {
 		if p.cfg.Address.IsUnspecified() && !remoteIP.IsLoopback() {
@@ -523,22 +394,25 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 			// and OPEN password is not validated. Accept silently.
 		} else if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
 			p.logger.Error("accept: tcp md5 set failed", "error", err)
-			conn.Close()
+			if err := conn.Close(); err != nil {
+				p.logger.Debug("close connection", "error", err)
+			}
 			return
 		}
 		// Fallback: validate password from OPEN message when TCP MD5
 		// is skipped (e.g., on loopback where MD5 is not enforced).
 		if remoteIP.IsLoopback() && openIn.Password != p.cfg.Password {
 			p.sendNotification(conn, 5, 0, nil)
-			conn.Close()
+			if err := conn.Close(); err != nil {
+				p.logger.Debug("close connection", "error", err)
+			}
 			return
 		}
 	}
 
 	// Send OPEN — hold time negotiation per RFC 4271
 	holdTime := uint16(90)
-	if openIn.HoldTime == 0 {
-		holdTime = 0 // no hold timer
+	if openIn.HoldTime == 0 { //nolint:gocritic // switch doesn't improve clarity with time.Duration comparisons
 		p.holdTime = 0
 	} else if openIn.HoldTime < 90 {
 		holdTime = openIn.HoldTime
@@ -558,7 +432,9 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		p.logger.Error("accept: write open", "error", err)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	}
 	p.setState(StateOpenSent)
@@ -567,30 +443,38 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	ka := &KeepaliveMessage{}
 	if _, err := conn.Write(ka.Serialize()); err != nil {
 		p.logger.Error("accept: write keepalive", "error", err)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	}
 	p.setState(StateOpenConfirm)
 
 	// Receive KEEPALIVE
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	msg, err := ReadMessage(conn)
 	if err != nil {
 		p.logger.Error("accept: read keepalive", "error", err)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	}
-	switch msg.(type) {
+	switch msg.(type) { //nolint:gocritic,staticcheck // 1 case benefits from type switch with assignment but explicit cast is clearer
 	case *KeepaliveMessage:
 		// established
 	case *NotificationMessage:
-		nm := msg.(*NotificationMessage)
+		nm := msg.(*NotificationMessage) //nolint:errcheck,staticcheck // guarded by type switch
 		p.logger.Error("accept: received notification", "code", nm.ErrorCode, "sub", nm.ErrorSubcode)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	default:
 		p.sendNotification(conn, 5, 0, nil)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	}
 
@@ -610,7 +494,9 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		p.logger.Error("main loop error", "error", err)
 	}
 	p.setState(StateIdle)
-	conn.Close()
+	if err := conn.Close(); err != nil {
+		p.logger.Debug("close connection", "error", err)
+	}
 }
 
 // sendNotification sends a BGP NOTIFICATION message.
@@ -620,7 +506,9 @@ func (p *Peer) sendNotification(conn net.Conn, code, subcode uint8, data []byte)
 		ErrorSubcode: subcode,
 		Data:         data,
 	}
-	conn.Write(notif.Serialize())
+	if _, err := conn.Write(notif.Serialize()); err != nil {
+		p.logger.Debug("send notification write", "error", err)
+	}
 	// Write error is intentionally ignored — the session is being torn down
 	// and the connection may already be closed by the peer.
 }
@@ -629,7 +517,9 @@ func (p *Peer) Stop() {
 	p.stopping.Store(true)
 	p.mu.Lock()
 	if p.conn != nil {
-		p.conn.Close()
+		if err := p.conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		p.conn = nil
 	}
 	p.mu.Unlock()

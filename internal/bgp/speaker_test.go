@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup/generators intentionally ignored
 package bgp
 
 import (

@@ -61,12 +61,12 @@ func TransientError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	// Context errors are not transient
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	
+
 	// Check for network errors
 	errStr := err.Error()
 	switch {
@@ -96,12 +96,12 @@ func HTTPTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	// Context errors are not transient
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	
+
 	// Check for network errors
 	errStr := err.Error()
 	switch {
@@ -130,7 +130,7 @@ func Do(ctx context.Context, config Config, fn func() error, shouldRetry func(er
 	if config.MaxAttempts < 1 {
 		config.MaxAttempts = 1
 	}
-	
+
 	var lastErr error
 	for attempt := 0; attempt < config.MaxAttempts; attempt++ {
 		// Execute the function
@@ -138,26 +138,26 @@ func Do(ctx context.Context, config Config, fn func() error, shouldRetry func(er
 		if err == nil {
 			return nil
 		}
-		
+
 		lastErr = err
-		
+
 		// Check if we should retry
 		if attempt == config.MaxAttempts-1 || !shouldRetry(err) {
 			break
 		}
-		
+
 		// Calculate delay with exponential backoff
 		delay := config.BaseDelay * time.Duration(1<<uint(attempt))
 		if delay > config.MaxDelay {
 			delay = config.MaxDelay
 		}
-		
+
 		// Add jitter
 		if config.JitterFactor > 0 {
 			jitter := float64(delay) * config.JitterFactor
-			delay += time.Duration(rand.Float64() * jitter)
+			delay += time.Duration(rand.Float64() * jitter) //nolint:gosec // jitter, not cryptographic
 		}
-		
+
 		// Wait for delay or context cancellation
 		timer := time.NewTimer(delay)
 		select {
@@ -168,7 +168,7 @@ func Do(ctx context.Context, config Config, fn func() error, shouldRetry func(er
 			// Continue to next attempt
 		}
 	}
-	
+
 	return lastErr
 }
 
@@ -177,7 +177,7 @@ func DoWithResult[T any](ctx context.Context, config Config, fn func() (T, error
 	if config.MaxAttempts < 1 {
 		config.MaxAttempts = 1
 	}
-	
+
 	var lastErr error
 	var zero T
 	for attempt := 0; attempt < config.MaxAttempts; attempt++ {
@@ -186,26 +186,26 @@ func DoWithResult[T any](ctx context.Context, config Config, fn func() (T, error
 		if err == nil {
 			return result, nil
 		}
-		
+
 		lastErr = err
-		
+
 		// Check if we should retry
 		if attempt == config.MaxAttempts-1 || !shouldRetry(err) {
 			break
 		}
-		
+
 		// Calculate delay with exponential backoff
 		delay := config.BaseDelay * time.Duration(1<<uint(attempt))
 		if delay > config.MaxDelay {
 			delay = config.MaxDelay
 		}
-		
+
 		// Add jitter
 		if config.JitterFactor > 0 {
 			jitter := float64(delay) * config.JitterFactor
-			delay += time.Duration(rand.Float64() * jitter)
+			delay += time.Duration(rand.Float64() * jitter) //nolint:gosec // jitter, not cryptographic
 		}
-		
+
 		// Wait for delay or context cancellation
 		timer := time.NewTimer(delay)
 		select {
@@ -216,7 +216,7 @@ func DoWithResult[T any](ctx context.Context, config Config, fn func() (T, error
 			// Continue to next attempt
 		}
 	}
-	
+
 	return zero, lastErr
 }
 

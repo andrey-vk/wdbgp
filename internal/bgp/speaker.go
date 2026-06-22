@@ -3,6 +3,7 @@ package bgp
 import (
 	"context"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -35,10 +36,10 @@ type SpeakerConfig struct {
 type PeerConfig struct {
 	ID        int64
 	Address   netip.Addr
-	Port      int32  // destination port (0 = default 179)
+	Port      int32 // destination port (0 = default 179)
 	ASN       uint32
-	Password  string // MD5 password (empty = none)
-	Name      string // description
+	Password  string     // MD5 password (empty = none)
+	Name      string     // description
 	LocalAddr netip.Addr // local bind address for dialing (per-peer, IPv4/IPv6 aware)
 }
 
@@ -72,7 +73,9 @@ func (s *Speaker) Start(ctx context.Context) error {
 		// Set TCP MD5 on listener BEFORE accepting connections so the
 		// kernel enforces MD5 during the TCP handshake (RFC 2385).
 		if err := applyListenerMD5(s.listener, s.peerConfigs); err != nil {
-			s.listener.Close()
+			if cerr := s.listener.Close(); cerr != nil {
+				log.Printf("DEBUG: close listener: %v", cerr)
+			}
 			s.listener = nil
 			return fmt.Errorf("tcp md5 on listener failed: %w", err)
 		}
@@ -93,7 +96,9 @@ func (s *Speaker) Stop() error {
 		s.cancel()
 	}
 	if s.listener != nil {
-		s.listener.Close()
+		if err := s.listener.Close(); err != nil {
+			log.Printf("DEBUG: close listener: %v", err)
+		}
 		s.listener = nil
 	}
 	s.mu.Lock()
@@ -168,7 +173,7 @@ func (s *Speaker) SetPeers(peers []PeerConfig) error {
 			}
 		}
 		if len(toClear) > 0 {
-			_ = clearListenerMD5(s.listener, toClear)
+			_ = clearListenerMD5(s.listener, toClear) //nolint:errcheck // connection is dying, Close is best-effort cleanup
 		}
 	}
 	return nil
@@ -246,19 +251,23 @@ func (s *Speaker) acceptLoop(ctx context.Context) {
 
 // handleConnection processes a new incoming TCP connection.
 func (s *Speaker) handleConnection(conn net.Conn) {
-	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String())
+	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String()) //nolint:errcheck // always valid from kernel accept()
 	addr := remoteAddr.Addr()
 
 	// Read OPEN message to get the remote ASN
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	msg, err := ReadMessage(conn)
 	if err != nil {
-		conn.Close()
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("DEBUG: close: %v", cerr)
+		}
 		return
 	}
 	open, ok := msg.(*OpenMessage)
 	if !ok {
-		conn.Close()
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("DEBUG: close: %v", cerr)
+		}
 		return
 	}
 	remoteASN := open.MyASN32
@@ -284,7 +293,9 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 
 	if !ok {
 		s.logger.Warn("unknown peer", "addr", addr, "asn", remoteASN)
-		conn.Close()
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("DEBUG: close: %v", cerr)
+		}
 		return
 	}
 
@@ -294,7 +305,9 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 	if peer.hasEstablishedConn() {
 		s.logger.Warn("duplicate connection rejected, peer session in progress",
 			"addr", addr, "asn", remoteASN)
-		conn.Close()
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("DEBUG: close: %v", cerr)
+		}
 		return
 	}
 

@@ -231,7 +231,7 @@ func TestOpenIncludesIPv6UnicastCapability(t *testing.T) {
 func TestOpenIncludesAS4Capability(t *testing.T) {
 	open := &OpenMessage{
 		Version:  4,
-		MyASN:    23456, // AS_TRANS — the 2-byte field
+		MyASN:    23456,  // AS_TRANS — the 2-byte field
 		MyASN32:  196608, // 4-octet ASN (3 * 65536)
 		HoldTime: 90,
 		BGPID:    [4]byte{192, 0, 2, 1},
@@ -638,7 +638,7 @@ func TestDecodePathAttributeSkipsUnknown(t *testing.T) {
 	// UPDATE body: 2-byte withdrawn len (0) + 2-byte path attr len + attrs + NLRI (empty)
 	body := []byte{
 		0, 0, // withdrawn routes length = 0
-		byte(len(pathAttr) >> 8), byte(len(pathAttr)), // path attr length = 3
+		byte(len(pathAttr) >> 8), byte(len(pathAttr)), //nolint:gosec // path attr length fits in byte // path attr length = 3
 	}
 	body = append(body, pathAttr...)
 
@@ -648,11 +648,11 @@ func TestDecodePathAttributeSkipsUnknown(t *testing.T) {
 	for i := 0; i < 16; i++ {
 		header[i] = 0xFF
 	}
-	header[16] = byte(totalLen >> 8)
-	header[17] = byte(totalLen)
+	header[16] = byte(totalLen >> 8) //nolint:gosec // totalLen fits in 2 bytes by spec
+	header[17] = byte(totalLen)      //nolint:gosec // totalLen fits in 2 bytes by spec
 	header[18] = MsgUpdate
 
-	data := append(header, body...)
+	data := append(header, body...) //nolint:gocritic // test code, clarity over optimization
 
 	msg, err := ReadMessage(bytes.NewReader(data))
 	if err != nil {
@@ -748,7 +748,7 @@ func TestReadMessageErrors(t *testing.T) {
 	notifHeader[17] = byte(HeaderLen + 1) // only 1 body byte, need at least 2
 	notifHeader[18] = MsgNotification
 	// Append 1-byte body
-	notifWithBody := append(notifHeader, 0x00)
+	notifWithBody := append(notifHeader, 0x00) //nolint:gocritic // test code, clarity over optimization
 
 	_, err = ReadMessage(bytes.NewReader(notifWithBody))
 	if err == nil {

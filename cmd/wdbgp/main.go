@@ -45,7 +45,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // process is about to exit, Close is best-effort
 
 	// Apply DB-stored settings (ENV overrides are preserved)
 	if dbSettings, err := db.GetAllSettings(context.Background()); err == nil {
@@ -260,7 +260,7 @@ func healthcheck(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer response.Body.Close() //nolint:errcheck // health check response body, no data to read
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("health endpoint returned %s", response.Status)
 	}

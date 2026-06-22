@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup intentionally ignored
 package bgp
 
 import (
@@ -365,7 +366,7 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 		// First route should have user community for user 1.
 		hasUserComm := false
 		for _, c := range firstRoutes[0].Communities {
-			if c.GlobalAdmin == 64512 && c.LocalData1 == uint32(firstID) {
+			if c.GlobalAdmin == 64512 && c.LocalData1 == uint32(firstID) { //nolint:gosec // value is in safe range
 				hasUserComm = true
 			}
 		}

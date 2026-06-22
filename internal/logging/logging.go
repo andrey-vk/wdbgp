@@ -42,7 +42,7 @@ func Configure(logLevel, logFormat string) {
 // NewLogger creates a new logger with the specified level and format
 func NewLogger(level slog.Level, format string) *Logger {
 	var handler slog.Handler
-	
+
 	opts := &slog.HandlerOptions{
 		Level: level,
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
@@ -56,14 +56,14 @@ func NewLogger(level slog.Level, format string) *Logger {
 			return a
 		},
 	}
-	
+
 	switch strings.ToLower(format) {
 	case "json":
 		handler = slog.NewJSONHandler(os.Stderr, opts)
 	default:
 		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
-	
+
 	return &Logger{slog.New(handler)}
 }
 
@@ -74,7 +74,7 @@ func Default() *Logger {
 
 // WithRequestID returns a new logger with request ID added to all logs
 func (l *Logger) WithRequestID(requestID string) *Logger {
-	return &Logger{l.Logger.With("request_id", requestID)}
+	return &Logger{l.With("request_id", requestID)}
 }
 
 // FromContext extracts logger from context, with request ID if available
@@ -82,12 +82,12 @@ func FromContext(ctx context.Context) *Logger {
 	if logger, ok := ctx.Value(contextKey("logger")).(*Logger); ok && logger != nil {
 		return logger
 	}
-	
+
 	// Check for request ID in context
 	if requestID, ok := ctx.Value(requestIDKey).(string); ok && requestID != "" {
 		return defaultLogger.WithRequestID(requestID)
 	}
-	
+
 	return defaultLogger
 }
 
@@ -187,11 +187,11 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			// Generate a simple request ID
 			requestID = fmt.Sprintf("%d", time.Now().UnixNano())
 		}
-		
+
 		// Create context with request ID and logger
 		ctx := WithRequestIDContext(r.Context(), requestID)
 		logger := FromContext(ctx)
-		
+
 		// Log the request
 		start := time.Now()
 		logger.Info("HTTP request started",
@@ -200,13 +200,13 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			"remote_addr", r.RemoteAddr,
 			"user_agent", r.UserAgent(),
 		)
-		
+
 		// Create response wrapper to capture status code
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-		
+
 		// Process request with enhanced context
 		next.ServeHTTP(rw, r.WithContext(ctx))
-		
+
 		// Log completion
 		duration := time.Since(start)
 		level := LevelInfo
@@ -215,7 +215,7 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 		} else if rw.statusCode >= 400 {
 			level = LevelWarn
 		}
-		
+
 		logger.Log(ctx, level, "HTTP request completed",
 			"method", r.Method,
 			"path", r.URL.Path,
@@ -230,9 +230,9 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 // responseWriter wraps http.ResponseWriter to capture status code and bytes written
 type responseWriter struct {
 	http.ResponseWriter
-	statusCode    int
-	bytesWritten  int64
-	wroteHeader   bool
+	statusCode   int
+	bytesWritten int64
+	wroteHeader  bool
 }
 
 func (rw *responseWriter) WriteHeader(statusCode int) {

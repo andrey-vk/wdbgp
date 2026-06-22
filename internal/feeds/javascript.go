@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -17,8 +18,6 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/store"
 	"github.com/dop251/goja"
 )
-
-
 
 type adapterRunner struct {
 	client  *http.Client
@@ -304,7 +303,11 @@ func (a *adapterHTTP) doHTTPRequest(parsed *url.URL) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			log.Printf("DEBUG: close response body: %v", err)
+		}
+	}()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP %s", response.Status)
