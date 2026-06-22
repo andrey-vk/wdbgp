@@ -159,7 +159,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		peerConfigs = append(peerConfigs, PeerConfig{
 			ID:        u.ID,
 			Address:   addr,
-			Port:      peerPort(u.PeerIP),
+			Port:      peerPort(u.PeerIP, m.cfg.ActiveDial && u.ActiveDial),
 			ASN:       u.PeerASN,
 			Password:  u.BGPPassword,
 			Name:      u.Name,
@@ -352,7 +352,7 @@ func (m *Manager) buildPeerConfigs() ([]PeerConfig, error) {
 		configs = append(configs, PeerConfig{
 			ID:        u.ID,
 			Address:   addr,
-			Port:      peerPort(u.PeerIP),
+			Port:      peerPort(u.PeerIP, m.cfg.ActiveDial && u.ActiveDial),
 			ASN:       u.PeerASN,
 			Password:  u.BGPPassword,
 			Name:      u.Name,
@@ -592,9 +592,13 @@ func routePrefixSet(routes []Route) map[string]bool {
 
 // peerPort returns the destination port for a peer connection.
 // Dynamic peers (0.0.0.0/::) are passive-only: Port=-1 prevents active dialing.
+// When activeDial is false, the peer is also passive-only (Port=-1).
 // All other peers use Port=0 (defaults to 179 in connectAndRun).
-func peerPort(peerIP string) int32 {
+func peerPort(peerIP string, activeDial bool) int32 {
 	if peerIP == "0.0.0.0" || peerIP == "::" {
+		return -1
+	}
+	if !activeDial {
 		return -1
 	}
 	return 0

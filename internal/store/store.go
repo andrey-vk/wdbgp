@@ -601,6 +601,23 @@ ALTER TABLE users_new RENAME TO users;
 PRAGMA foreign_keys = ON;
 `,
 	},
+	{
+		Version: 21,
+		Name:    "add active_dial column to users",
+		SQL:     "", // Schema change handled in Go function for idempotency.
+		Go: func(tx *sql.Tx) error {
+			var hasActiveDial int
+			if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('users') WHERE name='active_dial'").Scan(&hasActiveDial); err != nil {
+				return err
+			}
+			if hasActiveDial == 0 {
+				if _, err := tx.Exec("ALTER TABLE users ADD COLUMN active_dial INTEGER NOT NULL DEFAULT 1"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	},
 }
 
 var ErrDBTooNew = errors.New("database schema is newer than this server version")
@@ -677,6 +694,7 @@ type User struct {
 	CatalogModeID   int64
 	CatalogModeName string
 	CatalogEditable bool
+	ActiveDial      bool
 	WebAuth         string // "network", "login", "both"
 	Networks        []string
 }
@@ -1275,7 +1293,7 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 	                 filter_override_enabled, COALESCE(filter_mode, ''), filter_editable,
 	                 catalog_mode_id, catalog_mode_editable,
 	                 COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), ''),
-	                 web_auth
+	                 active_dial, web_auth
 	          FROM users`
 	if enabledOnly {
 		query += " WHERE enabled = 1"
@@ -1294,7 +1312,7 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
 			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
 			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName,
-			&user.WebAuth,
+			&user.ActiveDial, &user.WebAuth,
 		); err != nil {
 			return nil, err
 		}
@@ -1323,13 +1341,13 @@ func (s *Store) User(ctx context.Context, id int64) (User, error) {
 		filter_override_enabled, COALESCE(filter_mode, ''), filter_editable,
 		catalog_mode_id, catalog_mode_editable,
 		COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), ''),
-		web_auth
+		active_dial, web_auth
 		FROM users WHERE id = ?`, id).
 		Scan(&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
 			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
 			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
 			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName,
-			&user.WebAuth)
+			&user.ActiveDial, &user.WebAuth)
 	if err != nil {
 		return User{}, err
 	}
@@ -2652,11 +2670,12 @@ func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 		result, err := tx.ExecContext(ctx, `INSERT INTO users
 			(name, peer_ip, peer_asn, next_hop, bgp_password, selection_locked, enabled,
 			 filter_override_enabled, filter_mode, filter_editable,
-			 catalog_mode_id, catalog_mode_editable, web_auth)
-			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 catalog_mode_id, catalog_mode_editable, active_dial, web_auth)
+			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, user.BGPPassword,
 			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
-			user.FilterEditable, user.CatalogModeID, user.CatalogEditable, user.WebAuth)
+			user.FilterEditable, user.CatalogModeID, user.CatalogEditable,
+			user.ActiveDial, user.WebAuth)
 		if err != nil {
 			return err
 		}
@@ -2690,10 +2709,11 @@ func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) e
 		result, err := tx.ExecContext(ctx, `UPDATE users SET name=?, peer_ip=?, peer_asn=?,
 			next_hop=NULLIF(?, ''), bgp_password=?, selection_locked=?, enabled=?,
 			filter_override_enabled=?, filter_mode=?, filter_editable=?,
-			catalog_mode_id=?, catalog_mode_editable=?, web_auth=? WHERE id=?`,
+			catalog_mode_id=?, catalog_mode_editable=?, active_dial=?, web_auth=? WHERE id=?`,
 			user.Name, user.PeerIP, user.PeerASN, user.NextHop, password,
 			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
-			user.FilterEditable, user.CatalogModeID, user.CatalogEditable, user.WebAuth, user.ID)
+			user.FilterEditable, user.CatalogModeID, user.CatalogEditable,
+			user.ActiveDial, user.WebAuth, user.ID)
 		if err != nil {
 			return err
 		}

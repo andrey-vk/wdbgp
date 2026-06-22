@@ -195,6 +195,7 @@ var translations = map[locale]map[string]string{
 		"users.bgp_password_placeholder": "Leave empty to keep current password",
 		"users.bgp_section":         "BGP",
 		"users.dynamic_ip":          "Dynamic (0.0.0.0) — accept from any IP",
+		"users.active_dial":         "Active dial",
 		"users.access_section":      "Access",
 		"users.web_auth":              "Web auth",
 		"users.web_auth_network":      "Network (IP only)",
@@ -266,6 +267,7 @@ var translations = map[locale]map[string]string{
 		"hint.dynamic_peers_disabled": "Dynamic peers disabled. Set WDBGP_ALLOW_DYNAMIC_PEERS=true to use.",
 		"hint.dynamic_no_password":    "TCP MD5 requires known peer IP. No authentication for wildcard addresses.",
 		"hint.same_ip_password":       "Kernel supports one MD5 key per IP. All peers at this address must share the same password.",
+		"hints.active_dial":           "When enabled, the speaker initiates BGP connections to this peer. Disable for passive-only (listen-only) mode.",
 
 		// Settings page
 		"settings.section_general":     "General",
@@ -543,6 +545,7 @@ var translations = map[locale]map[string]string{
 		"users.bgp_password_placeholder": "Оставьте пустым чтобы сохранить текущий пароль",
 		"users.bgp_section":         "BGP",
 		"users.dynamic_ip":          "Динамический (0.0.0.0) — принимать с любого IP",
+		"users.active_dial":         "Активный дозвон",
 		"users.access_section":      "Доступ",
 		"users.web_auth":              "Веб-аутентификация",
 		"users.web_auth_network":      "Сеть (только IP)",
@@ -614,6 +617,7 @@ var translations = map[locale]map[string]string{
 		"hint.dynamic_peers_disabled": "Динамические пиры отключены. Установите WDBGP_ALLOW_DYNAMIC_PEERS=true.",
 		"hint.dynamic_no_password":    "TCP MD5 требует известный IP пира. Аутентификация для wildcard-адресов невозможна.",
 		"hint.same_ip_password":       "Ядро поддерживает один MD5 ключ на IP. Все пиры на этом адресе должны использовать одинаковый пароль.",
+		"hints.active_dial":           "При включении спикер сам устанавливает BGP-соединение с этим пиром. Выключите для пассивного режима (только приём входящих).",
 
 		// Settings page
 		"settings.section_general":     "Общие",

@@ -144,6 +144,7 @@ type userEditView struct {
 	DynamicChecked   bool   // true when User.PeerIP is 0.0.0.0 or ::
 	PasswordDisabled bool   // true when PeerIP is wildcard (0.0.0.0 or ::)
 	PasswordHint     string // tooltip hint for password field
+	ActiveDial       bool   // true when User.ActiveDial (active BGP dialing enabled)
 }
 
 type filterView struct {
@@ -1715,7 +1716,7 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 			dynamicReadonly = true
 		}
 		s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), translate(lang, "common.add")), "user-edit",
-			userEditView{User: emptyUser, DynamicReadonly: dynamicReadonly})
+			userEditView{User: emptyUser, DynamicReadonly: dynamicReadonly, ActiveDial: true})
 		return
 	}
 	user, err := s.store.User(r.Context(), id)
@@ -1768,7 +1769,8 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
 		userEditView{User: user, Selection: selection, Credentials: credentials,
 			DynamicReadonly: dynamicReadonly, DynamicChecked: dynamicChecked,
-			PasswordDisabled: passwordDisabled, PasswordHint: passwordHint})
+			PasswordDisabled: passwordDisabled, PasswordHint: passwordHint,
+			ActiveDial: user.ActiveDial})
 }
 
 func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
@@ -2288,6 +2290,7 @@ func parseUserForm(r *http.Request, id int64) (store.User, bool, error) {
 		FilterEditable:  r.Form.Has("filter_editable"),
 		CatalogModeID:   modeID,
 		CatalogEditable: r.Form.Has("catalog_mode_editable"),
+		ActiveDial:      r.Form.Has("active_dial"),
 		WebAuth:         r.FormValue("web_auth"),
 		Networks:        networks,
 	}, r.Form.Has("clear_bgp_password"), nil

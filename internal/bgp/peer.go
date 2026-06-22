@@ -98,6 +98,14 @@ func (p *Peer) Run() {
 func (p *Peer) connectAndRun() error {
 	p.setState(StateConnect)
 
+	// If a session is already active from an inbound accept, don't dial.
+	if p.hasEstablishedConn() {
+		for !p.stopping.Load() {
+			time.Sleep(1 * time.Second)
+		}
+		return fmt.Errorf("active session from inbound accept")
+	}
+
 	// Connect to remote peer
 	port := int(p.cfg.Port)
 	if port < 0 {
