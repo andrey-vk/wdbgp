@@ -268,6 +268,7 @@ var translations = map[locale]map[string]string{
 		"hint.dynamic_no_password":    "TCP MD5 requires known peer IP. No authentication for wildcard addresses.",
 		"hint.same_ip_password":       "Kernel supports one MD5 key per IP. All peers at this address must share the same password.",
 		"hints.active_dial":           "When enabled, the speaker initiates BGP connections to this peer. Disable for passive-only (listen-only) mode.",
+		"hints.active_dial_system_disabled": "Active dial is disabled system-wide (WDBGP_ACTIVE_DIAL=false).",
 
 		// Settings page
 		"settings.section_general":     "General",
@@ -618,6 +619,7 @@ var translations = map[locale]map[string]string{
 		"hint.dynamic_no_password":    "TCP MD5 требует известный IP пира. Аутентификация для wildcard-адресов невозможна.",
 		"hint.same_ip_password":       "Ядро поддерживает один MD5 ключ на IP. Все пиры на этом адресе должны использовать одинаковый пароль.",
 		"hints.active_dial":           "При включении спикер сам устанавливает BGP-соединение с этим пиром. Выключите для пассивного режима (только приём входящих).",
+		"hints.active_dial_system_disabled": "Активный дозвон отключен глобально (WDBGP_ACTIVE_DIAL=false).",
 
 		// Settings page
 		"settings.section_general":     "Общие",

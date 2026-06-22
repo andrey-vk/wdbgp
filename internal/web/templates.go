@@ -357,8 +357,8 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}` + 
 <p class=muted>{{tr "hints.user_next_hop"}}</p>
 <label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{tr "users.bgp_password_placeholder"}}" {{if .PasswordDisabled}}disabled title="{{tr "hint.dynamic_no_password"}}"{{else if .PasswordHint}}title="{{tr .PasswordHint}}"{{end}}></label>
 </div>
-<label class=checkbox-row><input type=checkbox name=active_dial {{if .ActiveDial}}checked{{end}}> {{tr "users.active_dial"}}</label>
-<p class=muted>{{tr "hints.active_dial"}}</p>
+<label class=checkbox-row><input type=checkbox name=active_dial {{if .ActiveDial}}checked{{end}} {{if .ActiveDialDisabled}}disabled title="{{tr .ActiveDialHint}}"{{end}}> {{tr "users.active_dial"}}</label>
+{{if .ActiveDialHint}}<p class=muted>{{tr .ActiveDialHint}}</p>{{else}}<p class=muted>{{tr "hints.active_dial"}}</p>{{end}}
 <label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Selection.Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.User.CatalogModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
 <p class=muted>{{tr "hints.user_catalog_mode"}}</p>
 {{template "checkbox-row" dict "Name" "enabled" "Checked" .User.Enabled "Label" (tr "user.enabled")}}
