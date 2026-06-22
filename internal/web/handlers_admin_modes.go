@@ -17,7 +17,7 @@ func (s *Server) modesPage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	feedCounts, _ := s.store.ModeFeedCounts(ctx)
+	feedCounts, _ := s.store.ModeFeedCounts(ctx) //nolint:errcheck // best-effort lookup for display
 	type modeRow struct {
 		Mode      store.CatalogMode
 		FeedCount int
@@ -97,7 +97,7 @@ func (s *Server) modeEditPage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	modeFeeds, _ := s.store.ModeFeeds(ctx, id)
+	modeFeeds, _ := s.store.ModeFeeds(ctx, id) //nolint:errcheck // best-effort lookup for display
 	modeFeedSet := make(map[int64]bool)
 	for _, f := range modeFeeds {
 		modeFeedSet[f.ID] = true
@@ -136,7 +136,7 @@ func (s *Server) modeFeedToggle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Generate communities before reconcile so new categories/services have community values
-	s.store.GenerateCommunities(r.Context(), modeID)
+	s.store.GenerateCommunities(r.Context(), modeID) //nolint:errcheck,gosec // best-effort community generation
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
 		s.internalError(w, r, err)
 		return

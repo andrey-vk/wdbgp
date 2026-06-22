@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"log"
 )
 
 // AppSetting represents a single row from app_settings.
@@ -18,7 +19,11 @@ func (s *Store) GetAllSettings(ctx context.Context) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	settings := make(map[string]string)
 	for rows.Next() {
 		var key, value string

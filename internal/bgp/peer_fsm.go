@@ -31,7 +31,7 @@ type Peer struct {
 	spk         SpeakerConfig
 	logger      *slog.Logger
 	conn        net.Conn
-	routes      []Route          // current announced routes
+	routes      []Route // current announced routes
 	state       string
 	holdTime    time.Duration
 	stopping    atomic.Bool
@@ -158,7 +158,7 @@ func (p *Peer) connectAndRun() error {
 	}()
 
 	// Deadlines for read/write
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 
 	// Step 1: Send OPEN
 	bgpID := p.spk.RouterID.As4()
@@ -180,7 +180,7 @@ func (p *Peer) connectAndRun() error {
 	p.setState(StateOpenSent)
 
 	// Step 2: Receive OPEN
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	msg, err := ReadMessage(conn)
 	if err != nil {
 		return fmt.Errorf("read open: %w", err)
@@ -213,7 +213,7 @@ func (p *Peer) connectAndRun() error {
 
 	// Negotiate hold time per RFC 4271: use min(local, remote), 0 means disabled.
 	remoteHold := time.Duration(openIn.HoldTime) * time.Second
-	if openIn.HoldTime == 0 {
+	if openIn.HoldTime == 0 { //nolint:gocritic // switch doesn't improve clarity with time.Duration comparisons
 		p.holdTime = 0 // no hold timer
 	} else if remoteHold < 90*time.Second {
 		p.holdTime = remoteHold
@@ -234,17 +234,17 @@ func (p *Peer) connectAndRun() error {
 	p.setState(StateOpenConfirm)
 
 	// Step 4: Receive KEEPALIVE
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	msg, err = ReadMessage(conn)
 	if err != nil {
 		return fmt.Errorf("read keepalive: %w", err)
 	}
 
-	switch msg.(type) {
+	switch msg.(type) { //nolint:gocritic,staticcheck // 1 case benefits from type switch with assignment but explicit cast is clearer
 	case *KeepaliveMessage:
 		// All good, established
 	case *NotificationMessage:
-		nm := msg.(*NotificationMessage) //nolint:errcheck // guarded by type switch
+		nm := msg.(*NotificationMessage) //nolint:errcheck,staticcheck // guarded by type switch
 		return fmt.Errorf("received notification: code=%d sub=%d", nm.ErrorCode, nm.ErrorSubcode)
 	default:
 		p.sendNotification(conn, 5, 0, nil) // FSM error
@@ -279,12 +279,12 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 		go p.keepaliveLoop(conn, holdTime, kaStop)
 	} else {
 		// Clear stale handshake deadline from connectAndRun/AcceptWithOpen.
-		conn.SetDeadline(time.Time{})
+		conn.SetDeadline(time.Time{}) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	}
 
 	for !p.stopping.Load() {
 		if holdTime > 0 {
-			conn.SetDeadline(time.Now().Add(holdTime)) // hold time
+			conn.SetDeadline(time.Now().Add(holdTime)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 		}
 
 		// Check for pending route updates
@@ -306,7 +306,7 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 			return fmt.Errorf("read: %w", err)
 		}
 
-		switch msg.(type) {
+		switch msg.(type) { //nolint:gocritic,staticcheck // single-case type switch is intentional for extensibility
 		case *KeepaliveMessage:
 			// Received keepalive — reset hold timer
 		case *UpdateMessage:
@@ -323,7 +323,7 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 				p.routeCB(nlri)
 			}
 		case *NotificationMessage:
-			nm := msg.(*NotificationMessage) //nolint:errcheck // guarded by type switch
+			nm := msg.(*NotificationMessage) //nolint:errcheck,staticcheck // guarded by type switch
 			return fmt.Errorf("received notification: code=%d sub=%d", nm.ErrorCode, nm.ErrorSubcode)
 		}
 	}
@@ -344,7 +344,7 @@ func (p *Peer) Accept(conn net.Conn) {
 	}()
 
 	// Receive OPEN first (passive side)
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	msg, err := ReadMessage(conn)
 	if err != nil {
 		p.logger.Error("accept: read open", "error", err)
@@ -412,8 +412,7 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 
 	// Send OPEN — hold time negotiation per RFC 4271
 	holdTime := uint16(90)
-	if openIn.HoldTime == 0 {
-		holdTime = 0 // no hold timer
+	if openIn.HoldTime == 0 { //nolint:gocritic // switch doesn't improve clarity with time.Duration comparisons
 		p.holdTime = 0
 	} else if openIn.HoldTime < 90 {
 		holdTime = openIn.HoldTime
@@ -452,7 +451,7 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	p.setState(StateOpenConfirm)
 
 	// Receive KEEPALIVE
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	msg, err := ReadMessage(conn)
 	if err != nil {
 		p.logger.Error("accept: read keepalive", "error", err)
@@ -461,11 +460,11 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		}
 		return
 	}
-	switch msg.(type) {
+	switch msg.(type) { //nolint:gocritic,staticcheck // 1 case benefits from type switch with assignment but explicit cast is clearer
 	case *KeepaliveMessage:
 		// established
 	case *NotificationMessage:
-		nm := msg.(*NotificationMessage) //nolint:errcheck // guarded by type switch
+		nm := msg.(*NotificationMessage) //nolint:errcheck,staticcheck // guarded by type switch
 		p.logger.Error("accept: received notification", "code", nm.ErrorCode, "sub", nm.ErrorSubcode)
 		if err := conn.Close(); err != nil {
 			p.logger.Debug("close connection", "error", err)

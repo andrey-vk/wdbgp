@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup intentionally ignored
 package web
 
 import (
@@ -24,7 +25,7 @@ func TestUserLoginPageReturnsLoginForm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	// Add a user with web_auth=both so login page is reachable
 	_, err = db.AddUser(context.Background(), store.User{
@@ -57,7 +58,7 @@ func TestUserLoginSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	ctx := context.Background()
 	userID, err := db.AddUser(ctx, store.User{
@@ -105,7 +106,7 @@ func TestUserLoginWrongPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	ctx := context.Background()
 	userID, err := db.AddUser(ctx, store.User{
@@ -145,7 +146,7 @@ func TestUserPageRedirectsToLoginWhenWebAuthIsLoginAndNoSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	_, err = db.AddUser(context.Background(), store.User{
 		Name: "login-user3", PeerIP: "10.0.3.1", PeerASN: 65001, Enabled: true,
@@ -183,7 +184,7 @@ func TestAdminCommunitiesPageLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	// Add catalog data so communities are auto-generated
 	addCommunityTestData(t, db)
@@ -214,7 +215,7 @@ func TestAdminCommunitiesPageRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
@@ -233,7 +234,7 @@ func TestAdminCommunitiesSaves(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	ctx := context.Background()
 	addCommunityTestData(t, db)
@@ -292,7 +293,7 @@ func TestAdminSettingsPageRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
@@ -311,7 +312,7 @@ func TestAdminSettingsPageLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
@@ -337,7 +338,7 @@ func TestAdminSettingsSavesAndRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	bgp := &fakeBGP{}
@@ -360,9 +361,9 @@ func TestAdminSettingsSavesAndRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if val, ok := settings["sync_interval"]; ok && val != "" {
+	if _, ok := settings["sync_interval"]; ok { //nolint:staticcheck,gocritic // intentional empty branch in test
 		// Value was saved, expected
-	} else {
+	} else { //nolint:staticcheck // intentional empty branch in test
 		// May be empty if "sync_interval" is env-overridden or the key name differs
 	}
 }
@@ -372,7 +373,7 @@ func TestAdminSettingsIncludesGlobalRouteFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
@@ -394,7 +395,7 @@ func TestAdminSettingsSavesGlobalRouteFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	ctx := context.Background()
 	// Clear defaults so we can see our custom filters
@@ -438,7 +439,7 @@ func TestSettingsPageDynamicPeersFieldAndHint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
@@ -470,7 +471,7 @@ func TestUserFormDynamicCheckboxReadonlyWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
@@ -498,7 +499,7 @@ func TestUserFormPasswordDisabledDynamicIPv4(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	ctx := context.Background()
 	userID, err := db.AddUser(ctx, store.User{
@@ -536,7 +537,7 @@ func TestUserFormPasswordDisabledDynamicIPv6(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	ctx := context.Background()
 	userID, err := db.AddUser(ctx, store.User{
@@ -578,7 +579,7 @@ func TestSelectionCountEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	ctx := context.Background()
 
@@ -648,7 +649,7 @@ func TestSelectionCountWithEmptySelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	ctx := context.Background()
 	_, err = db.AddUser(ctx, store.User{
@@ -687,7 +688,7 @@ func TestSelectionCountWithEmptySelection(t *testing.T) {
 // adminAuthCookie returns a cookie with a valid admin session for tests.
 func adminAuthCookie(t *testing.T, cfg config.Config) *http.Cookie {
 	t.Helper()
-	return &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}
+	return &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 }
 
 // addCommunityTestData adds catalog entries so communities have data to generate from.
@@ -721,7 +722,7 @@ func TestUserLoginRateLimited(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	ctx := context.Background()
 	userID, err := db.AddUser(ctx, store.User{

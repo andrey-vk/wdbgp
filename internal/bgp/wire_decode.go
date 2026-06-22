@@ -106,11 +106,11 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 					if 2+capLen > len(capData) {
 						break // malformed, stop
 					}
-				if capCode == 65 && capLen == 4 {
-					// Four-octet ASN Capability — use the LAST one found
-					o.MyASN32 = binary.BigEndian.Uint32(capData[2 : 2+capLen])
-					o.HasAS4Cap = true
-				}
+					if capCode == 65 && capLen == 4 {
+						// Four-octet ASN Capability — use the LAST one found
+						o.MyASN32 = binary.BigEndian.Uint32(capData[2 : 2+capLen])
+						o.HasAS4Cap = true
+					}
 					if capCode == 1 && capLen == 4 {
 						// Multiprotocol Extension — check AFI/SAFI for IPv6 unicast.
 						// Value: AFI(2) + Reserved(1) + SAFI(1) = 4 bytes.
@@ -368,7 +368,7 @@ func decodeASPath(value []byte) (PathAttribute, error) {
 	// Determine ASN width from the total segment value length.
 	// 2 bytes (header) + segLen * 2 (2-byte ASNs) or + segLen * 4 (4-byte ASNs).
 	var asn uint32
-	if len(value) >= 2+segLen*4 {
+	if len(value) >= 2+segLen*4 { //nolint:gocritic // if/else is clearer than switch here
 		// 4-byte ASNs
 		asn = binary.BigEndian.Uint32(value[2:6])
 	} else if len(value) >= 2+segLen*2 {

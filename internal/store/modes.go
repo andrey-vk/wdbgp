@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 )
 
 // CatalogMode represents a catalog mode (OpenCCK, IPRanges, sing-box SRS, etc.).
@@ -24,7 +25,11 @@ func (s *Store) CatalogModes(ctx context.Context, enabledOnly bool) ([]CatalogMo
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	var modes []CatalogMode
 	for rows.Next() {
 		var mode CatalogMode
@@ -98,7 +103,11 @@ func (s *Store) ModeFeedCounts(ctx context.Context) (map[int64]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	counts := make(map[int64]int)
 	for rows.Next() {
 		var modeID int64
@@ -125,7 +134,11 @@ ORDER BY f.id`, modeID)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	var feeds []Feed
 	for rows.Next() {
 		var feed Feed

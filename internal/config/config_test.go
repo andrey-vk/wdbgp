@@ -16,7 +16,7 @@ func TestLoadRejectsOutOfRangeASN(t *testing.T) {
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "integer") {
 		t.Fatalf("Load() error = %v, want ASN integer range error", err)
 	}
-	
+
 	t.Setenv("WDBGP_LOCAL_ASN", "0")
 	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "greater than zero") {
 		t.Fatalf("Load() error = %v, want ASN zero error", err)
@@ -67,14 +67,14 @@ func TestValidateServeRejectsInvalidNetworkSettings(t *testing.T) {
 		AdminPassword: "admin", SessionSecret: "secret",
 		Port: 8080, BGPListenPort: 179, LocalASN: 64512,
 		RouterID: "192.0.2.1", LocalAddressV4: "192.0.2.2",
-		SyncInterval: time.Hour,
+		SyncInterval:   time.Hour,
 		RateLimitLogin: 5,
 		RateLimitAdmin: 30,
-		SessionMaxAge: 28800,
+		SessionMaxAge:  28800,
 	}
 	tests := []struct {
-		name   string
-		change func(*Config)
+		name      string
+		change    func(*Config)
 		wantError bool
 	}{
 		// These validations now happen in Load(), not ValidateServe()

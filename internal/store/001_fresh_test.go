@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup intentionally ignored
 package store
 
 import (
@@ -107,7 +108,7 @@ func TestRejectNewerDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	db.Close() //nolint:errcheck,gosec // test cleanup
 	if _, err := Open(path, config.Config{}); err == nil {
 		t.Fatal("Open accepted a newer database schema")
 	}

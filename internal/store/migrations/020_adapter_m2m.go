@@ -3,6 +3,7 @@ package migrations
 import (
 	"context"
 	"database/sql"
+	"log"
 )
 
 func V020(ctx context.Context, tx *sql.Tx) error {
@@ -16,7 +17,9 @@ func V020(ctx context.Context, tx *sql.Tx) error {
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			_ = rows.Close()
+			if err := rows.Close(); err != nil {
+				log.Printf("WARNING: rows close: %v", err)
+			}
 			return err
 		}
 		switch name {
@@ -26,7 +29,9 @@ func V020(ctx context.Context, tx *sql.Tx) error {
 			hasIsCustomized = true
 		}
 	}
-	_ = rows.Close()
+	if err := rows.Close(); err != nil {
+		log.Printf("WARNING: rows close: %v", err)
+	}
 	if !hasBuiltinVersion {
 		if _, err := tx.Exec("ALTER TABLE feed_adapters ADD COLUMN builtin_version INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return err

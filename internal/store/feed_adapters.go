@@ -141,9 +141,9 @@ function sync(feed, api) {
 `
 
 type builtInAdapter struct {
-	name         string
-	source       string
-	allowedHosts string
+	name           string
+	source         string
+	allowedHosts   string
 	builtinVersion int
 }
 
@@ -158,7 +158,7 @@ var builtInAdapters = map[string]builtInAdapter{
 	},
 	"ipranges": {
 		name: "IPRanges", source: ipRangesAdapter,
-		allowedHosts: "raw.githubusercontent.com",
+		allowedHosts:   "raw.githubusercontent.com",
 		builtinVersion: 1,
 	},
 	"singbox-srs": {
@@ -189,7 +189,7 @@ VALUES (?, ?, 'javascript', 1, ?, ?, ?)`,
 
 		normBuiltIn := normalizedBuiltInSource(adapter.source)
 
-		if isCustomized == 1 {
+		if isCustomized == 1 { //nolint:gocritic // if/else chain is clearer than switch for this logic
 			// Only update builtin_version; preserve user edits.
 			if _, err := s.DB.ExecContext(ctx,
 				"UPDATE feed_adapters SET builtin_version = ? WHERE key = ?",

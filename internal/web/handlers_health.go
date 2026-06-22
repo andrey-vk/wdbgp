@@ -14,7 +14,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte("ok\n"))
+	_, _ = w.Write([]byte("ok\n")) //nolint:errcheck // health endpoint, best-effort
 }
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
@@ -96,13 +96,13 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"uptime":   time.Since(s.startTime).Seconds(),
 		"prefixes": totalPrefixes,
 		"database": map[string]any{
-			"connected":     true, // health check already passed
-			"categories":    categories,
-			"services":      services,
+			"connected":      true, // health check already passed
+			"categories":     categories,
+			"services":       services,
 			"total_prefixes": totalPrefixes,
 		},
 		"bgp": map[string]any{
-			"total_peers":    len(peerStates),
+			"total_peers":     len(peerStates),
 			"connected_peers": connectedPeers,
 			"peer_states":     peerStates,
 		},

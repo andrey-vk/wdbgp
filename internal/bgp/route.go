@@ -23,7 +23,7 @@ func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, ser
 	// User ID community
 	comms = append(comms, LargeCommunity{
 		GlobalAdmin: m.cfg.LocalASN,
-		LocalData1:  uint32(user.ID),
+		LocalData1:  uint32(user.ID), //nolint:gosec // user IDs are within uint32 range in practice
 		LocalData2:  0,
 	})
 	// Category and service communities if available

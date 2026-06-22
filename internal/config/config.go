@@ -9,44 +9,44 @@ import (
 )
 
 type Config struct {
-	DBPath            string
-	Host              string
-	Port              int
-	BGPListenPort     int32
-	LocalASN          uint32
-	RouterID          string
-	LocalAddressV4    string
-	LocalAddressV6    string
-	AdminPassword     string
-	SessionSecret     string
-	AdminCookieSecure string
-	DefaultLanguage   string
-	TrustProxyHeader  bool
-	SyncInterval      time.Duration
-	SecurityHeaders   bool
-	RateLimitLogin    int
-	RateLimitAdmin    int
-	SessionMaxAge     int
-	LogLevel           string
-	LogFormat          string
-	JSTimeout          time.Duration
-	JSMaxSourceBytes   int
-	JSMaxResponseBytes int
-	JSMaxTotalBytes    int
-	JSMaxEntries       int
-	JSMaxRequests      int
-	JSMaxCallStack     int
-	DefaultWebAuth     string
-	StatusAllowed      []string            // comma-separated CIDRs for /status access
-	StatusToken        string              // Bearer token for /status access
-	AdapterBackupDir   string              // backup directory for adapter sources (empty = disabled)
-	AdapterBackupMax   int                 // max backup copies per adapter
+	DBPath                        string
+	Host                          string
+	Port                          int
+	BGPListenPort                 int32
+	LocalASN                      uint32
+	RouterID                      string
+	LocalAddressV4                string
+	LocalAddressV6                string
+	AdminPassword                 string
+	SessionSecret                 string
+	AdminCookieSecure             string
+	DefaultLanguage               string
+	TrustProxyHeader              bool
+	SyncInterval                  time.Duration
+	SecurityHeaders               bool
+	RateLimitLogin                int
+	RateLimitAdmin                int
+	SessionMaxAge                 int
+	LogLevel                      string
+	LogFormat                     string
+	JSTimeout                     time.Duration
+	JSMaxSourceBytes              int
+	JSMaxResponseBytes            int
+	JSMaxTotalBytes               int
+	JSMaxEntries                  int
+	JSMaxRequests                 int
+	JSMaxCallStack                int
+	DefaultWebAuth                string
+	StatusAllowed                 []string // comma-separated CIDRs for /status access
+	StatusToken                   string   // Bearer token for /status access
+	AdapterBackupDir              string   // backup directory for adapter sources (empty = disabled)
+	AdapterBackupMax              int      // max backup copies per adapter
 	RequirePasswordForNonUniqueIP bool     // require BGP password when sharing IP with different ASN
 	AllowDynamicPeers             bool     // allow dynamic peers (0.0.0.0/0) via WDBGP_ALLOW_DYNAMIC_PEERS
 	ActiveDial                    bool     // WDBGP_ACTIVE_DIAL — system-wide default for active BGP dialing (default true)
-	BackupEnabled      bool   // WDBGP_BACKUP_ENABLED (default true)
-	BackupDir          string // WDBGP_BACKUP_DIR (default: same dir as DB)
-	AutoRestoreEnabled bool   // WDBGP_AUTO_RESTORE_ENABLED (default false)
+	BackupEnabled                 bool     // WDBGP_BACKUP_ENABLED (default true)
+	BackupDir                     string   // WDBGP_BACKUP_DIR (default: same dir as DB)
+	AutoRestoreEnabled            bool     // WDBGP_AUTO_RESTORE_ENABLED (default false)
 }
 
 func Load() (Config, error) {
@@ -147,44 +147,44 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		DBPath:            dbPath,
-		Host:              host,
-		Port:              port,
-		BGPListenPort:     bgpPort,
-		LocalASN:          asn,
-		RouterID:          routerID,
-		LocalAddressV4:    localAddressV4,
-		LocalAddressV6:    localAddressV6,
-		AdminPassword:     os.Getenv("WDBGP_ADMIN_PASSWORD"),
-		SessionSecret:     os.Getenv("WDBGP_SESSION_SECRET"),
-		AdminCookieSecure: adminCookieSecure,
-		DefaultLanguage:   defaultLanguage,
-		TrustProxyHeader:  boolean("WDBGP_TRUST_PROXY_HEADERS"),
-		SyncInterval:      time.Duration(syncSeconds) * time.Second,
-		SecurityHeaders:   boolean("WDBGP_SECURITY_HEADERS"),
-		RateLimitLogin:    rateLimitLogin,
-		RateLimitAdmin:    rateLimitAdmin,
-		SessionMaxAge:     sessionMaxAge,
-		LogLevel:           logLevel,
-		LogFormat:          logFormat,
-		JSTimeout:          time.Duration(jsTimeout) * time.Second,
-		JSMaxSourceBytes:   jsMaxSource,
-		JSMaxResponseBytes: jsMaxResponse,
-		JSMaxTotalBytes:    jsMaxTotal,
-		JSMaxEntries:       jsMaxEntries,
-		JSMaxRequests:      jsMaxRequests,
-		JSMaxCallStack:     jsMaxCallStack,
-		DefaultWebAuth:     defaultWebAuth,
-		StatusAllowed:      splitCIDRsEnv("WDBGP_STATUS_ALLOWED"),
-		StatusToken:        os.Getenv("WDBGP_STATUS_TOKEN"),
-		AdapterBackupDir:   env("WDBGP_ADAPTER_BACKUP_DIR", filepath.Dir(dbPath)+"/backup/adapters"),
-		AdapterBackupMax:   validateBackupMax("WDBGP_ADAPTER_BACKUP_MAX", 10),
+		DBPath:                        dbPath,
+		Host:                          host,
+		Port:                          port,
+		BGPListenPort:                 bgpPort,
+		LocalASN:                      asn,
+		RouterID:                      routerID,
+		LocalAddressV4:                localAddressV4,
+		LocalAddressV6:                localAddressV6,
+		AdminPassword:                 os.Getenv("WDBGP_ADMIN_PASSWORD"),
+		SessionSecret:                 os.Getenv("WDBGP_SESSION_SECRET"),
+		AdminCookieSecure:             adminCookieSecure,
+		DefaultLanguage:               defaultLanguage,
+		TrustProxyHeader:              boolean("WDBGP_TRUST_PROXY_HEADERS"),
+		SyncInterval:                  time.Duration(syncSeconds) * time.Second,
+		SecurityHeaders:               boolean("WDBGP_SECURITY_HEADERS"),
+		RateLimitLogin:                rateLimitLogin,
+		RateLimitAdmin:                rateLimitAdmin,
+		SessionMaxAge:                 sessionMaxAge,
+		LogLevel:                      logLevel,
+		LogFormat:                     logFormat,
+		JSTimeout:                     time.Duration(jsTimeout) * time.Second,
+		JSMaxSourceBytes:              jsMaxSource,
+		JSMaxResponseBytes:            jsMaxResponse,
+		JSMaxTotalBytes:               jsMaxTotal,
+		JSMaxEntries:                  jsMaxEntries,
+		JSMaxRequests:                 jsMaxRequests,
+		JSMaxCallStack:                jsMaxCallStack,
+		DefaultWebAuth:                defaultWebAuth,
+		StatusAllowed:                 splitCIDRsEnv("WDBGP_STATUS_ALLOWED"),
+		StatusToken:                   os.Getenv("WDBGP_STATUS_TOKEN"),
+		AdapterBackupDir:              env("WDBGP_ADAPTER_BACKUP_DIR", filepath.Dir(dbPath)+"/backup/adapters"),
+		AdapterBackupMax:              validateBackupMax("WDBGP_ADAPTER_BACKUP_MAX", 10),
 		RequirePasswordForNonUniqueIP: envBool("WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP", true),
 		AllowDynamicPeers:             envBool("WDBGP_ALLOW_DYNAMIC_PEERS", false),
 		ActiveDial:                    envBool("WDBGP_ACTIVE_DIAL", true),
-		BackupEnabled:      envBool("WDBGP_BACKUP_ENABLED", true),
-		BackupDir:          env("WDBGP_BACKUP_DIR", filepath.Dir(dbPath)),
-		AutoRestoreEnabled: envBool("WDBGP_AUTO_RESTORE_ENABLED", false),
+		BackupEnabled:                 envBool("WDBGP_BACKUP_ENABLED", true),
+		BackupDir:                     env("WDBGP_BACKUP_DIR", filepath.Dir(dbPath)),
+		AutoRestoreEnabled:            envBool("WDBGP_AUTO_RESTORE_ENABLED", false),
 	}
 	return cfg, nil
 }

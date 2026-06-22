@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup intentionally ignored
 package web
 
 import (
@@ -198,7 +199,7 @@ func TestCIDRDebugEndpointRequiresAdminAndReturnsJSON(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/admin/debug/cidr?cidr=8.8.8.8", nil)
-	request.AddCookie(&http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)})
+	request.AddCookie(&http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}) //nolint:gosec // test cookie
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK ||
@@ -215,7 +216,7 @@ func TestCIDRDebugEndpointRequiresAdminAndReturnsJSON(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/admin/debug/cidr?cidr=invalid", nil)
-	request.AddCookie(&http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)})
+	request.AddCookie(&http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)}) //nolint:gosec // test code
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {

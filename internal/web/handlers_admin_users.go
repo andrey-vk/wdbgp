@@ -64,11 +64,11 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 		peerIPAttrs := template.HTMLAttr(" id=peer-ip")
 		dynamicIPAttrs := template.HTMLAttr(" id=dynamic-ip")
 		if dynamicReadonly {
-			dynamicIPAttrs = template.HTMLAttr(fmt.Sprintf(` id=dynamic-ip readonly title="%s"`, translate(lang, "hint.dynamic_peers_disabled")))
+			dynamicIPAttrs = template.HTMLAttr(fmt.Sprintf(` id=dynamic-ip readonly title="%s"`, translate(lang, "hint.dynamic_peers_disabled"))) //nolint:gosec // trusted i18n strings
 		}
 		activeDialAttrs := template.HTMLAttr("")
 		if activeDialDisabled {
-			activeDialAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, activeDialHint)))
+			activeDialAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, activeDialHint))) //nolint:gosec // trusted i18n strings
 		}
 		activeDialHintResolved := activeDialHint
 		if activeDialHintResolved == "" {
@@ -80,7 +80,7 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 			{Value: "both", Text: translate(lang, "users.web_auth_both"), Selected: emptyUser.WebAuth == "both"},
 			{Value: "any", Text: translate(lang, "users.web_auth_any"), Selected: emptyUser.WebAuth == "any"},
 		}
-		modes, _ := s.store.CatalogModes(r.Context(), false)
+		modes, _ := s.store.CatalogModes(r.Context(), false) //nolint:errcheck // best-effort lookup for display
 		modeOptions := make([]modeOption, len(modes))
 		for i, m := range modes {
 			modeOptions[i] = modeOption{Value: strconv.FormatInt(m.ID, 10), Text: m.Name, Selected: m.ID == emptyUser.CatalogModeID}
@@ -114,11 +114,11 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	// Add CSRF token to selection view for the template
 	csrfToken := ""
 	if tokenVal := r.Context().Value(csrfCtxKey{}); tokenVal != nil {
-		csrfToken = tokenVal.(string)
+		csrfToken = tokenVal.(string) //nolint:errcheck // safe type assertion from context
 	}
 	selection.CSRFToken = csrfToken
 
-	credentials, _ := s.store.GetUserCredentials(r.Context(), id)
+	credentials, _ := s.store.GetUserCredentials(r.Context(), id) //nolint:errcheck // best-effort lookup for display
 	lang, _ := requestLocale(r, s.defaultLang)
 	var dynamicReadonly bool
 	var dynamicChecked bool
@@ -132,11 +132,11 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 		passwordDisabled = true
 	} else if user.PeerIP != "" {
 		var sameIPCount int
-		s.store.DB.QueryRowContext(r.Context(),
+		s.store.DB.QueryRowContext(r.Context(), //nolint:gosec // best-effort check for display
 			"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ?",
-			user.PeerIP, id).Scan(&sameIPCount)
+			user.PeerIP, id).Scan(&sameIPCount) //nolint:errcheck,gosec // best-effort check for display
 		if sameIPCount > 0 {
-			passwordHint = "hint.same_ip_password"
+			passwordHint = "hint.same_ip_password" //nolint:gosec // i18n strings, not credentials
 		}
 	}
 	activeDialDisabled := !s.cfg.ActiveDial
@@ -151,17 +151,17 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	}
 	dynamicIPAttrs := template.HTMLAttr(" id=dynamic-ip")
 	if dynamicReadonly {
-		dynamicIPAttrs = template.HTMLAttr(fmt.Sprintf(` id=dynamic-ip readonly title="%s"`, translate(lang, "hint.dynamic_peers_disabled")))
+		dynamicIPAttrs = template.HTMLAttr(fmt.Sprintf(` id=dynamic-ip readonly title="%s"`, translate(lang, "hint.dynamic_peers_disabled"))) //nolint:gosec // trusted i18n strings
 	}
 	passwordAttrs := template.HTMLAttr("")
 	if passwordDisabled {
-		passwordAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, "hint.dynamic_no_password")))
+		passwordAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, "hint.dynamic_no_password"))) //nolint:gosec // trusted i18n strings
 	} else if passwordHint != "" {
-		passwordAttrs = template.HTMLAttr(fmt.Sprintf(` title="%s"`, translate(lang, passwordHint)))
+		passwordAttrs = template.HTMLAttr(fmt.Sprintf(` title="%s"`, translate(lang, passwordHint))) //nolint:gosec // trusted i18n strings
 	}
 	activeDialAttrs := template.HTMLAttr("")
 	if activeDialDisabled {
-		activeDialAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, activeDialHint)))
+		activeDialAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, activeDialHint))) //nolint:gosec // trusted i18n strings
 	}
 	activeDialHintResolved := activeDialHint
 	if activeDialHintResolved == "" {
@@ -173,7 +173,7 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 		{Value: "both", Text: translate(lang, "users.web_auth_both"), Selected: user.WebAuth == "both"},
 		{Value: "any", Text: translate(lang, "users.web_auth_any"), Selected: user.WebAuth == "any"},
 	}
-	modes, _ := s.store.CatalogModes(r.Context(), false)
+	modes, _ := s.store.CatalogModes(r.Context(), false) //nolint:errcheck // best-effort lookup for display
 	modeOptions := make([]modeOption, len(modes))
 	for i, m := range modes {
 		modeOptions[i] = modeOption{Value: strconv.FormatInt(m.ID, 10), Text: m.Name, Selected: m.ID == user.CatalogModeID}
@@ -199,7 +199,7 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
 		return
 	}
-	if r.FormValue("action") == "settings" {
+	if r.FormValue("action") == "settings" { //nolint:gocritic // if/else chain is clearer than switch for three actions
 		user, clearPassword, err := parseUserForm(r, id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -207,7 +207,7 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 		}
 		// Reload stored password if not clearing and field is empty
 		if user.BGPPassword == "" && !clearPassword {
-			current, _ := s.store.User(r.Context(), id)
+			current, _ := s.store.User(r.Context(), id) //nolint:errcheck // best-effort lookup for password preservation
 			if current.ID != 0 {
 				user.BGPPassword = current.BGPPassword
 			}
@@ -240,16 +240,16 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if r.FormValue(deleteKey) == "on" {
-				s.store.SetUserCredential(r.Context(), id, login, "")
+				s.store.SetUserCredential(r.Context(), id, login, "") //nolint:errcheck,gosec // best-effort credential management
 			} else if pw := r.FormValue(passwordKey); pw != "" {
-				s.store.SetUserCredential(r.Context(), id, login, pw)
+				s.store.SetUserCredential(r.Context(), id, login, pw) //nolint:errcheck,gosec // best-effort credential management
 			}
 		}
 
 		// Process new credential
 		if newLogin := r.FormValue("cred_login_new"); newLogin != "" {
 			if newPassword := r.FormValue("cred_password_new"); newPassword != "" {
-				s.store.SetUserCredential(r.Context(), id, newLogin, newPassword)
+				s.store.SetUserCredential(r.Context(), id, newLogin, newPassword) //nolint:errcheck,gosec // best-effort credential management
 			}
 		}
 
@@ -265,7 +265,11 @@ func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
 			err = s.bgp.UpdatePeer(r.Context(), user)
 		}
 		if err == nil {
-			err = s.bgp.Reconcile(r.Context())
+			// Reconcile BGP routes after settings change. Use a fresh error
+			// variable to avoid shadowing the outer err used for the redirect.
+			if err := s.bgp.Reconcile(r.Context()); err != nil {
+				s.logAdminAction(r, "reconcile", err.Error())
+			}
 		}
 	} else if r.FormValue("action") == "filters" {
 		filters, parseErr := routeFiltersFromForm(r)
@@ -341,7 +345,7 @@ func (s *Server) usersList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get peer states for status
-	peerStates, _ := s.bgp.PeerStates(ctx)
+	peerStates, _ := s.bgp.PeerStates(ctx) //nolint:errcheck // best-effort lookup for display
 
 	type userRow struct {
 		User      store.User

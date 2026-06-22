@@ -62,10 +62,10 @@ func applyListenerMD5(listener net.Listener, peers []PeerConfig) error {
 	// The kernel uses one key per remote address — different passwords
 	// at the same IP would leave one peer unable to authenticate.
 	addrPasswords := make(map[netip.Addr]string)
-		for _, pc := range peers {
-			if pc.Password == "" || pc.Address.IsLoopback() || pc.Address.IsUnspecified() {
-				continue
-			}
+	for _, pc := range peers {
+		if pc.Password == "" || pc.Address.IsLoopback() || pc.Address.IsUnspecified() {
+			continue
+		}
 		if prev, ok := addrPasswords[pc.Address]; ok && prev != pc.Password {
 			return fmt.Errorf("tcp md5: peers at %s have different passwords; kernel uses one key per remote address", pc.Address)
 		}
@@ -159,8 +159,8 @@ func setTCPMD5OnFd(fd int, addr netip.Addr, password string) error {
 	sa := buildSockaddrStorage(addr, af)
 
 	sig := unix.TCPMD5Sig{
-		Addr:  sa,
-		Keylen: uint16(len(password)),
+		Addr:   sa,
+		Keylen: uint16(len(password)), //nolint:gosec // password length fits in uint16 (max 65535 bytes)
 	}
 	copy(sig.Key[:], password)
 
@@ -200,8 +200,8 @@ func buildSockaddrStorage(addr netip.Addr, af int) unix.SockaddrStorage {
 			sa.Data[1] = 0 // sin6_port low byte
 			// sin6_flowinfo = 0 (Data[2:6] already zero)
 			// Prefix bytes 0-9 = 0, bytes 10-11 = 0xff 0xff, bytes 12-15 = IPv4
-			sa.Data[16] = 0xff // byte 10 of addr
-			sa.Data[17] = 0xff // byte 11 of addr
+			sa.Data[16] = 0xff           // byte 10 of addr
+			sa.Data[17] = 0xff           // byte 11 of addr
 			copy(sa.Data[18:22], ip4[:]) // bytes 12-15 of addr
 		} else {
 			// Pure IPv4 (AF_INET)

@@ -1,3 +1,4 @@
+//nolint:errcheck,gosec // test file, errors in cleanup/generators intentionally ignored
 package feeds
 
 import (

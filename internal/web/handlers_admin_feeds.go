@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -72,12 +73,12 @@ func (s *Server) feedEditPage(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, r, err)
 			return
 		}
-		feedModeIDs, _ = s.store.FeedModes(ctx, id)
+		feedModeIDs, _ = s.store.FeedModes(ctx, id) //nolint:errcheck // best-effort lookup for display
 		isNew = false
 	}
 
-	modes, _ := s.store.CatalogModes(ctx, false)
-	adapters, _ := s.store.FeedAdapters(ctx)
+	modes, _ := s.store.CatalogModes(ctx, false) //nolint:errcheck // best-effort lookup for display
+	adapters, _ := s.store.FeedAdapters(ctx)     //nolint:errcheck // best-effort lookup for display
 
 	lang, _ := requestLocale(r, s.defaultLang)
 	title := translate(lang, "feeds.add")
@@ -123,7 +124,7 @@ func (s *Server) feedAdapterPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if id == 0 {
 		// New adapter creation form
-		feeds, _ := s.store.Feeds(r.Context(), false)
+		feeds, _ := s.store.Feeds(r.Context(), false) //nolint:errcheck // best-effort lookup for display
 		lang, _ := requestLocale(r, s.defaultLang)
 		emptyAdapter := store.FeedAdapter{
 			Language:   "javascript",
@@ -276,9 +277,15 @@ func backupAdapterSource(adapter store.FeedAdapter, backupDir string, maxCopies 
 	if backupDir == "" || adapter.Source == "" {
 		return
 	}
-	os.MkdirAll(backupDir, 0755)
+	if err := os.MkdirAll(backupDir, 0755); err != nil { //nolint:gosec // container filesystem, single user
+		log.Printf("WARNING: backup adapter mkdir: %v", err)
+		return
+	}
 	name := fmt.Sprintf("%s_r%d_%s.js", adapter.Key, adapter.Revision, time.Now().UTC().Format("20060102T150405Z"))
-	os.WriteFile(filepath.Join(backupDir, name), []byte(adapter.Source), 0644)
+	if err := os.WriteFile(filepath.Join(backupDir, name), []byte(adapter.Source), 0644); err != nil { //nolint:gosec // backup files on server, single user
+		log.Printf("WARNING: backup adapter write: %v", err)
+		return
+	}
 	pruneAdapterBackups(adapter.Key, backupDir, maxCopies)
 }
 
@@ -301,7 +308,9 @@ func pruneAdapterBackups(key, dir string, max int) {
 	}
 	sort.Strings(files)
 	for _, f := range files[:len(files)-max] {
-		os.Remove(filepath.Join(dir, f))
+		if err := os.Remove(filepath.Join(dir, f)); err != nil {
+			log.Printf("WARNING: remove backup: %v", err)
+		}
 	}
 }
 
@@ -379,7 +388,7 @@ func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, mid := range modeIDs {
-		s.store.GenerateCommunities(r.Context(), mid)
+		s.store.GenerateCommunities(r.Context(), mid) //nolint:errcheck,gosec // best-effort community generation; Reconciliation handles any gaps
 	}
 	if err := s.bgp.Reconcile(r.Context()); err != nil {
 		s.internalError(w, r, err)
@@ -602,7 +611,7 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	go func() {
+	go func() { //nolint:gosec // goroutine outlives request
 		defer s.syncer.UnlockFeed(mu)
 		// SyncOneLocked skips the internal lock since we already hold it.
 		var syncErr error
@@ -627,8 +636,10 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 				currentEnabled == feed.Enabled &&
 				currentName == feed.Name &&
 				currentRevision == executedRevision {
-				s.store.DB.ExecContext(context.Background(),
-					"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
+				if _, err := s.store.DB.ExecContext(context.Background(),
+					"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id); err != nil {
+					log.Printf("WARNING: feed error update: %v", err)
+				}
 			}
 		}
 		if err := s.bgp.Reconcile(context.Background()); err != nil {
@@ -652,8 +663,10 @@ func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
 				if syncErr != nil {
 					msg = syncErr.Error() + "; " + msg
 				}
-				s.store.DB.ExecContext(context.Background(),
-					"UPDATE feeds SET last_error = ? WHERE id = ?", msg, id)
+				if _, err := s.store.DB.ExecContext(context.Background(),
+					"UPDATE feeds SET last_error = ? WHERE id = ?", msg, id); err != nil {
+					log.Printf("WARNING: feed error update: %v", err)
+				}
 			}
 		}
 	}()
@@ -664,7 +677,7 @@ func (s *Server) handleSyncAll(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		_ = s.syncer.SyncAll(context.Background())
 		if err := s.bgp.Reconcile(context.Background()); err != nil {
-			// logged inside
+			log.Printf("WARNING: bgp reconcile in sync-all: %v", err)
 		}
 	}()
 	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)

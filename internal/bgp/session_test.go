@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup intentionally ignored
 package bgp
 
 import (
@@ -22,7 +23,7 @@ func freeTCPPort(t *testing.T) int32 {
 	defer l.Close()
 	_, portStr, _ := net.SplitHostPort(l.Addr().String())
 	port, _ := strconv.Atoi(portStr)
-	return int32(port)
+	return int32(port) //nolint:gosec // port fits in int32 (0-65535)
 }
 
 // startSpeakerAndClient starts a Speaker as a BGP server and a Peer as a client.
@@ -45,7 +46,7 @@ func startSpeakerAndClient(t *testing.T, serverASN uint32, serverPeer PeerConfig
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	// Ensure server peer is passive (doesn't try to dial out; only
 	// accepts incoming connections via the speaker's listener).
@@ -143,7 +144,7 @@ func TestSameIPDifferentASNs(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	// Two peers on same IP, different ASNs (passive-only)
 	peers := []PeerConfig{
@@ -191,7 +192,7 @@ func TestDifferentIPSameASN(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	// Two peers on different IPs, same ASN (passive-only)
 	peers := []PeerConfig{
@@ -256,7 +257,7 @@ func TestDynamicPeerSessionIPv6(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	// Register :: as a dynamic peer (IPv6 wildcard)
 	_ = speaker.SetPeers([]PeerConfig{
@@ -441,7 +442,7 @@ func TestReconnect(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	serverPeer := PeerConfig{
 		ID: 1, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65001,
@@ -508,7 +509,7 @@ func TestPasswordAuthWrong(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	// Speaker expects password "secret"
 	_ = speaker.SetPeers([]PeerConfig{
@@ -619,10 +620,8 @@ func TestPeerStateTransitions(t *testing.T) {
 	}
 	if connIdx == -1 {
 		t.Logf("note: CONNECT state not captured (may have been too fast)")
-	} else {
-		if connIdx > estIdx {
-			t.Fatalf("CONNECT (%d) seen after ESTABLISHED (%d)", connIdx, estIdx)
-		}
+	} else if connIdx > estIdx { //nolint:gocritic // test code, clearer as-is
+		t.Fatalf("CONNECT (%d) seen after ESTABLISHED (%d)", connIdx, estIdx)
 	}
 }
 
@@ -643,7 +642,7 @@ func TestKeepaliveMaintainsSession(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	serverPeer := PeerConfig{
 		ID: 1, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65001,
@@ -694,7 +693,7 @@ func TestRouteAnnouncementToMultiplePeers(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	peers := []PeerConfig{
 		{ID: 1, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65001, Port: -1},
@@ -787,7 +786,7 @@ func freeTCPPortV6(t *testing.T) int32 {
 	defer l.Close()
 	_, portStr, _ := net.SplitHostPort(l.Addr().String())
 	port, _ := strconv.Atoi(portStr)
-	return int32(port)
+	return int32(port) //nolint:gosec // port fits in int32 (0-65535)
 }
 
 // TestSessionEstablishedIPv6: basic BGP session over IPv6 loopback.
@@ -804,7 +803,7 @@ func TestSessionEstablishedIPv6(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	_ = speaker.SetPeers([]PeerConfig{
 		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
@@ -837,7 +836,7 @@ func TestSameIPDifferentASNsIPv6(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	_ = speaker.SetPeers([]PeerConfig{
 		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
@@ -878,7 +877,7 @@ func TestRouteAnnouncementIPv6(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	_ = speaker.SetPeers([]PeerConfig{
 		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
@@ -944,7 +943,7 @@ func TestRouteWithdrawalIPv6(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	_ = speaker.SetPeers([]PeerConfig{
 		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
@@ -1008,7 +1007,7 @@ func TestPasswordAuthCorrectIPv6(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	_ = speaker.SetPeers([]PeerConfig{
 		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Password: "secret", Port: -1},
@@ -1041,7 +1040,7 @@ func TestReconnectIPv6(t *testing.T) {
 	if err := speaker.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { speaker.Stop() })
+	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
 	_ = speaker.SetPeers([]PeerConfig{
 		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},

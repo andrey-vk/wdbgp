@@ -41,7 +41,7 @@ func intersect(input, allow []netip.Prefix) []netip.Prefix {
 	if len(allow) == 0 {
 		return input
 	}
-	
+
 	// For typical use cases (allow list is small), the simple algorithm is fine
 	// But we can optimize by sorting and using binary search for larger lists
 	// However, since allow lists in wdbgp are typically small (a few entries),
@@ -110,7 +110,7 @@ func normalize(prefixes []netip.Prefix) []netip.Prefix {
 			unique[prefix.Masked()] = struct{}{}
 		}
 	}
-	
+
 	// Step 2: Convert to slice
 	result := make([]netip.Prefix, 0, len(unique))
 	for prefix := range unique {
@@ -119,7 +119,7 @@ func normalize(prefixes []netip.Prefix) []netip.Prefix {
 	if len(result) <= 1 {
 		return result
 	}
-	
+
 	// Step 3: Sort by address family, then prefix length, then address
 	// This puts parent prefixes before child prefixes
 	sort.Slice(result, func(i, j int) bool {
@@ -131,7 +131,7 @@ func normalize(prefixes []netip.Prefix) []netip.Prefix {
 		}
 		return result[i].Addr().Less(result[j].Addr())
 	})
-	
+
 	// Step 4: Use threshold to choose algorithm
 	// For small number of prefixes, simple algorithm is faster
 	// For large number or many overlaps, trie is better
@@ -139,7 +139,7 @@ func normalize(prefixes []netip.Prefix) []netip.Prefix {
 	if len(result) <= threshold {
 		return normalizeSimple(result)
 	}
-	
+
 	// Separate IPv4 and IPv6 since they can't overlap
 	var v4Prefixes, v6Prefixes []netip.Prefix
 	for _, p := range result {
@@ -149,11 +149,11 @@ func normalize(prefixes []netip.Prefix) []netip.Prefix {
 			v6Prefixes = append(v6Prefixes, p)
 		}
 	}
-	
+
 	normalized := make([]netip.Prefix, 0, len(result))
 	normalized = append(normalized, normalizeWithTrie(v4Prefixes)...)
 	normalized = append(normalized, normalizeWithTrie(v6Prefixes)...)
-	
+
 	return normalized
 }
 
@@ -162,10 +162,10 @@ func normalizeSimple(prefixes []netip.Prefix) []netip.Prefix {
 	// Works well for small n
 	accepted := make(map[netip.Prefix]struct{}, len(prefixes))
 	collapsed := make([]netip.Prefix, 0, len(prefixes))
-	
+
 	for _, prefix := range prefixes {
 		covered := false
-		
+
 		// Check all possible parent prefixes
 		addr := prefix.Addr()
 		for bits := prefix.Bits() - 1; bits >= 0; bits-- {
@@ -175,13 +175,13 @@ func normalizeSimple(prefixes []netip.Prefix) []netip.Prefix {
 				break
 			}
 		}
-		
+
 		if !covered {
 			accepted[prefix] = struct{}{}
 			collapsed = append(collapsed, prefix)
 		}
 	}
-	
+
 	return collapsed
 }
 
@@ -190,39 +190,39 @@ func normalizeWithTrie(prefixes []netip.Prefix) []netip.Prefix {
 	if len(prefixes) <= 1 {
 		return prefixes
 	}
-	
+
 	// Build a simple binary trie
 	type trieNode struct {
 		prefix   *netip.Prefix // nil for internal nodes
 		children [2]*trieNode  // 0: left, 1: right
 	}
-	
+
 	var root *trieNode
 	normalized := make([]netip.Prefix, 0, len(prefixes))
-	
+
 	for _, p := range prefixes {
 		// Check if prefix is covered by any prefix in the trie
 		covered := false
-		
+
 		// Walk down the trie following the prefix bits
 		node := root
 		depth := 0
 		addr := p.Addr()
-		
+
 		for node != nil {
 			// If we encounter a node with a prefix, check if it covers p
 			if node.prefix != nil {
-				if node.prefix.Bits() <= p.Bits() && (*node.prefix).Contains(addr) {
+				if node.prefix.Bits() <= p.Bits() && (*node.prefix).Contains(addr) { //nolint:gocritic // deref conveys comparison with pointer prefix
 					covered = true
 					break
 				}
 			}
-			
+
 			// Stop if we've reached the prefix length
 			if depth >= p.Bits() {
 				break
 			}
-			
+
 			// Get the bit at current depth
 			var bit byte
 			if addr.Is4() {
@@ -236,21 +236,21 @@ func normalizeWithTrie(prefixes []netip.Prefix) []netip.Prefix {
 					bit = (bytes[depth/8] >> (7 - (depth % 8))) & 1
 				}
 			}
-			
+
 			// Move to child
 			node = node.children[bit]
 			depth++
 		}
-		
+
 		if !covered {
 			// Add prefix to result and insert into trie
 			normalized = append(normalized, p)
-			
+
 			// Insert into trie
 			if root == nil {
 				root = &trieNode{}
 			}
-			
+
 			node := root
 			for depth := 0; depth < p.Bits(); depth++ {
 				// Get the bit at current depth
@@ -266,17 +266,17 @@ func normalizeWithTrie(prefixes []netip.Prefix) []netip.Prefix {
 						bit = (bytes[depth/8] >> (7 - (depth % 8))) & 1
 					}
 				}
-				
+
 				if node.children[bit] == nil {
 					node.children[bit] = &trieNode{}
 				}
 				node = node.children[bit]
 			}
-			
+
 			// At the leaf node, store the prefix
 			node.prefix = &p
 		}
 	}
-	
+
 	return normalized
 }

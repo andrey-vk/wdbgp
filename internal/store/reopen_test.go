@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup intentionally ignored
 package store
 
 import (
@@ -32,7 +33,7 @@ func TestMigrationReopenPreservesData(t *testing.T) {
 		ctx, "persist-feed", "https://example.test/persist", 1, 1, true, 0, ""); err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
+	s.Close() //nolint:gosec // test cleanup
 
 	// Reopen the same database
 	s2, err := Open(dbPath, config.Config{})

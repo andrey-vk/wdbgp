@@ -14,14 +14,14 @@ func encodePathAttribute(flags, typeCode uint8, value []byte) []byte {
 		buf := make([]byte, 4+len(value))
 		buf[0] = flags
 		buf[1] = typeCode
-		binary.BigEndian.PutUint16(buf[2:4], uint16(len(value)))
+		binary.BigEndian.PutUint16(buf[2:4], uint16(len(value))) //nolint:gosec // value length fits in uint16 per BGP spec
 		copy(buf[4:], value)
 		return buf
 	}
 	buf := make([]byte, 3+len(value))
 	buf[0] = flags
 	buf[1] = typeCode
-	buf[2] = byte(len(value))
+	buf[2] = byte(len(value)) //nolint:gosec // value length fits in byte per BGP spec
 	copy(buf[3:], value)
 	return buf
 }
@@ -59,7 +59,7 @@ func encodePrefixes(prefixes []netip.Prefix) []byte {
 	for _, p := range prefixes {
 		bits := p.Bits()
 		bytesNeeded := (bits + 7) / 8
-		buf[offset] = uint8(bits)
+		buf[offset] = uint8(bits) //nolint:gosec // bits fits in uint8 (0-128)
 		offset++
 
 		// Get address bytes
@@ -87,7 +87,7 @@ func wrapMessage(msgType uint8, body []byte) []byte {
 		buf[i] = 0xFF
 	}
 
-	binary.BigEndian.PutUint16(buf[16:18], uint16(totalLen))
+	binary.BigEndian.PutUint16(buf[16:18], uint16(totalLen)) //nolint:gosec // totalLen fits in uint16 per BGP spec
 	buf[18] = msgType
 
 	if body != nil {
@@ -109,15 +109,15 @@ func (o *OpenMessage) Serialize() []byte {
 	//   3) Four-octet ASN (RFC 6793): code 65, len 4 (MyASN32 in network byte order)
 	// Parameter type: 2 (Capability)
 	capParam := make([]byte, 20)
-	capParam[0] = 2     // Parameter type: Capability
-	capParam[1] = 18    // Parameter length: three capabilities, 6 bytes each = 18
+	capParam[0] = 2  // Parameter type: Capability
+	capParam[1] = 18 // Parameter length: three capabilities, 6 bytes each = 18
 	// Capability 1: Multiprotocol Extension for IPv6 unicast
-	capParam[2] = 1     // Capability code: Multiprotocol Extension
-	capParam[3] = 4     // Capability length: 4
-	capParam[4] = 0x00  // AFI high byte (IPv6=2)
-	capParam[5] = 0x02  // AFI low byte
-	capParam[6] = 0x00  // Reserved
-	capParam[7] = 0x01  // SAFI=1 (unicast)
+	capParam[2] = 1    // Capability code: Multiprotocol Extension
+	capParam[3] = 4    // Capability length: 4
+	capParam[4] = 0x00 // AFI high byte (IPv6=2)
+	capParam[5] = 0x02 // AFI low byte
+	capParam[6] = 0x00 // Reserved
+	capParam[7] = 0x01 // SAFI=1 (unicast)
 	// Capability 2: Multiprotocol Extension for IPv4 unicast
 	capParam[8] = 1     // Capability code: Multiprotocol Extension
 	capParam[9] = 4     // Capability length: 4
@@ -126,8 +126,8 @@ func (o *OpenMessage) Serialize() []byte {
 	capParam[12] = 0x00 // Reserved
 	capParam[13] = 0x01 // SAFI=1 (unicast)
 	// Capability 3: Four-octet ASN (RFC 6793)
-	capParam[14] = 65   // Capability code: Four-octet ASN
-	capParam[15] = 4    // Capability length: 4
+	capParam[14] = 65 // Capability code: Four-octet ASN
+	capParam[15] = 4  // Capability length: 4
 	binary.BigEndian.PutUint32(capParam[16:20], o.MyASN32)
 
 	// Build password parameter (type 1) if set and fits in OPEN message.
@@ -138,14 +138,14 @@ func (o *OpenMessage) Serialize() []byte {
 			log.Printf("WARNING: BGP password too long (%d bytes > 233), omitting from OPEN", len(o.Password))
 		} else {
 			pwParam = make([]byte, 2+len(o.Password))
-			pwParam[0] = 1 // Parameter type: password
-			pwParam[1] = uint8(len(o.Password))
+			pwParam[0] = 1                      // Parameter type: password
+			pwParam[1] = uint8(len(o.Password)) //nolint:gosec // password length fits in uint8
 			copy(pwParam[2:], o.Password)
 		}
 	}
 
 	// 2-byte ASN field: use AS_TRANS (23456) for ASNs > 65535 (RFC 6793).
-	o.OptParmLen = uint8(len(capParam) + len(pwParam))
+	o.OptParmLen = uint8(len(capParam) + len(pwParam)) //nolint:gosec // optional parameters fit in uint8 per BGP spec
 	if o.MyASN32 > 65535 {
 		o.MyASN = 23456 // AS_TRANS — real ASN in Four-octet ASN capability
 	} else {
@@ -176,12 +176,12 @@ func (u *UpdateMessage) Serialize() []byte {
 	body := make([]byte, bodyLen)
 
 	offset := 0
-	binary.BigEndian.PutUint16(body[offset:offset+2], uint16(len(withdrawnBytes)))
+	binary.BigEndian.PutUint16(body[offset:offset+2], uint16(len(withdrawnBytes))) //nolint:gosec // withdrawnBytes length fits in uint16 per BGP spec
 	offset += 2
 	copy(body[offset:], withdrawnBytes)
 	offset += len(withdrawnBytes)
 
-	binary.BigEndian.PutUint16(body[offset:offset+2], uint16(len(pathAttrBytes)))
+	binary.BigEndian.PutUint16(body[offset:offset+2], uint16(len(pathAttrBytes))) //nolint:gosec // pathAttrBytes length fits in uint16 per BGP spec
 	offset += 2
 	copy(body[offset:], pathAttrBytes)
 	offset += len(pathAttrBytes)
@@ -224,7 +224,7 @@ func (a *MpReachNLRIAttribute) Serialize() []byte {
 	afi := uint16(2) // IPv6
 	safi := uint8(1)
 	nh := a.NextHop.AsSlice()
-	data := []byte{byte(afi >> 8), byte(afi), safi, byte(len(nh))}
+	data := []byte{byte(afi >> 8), byte(afi), safi, byte(len(nh))} //nolint:gosec // next-hop length fits in byte per RFC 4760
 	data = append(data, nh...)
 	data = append(data, 0) // SNP = 0 (no subsequent address family info)
 	data = append(data, encodePrefixes(a.NLRI)...)

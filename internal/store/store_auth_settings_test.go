@@ -62,7 +62,7 @@ func TestMigration14AddsWebAuthAndUserCredentials(t *testing.T) {
 		}
 		columns[name] = colType
 	}
-	rows.Close()
+	_ = rows.Close() //nolint:errcheck // test cleanup
 
 	if columns["user_id"] != "INTEGER" {
 		t.Fatalf("user_credentials.user_id type = %s, want INTEGER", columns["user_id"])
@@ -108,7 +108,7 @@ func TestMigration15AddsAppSettings(t *testing.T) {
 		}
 		columns[name] = colType
 	}
-	rows.Close()
+	_ = rows.Close() //nolint:errcheck // test cleanup
 
 	if columns["key"] != "TEXT" {
 		t.Fatalf("app_settings.key type = %s, want TEXT", columns["key"])
@@ -531,7 +531,7 @@ func TestGetCommunities(t *testing.T) {
 	ctx := context.Background()
 
 	// Need catalog_entries for communities to be generated
-	syncTestData(t, s, ctx)
+	syncTestData(ctx, t, s)
 
 	// Generate communities for mode 1 since a fresh test store may not have them
 	count, err := s.GenerateCommunities(ctx, 1)
@@ -552,7 +552,7 @@ func TestGetCommunities(t *testing.T) {
 func TestSetCommunityInsertAndUpdate(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	syncTestData(t, s, ctx)
+	syncTestData(ctx, t, s)
 
 	// Insert a new community for a group
 	err := s.SetCommunity(ctx, 1, "TestCat", "", 1000)
@@ -598,7 +598,7 @@ func TestSetCommunityInsertAndUpdate(t *testing.T) {
 func TestSetCommunityRejectsDuplicateNumber(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	syncTestData(t, s, ctx)
+	syncTestData(ctx, t, s)
 
 	// Set a community on one key
 	err := s.SetCommunity(ctx, 1, "CatA", "", 5000)
@@ -623,7 +623,7 @@ func TestGenerateCommunitiesFillsMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	syncTestData(t, s, ctx)
+	syncTestData(ctx, t, s)
 
 	// Generate
 	count, err := s.GenerateCommunities(ctx, 1)
@@ -684,7 +684,7 @@ func TestCountPrefixesWithExplicitCategoriesAndServices(t *testing.T) {
 
 	// Get feed for mode 1
 	var feedID int64
-	err := s.DB.QueryRow(	"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID)
+	err := s.DB.QueryRow("SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -761,7 +761,7 @@ func TestCategoryPrefixCounts(t *testing.T) {
 	ctx := context.Background()
 
 	var feedID int64
-	err := s.DB.QueryRow(	"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID)
+	err := s.DB.QueryRow("SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,7 +797,7 @@ func TestPrefixCounts(t *testing.T) {
 	ctx := context.Background()
 
 	var feedID int64
-	err := s.DB.QueryRow(	"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID)
+	err := s.DB.QueryRow("SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -829,10 +829,10 @@ func TestPrefixCounts(t *testing.T) {
 // =============================================================================
 
 // syncTestData ensures there are catalog_entries in mode 1 for community tests.
-func syncTestData(t *testing.T, s *Store, ctx context.Context) {
+func syncTestData(ctx context.Context, t *testing.T, s *Store) {
 	t.Helper()
 	var feedID int64
-	err := s.DB.QueryRow(	"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID)
+	err := s.DB.QueryRow("SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -892,7 +892,9 @@ func TestDeleteFeedAdapter(t *testing.T) {
 
 	// Verify gone
 	var count int
-	s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM feed_adapters WHERE id=?", id).Scan(&count)
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM feed_adapters WHERE id=?", id).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
 	if count != 0 {
 		t.Fatal("adapter not deleted")
 	}

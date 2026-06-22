@@ -36,10 +36,10 @@ type SpeakerConfig struct {
 type PeerConfig struct {
 	ID        int64
 	Address   netip.Addr
-	Port      int32  // destination port (0 = default 179)
+	Port      int32 // destination port (0 = default 179)
 	ASN       uint32
-	Password  string // MD5 password (empty = none)
-	Name      string // description
+	Password  string     // MD5 password (empty = none)
+	Name      string     // description
 	LocalAddr netip.Addr // local bind address for dialing (per-peer, IPv4/IPv6 aware)
 }
 
@@ -173,7 +173,7 @@ func (s *Speaker) SetPeers(peers []PeerConfig) error {
 			}
 		}
 		if len(toClear) > 0 {
-			_ = clearListenerMD5(s.listener, toClear)
+			_ = clearListenerMD5(s.listener, toClear) //nolint:errcheck // connection is dying, Close is best-effort cleanup
 		}
 	}
 	return nil
@@ -255,7 +255,7 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 	addr := remoteAddr.Addr()
 
 	// Read OPEN message to get the remote ASN
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	msg, err := ReadMessage(conn)
 	if err != nil {
 		if cerr := conn.Close(); cerr != nil {

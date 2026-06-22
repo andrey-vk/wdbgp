@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup intentionally ignored
 package store
 
 import (
@@ -36,7 +37,7 @@ INSERT INTO catalog_entries VALUES
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	db.Close() //nolint:errcheck,gosec // test cleanup
 
 	s, err := Open(path, config.Config{})
 	if err != nil {

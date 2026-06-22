@@ -17,7 +17,7 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/retry"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // SQLite driver
 )
 
 // migrations slice is defined in migrations.go
@@ -25,11 +25,11 @@ import (
 var ErrDBTooNew = errors.New("database schema is newer than this server version")
 
 type Store struct {
-	DB            *sql.DB
-	dbPath        string // DB file path for backup
-	backupEnabled bool
-	backupDir     string
-	autoRestore   bool // auto-restore from backup when DB is newer than server
+	DB             *sql.DB
+	dbPath         string // DB file path for backup
+	backupEnabled  bool
+	backupDir      string
+	autoRestore    bool   // auto-restore from backup when DB is newer than server
 	Degraded       bool   // true when DB is newer and auto-restore didn't run
 	DBVersion      int    // current DB schema version (when degraded)
 	ServerVersion  int    // expected server schema version (when degraded)
@@ -49,8 +49,8 @@ type FeedAdapter struct {
 }
 
 const (
-	DefaultCatalogModeID  int64 = 1
-	IPRangesCatalogModeID int64 = 2
+	DefaultCatalogModeID    int64 = 1
+	IPRangesCatalogModeID   int64 = 2
 	SingboxSRSCatalogModeID int64 = 3
 )
 
@@ -66,7 +66,7 @@ type RouteFilters struct {
 
 func Open(path string, cfg config.Config) (*Store, error) {
 	if parent := filepath.Dir(path); parent != "." {
-		if err := os.MkdirAll(parent, 0o755); err != nil {
+		if err := os.MkdirAll(parent, 0o755); err != nil { //nolint:gosec // container filesystem, single user
 			return nil, err
 		}
 	}
@@ -83,12 +83,16 @@ func Open(path string, cfg config.Config) (*Store, error) {
 		PRAGMA temp_store = MEMORY;
 		PRAGMA busy_timeout = 30000;
 	`); err != nil {
-		_ = db.Close()
+		if err := db.Close(); err != nil {
+			log.Printf("WARNING: close: %v", err)
+		}
 		return nil, err
 	}
 	s := &Store{DB: db, dbPath: path, backupEnabled: cfg.BackupEnabled, backupDir: cfg.BackupDir, autoRestore: cfg.AutoRestoreEnabled}
 	if err := s.Migrate(context.Background()); err != nil {
-		_ = db.Close()
+		if err := db.Close(); err != nil {
+			log.Printf("WARNING: close: %v", err)
+		}
 		return nil, err
 	}
 	return s, nil
@@ -103,7 +107,11 @@ func (s *Store) readAppliedMigrations(ctx context.Context) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	var applied []int
 	for rows.Next() {
 		var version int
@@ -147,21 +155,31 @@ func (s *Store) tryRestore(ctx context.Context, applied []int) error {
 		backupDB.SetMaxOpenConns(1)
 		rows, err := backupDB.QueryContext(ctx, "SELECT version FROM schema_migrations ORDER BY version")
 		if err != nil {
-			_ = backupDB.Close()
+			if err := backupDB.Close(); err != nil {
+				log.Printf("WARNING: backup close: %v", err)
+			}
 			continue
 		}
 		var versions []int
 		for rows.Next() {
 			var v int
 			if err := rows.Scan(&v); err != nil {
-				_ = rows.Close()
-				_ = backupDB.Close()
+				if err := rows.Close(); err != nil {
+					log.Printf("WARNING: rows close: %v", err)
+				}
+				if err := backupDB.Close(); err != nil {
+					log.Printf("WARNING: backup close: %v", err)
+				}
 				continue
 			}
 			versions = append(versions, v)
 		}
-		_ = rows.Close()
-		_ = backupDB.Close()
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+		if err := backupDB.Close(); err != nil {
+			log.Printf("WARNING: backup close: %v", err)
+		}
 		if len(versions) == 0 {
 			continue
 		}
@@ -194,16 +212,26 @@ func (s *Store) tryRestore(ctx context.Context, applied []int) error {
 	}
 	dst, err := os.Create(s.dbPath)
 	if err != nil {
-		_ = src.Close()
+		if err := src.Close(); err != nil {
+			log.Printf("WARNING: src close: %v", err)
+		}
 		return fmt.Errorf("create new DB: %w", err)
 	}
 	if _, err := dst.ReadFrom(src); err != nil {
-		_ = src.Close()
-		_ = dst.Close()
+		if err := src.Close(); err != nil {
+			log.Printf("WARNING: src close: %v", err)
+		}
+		if err := dst.Close(); err != nil {
+			log.Printf("WARNING: dst close: %v", err)
+		}
 		return fmt.Errorf("copy backup: %w", err)
 	}
-	_ = src.Close()
-	_ = dst.Close()
+	if err := src.Close(); err != nil {
+		log.Printf("WARNING: src close: %v", err)
+	}
+	if err := dst.Close(); err != nil {
+		log.Printf("WARNING: dst close: %v", err)
+	}
 
 	log.Printf("DB auto-restored from %s (saved incompatible DB as %s)", best.path, savedPath)
 	return nil
@@ -240,7 +268,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 				return nil
 			}
 			// Re-open the restored DB
-			_ = s.DB.Close()
+			if err := s.DB.Close(); err != nil {
+				log.Printf("WARNING: close: %v", err)
+			}
 			db, err := sql.Open("sqlite", s.dbPath)
 			if err != nil {
 				return fmt.Errorf("reopen after restore: %w", err)
@@ -254,7 +284,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 				PRAGMA temp_store = MEMORY;
 				PRAGMA busy_timeout = 30000;
 			`); err != nil {
-				_ = db.Close()
+				if err := db.Close(); err != nil {
+					log.Printf("WARNING: close: %v", err)
+				}
 				return fmt.Errorf("reopen pragmas: %w", err)
 			}
 			s.DB = db
@@ -276,7 +308,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	// Only backup when there are existing applied migrations — fresh
 	// installs have nothing to preserve.
 	if s.backupEnabled && len(applied) > 0 && len(applied) < len(migrations) {
-		if err := os.MkdirAll(s.backupDir, 0755); err != nil {
+		if err := os.MkdirAll(s.backupDir, 0755); err != nil { //nolint:gosec // container filesystem, single user
 			return fmt.Errorf("backup: create dir: %w", err)
 		}
 		backupName := "wdbgp-backup-" + time.Now().UTC().Format("20060102150405") + ".sqlite3"
@@ -294,23 +326,37 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		}
 		srcInfo, err := src.Stat()
 		if err != nil {
-			src.Close()
+			if err := src.Close(); err != nil {
+				log.Printf("WARNING: src close: %v", err)
+			}
 			return fmt.Errorf("backup: stat source: %w", err)
 		}
-		dst, err := os.Create(backupPath)
+		dst, err := os.Create(backupPath) //nolint:gosec // path from admin config
 		if err != nil {
-			_ = src.Close()
+			if err := src.Close(); err != nil {
+				log.Printf("WARNING: src close: %v", err)
+			}
 			return fmt.Errorf("backup: create backup: %w", err)
 		}
 		if _, err := dst.ReadFrom(src); err != nil {
-			_ = src.Close()
-			_ = dst.Close()
+			if err := src.Close(); err != nil {
+				log.Printf("WARNING: src close: %v", err)
+			}
+			if err := dst.Close(); err != nil {
+				log.Printf("WARNING: dst close: %v", err)
+			}
 			return fmt.Errorf("backup: copy: %w", err)
 		}
-		_ = src.Close()
-		_ = dst.Close()
+		if err := src.Close(); err != nil {
+			log.Printf("WARNING: src close: %v", err)
+		}
+		if err := dst.Close(); err != nil {
+			log.Printf("WARNING: dst close: %v", err)
+		}
 		if srcInfo != nil {
-			_ = os.Chmod(backupPath, srcInfo.Mode())
+			if err := os.Chmod(backupPath, srcInfo.Mode()); err != nil {
+				log.Printf("WARNING: chmod backup: %v", err)
+			}
 		}
 
 		// Strip catalog_entries from backup (recreatable by feed sync)
@@ -325,7 +371,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if _, err := backupDB.Exec("VACUUM"); err != nil {
 			log.Printf("WARNING: backup cleanup VACUUM: %v", err)
 		}
-		_ = backupDB.Close()
+		if err := backupDB.Close(); err != nil {
+			log.Printf("WARNING: backup close: %v", err)
+		}
 
 		log.Printf("DB backup saved to %s", backupPath)
 	}
@@ -354,7 +402,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			)
 		}
 		if err != nil {
-			_ = tx.Rollback()
+			if err := tx.Rollback(); err != nil {
+				log.Printf("WARNING: rollback: %v", err)
+			}
 			return fmt.Errorf("migration %d (%s): %w", migration.Version, migration.Name, err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -394,7 +444,9 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 				return err
 			}
 			if err := fn(tx); err != nil {
-				_ = tx.Rollback()
+				if err := tx.Rollback(); err != nil {
+					log.Printf("WARNING: rollback: %v", err)
+				}
 				return err
 			}
 			return tx.Commit()
@@ -411,7 +463,11 @@ ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	var adapters []FeedAdapter
 	for rows.Next() {
 		var adapter FeedAdapter

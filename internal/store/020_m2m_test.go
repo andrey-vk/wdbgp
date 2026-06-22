@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup intentionally ignored
 package store
 
 import (
@@ -125,7 +126,7 @@ func TestMigration20Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	db.Close() //nolint:errcheck,gosec // test cleanup
 
 	// Now open — this triggers migration 20. It should succeed.
 	s, err := Open(path, config.Config{})
@@ -293,7 +294,7 @@ func TestMigration20NoTxSQLFailureRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	db.Close() //nolint:errcheck,gosec // test cleanup
 
 	// Open the DB — this triggers migration 20.  The transactional SQL
 	// part (feed_adapters columns, catalog_mode_feeds table) will succeed,
@@ -425,7 +426,7 @@ func TestMigration20FeedAdapterUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	db.Close() //nolint:gosec // test cleanup
 
 	s, err := Open(path, config.Config{})
 	if err != nil {
@@ -552,7 +553,7 @@ func TestMigration20PreservesAdapterCustomizations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+	db.Close() //nolint:gosec // test cleanup
 
 	// Open triggers migration 20 + seedBuiltInAdapters.
 	s, err := Open(path, config.Config{})

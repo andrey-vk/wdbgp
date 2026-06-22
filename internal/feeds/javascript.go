@@ -19,8 +19,6 @@ import (
 	"github.com/dop251/goja"
 )
 
-
-
 type adapterRunner struct {
 	client  *http.Client
 	timeout time.Duration

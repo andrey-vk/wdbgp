@@ -124,17 +124,17 @@ type modeOption struct {
 }
 
 type userEditView struct {
-	User                 store.User
-	Selection            selectionView
-	Credentials          []store.UserCredential
-	Error                string
-	DynamicReadonly      bool // true when AllowDynamicPeers==false
-	DynamicChecked       bool // true when User.PeerIP is 0.0.0.0 or ::
-	PasswordDisabled     bool // true when PeerIP is wildcard (0.0.0.0 or ::)
-	PasswordHint         string // tooltip hint for password field
-	ActiveDial           bool   // true when User.ActiveDial (active BGP dialing enabled)
-	ActiveDialDisabled   bool   // true when system-wide ActiveDial==false
-	ActiveDialHint       string // explanatory text when disabled
+	User               store.User
+	Selection          selectionView
+	Credentials        []store.UserCredential
+	Error              string
+	DynamicReadonly    bool   // true when AllowDynamicPeers==false
+	DynamicChecked     bool   // true when User.PeerIP is 0.0.0.0 or ::
+	PasswordDisabled   bool   // true when PeerIP is wildcard (0.0.0.0 or ::)
+	PasswordHint       string // tooltip hint for password field
+	ActiveDial         bool   // true when User.ActiveDial (active BGP dialing enabled)
+	ActiveDialDisabled bool   // true when system-wide ActiveDial==false
+	ActiveDialHint     string // explanatory text when disabled
 	// Computed attribute strings for form components
 	PeerIPAttrs            template.HTMLAttr
 	DynamicIPAttrs         template.HTMLAttr

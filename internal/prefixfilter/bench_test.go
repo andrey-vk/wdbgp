@@ -8,15 +8,15 @@ import (
 
 func BenchmarkNormalizeRandom(b *testing.B) {
 	// Generate random prefixes for benchmarking
-	rng := rand.New(rand.NewSource(42))
+	rng := rand.New(rand.NewSource(42)) //nolint:gosec // benchmark, not cryptographic
 	prefixes := make([]netip.Prefix, 10000)
 	for i := range prefixes {
 		// Random IPv4 prefixes
 		addr := netip.AddrFrom4([4]byte{
-			byte(rng.Intn(256)),
-			byte(rng.Intn(256)),
-			byte(rng.Intn(256)),
-			byte(rng.Intn(256)),
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
 		})
 		prefixes[i] = netip.PrefixFrom(addr, rng.Intn(33))
 	}
@@ -59,21 +59,21 @@ func BenchmarkApplyManyDeny(b *testing.B) {
 	lists := Lists{
 		Deny: make([]netip.Prefix, 100),
 	}
-	
-	rng := rand.New(rand.NewSource(42))
+
+	rng := rand.New(rand.NewSource(42)) //nolint:gosec // benchmark, not cryptographic
 	for i := range lists.Deny {
 		addr := netip.AddrFrom4([4]byte{
-			byte(rng.Intn(256)),
-			byte(rng.Intn(256)),
-			byte(rng.Intn(256)),
-			byte(rng.Intn(256)),
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
 		})
 		lists.Deny[i] = netip.PrefixFrom(addr, 32)
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = Apply(input, lists, 1000000)
+		_, _ = Apply(input, lists, 1000000) //nolint:errcheck // benchmark code
 	}
 }
 
@@ -81,14 +81,14 @@ func BenchmarkIntersectLarge(b *testing.B) {
 	// Generate large input and allow lists
 	input := make([]netip.Prefix, 1000)
 	allow := make([]netip.Prefix, 1000)
-	
-	rng := rand.New(rand.NewSource(42))
+
+	rng := rand.New(rand.NewSource(42)) //nolint:gosec // benchmark, not cryptographic
 	for i := range input {
 		addr := netip.AddrFrom4([4]byte{
-			byte(rng.Intn(256)),
-			byte(rng.Intn(256)),
-			byte(rng.Intn(256)),
-			byte(rng.Intn(256)),
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
+			byte(rng.Intn(256)), //nolint:gosec // benchmark, values always 0-255
 		})
 		input[i] = netip.PrefixFrom(addr, rng.Intn(33))
 		allow[i] = netip.PrefixFrom(addr, rng.Intn(33))

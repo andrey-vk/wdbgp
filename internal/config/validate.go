@@ -223,7 +223,8 @@ func validateHost(name string, fallback string) (string, error) {
 		}
 		// Allow letters, digits, hyphen, and underscore
 		for _, r := range label {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			valid := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
+			if !valid {
 				return "", fmt.Errorf("%s invalid character %q in hostname label %q", name, r, label)
 			}
 		}
@@ -239,15 +240,12 @@ func validateDBPath(name string, fallback string) (string, error) {
 	if value == "" {
 		return fallback, nil
 	}
-	// Check for absolute path
-	if !strings.HasPrefix(value, "/") {
-		// Relative paths are allowed but warn
-		// In production, absolute paths are recommended
-	}
+	// Relative paths are allowed but warn.
+	// In production, absolute paths are recommended.
 
 	// Get parent directory
 	dir := path.Dir(value)
-	if dir == "." {
+	if dir == "." { //nolint:gocritic,staticcheck // if/else chain is clearer than switch here
 		dir = "."
 	} else if dir == "/" {
 		// Root directory
@@ -256,7 +254,7 @@ func validateDBPath(name string, fallback string) (string, error) {
 	}
 
 	// Check if parent directory exists and is writable
-	if stat, err := os.Stat(dir); err == nil {
+	if stat, err := os.Stat(dir); err == nil { //nolint:gosec // config validation, admin input
 		// Directory exists
 		if !stat.IsDir() {
 			return "", fmt.Errorf("%s: parent path %s is not a directory", name, dir)
@@ -270,13 +268,13 @@ func validateDBPath(name string, fallback string) (string, error) {
 		// Try to check grandparent directory
 		grandDir := path.Dir(dir)
 		if grandDir != dir { // Not at root
-			if stat, err := os.Stat(grandDir); err == nil && stat.IsDir() {
+			if stat, err := os.Stat(grandDir); err == nil && stat.IsDir() { //nolint:gosec // config validation, admin input
 				if stat.Mode().Perm()&0200 == 0 {
 					return "", fmt.Errorf("%s: cannot create directory %s - parent %s is not writable", name, dir, grandDir)
 				}
-		} else if os.IsNotExist(err) {
-			log.Printf("WARNING: %s: parent directory %s does not exist", name, dir)
-		}
+			} else if os.IsNotExist(err) {
+				log.Printf("WARNING: %s: parent directory %s does not exist", name, dir) //nolint:gosec // config validation, admin input
+			}
 		}
 	} else {
 		// Other error (permission denied, etc.)

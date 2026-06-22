@@ -3,6 +3,7 @@ package migrations
 import (
 	"context"
 	"database/sql"
+	"log"
 )
 
 func V013(ctx context.Context, tx *sql.Tx) error {
@@ -48,7 +49,11 @@ func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, er
 		if err != nil {
 			return 0, err
 		}
-		defer func() { _ = modes.Close() }()
+		defer func() {
+			if err := modes.Close(); err != nil {
+				log.Printf("WARNING: modes close: %v", err)
+			}
+		}()
 
 		for modes.Next() {
 			var id int64
@@ -77,7 +82,9 @@ func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, er
 			var category, service string
 			var community uint32
 			if err := commRows.Scan(&category, &service, &community); err != nil {
-				_ = commRows.Close()
+				if err := commRows.Close(); err != nil {
+					log.Printf("WARNING: commRows close: %v", err)
+				}
 				return 0, err
 			}
 			used[community] = true
@@ -87,7 +94,9 @@ func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, er
 				keyComm["svc:"+category+"|"+service] = community
 			}
 		}
-		_ = commRows.Close()
+		if err := commRows.Close(); err != nil {
+			log.Printf("WARNING: commRows close: %v", err)
+		}
 
 		// Get categories in alphabetical order.
 		catRows, err := tx.Query(`
@@ -104,12 +113,16 @@ ORDER BY ce.category`, mid)
 		for catRows.Next() {
 			var cat string
 			if err := catRows.Scan(&cat); err != nil {
-				_ = catRows.Close()
+				if err := catRows.Close(); err != nil {
+					log.Printf("WARNING: catRows close: %v", err)
+				}
 				return 0, err
 			}
 			categories = append(categories, cat)
 		}
-		_ = catRows.Close()
+		if err := catRows.Close(); err != nil {
+			log.Printf("WARNING: catRows close: %v", err)
+		}
 
 		groupIndex := 0
 		for _, category := range categories {
@@ -151,12 +164,16 @@ ORDER BY ce.service`, mid, category)
 			for svcRows.Next() {
 				var svc string
 				if err := svcRows.Scan(&svc); err != nil {
-					_ = svcRows.Close()
+					if err := svcRows.Close(); err != nil {
+						log.Printf("WARNING: svcRows close: %v", err)
+					}
 					return generated, err
 				}
 				services = append(services, svc)
 			}
-			_ = svcRows.Close()
+			if err := svcRows.Close(); err != nil {
+				log.Printf("WARNING: svcRows close: %v", err)
+			}
 
 			for _, service := range services {
 				svcKey := "svc:" + category + "|" + service

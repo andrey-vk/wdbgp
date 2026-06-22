@@ -40,14 +40,14 @@ func skipIPSet(ctx context.Context, r io.Reader) error {
 		if err != nil {
 			return fmt.Errorf("ipset fromLen: %w", err)
 		}
-		if err := skipBytes(r, int64(fl)); err != nil {
+		if err := skipBytes(r, int64(fl)); err != nil { //nolint:gosec // binary.ReadUvarint returns small values
 			return fmt.Errorf("ipset from: %w", err)
 		}
 		tl, err := binary.ReadUvarint(br)
 		if err != nil {
 			return fmt.Errorf("ipset toLen: %w", err)
 		}
-		if err := skipBytes(r, int64(tl)); err != nil {
+		if err := skipBytes(r, int64(tl)); err != nil { //nolint:gosec // binary.ReadUvarint returns small values
 			return fmt.Errorf("ipset to: %w", err)
 		}
 	}
@@ -78,7 +78,7 @@ func skipStringArray(ctx context.Context, r io.Reader) error {
 		if err != nil {
 			return err
 		}
-		if err := skipBytes(r, int64(slen)); err != nil {
+		if err := skipBytes(r, int64(slen)); err != nil { //nolint:gosec // binary.ReadUvarint returns small values
 			return err
 		}
 	}

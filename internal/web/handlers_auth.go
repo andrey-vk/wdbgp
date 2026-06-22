@@ -47,7 +47,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		maxAge = s.cfg.SessionMaxAge
 	}
 
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime via adminCookieSecure
 		Name:     "wdbgp_admin",
 		Value:    sessionToken(s.cfg.SessionSecret),
 		Path:     "/",
@@ -163,7 +163,7 @@ func (s *Server) userLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) userLogout(w http.ResponseWriter, r *http.Request) {
 	// Clear the user session cookie
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // cookies are already secure (HttpOnly: true, Secure: s.userCookieSecure(r), SameSite: Strict)
 		Name:     userSessionCookieName,
 		Value:    "",
 		Path:     "/",
@@ -229,7 +229,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 						maxAge = s.cfg.SessionMaxAge
 					}
 
-					http.SetCookie(w, &http.Cookie{
+					http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime via adminCookieSecure
 						Name:     "wdbgp_admin",
 						Value:    sessionToken(s.cfg.SessionSecret),
 						Path:     "/",
@@ -249,7 +249,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	// Clear admin session cookie
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime via adminCookieSecure
 		Name:     "wdbgp_admin",
 		Value:    "",
 		Path:     "/",

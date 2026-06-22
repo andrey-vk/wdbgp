@@ -59,7 +59,7 @@ type Syncer struct {
 	// feedLocks serializes concurrent syncs per feed.
 	// NOTE: map grows without bound as feeds are created/deleted.
 	// Entries are small (~40 bytes each); with <1000 feeds this is negligible.
-	feedLocksMu   sync.Mutex
+	feedLocksMu sync.Mutex
 }
 
 var errFeedChanged = errors.New("feed changed during synchronization")
@@ -139,13 +139,13 @@ func (s *Syncer) UnlockFeed(mu *sync.Mutex) {
 func (s *Syncer) SyncAll(ctx context.Context) []error {
 	logger := logging.FromContext(ctx)
 	logger.Info("starting feed synchronization")
-	
+
 	feeds, err := s.Store.Feeds(ctx, true)
 	if err != nil {
 		logger.Error("failed to get feeds from store", "error", err)
 		return []error{err}
 	}
-	
+
 	logger.Debug("found feeds to sync", "feed_count", len(feeds), "enabled_only", true)
 	var errors []error
 	for _, feed := range feeds {
@@ -159,23 +159,27 @@ func (s *Syncer) SyncAll(ctx context.Context) []error {
 			// SyncOne loaded it, the error belongs to the old revision
 			// and must not overwrite the new feed status.
 			if executedRevision > 0 {
-				_, _ = s.Store.DB.ExecContext(ctx,
+				if _, err := s.Store.DB.ExecContext(ctx,
 					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
 					 AND data = ? AND adapter_id = ? AND name = ?
 					 AND adapter_id IN (SELECT id FROM feed_adapters WHERE id = ? AND revision = ?)`,
 					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name,
-					feed.AdapterID, executedRevision)
+					feed.AdapterID, executedRevision); err != nil {
+					log.Printf("WARNING: cleanup: %v", err)
+				}
 			} else {
-				_, _ = s.Store.DB.ExecContext(ctx,
+				if _, err := s.Store.DB.ExecContext(ctx,
 					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
 					 AND data = ? AND adapter_id = ? AND name = ?`,
-					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name)
+					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name); err != nil {
+					log.Printf("WARNING: cleanup: %v", err)
+				}
 			}
 		} else {
 			logger.Info("feed synced successfully", "name", feed.Name, "feed_id", feed.ID)
 		}
 	}
-	
+
 	if len(errors) > 0 {
 		logger.Error("feed synchronization completed with errors", "error_count", len(errors))
 	} else {
@@ -218,14 +222,14 @@ func (s *Syncer) SyncOneLocked(ctx context.Context, feed store.Feed) (int64, err
 
 func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	logger := logging.FromContext(ctx)
-	
+
 	adapter, err := s.Store.FeedAdapter(ctx, feed.AdapterID)
 	if err != nil {
 		logger.Error("failed to get feed adapter", "feed_id", feed.ID, "adapter_id", feed.AdapterID, "error", err)
 		return 0, err
 	}
 	logger.Debug("testing adapter", "feed", feed.Name, "adapter", adapter.Name, "adapter_revision", adapter.Revision)
-	
+
 	entries, err := s.TestAdapter(ctx, feed, adapter)
 	if err != nil {
 		logger.Error("adapter test failed", "feed", feed.Name, "adapter", adapter.Name, "error", err)
@@ -324,7 +328,7 @@ func (s *Syncer) download(ctx context.Context, rawURL string) ([]byte, error) {
 		},
 		retry.HTTPTransientError,
 	)
-	
+
 	if err != nil {
 		// Check if it's a context error
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -332,7 +336,7 @@ func (s *Syncer) download(ctx context.Context, rawURL string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("feed download failed for %s: %w", rawURL, err)
 	}
-	
+
 	return result, nil
 }
 
@@ -342,7 +346,7 @@ func (s *Syncer) doDownload(ctx context.Context, rawURL string) ([]byte, error) 
 		return nil, err
 	}
 	request.Header.Set("User-Agent", "wdbgp-go/1.0")
-	
+
 	response, err := s.Client.Do(request)
 	if err != nil {
 		return nil, err
@@ -352,11 +356,11 @@ func (s *Syncer) doDownload(ctx context.Context, rawURL string) ([]byte, error) 
 			log.Printf("DEBUG: close response body: %v", err)
 		}
 	}()
-	
+
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP %s", response.Status)
 	}
-	
+
 	return io.ReadAll(response.Body)
 }
 
@@ -393,7 +397,7 @@ func Parse(payload []byte, lookup map[string][]string, defaultCategory string) (
 			if err != nil {
 				return nil, err
 			}
-		} else if isOpenCCKFull(value) {
+		} else if isOpenCCKFull(value) { //nolint:gocritic // if/else chain is for SRS format detection, switch doesn't improve
 			var err error
 			entries, err = parseOpenCCKFull(payload)
 			if err != nil {

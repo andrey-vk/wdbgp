@@ -1,3 +1,4 @@
+//nolint:errcheck,gosec // test file, errors in cleanup/generators intentionally ignored
 package feeds
 
 import (
@@ -121,13 +122,13 @@ func TestJavaScriptAdapterSRSGet(t *testing.T) {
 	// rule_count = 1
 	uvbuf := make([]byte, binary.MaxVarintLen64)
 	n := binary.PutUvarint(uvbuf, 1)
-	bw.Write(uvbuf[:n])
+	bw.Write(uvbuf[:n]) //nolint:gosec // test buffer write
 
 	// rule_type = 0 (default)
-	bw.WriteByte(0)
+	bw.WriteByte(0) //nolint:gosec // test buffer write
 
 	// item_type = 6 (ip_cidr)
-	bw.WriteByte(6)
+	bw.WriteByte(6) //nolint:gosec // test buffer write
 
 	// IPSet: version=1
 	bw.WriteByte(1)

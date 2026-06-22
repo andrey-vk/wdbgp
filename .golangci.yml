@@ -27,22 +27,6 @@ linters:
 
   exclusions:
     generated: lax
-    rules:
-      - path: _test\.go
-        linters:
-          - errcheck
-        text: "Error return value of .* is not checked"
-      - path: _test\.go
-        linters:
-          - gosec
-        text: "G404"
-      - path: internal/web/i18n\.go
-        linters:
-          - gosec
-        text: "G101"
-      - path: runtime/
-        linters:
-          - misspell
 
 formatters:
   enable:

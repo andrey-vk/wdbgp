@@ -20,7 +20,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 		defaultLang: defaultLang, templates: compileTemplates(),
 		loginLimiter: newRateLimiter(time.Minute, cfg.RateLimitLogin), // per minute
 		adminLimiter: newRateLimiter(time.Minute, cfg.RateLimitAdmin), // per minute
-		startTime: time.Now(),
+		startTime:    time.Now(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", server.userPage)
@@ -118,7 +118,7 @@ func (s *Server) degradedMiddleware(next http.Handler) http.Handler {
 func (s *Server) degradedHandler(w http.ResponseWriter, r *http.Request) {
 	lang, persist := requestLocale(r, s.defaultLang)
 	if persist {
-		http.SetCookie(w, &http.Cookie{
+		http.SetCookie(w, &http.Cookie{ //nolint:gosec // language cookie is not sensitive, no Secure/HttpOnly needed
 			Name: languageCookieName, Value: string(lang), Path: "/",
 			MaxAge: 365 * 24 * 60 * 60, SameSite: http.SameSiteLaxMode,
 		})

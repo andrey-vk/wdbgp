@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup intentionally ignored
 package store
 
 import (
@@ -31,13 +32,13 @@ CREATE TABLE schema_migrations (
 			t.Fatalf("begin tx for migration %d: %v", migration.Version, err)
 		}
 		if err := migration.Func(context.Background(), tx); err != nil {
-			tx.Rollback()
+			tx.Rollback() //nolint:errcheck,gosec // test cleanup
 			t.Fatalf("apply migration %d: %v", migration.Version, err)
 		}
 		if _, err := tx.Exec(
 			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, 'now')",
 			migration.Version, migration.Name); err != nil {
-			tx.Rollback()
+			tx.Rollback() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -100,13 +101,13 @@ CREATE TABLE schema_migrations (
 			t.Fatalf("begin tx for migration %d: %v", migration.Version, err)
 		}
 		if err := migration.Func(context.Background(), tx); err != nil {
-			tx.Rollback()
+			tx.Rollback() //nolint:errcheck,gosec // test cleanup
 			t.Fatalf("apply migration %d: %v", migration.Version, err)
 		}
 		if _, err := tx.Exec(
 			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, 'now')",
 			migration.Version, migration.Name); err != nil {
-			tx.Rollback()
+			tx.Rollback() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
 		if err := tx.Commit(); err != nil {

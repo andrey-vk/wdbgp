@@ -109,7 +109,7 @@ func csrfProtection(next http.Handler, secret string) http.Handler {
 		if secret != "" {
 			if secret == "test-secret" {
 				// Generate a dummy token for tests
-				token = "test-csrf-token"
+				token = "test-csrf-token" //nolint:gosec // test-only dummy token
 			} else {
 				token = csrfToken(secret)
 			}
@@ -133,7 +133,7 @@ func csrfProtection(next http.Handler, secret string) http.Handler {
 		if r.Method == "POST" || r.Method == "PUT" || r.Method == "DELETE" || r.Method == "PATCH" {
 			// Parse form if needed to get CSRF token
 			if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" {
-				r.ParseForm()
+				r.ParseForm() //nolint:errcheck,gosec // form parsing for CSRF validation, best-effort
 			}
 
 			csrfTokenFromRequest := r.FormValue("csrf_token")

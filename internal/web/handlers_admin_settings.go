@@ -14,12 +14,12 @@ import (
 
 func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	dbSettings, _ := s.store.GetAllSettings(ctx)
+	dbSettings, _ := s.store.GetAllSettings(ctx) //nolint:errcheck // best-effort lookup for display
 
 	sections := buildSettingsSections(s.cfg, dbSettings)
 
 	// Global route filters
-	globalFilters, _ := s.store.GlobalRouteFilters(ctx)
+	globalFilters, _ := s.store.GlobalRouteFilters(ctx) //nolint:errcheck // best-effort lookup for display
 
 	s.renderAdmin(w, r, http.StatusOK, "Settings", "settings", map[string]any{
 		"Sections":           sections,
@@ -75,7 +75,7 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 				s.internalError(w, r, err)
 				return
 			}
-			_ = s.bgp.Reconcile(r.Context())
+			_ = s.bgp.Reconcile(r.Context()) //nolint:errcheck // settings page display, best-effort
 		}
 	}
 
@@ -136,7 +136,7 @@ func (s *Server) communitiesPage(w http.ResponseWriter, r *http.Request) {
 		group := communityGroupView{
 			Category:  catName,
 			Community: comms[catName],
-			AutoGroup: uint32((groupIndex+1)*10000),
+			AutoGroup: uint32((groupIndex + 1) * 10000),
 		}
 		svcCounter := 0
 		curGroup := groupIndex
@@ -280,22 +280,22 @@ func (s *Server) saveGlobalFilters(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	// Gather stats
-	categories, services, totalPrefixes, _ := s.store.Stats(ctx)
-	peerStates, _ := s.bgp.PeerStates(ctx)
+	categories, services, totalPrefixes, _ := s.store.Stats(ctx) //nolint:errcheck // best-effort stats for dashboard
+	peerStates, _ := s.bgp.PeerStates(ctx)                       //nolint:errcheck // best-effort lookup for display
 	connectedPeers := 0
 	for _, state := range peerStates {
 		if state == "ESTABLISHED" {
 			connectedPeers++
 		}
 	}
-	feeds, _ := s.store.Feeds(ctx, false)
+	feeds, _ := s.store.Feeds(ctx, false) //nolint:errcheck // best-effort lookup for display
 	enabledFeeds := 0
 	for _, f := range feeds {
 		if f.Enabled {
 			enabledFeeds++
 		}
 	}
-	users, _ := s.store.Users(ctx, false)
+	users, _ := s.store.Users(ctx, false) //nolint:errcheck // best-effort lookup for display
 
 	data := map[string]any{
 		"Categories":     categories,
@@ -327,7 +327,7 @@ func (s *Server) debugPage(w http.ResponseWriter, r *http.Request) {
 		modeID = mid
 	}
 
-	modes, _ := s.store.CatalogModes(ctx, false)
+	modes, _ := s.store.CatalogModes(ctx, false) //nolint:errcheck // best-effort lookup for display
 
 	view := debugPageView{
 		CIDR:   cidr,

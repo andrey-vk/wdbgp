@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"net/netip"
 	"sort"
 	"strconv"
@@ -70,7 +71,11 @@ ORDER BY 1, 2`)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	type selectedUser struct {
 		filterMode string
 		routes     []userRoute
@@ -264,7 +269,11 @@ func (s *Store) allUserRouteFilters(ctx context.Context) (map[int64]RouteFilters
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 
 	filtersMap := make(map[int64]RouteFilters)
 	for rows.Next() {
@@ -405,7 +414,11 @@ func readRouteFilters(ctx context.Context, db queryer, query string, args ...any
 	if err != nil {
 		return RouteFilters{}, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	var filters RouteFilters
 	for rows.Next() {
 		var action, cidr string

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 )
 
 // Community represents a catalog community assignment.
@@ -30,7 +31,7 @@ func AutoCommunity(groupIndex int, serviceIndex int) uint32 {
 		serviceIndex -= 9999
 	}
 	groupCommunity := (groupIndex + 1) * 10000
-	return uint32(groupCommunity + serviceIndex + 1)
+	return uint32(groupCommunity + serviceIndex + 1) //nolint:gosec // community values fit in uint32
 }
 
 // GetCommunities returns all communities for a mode.
@@ -42,7 +43,11 @@ func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]ui
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	result := make(map[string]uint32)
 	for rows.Next() {
 		var category, service string
@@ -98,7 +103,9 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, err
 		for rows.Next() {
 			var category, service string
 			if err := rows.Scan(&category, &service); err != nil {
-				_ = rows.Close()
+				if err := rows.Close(); err != nil {
+					log.Printf("WARNING: rows close: %v", err)
+				}
 				return err
 			}
 			if service == "" {
@@ -129,7 +136,11 @@ func genCommunitiesRuntime(tx *sql.Tx, existing map[string]bool, modeID int64) (
 		if err != nil {
 			return 0, err
 		}
-		defer func() { _ = modes.Close() }()
+		defer func() {
+			if err := modes.Close(); err != nil {
+				log.Printf("WARNING: modes close: %v", err)
+			}
+		}()
 
 		for modes.Next() {
 			var id int64
@@ -157,7 +168,9 @@ func genCommunitiesRuntime(tx *sql.Tx, existing map[string]bool, modeID int64) (
 			var category, service string
 			var community uint32
 			if err := commRows.Scan(&category, &service, &community); err != nil {
-				_ = commRows.Close()
+				if err := commRows.Close(); err != nil {
+					log.Printf("WARNING: commRows close: %v", err)
+				}
 				return 0, err
 			}
 			used[community] = true
@@ -167,7 +180,9 @@ func genCommunitiesRuntime(tx *sql.Tx, existing map[string]bool, modeID int64) (
 				keyComm["svc:"+category+"|"+service] = community
 			}
 		}
-		_ = commRows.Close()
+		if err := commRows.Close(); err != nil {
+			log.Printf("WARNING: commRows close: %v", err)
+		}
 
 		catRows, err := tx.Query(`
 SELECT DISTINCT ce.category
@@ -184,12 +199,16 @@ ORDER BY ce.category`, mid)
 		for catRows.Next() {
 			var cat string
 			if err := catRows.Scan(&cat); err != nil {
-				_ = catRows.Close()
+				if err := catRows.Close(); err != nil {
+					log.Printf("WARNING: catRows close: %v", err)
+				}
 				return 0, err
 			}
 			categories = append(categories, cat)
 		}
-		_ = catRows.Close()
+		if err := catRows.Close(); err != nil {
+			log.Printf("WARNING: catRows close: %v", err)
+		}
 
 		groupIndex := 0
 		for _, category := range categories {
@@ -229,12 +248,16 @@ ORDER BY ce.service`, mid, category)
 			for svcRows.Next() {
 				var svc string
 				if err := svcRows.Scan(&svc); err != nil {
-					_ = svcRows.Close()
+					if err := svcRows.Close(); err != nil {
+						log.Printf("WARNING: svcRows close: %v", err)
+					}
 					return generated, err
 				}
 				services = append(services, svc)
 			}
-			_ = svcRows.Close()
+			if err := svcRows.Close(); err != nil {
+				log.Printf("WARNING: svcRows close: %v", err)
+			}
 
 			for _, service := range services {
 				svcKey := "svc:" + category + "|" + service

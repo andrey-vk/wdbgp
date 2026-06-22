@@ -25,11 +25,11 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	}
 
 	var openCCKFeedID, ipRangesFeedID int64
-	if err := s.DB.QueryRow(	"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").
+	if err := s.DB.QueryRow("SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").
 		Scan(&openCCKFeedID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DB.QueryRow(		"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = ?", ipranges.ID).
+	if err := s.DB.QueryRow("SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = ?", ipranges.ID).
 		Scan(&ipRangesFeedID); err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestCountSelectionPrefixes(t *testing.T) {
 
 	// Get a feed ID for mode 1 (opencck, already enabled)
 	var feedID int64
-	if err := s.DB.QueryRow(	"SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID); err != nil {
+	if err := s.DB.QueryRow("SELECT f.id FROM feeds f JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id WHERE cmf.mode_id = 1 ORDER BY f.id LIMIT 1").Scan(&feedID); err != nil {
 		t.Fatal(err)
 	}
 

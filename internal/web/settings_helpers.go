@@ -26,7 +26,7 @@ type settingField struct {
 }
 
 type settingSection struct {
-	TitleKey string         // i18n key
+	TitleKey string // i18n key
 	Fields   []settingField
 }
 

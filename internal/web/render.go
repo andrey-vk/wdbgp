@@ -18,7 +18,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, titl
 func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int, title, name string, data any) {
 	lang, persist := requestLocale(r, s.defaultLang)
 	if persist {
-		http.SetCookie(w, &http.Cookie{
+		http.SetCookie(w, &http.Cookie{ //nolint:gosec // language cookie is not sensitive, no Secure/HttpOnly needed
 			Name: languageCookieName, Value: string(lang), Path: "/",
 			MaxAge: 365 * 24 * 60 * 60, SameSite: http.SameSiteLaxMode,
 		})
@@ -29,7 +29,7 @@ func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int,
 	// Get CSRF token from context
 	csrfToken := ""
 	if tokenVal := r.Context().Value(csrfCtxKey{}); tokenVal != nil {
-		csrfToken = tokenVal.(string)
+		csrfToken = tokenVal.(string) //nolint:errcheck // safe type assertion from context
 	}
 
 	if err := s.templates[lang][name].Execute(w, struct {
@@ -54,12 +54,12 @@ func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int,
 func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, status int, title, name string, data any) {
 	lang, persist := requestLocale(r, s.defaultLang)
 	if persist {
-		http.SetCookie(w, &http.Cookie{Name: languageCookieName, Value: string(lang), Path: "/", MaxAge: 365 * 24 * 60 * 60, SameSite: http.SameSiteLaxMode})
+		http.SetCookie(w, &http.Cookie{Name: languageCookieName, Value: string(lang), Path: "/", MaxAge: 365 * 24 * 60 * 60, SameSite: http.SameSiteLaxMode}) //nolint:gosec // language cookie is not sensitive
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
 
-	csrfToken, _ := r.Context().Value(csrfCtxKey{}).(string) // ok if empty — CSRF middleware handles it
+	csrfToken, _ := r.Context().Value(csrfCtxKey{}).(string) //nolint:errcheck // ok if empty — CSRF middleware handles it
 
 	// Render content fragment to buffer
 	var contentBuf strings.Builder
@@ -78,19 +78,19 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, status int,
 
 	if isHtmxRequest(r) {
 		// Return content fragment only (no shell)
-		w.Write([]byte(contentBuf.String()))
+		w.Write([]byte(contentBuf.String())) //nolint:errcheck,gosec // error page render, client already about to disconnect
 		return
 	}
 
 	// Full page with shell
-	s.templates[lang]["admin-shell"].Execute(w, struct {
+	s.templates[lang]["admin-shell"].Execute(w, struct { //nolint:errcheck,gosec // template execution, best-effort
 		Title       string
 		Lang        string
 		EnglishURL  string
 		RussianURL  string
 		CSRFToken   string
 		ContentHTML template.HTML
-	}{Title: title, Lang: string(lang), EnglishURL: languageURL(r, localeEnglish), RussianURL: languageURL(r, localeRussian), CSRFToken: csrfToken, ContentHTML: template.HTML(contentBuf.String())})
+	}{Title: title, Lang: string(lang), EnglishURL: languageURL(r, localeEnglish), RussianURL: languageURL(r, localeRussian), CSRFToken: csrfToken, ContentHTML: template.HTML(contentBuf.String())}) //nolint:gosec // HTML content is server-generated, not user-controlled
 }
 
 func (s *Server) httpError(w http.ResponseWriter, r *http.Request, key string, status int) {

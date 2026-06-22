@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"log"
 )
 
 // Feed represents a data feed source.
@@ -39,7 +40,11 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	var feeds []Feed
 	for rows.Next() {
 		var feed Feed
@@ -178,7 +183,11 @@ func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
 	var modeIDs []int64
 	for rows.Next() {
 		var modeID int64

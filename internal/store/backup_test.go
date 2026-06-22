@@ -50,10 +50,10 @@ func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
 			Networks: []string{"10.0.0.0/8"},
 		})
 		if err != nil {
-			s.Close()
+			s.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
-		s.Close()
+		s.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	// Step 2: Simulate an upgrade — remove the last migration to create pending work.
@@ -64,10 +64,10 @@ func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
 		}
 		db.SetMaxOpenConns(1)
 		if _, err := db.Exec("DELETE FROM schema_migrations WHERE version = (SELECT MAX(version) FROM schema_migrations)"); err != nil {
-			db.Close()
+			db.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
-		db.Close()
+		db.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	// Step 3: Reopen with backup enabled — migrations are pending → backup created.
@@ -78,7 +78,7 @@ func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer s.Close() //nolint:errcheck // test cleanup
 
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
@@ -105,7 +105,7 @@ func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer backupDB.Close()
+	defer backupDB.Close() //nolint:errcheck // test cleanup
 
 	var userCount int
 	if err := backupDB.QueryRow("SELECT COUNT(*) FROM users").Scan(&userCount); err != nil {
@@ -127,7 +127,7 @@ func TestBackupNotCreatedWhenUpToDate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s.Close()
+		s.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	// Step 2: Reopen with backup enabled — all migrations already applied,
@@ -139,7 +139,7 @@ func TestBackupNotCreatedWhenUpToDate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
+	s.Close() //nolint:errcheck,gosec // test cleanup
 
 	entries, err := os.ReadDir(backupDir)
 	if err != nil {
@@ -168,7 +168,7 @@ func TestBackupNotCreatedWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer s.Close() //nolint:errcheck // test cleanup
 
 	entries, err := os.ReadDir(backupDir)
 	if os.IsNotExist(err) {
@@ -197,7 +197,7 @@ func TestBackupNotCreatedOnFreshInstall(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer s.Close() //nolint:errcheck // test cleanup
 
 	entries, err := os.ReadDir(backupDir)
 	if os.IsNotExist(err) {
@@ -224,7 +224,7 @@ func TestBackupDirAutoCreated(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s.Close()
+		s.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	// Step 2: Simulate an upgrade by removing the last migration record.
@@ -235,10 +235,10 @@ func TestBackupDirAutoCreated(t *testing.T) {
 		}
 		db.SetMaxOpenConns(1)
 		if _, err := db.Exec("DELETE FROM schema_migrations WHERE version = (SELECT MAX(version) FROM schema_migrations)"); err != nil {
-			db.Close()
+			db.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
-		db.Close()
+		db.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	// Step 3: Reopen with backup enabled + non-existent backup dir.
@@ -250,7 +250,7 @@ func TestBackupDirAutoCreated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer s.Close() //nolint:errcheck // test cleanup
 
 	info, err := os.Stat(backupDir)
 	if err != nil {
@@ -307,34 +307,34 @@ func TestRestoreFromBackup(t *testing.T) {
 			Networks: []string{"192.168.1.0/24"},
 		})
 		if err != nil {
-			s.Close()
+			s.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
-		s.Close()
+		s.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	// Step 2: Take a manual backup.
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
+	if err := os.MkdirAll(backupDir, 0755); err != nil { //nolint:gosec // container filesystem, test dir
 		t.Fatal(err)
 	}
 	backupPath := filepath.Join(backupDir, "wdbgp-backup-20240101000000.sqlite3")
 	{
-		src, err := os.Open(dbPath)
+		src, err := os.Open(dbPath) //nolint:gosec // test file, controlled path
 		if err != nil {
 			t.Fatal(err)
 		}
-		dst, err := os.Create(backupPath)
+		dst, err := os.Create(backupPath) //nolint:gosec // test file, controlled path
 		if err != nil {
-			src.Close()
+			src.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
 		if _, err := dst.ReadFrom(src); err != nil {
-			src.Close()
-			dst.Close()
+			src.Close() //nolint:errcheck,gosec // test cleanup
+			dst.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
-		src.Close()
-		dst.Close()
+		src.Close() //nolint:errcheck,gosec // test cleanup
+		dst.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	// Step 3: Add a fake higher migration to simulate "newer version".
@@ -346,10 +346,10 @@ func TestRestoreFromBackup(t *testing.T) {
 		}
 		db.SetMaxOpenConns(1)
 		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, 'future', 'now')`, extraVersion); err != nil {
-			db.Close()
+			db.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
-		db.Close()
+		db.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	// Step 4: Reopen with auto-restore enabled.
@@ -360,7 +360,7 @@ func TestRestoreFromBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer s.Close() //nolint:errcheck // test cleanup
 
 	// Verify restored DB is not degraded.
 	if s.Degraded {
@@ -406,10 +406,10 @@ func TestDegradedWhenAutoRestoreDisabled(t *testing.T) {
 			Networks: []string{"192.168.2.0/24"},
 		})
 		if err != nil {
-			s.Close()
+			s.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
-		s.Close()
+		s.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	{
@@ -419,17 +419,17 @@ func TestDegradedWhenAutoRestoreDisabled(t *testing.T) {
 		}
 		db.SetMaxOpenConns(1)
 		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, 'future', 'now')`, len(migrations)+1); err != nil {
-			db.Close()
+			db.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
-		db.Close()
+		db.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	s, err := Open(dbPath, config.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer s.Close() //nolint:errcheck // test cleanup
 
 	if !s.Degraded {
 		t.Fatal("Store.Degraded should be true")
@@ -446,7 +446,7 @@ func TestDegradedWhenNoBackupFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.sqlite3")
 	backupDir := filepath.Join(tmpDir, "empty-backups")
-	if err := os.MkdirAll(backupDir, 0755); err != nil {
+	if err := os.MkdirAll(backupDir, 0755); err != nil { //nolint:gosec // container filesystem, test dir
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -462,10 +462,10 @@ func TestDegradedWhenNoBackupFound(t *testing.T) {
 			Networks: []string{"192.168.3.0/24"},
 		})
 		if err != nil {
-			s.Close()
+			s.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
-		s.Close()
+		s.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	{
@@ -475,10 +475,10 @@ func TestDegradedWhenNoBackupFound(t *testing.T) {
 		}
 		db.SetMaxOpenConns(1)
 		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, 'future', 'now')`, len(migrations)+1); err != nil {
-			db.Close()
+			db.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
-		db.Close()
+		db.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
 	s, err := Open(dbPath, config.Config{
@@ -488,7 +488,7 @@ func TestDegradedWhenNoBackupFound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer s.Close() //nolint:errcheck // test cleanup
 
 	if !s.Degraded {
 		t.Fatal("Store.Degraded should be true")

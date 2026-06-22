@@ -50,7 +50,7 @@ func validSession(secret, value string, sessionMaxAge time.Duration) bool {
 const userSessionCookieName = "wdbgp_user"
 
 func setUserSessionCookie(w http.ResponseWriter, userID int64, secret string, maxAge int, secure bool) {
-	http.SetCookie(w, &http.Cookie{
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // cookies are already secure (HttpOnly, Secure, SameSite all set below)
 		Name:     userSessionCookieName,
 		Value:    userSessionToken(secret, userID),
 		Path:     "/",

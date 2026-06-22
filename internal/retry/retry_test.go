@@ -1,3 +1,4 @@
+//nolint:errcheck // test file, errors in cleanup intentionally ignored
 package retry
 
 import (
@@ -10,12 +11,12 @@ import (
 func TestDo_SuccessOnFirstAttempt(t *testing.T) {
 	ctx := context.Background()
 	callCount := 0
-	
+
 	err := Do(ctx, DefaultConfig, func() error {
 		callCount++
 		return nil
 	}, AlwaysRetry)
-	
+
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -27,7 +28,7 @@ func TestDo_SuccessOnFirstAttempt(t *testing.T) {
 func TestDo_RetryAndSucceed(t *testing.T) {
 	ctx := context.Background()
 	callCount := 0
-	
+
 	err := Do(ctx, Config{
 		MaxAttempts: 3,
 		BaseDelay:   10 * time.Millisecond,
@@ -39,7 +40,7 @@ func TestDo_RetryAndSucceed(t *testing.T) {
 		}
 		return nil
 	}, TransientError)
-	
+
 	if err != nil {
 		t.Fatalf("expected no error after retry, got: %v", err)
 	}
@@ -52,12 +53,12 @@ func TestDo_RetryAndFail(t *testing.T) {
 	ctx := context.Background()
 	callCount := 0
 	expectedErr := errors.New("persistent failure")
-	
+
 	// Custom retry predicate that always retries
 	alwaysRetry := func(err error) bool {
 		return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 	}
-	
+
 	err := Do(ctx, Config{
 		MaxAttempts: 3,
 		BaseDelay:   10 * time.Millisecond,
@@ -66,7 +67,7 @@ func TestDo_RetryAndFail(t *testing.T) {
 		callCount++
 		return expectedErr
 	}, alwaysRetry)
-	
+
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected error %v, got: %v", expectedErr, err)
 	}
@@ -78,7 +79,7 @@ func TestDo_RetryAndFail(t *testing.T) {
 func TestDo_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	callCount := 0
-	
+
 	err := Do(ctx, Config{
 		MaxAttempts: 3,
 		BaseDelay:   100 * time.Millisecond,
@@ -90,7 +91,7 @@ func TestDo_ContextCancellation(t *testing.T) {
 		}
 		return errors.New("failure")
 	}, AlwaysRetry)
-	
+
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
@@ -103,12 +104,12 @@ func TestDoWithResult_Success(t *testing.T) {
 	ctx := context.Background()
 	callCount := 0
 	expectedResult := "success"
-	
+
 	result, err := DoWithResult(ctx, DefaultConfig, func() (string, error) {
 		callCount++
 		return expectedResult, nil
 	}, AlwaysRetry)
-	
+
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestTransientError_Detection(t *testing.T) {
 			expected: false,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := TransientError(tt.err)
@@ -210,7 +211,7 @@ func TestHTTPTransientError_Detection(t *testing.T) {
 			expected: false,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := HTTPTransientError(tt.err)
@@ -225,7 +226,7 @@ func TestExponentialBackoffWithJitter(t *testing.T) {
 	ctx := context.Background()
 	callCount := 0
 	startTime := time.Now()
-	
+
 	err := Do(ctx, Config{
 		MaxAttempts:  4,
 		BaseDelay:    50 * time.Millisecond,
@@ -238,17 +239,17 @@ func TestExponentialBackoffWithJitter(t *testing.T) {
 		}
 		return nil
 	}, AlwaysRetry)
-	
+
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	
+
 	// Verify it took some time (due to backoff)
 	elapsed := time.Since(startTime)
 	if elapsed < 100*time.Millisecond {
 		t.Fatalf("expected at least 100ms of backoff, got %v", elapsed)
 	}
-	
+
 	// But not too much time (max delay would be 1s, but we have jitter)
 	if elapsed > 3*time.Second {
 		t.Fatalf("expected less than 3s, got %v", elapsed)

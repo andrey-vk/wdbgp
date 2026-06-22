@@ -122,7 +122,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	defer func() {
 		if !started {
 			m.speaker = nil
-			_ = speaker.Stop()
+			_ = speaker.Stop() //nolint:errcheck // connection is dying, Close is best-effort cleanup
 		}
 	}()
 

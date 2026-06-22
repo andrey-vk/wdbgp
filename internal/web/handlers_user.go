@@ -69,7 +69,7 @@ func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
 	// Add CSRF token to selection view for the template
 	csrfToken := ""
 	if tokenVal := r.Context().Value(csrfCtxKey{}); tokenVal != nil {
-		csrfToken = tokenVal.(string)
+		csrfToken = tokenVal.(string) //nolint:errcheck // safe type assertion from context
 	}
 	view.CSRFToken = csrfToken
 	view.Saved = r.URL.Query().Get("saved")
@@ -174,7 +174,7 @@ func (s *Server) selectionCount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, "IPv4: <strong id=total-prefix-v4>%d</strong> pref. · IPv6: <strong id=total-prefix-v6>%d</strong> pref.", v4, v6)
+	fmt.Fprintf(w, "IPv4: <strong id=total-prefix-v4>%d</strong> pref. · IPv6: <strong id=total-prefix-v6>%d</strong> pref.", v4, v6) //nolint:errcheck,gosec // HTMX response, client already connected; values are integers not user input
 }
 
 func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
@@ -258,7 +258,7 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 			Admin:     admin,
 		},
 	}
-	comms, _ := s.store.GetCommunities(ctx, user.CatalogModeID)
+	comms, _ := s.store.GetCommunities(ctx, user.CatalogModeID) //nolint:errcheck // best-effort lookup for display
 	view.Communities = comms
 	prefixCountsV4, prefixCountsV6, err := s.store.PrefixCounts(ctx, user.CatalogModeID)
 	if err != nil {
@@ -300,8 +300,8 @@ func (s *Server) selection(ctx context.Context, user store.User, editable, admin
 			}
 			item.Services = append(item.Services, serviceView{
 				Name: service, Value: serviceValue(category, service),
-				Selected: !categorySelected && selectedServices[key],
-				Disabled: categorySelected,
+				Selected:      !categorySelected && selectedServices[key],
+				Disabled:      categorySelected,
 				PrefixCountV4: svcPrefixCountV4,
 				PrefixCountV6: svcPrefixCountV6,
 			})
