@@ -135,6 +135,12 @@ type communityServiceView struct {
 	AutoSvc   uint32
 }
 
+type modeOption struct {
+	Value    string
+	Text     string
+	Selected bool
+}
+
 type userEditView struct {
 	User        store.User
 	Selection   selectionView
@@ -147,6 +153,15 @@ type userEditView struct {
 	ActiveDial         bool   // true when User.ActiveDial (active BGP dialing enabled)
 	ActiveDialDisabled bool   // true when system-wide ActiveDial==false
 	ActiveDialHint     string // explanatory text when disabled
+	// Computed attribute strings for form components
+	PeerIPAttrs           template.HTMLAttr
+	DynamicIPAttrs        template.HTMLAttr
+	ActiveDialAttrs       template.HTMLAttr
+	PasswordAttrs         template.HTMLAttr
+	ActiveDialHintResolved string
+	NetworksStr           string
+	WebAuthOptions        []modeOption
+	ModeOptions           []modeOption
 }
 
 type filterView struct {
@@ -1722,9 +1737,36 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 		if activeDialDisabled {
 			activeDialHint = "hints.active_dial_system_disabled"
 		}
+		// Compute form-component attributes
+		peerIPAttrs := template.HTMLAttr(" id=peer-ip")
+		dynamicIPAttrs := template.HTMLAttr(" id=dynamic-ip")
+		if dynamicReadonly {
+			dynamicIPAttrs = template.HTMLAttr(fmt.Sprintf(` id=dynamic-ip readonly title="%s"`, translate(lang, "hint.dynamic_peers_disabled")))
+		}
+		activeDialAttrs := template.HTMLAttr("")
+		if activeDialDisabled {
+			activeDialAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, activeDialHint)))
+		}
+		activeDialHintResolved := activeDialHint
+		if activeDialHintResolved == "" {
+			activeDialHintResolved = "hints.active_dial"
+		}
+		webAuthOptions := []modeOption{
+			{Value: "network", Text: translate(lang, "users.web_auth_network"), Selected: emptyUser.WebAuth == "network"},
+			{Value: "login", Text: translate(lang, "users.web_auth_login"), Selected: emptyUser.WebAuth == "login"},
+			{Value: "both", Text: translate(lang, "users.web_auth_both"), Selected: emptyUser.WebAuth == "both"},
+			{Value: "any", Text: translate(lang, "users.web_auth_any"), Selected: emptyUser.WebAuth == "any"},
+		}
+		modes, _ := s.store.CatalogModes(r.Context(), false)
+		modeOptions := make([]modeOption, len(modes))
+		for i, m := range modes {
+			modeOptions[i] = modeOption{Value: strconv.FormatInt(m.ID, 10), Text: m.Name, Selected: m.ID == emptyUser.CatalogModeID}
+		}
 		s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), translate(lang, "common.add")), "user-edit",
 			userEditView{User: emptyUser, DynamicReadonly: dynamicReadonly,
-				ActiveDial: true, ActiveDialDisabled: activeDialDisabled, ActiveDialHint: activeDialHint})
+				ActiveDial: true, ActiveDialDisabled: activeDialDisabled, ActiveDialHint: activeDialHint,
+				PeerIPAttrs: peerIPAttrs, DynamicIPAttrs: dynamicIPAttrs, ActiveDialAttrs: activeDialAttrs,
+				PasswordAttrs: template.HTMLAttr(""), ActiveDialHintResolved: activeDialHintResolved, NetworksStr: "", WebAuthOptions: webAuthOptions, ModeOptions: modeOptions})
 		return
 	}
 	user, err := s.store.User(r.Context(), id)
@@ -1779,11 +1821,49 @@ func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
 	if activeDialDisabled {
 		activeDialHint = "hints.active_dial_system_disabled"
 	}
+	// Compute form-component attributes
+	peerIPAttrs := template.HTMLAttr(" id=peer-ip")
+	if user.PeerIP == "0.0.0.0" || user.PeerIP == "::" {
+		peerIPAttrs = template.HTMLAttr(" id=peer-ip readonly")
+	}
+	dynamicIPAttrs := template.HTMLAttr(" id=dynamic-ip")
+	if dynamicReadonly {
+		dynamicIPAttrs = template.HTMLAttr(fmt.Sprintf(` id=dynamic-ip readonly title="%s"`, translate(lang, "hint.dynamic_peers_disabled")))
+	}
+	passwordAttrs := template.HTMLAttr("")
+	if passwordDisabled {
+		passwordAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, "hint.dynamic_no_password")))
+	} else if passwordHint != "" {
+		passwordAttrs = template.HTMLAttr(fmt.Sprintf(` title="%s"`, translate(lang, passwordHint)))
+	}
+	activeDialAttrs := template.HTMLAttr("")
+	if activeDialDisabled {
+		activeDialAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, activeDialHint)))
+	}
+	activeDialHintResolved := activeDialHint
+	if activeDialHintResolved == "" {
+		activeDialHintResolved = "hints.active_dial"
+	}
+	webAuthOptions := []modeOption{
+		{Value: "network", Text: translate(lang, "users.web_auth_network"), Selected: user.WebAuth == "network"},
+		{Value: "login", Text: translate(lang, "users.web_auth_login"), Selected: user.WebAuth == "login"},
+		{Value: "both", Text: translate(lang, "users.web_auth_both"), Selected: user.WebAuth == "both"},
+		{Value: "any", Text: translate(lang, "users.web_auth_any"), Selected: user.WebAuth == "any"},
+	}
+	modes, _ := s.store.CatalogModes(r.Context(), false)
+	modeOptions := make([]modeOption, len(modes))
+	for i, m := range modes {
+		modeOptions[i] = modeOption{Value: strconv.FormatInt(m.ID, 10), Text: m.Name, Selected: m.ID == user.CatalogModeID}
+	}
+	networksStr := strings.Join(user.Networks, ", ")
 	s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
 		userEditView{User: user, Selection: selection, Credentials: credentials,
 			DynamicReadonly: dynamicReadonly, DynamicChecked: dynamicChecked,
 			PasswordDisabled: passwordDisabled, PasswordHint: passwordHint,
-			ActiveDial: user.ActiveDial, ActiveDialDisabled: activeDialDisabled, ActiveDialHint: activeDialHint})
+			ActiveDial: user.ActiveDial, ActiveDialDisabled: activeDialDisabled, ActiveDialHint: activeDialHint,
+			PeerIPAttrs: peerIPAttrs, DynamicIPAttrs: dynamicIPAttrs, ActiveDialAttrs: activeDialAttrs,
+			PasswordAttrs: passwordAttrs, ActiveDialHintResolved: activeDialHintResolved,
+			NetworksStr: networksStr, WebAuthOptions: webAuthOptions, ModeOptions: modeOptions})
 }
 
 func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {

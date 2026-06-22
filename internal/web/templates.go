@@ -126,7 +126,22 @@ select:disabled,input:disabled{opacity:.5;cursor:not-allowed;background:var(--bg
 .card form + form{margin-top:1rem}
 `
 
-const sharedComponents = `{{define "error-message"}}{{if .}}<p class=error>{{.}}</p>{{end}}{{end}}
+const formFieldComponent = `{{define "form-field"}}
+<label>{{tr .Label}} <input{{if .Type}} type="{{.Type}}"{{end}} name={{.Name}} value="{{.Value}}"{{if .Placeholder}} placeholder="{{.Placeholder}}"{{end}}{{if .Required}} required{{end}}{{.Attrs}}></label>
+{{if .Hint}}<p class=muted>{{tr .Hint}}</p>{{end}}
+{{end}}`
+
+const formCheckboxComponent = `{{define "form-checkbox"}}
+<label class=checkbox-row><input type=checkbox name={{.Name}} {{if .Checked}}checked {{end}}{{.Attrs}}> {{tr .Label}}</label>
+{{if .Hint}}<p class=muted>{{tr .Hint}}</p>{{end}}
+{{end}}`
+
+const formSelectComponent = `{{define "form-select"}}
+<label>{{tr .Label}} <select name={{.Name}}{{.Attrs}}>{{range .Options}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Text}}</option>{{end}}</select></label>
+{{if .Hint}}<p class=muted>{{tr .Hint}}</p>{{end}}
+{{end}}`
+
+const sharedComponents = formFieldComponent + formCheckboxComponent + formSelectComponent + `{{define "error-message"}}{{if .}}<p class=error>{{.}}</p>{{end}}{{end}}
 {{define "section-header"}}<h3>{{.}}</h3>{{end}}
 {{define "back-link"}}<a href="{{.URL}}" class=back-link>← {{.Label}}</a>{{end}}
 {{define "checkbox-row"}}<label class=checkbox-row><input type=checkbox name="{{.Name}}" {{if .Checked}}checked{{end}} {{if .Disabled}}disabled{{end}}> {{.Label}}</label>{{if .Hint}}<p class=muted>{{.Hint}}</p>{{end}}{{end}}
@@ -343,34 +358,25 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}` + 
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <input type=hidden name=action value=settings>
 <div class=form-grid>
-<label>{{tr "feeds.name"}} <input name=name value="{{.User.Name}}" required></label>
-<p class=muted>{{tr "hints.user_name"}}</p>
-<label>{{tr "users.networks"}} <input name=networks value="{{join .User.Networks ", "}}" required></label>
-<p class=muted>{{tr "hints.user_networks"}}</p>
-<label>{{tr "users.peer_ip"}} <input name=peer_ip id=peer-ip value="{{.User.PeerIP}}" required {{if eq .User.PeerIP "0.0.0.0"}}readonly{{end}}></label>
-<p class=muted>{{tr "hints.user_peer_ip"}}</p>
-<label class=checkbox-row><input type=checkbox id=dynamic-ip {{if .DynamicChecked}}checked{{end}} {{if .DynamicReadonly}}readonly title="{{tr "hint.dynamic_peers_disabled"}}"{{end}}> {{tr "users.dynamic_ip"}}</label>
-<p class=muted>{{tr "hints.user_dynamic_ip"}}</p>
-<label>{{tr "users.peer_asn"}} <input type=number min=1 name=peer_asn value="{{.User.PeerASN}}" required></label>
-<p class=muted>{{tr "hints.user_peer_asn"}}</p>
-<label>{{tr "users.next_hop"}} <input name=next_hop value="{{.User.NextHop}}" placeholder="auto"></label>
-<p class=muted>{{tr "hints.user_next_hop"}}</p>
-<label>{{tr "users.bgp_password"}} <input type=password name=bgp_password placeholder="{{tr "users.bgp_password_placeholder"}}" {{if .PasswordDisabled}}disabled title="{{tr "hint.dynamic_no_password"}}"{{else if .PasswordHint}}title="{{tr .PasswordHint}}"{{end}}></label>
+{{template "form-field" dict "Label" "feeds.name" "Name" "name" "Value" .User.Name "Required" true "Hint" "hints.user_name"}}
+{{template "form-field" dict "Label" "users.networks" "Name" "networks" "Value" .NetworksStr "Required" true "Hint" "hints.user_networks"}}
+{{template "form-field" dict "Label" "users.peer_ip" "Name" "peer_ip" "Value" .User.PeerIP "Required" true "Hint" "hints.user_peer_ip" "Attrs" .PeerIPAttrs}}
+{{template "form-checkbox" dict "Name" "dynamic_ip" "Label" "users.dynamic_ip" "Checked" .DynamicChecked "Hint" "hints.user_dynamic_ip" "Attrs" .DynamicIPAttrs}}
+{{template "form-field" dict "Label" "users.peer_asn" "Type" "number" "Name" "peer_asn" "Value" .User.PeerASN "Required" true "Hint" "hints.user_peer_asn"}}
+{{template "form-field" dict "Label" "users.next_hop" "Name" "next_hop" "Value" .User.NextHop "Placeholder" "auto" "Hint" "hints.user_next_hop"}}
+{{template "form-field" dict "Label" "users.bgp_password" "Type" "password" "Name" "bgp_password" "Placeholder" (tr "users.bgp_password_placeholder") "Attrs" .PasswordAttrs}}
+{{template "form-checkbox" dict "Name" "active_dial" "Label" "users.active_dial" "Checked" .ActiveDial "Hint" .ActiveDialHintResolved "Attrs" .ActiveDialAttrs}}
+{{template "form-checkbox" dict "Name" "enabled" "Label" "user.enabled" "Checked" .User.Enabled}}
+{{template "form-checkbox" dict "Name" "clear_bgp_password" "Label" "user.clear_password"}}
 </div>
-<label class=checkbox-row><input type=checkbox name=active_dial {{if .ActiveDial}}checked{{end}} {{if .ActiveDialDisabled}}disabled title="{{tr .ActiveDialHint}}"{{end}}> {{tr "users.active_dial"}}</label>
-{{if .ActiveDialHint}}<p class=muted>{{tr .ActiveDialHint}}</p>{{else}}<p class=muted>{{tr "hints.active_dial"}}</p>{{end}}
-<label>{{tr "catalog.mode"}} <select name=catalog_mode_id>{{range .Selection.Modes}}<option value="{{.ID}}" {{if eq .ID $.Data.User.CatalogModeID}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
-<p class=muted>{{tr "hints.user_catalog_mode"}}</p>
-{{template "checkbox-row" dict "Name" "enabled" "Checked" .User.Enabled "Label" (tr "user.enabled")}}
-{{template "checkbox-row" dict "Name" "clear_bgp_password" "Label" (tr "user.clear_password")}}
+{{template "form-select" dict "Label" "catalog.mode" "Name" "catalog_mode_id" "Options" .ModeOptions "Hint" "hints.user_catalog_mode"}}
 {{template "section-header" (tr "users.access_section")}}
-<label>{{tr "users.web_auth"}} <select name=web_auth>
-<option value=network {{if eq .User.WebAuth "network"}}selected{{end}}>{{tr "users.web_auth_network"}}</option>
-<option value=login {{if eq .User.WebAuth "login"}}selected{{end}}>{{tr "users.web_auth_login"}}</option>
-<option value=both {{if eq .User.WebAuth "both"}}selected{{end}}>{{tr "users.web_auth_both"}}</option>
-<option value=any {{if eq .User.WebAuth "any"}}selected{{end}}>{{tr "users.web_auth_any"}}</option>
-</select></label>
-<p class=muted>{{tr "users.web_auth_hint"}}</p>
+<div class=form-grid>
+{{template "form-select" dict "Label" "users.web_auth" "Name" "web_auth" "Options" .WebAuthOptions "Hint" "users.web_auth_hint"}}
+{{template "form-checkbox" dict "Name" "locked" "Label" "user.lock_selection" "Checked" .User.SelectionLocked}}
+{{template "form-checkbox" dict "Name" "filter_editable" "Label" "users.allow_filter_editing" "Checked" .User.FilterEditable}}
+{{template "form-checkbox" dict "Name" "catalog_mode_editable" "Label" "users.allow_mode_editing" "Checked" .User.CatalogEditable}}
+</div>
 {{if .User.ID}}<section class=card id=credentials-section>
 <h2>{{tr "users.credentials"}}</h2>
 {{range $i, $cred := .Credentials}}
@@ -385,9 +391,6 @@ const userEditTemplate = `{{define "selection"}}` + selectionBody + `{{end}}` + 
 <label>{{tr "user.password"}} <input type=password name=cred_password_new></label>
 </div>
 </section>{{end}}
-{{template "checkbox-row" dict "Name" "locked" "Checked" .User.SelectionLocked "Label" (tr "user.lock_selection")}}
-{{template "checkbox-row" dict "Name" "filter_editable" "Checked" .User.FilterEditable "Label" (tr "users.allow_filter_editing")}}
-{{template "checkbox-row" dict "Name" "catalog_mode_editable" "Checked" .User.CatalogEditable "Label" (tr "users.allow_mode_editing")}}
 <input type=hidden name=filter_mode value="{{.User.FilterMode}}">
 <button class=primary>{{tr "user.save"}}</button></form>
 {{if .User.ID}}<form method=post action="/admin/user/{{.User.ID}}/delete" onsubmit="return confirm('{{tr "user.delete_confirm"}}');"><input type=hidden name=csrf_token value="{{$.CSRFToken}}"><button class=danger>{{tr "user.delete"}}</button></form>{{end}}</section></div>
@@ -870,10 +873,10 @@ const modesTemplate = `{{with .Data}}
 <form method=post action=/admin/modes>
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <div class=form-grid>
-<label>{{tr "catalog.mode_name"}} <input name=name required></label>
-<label>{{tr "catalog.key"}} <input name=key></label>
+{{template "form-field" dict "Label" "catalog.mode_name" "Name" "name" "Required" true}}
+{{template "form-field" dict "Label" "catalog.key" "Name" "key"}}
+{{template "form-checkbox" dict "Name" "enabled" "Label" "feeds.enabled"}}
 </div>
-<label class=checkbox-row><input type=checkbox name=enabled> {{tr "feeds.enabled"}}</label>
 <button type=submit class=primary>{{tr "common.add"}}</button>
 </form>
 </div>
@@ -887,11 +890,11 @@ const modeEditTemplate = `{{with .Data}}
 <form method=post action="/admin/modes/{{.Mode.ID}}">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <label>{{tr "catalog.mode_name"}} <input name=name value="{{.Mode.Name}}" required></label>
-<label class=checkbox-row><input type=checkbox name=enabled {{if .Mode.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label>
+{{template "form-checkbox" dict "Name" "enabled" "Label" "feeds.enabled" "Checked" .Mode.Enabled}}
 <button type=submit class=primary>{{tr "common.save"}}</button>
 </form>
 {{if gt .Mode.ID 3}}
-<form method=post action="/admin/modes/{{.Mode.ID}}/delete" onsubmit="return confirm('{{tr "catalog.mode_delete_confirm"}}')" style=margin-top:1rem>
+<form method=post action="/admin/modes/{{.Mode.ID}}/delete" onsubmit="return confirm('{{tr "catalog.mode_delete_confirm"}}')">
 <input type=hidden name=csrf_token value="{{$.CSRFToken}}">
 <button type=submit class=danger>{{tr "common.delete"}}</button>
 </form>
@@ -939,19 +942,15 @@ const feedEditTemplate = sharedComponents + `{{with .Data}}
 <p class=muted>{{tr "hints.feed_url"}}</p>
 <label>{{tr "feeds.data"}} <textarea name=data rows=4 placeholder='{"category": "Russia", "service": "geoip-ru"}' class=mono>{{.Feed.Data}}</textarea></label>
 <p class=muted>{{tr "hints.feed_data"}}</p>
-	<label>{{tr "catalog.modes"}}</label>
-	<div style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:8px">
-	{{range .Modes}}<label class=checkbox-row><input type=checkbox name=mode_ids value="{{.ID}}" {{if index $.Data.FeedModeIDs .ID}}checked{{end}}> {{.Name}}</label>{{end}}
-	</div>
-	<div class=form-grid>
-<label>{{tr "feeds.adapter"}}
-<select name=adapter_id>
-{{range .Adapters}}<option value="{{.ID}}" {{if eq .ID $.Data.Feed.AdapterID}}selected{{end}}>{{.Name}}</option>{{end}}
-</select></label>
+<label>{{tr "catalog.modes"}}</label>
+<div>
+{{range .Modes}}<label class=checkbox-row><input type=checkbox name=mode_ids value="{{.ID}}" {{if index $.Data.FeedModeIDs .ID}}checked{{end}}> {{.Name}}</label>{{end}}
 </div>
-<label>{{tr "feeds.sync_interval"}} <input type=number name=sync_interval value="{{.Feed.SyncInterval}}" placeholder="{{tr "feeds.default_interval"}}"></label>
-<p class=muted>{{tr "hints.feed_sync_interval"}}</p>
-<div class=checkbox-row><label><input type=checkbox name=enabled {{if .Feed.Enabled}}checked{{end}}> {{tr "feeds.enabled"}}</label></div>
+<div class=form-grid>
+<label>{{tr "feeds.adapter"}} <select name=adapter_id>{{range .Adapters}}<option value="{{.ID}}" {{if eq .ID $.Data.Feed.AdapterID}}selected{{end}}>{{.Name}}</option>{{end}}</select></label>
+{{template "form-field" dict "Label" "feeds.sync_interval" "Type" "number" "Name" "sync_interval" "Value" .Feed.SyncInterval "Placeholder" (tr "feeds.default_interval") "Hint" "hints.feed_sync_interval"}}
+</div>
+{{template "form-checkbox" dict "Name" "enabled" "Label" "feeds.enabled" "Checked" .Feed.Enabled}}
 <button type=submit class=primary>{{tr "common.save"}}</button>
 </form>
 {{if not .IsNew}}<form method=post action="/admin/feed/{{.Feed.ID}}/delete" onsubmit="return confirm('{{tr "feeds.delete_confirm"}}')">
