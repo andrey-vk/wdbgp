@@ -68,6 +68,9 @@ func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reload runtime-mutable settings so they take effect without restart
+	s.reloadRuntimeSettings(r.Context())
+
 	// Save global route filters if the fields are present in the form
 	if r.Form.Has("filter_allow") || r.Form.Has("filter_deny") {
 		if filters, err := routeFiltersFromForm(r); err == nil {

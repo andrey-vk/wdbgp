@@ -266,22 +266,26 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) statusAuthorized(r *http.Request) bool {
 	// Check IP
-	if len(s.cfg.StatusAllowed) > 0 {
+	s.mu.RLock()
+	cidrs := s.statusCIDRs
+	token := s.statusToken
+	s.mu.RUnlock()
+
+	if len(cidrs) > 0 {
 		clientIP := s.clientIP(r)
 		ip, err := netip.ParseAddr(clientIP)
 		if err == nil {
-			for _, cidr := range s.cfg.StatusAllowed {
-				prefix, err := netip.ParsePrefix(cidr)
-				if err == nil && prefix.Contains(ip) {
+			for _, prefix := range cidrs {
+				if prefix.Contains(ip) {
 					return true
 				}
 			}
 		}
 	}
 	// Check token
-	if s.cfg.StatusToken != "" {
+	if token != "" {
 		auth := r.Header.Get("Authorization")
-		if strings.TrimPrefix(auth, "Bearer ") == s.cfg.StatusToken {
+		if strings.TrimPrefix(auth, "Bearer ") == token {
 			return true
 		}
 	}
