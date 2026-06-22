@@ -462,12 +462,21 @@ CREATE TABLE schema_migrations (
 		t.Fatal(err)
 	}
 	for _, migration := range migrations[:8] {
-		if _, err := db.Exec(migration.SQL); err != nil {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("begin tx for migration %d: %v", migration.Version, err)
+		}
+		if err := migration.Func(context.Background(), tx); err != nil {
+			tx.Rollback()
 			t.Fatalf("apply migration %d: %v", migration.Version, err)
 		}
-		if _, err := db.Exec(
+		if _, err := tx.Exec(
 			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, 'now')",
 			migration.Version, migration.Name); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -522,12 +531,21 @@ CREATE TABLE schema_migrations (
 		t.Fatal(err)
 	}
 	for _, migration := range migrations[:8] {
-		if _, err := db.Exec(migration.SQL); err != nil {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatalf("begin tx for migration %d: %v", migration.Version, err)
+		}
+		if err := migration.Func(context.Background(), tx); err != nil {
+			tx.Rollback()
 			t.Fatalf("apply migration %d: %v", migration.Version, err)
 		}
-		if _, err := db.Exec(
+		if _, err := tx.Exec(
 			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, 'now')",
 			migration.Version, migration.Name); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
 	}
