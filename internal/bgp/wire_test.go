@@ -386,6 +386,57 @@ func TestASPath4ByteEncoding(t *testing.T) {
 	t.Logf("2-byte AS_PATH encoding verified for ASN 64512")
 }
 
+func TestASPathFourOctetForce(t *testing.T) {
+	// FourOctet mode: even small ASNs produce 4-byte AS_SEQUENCE.
+	// Required when AS4 capability is negotiated (RFC 6793).
+	attr := &ASPathAttribute{ASN: 64512, FourOctet: true}
+	serialized := attr.Serialize()
+
+	// Decode the wire format to verify 4-byte encoding.
+	flags := serialized[0]
+	var valOffset, valLen int
+	if flags&attrFlagExtendedLength != 0 {
+		valOffset = 4
+		valLen = int(binary.BigEndian.Uint16(serialized[2:4]))
+	} else {
+		valOffset = 3
+		valLen = int(serialized[2])
+	}
+
+	value := serialized[valOffset : valOffset+valLen]
+	if len(value) != 6 {
+		t.Fatalf("value length = %d, want 6 (4-byte AS_SEQUENCE forced by FourOctet)", len(value))
+	}
+	if value[0] != 2 {
+		t.Fatalf("segment type = %d, want 2 (AS_SEQUENCE 4-byte)", value[0])
+	}
+	if value[1] != 1 {
+		t.Fatalf("segment length = %d, want 1", value[1])
+	}
+	decodedASN := binary.BigEndian.Uint32(value[2:6])
+	if decodedASN != 64512 {
+		t.Fatalf("decoded ASN = %d, want 64512", decodedASN)
+	}
+	t.Logf("FourOctet mode: small ASN %d encoded as 4-byte AS_SEQUENCE", decodedASN)
+
+	// Round-trip via decodePathAttributes
+	attrs, err := decodePathAttributes(serialized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attrs) != 1 {
+		t.Fatalf("attrs len = %d, want 1", len(attrs))
+	}
+	decoded, ok := attrs[0].(*ASPathAttribute)
+	if !ok {
+		t.Fatalf("expected *ASPathAttribute, got %T", attrs[0])
+	}
+	if decoded.ASN != 64512 {
+		t.Fatalf("round-trip decoded ASN = %d, want 64512", decoded.ASN)
+	}
+	t.Logf("FourOctet mode round-trip verified: ASN=%d", decoded.ASN)
+}
+
 func TestDecodeASPath2Byte(t *testing.T) {
 	attr := &ASPathAttribute{ASN: 64512}
 	serialized := attr.Serialize()

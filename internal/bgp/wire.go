@@ -63,6 +63,7 @@ type OpenMessage struct {
 	OptParmLen     uint8
 	Password       string // fallback auth for loopback (empty = none)
 	HasIPv6Unicast bool   // remote peer advertised IPv6 unicast capability (AFI=2, SAFI=1)
+	HasAS4Cap      bool   // remote peer advertised Four-octet ASN capability (capCode 65, RFC 6793)
 }
 
 // UPDATE message
@@ -103,7 +104,8 @@ type MpUnreachNLRIAttribute struct {
 
 // ASPathAttribute is the AS_PATH path attribute (type 2, well-known mandatory).
 type ASPathAttribute struct {
-	ASN uint32 // local ASN to include
+	ASN       uint32 // local ASN to include
+	FourOctet bool   // if true, always use 4-byte AS_SEQUENCE regardless of ASN value
 }
 
 // LargeCommunity
@@ -224,10 +226,11 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 					if 2+capLen > len(capData) {
 						break // malformed, stop
 					}
-					if capCode == 65 && capLen == 4 {
-						// Four-octet ASN Capability — use the LAST one found
-						o.MyASN32 = binary.BigEndian.Uint32(capData[2 : 2+capLen])
-					}
+				if capCode == 65 && capLen == 4 {
+					// Four-octet ASN Capability — use the LAST one found
+					o.MyASN32 = binary.BigEndian.Uint32(capData[2 : 2+capLen])
+					o.HasAS4Cap = true
+				}
 					if capCode == 1 && capLen == 4 {
 						// Multiprotocol Extension — check AFI/SAFI for IPv6 unicast.
 						// Value: AFI(2) + Reserved(1) + SAFI(1) = 4 bytes.
@@ -476,7 +479,7 @@ func (a *ASPathAttribute) TypeCode() uint8 {
 // Serialize encodes the AS_PATH path attribute value.
 // Uses AS_SEQUENCE (type code 2) for both 2-byte and 4-byte ASNs.
 func (a *ASPathAttribute) Serialize() []byte {
-	if a.ASN > 65535 {
+	if a.ASN > 65535 || a.FourOctet {
 		// 4-octet AS_SEQUENCE: segment type=2, length=1 (in ASNs), value=4 bytes
 		val := make([]byte, 6)
 		val[0] = 2 // AS_SEQUENCE

@@ -39,6 +39,7 @@ type Peer struct {
 	connAttempt atomic.Int64
 	routeCB     RouteCallback
 	hasIPv6Cap  bool // remote peer advertised IPv6 unicast capability
+	hasAS4Cap   bool // remote peer advertised Four-octet ASN capability (RFC 6793)
 }
 
 func NewPeer(cfg PeerConfig, spk SpeakerConfig, logger *slog.Logger, routeCB RouteCallback) *Peer {
@@ -215,6 +216,7 @@ func (p *Peer) connectAndRun() error {
 	// Track remote IPv6 unicast capability so we skip IPv6 routes
 	// to IPv4-only peers.
 	p.hasIPv6Cap = openIn.HasIPv6Unicast
+	p.hasAS4Cap = openIn.HasAS4Cap
 
 	// Step 3: Send KEEPALIVE
 	ka := &KeepaliveMessage{}
@@ -362,7 +364,7 @@ func (p *Peer) sendRoutes(conn net.Conn) {
 			// UPDATE.NLRI must be empty.
 			attrs = []PathAttribute{
 				OriginAttribute(OriginIGP),
-				&ASPathAttribute{ASN: p.spk.ASN},
+				&ASPathAttribute{ASN: p.spk.ASN, FourOctet: p.hasAS4Cap},
 				&MpReachNLRIAttribute{
 					NextHop: r.NextHop,
 					NLRI:    []netip.Prefix{r.Prefix},
@@ -376,7 +378,7 @@ func (p *Peer) sendRoutes(conn net.Conn) {
 			// IPv4: NLRI in UPDATE.NLRI field + NextHopAttribute (RFC 4271).
 			attrs = []PathAttribute{
 				OriginAttribute(OriginIGP),
-				&ASPathAttribute{ASN: p.spk.ASN},
+				&ASPathAttribute{ASN: p.spk.ASN, FourOctet: p.hasAS4Cap},
 				&NextHopAttribute{NextHop: r.NextHop},
 				&LargeCommunitiesAttribute{Communities: r.Communities},
 			}
@@ -590,6 +592,7 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	// Track remote IPv6 unicast capability so we skip IPv6 routes
 	// to IPv4-only peers.
 	p.hasIPv6Cap = openIn.HasIPv6Unicast
+	p.hasAS4Cap = openIn.HasAS4Cap
 
 	// Initial routes
 	p.sendRoutes(conn)
