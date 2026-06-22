@@ -13,11 +13,8 @@ import (
 	"html/template"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -142,26 +139,26 @@ type modeOption struct {
 }
 
 type userEditView struct {
-	User        store.User
-	Selection   selectionView
-	Credentials []store.UserCredential
-	Error       string
-	DynamicReadonly  bool   // true when AllowDynamicPeers==false
-	DynamicChecked   bool   // true when User.PeerIP is 0.0.0.0 or ::
-	PasswordDisabled bool   // true when PeerIP is wildcard (0.0.0.0 or ::)
-	PasswordHint     string // tooltip hint for password field
-	ActiveDial         bool   // true when User.ActiveDial (active BGP dialing enabled)
-	ActiveDialDisabled bool   // true when system-wide ActiveDial==false
-	ActiveDialHint     string // explanatory text when disabled
+	User                 store.User
+	Selection            selectionView
+	Credentials          []store.UserCredential
+	Error                string
+	DynamicReadonly      bool // true when AllowDynamicPeers==false
+	DynamicChecked       bool // true when User.PeerIP is 0.0.0.0 or ::
+	PasswordDisabled     bool // true when PeerIP is wildcard (0.0.0.0 or ::)
+	PasswordHint         string // tooltip hint for password field
+	ActiveDial           bool   // true when User.ActiveDial (active BGP dialing enabled)
+	ActiveDialDisabled   bool   // true when system-wide ActiveDial==false
+	ActiveDialHint       string // explanatory text when disabled
 	// Computed attribute strings for form components
-	PeerIPAttrs           template.HTMLAttr
-	DynamicIPAttrs        template.HTMLAttr
-	ActiveDialAttrs       template.HTMLAttr
-	PasswordAttrs         template.HTMLAttr
+	PeerIPAttrs            template.HTMLAttr
+	DynamicIPAttrs         template.HTMLAttr
+	ActiveDialAttrs        template.HTMLAttr
+	PasswordAttrs          template.HTMLAttr
 	ActiveDialHintResolved string
-	NetworksStr           string
-	WebAuthOptions        []modeOption
-	ModeOptions           []modeOption
+	NetworksStr            string
+	WebAuthOptions         []modeOption
+	ModeOptions            []modeOption
 }
 
 type filterView struct {
@@ -300,7 +297,7 @@ func (s *Server) degradedHandler(w http.ResponseWriter, r *http.Request) {
 	russianURL := "?" + baseURL.Encode()
 
 	info := struct {
-		Title         string
+		Title          string
 		CurrentVersion int
 		ServerVersion  int
 		Reason         string
@@ -308,7 +305,7 @@ func (s *Server) degradedHandler(w http.ResponseWriter, r *http.Request) {
 		EnglishURL     string
 		RussianURL     string
 	}{
-		Title:         translate(lang, "title.db_mismatch"),
+		Title:          translate(lang, "title.db_mismatch"),
 		CurrentVersion: s.degradedInfo.CurrentVersion,
 		ServerVersion:  s.degradedInfo.ServerVersion,
 		Reason:         s.degradedInfo.Reason,
@@ -321,1709 +318,6 @@ func (s *Server) degradedHandler(w http.ResponseWriter, r *http.Request) {
 		logger := logging.FromContext(r.Context())
 		logger.Error("failed to render degraded template", "error", err)
 	}
-}
-
-func (s *Server) userPage(w http.ResponseWriter, r *http.Request) {
-	clientIP := s.clientIP(r)
-
-	// Try IP match first
-	user, err := s.store.UserByIP(r.Context(), clientIP)
-
-	if err != nil {
-		// No IP match — try session-based auth for login-mode users
-		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
-		if sessionID > 0 {
-			user, err = s.store.User(r.Context(), sessionID)
-			if err == nil && user.Enabled && (user.WebAuth == "login" || user.WebAuth == "any") {
-				// Fall through to serve page
-			} else {
-				s.render(w, r, http.StatusForbidden, "title.access_denied", "access-denied", clientIP)
-				return
-			}
-		} else {
-			s.render(w, r, http.StatusForbidden, "title.access_denied", "access-denied", clientIP)
-			return
-		}
-	} else {
-		// IP matched — but a valid session for a different user takes priority
-		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
-		if sessionID > 0 {
-			if sessionUser, sessionErr := s.store.User(r.Context(), sessionID); sessionErr == nil && sessionUser.Enabled {
-				if sessionUser.ID != user.ID && (sessionUser.WebAuth == "login" || sessionUser.WebAuth == "any") {
-					user = sessionUser
-				}
-			}
-		}
-		// Check web_auth mode for the (possibly overridden) user
-		switch user.WebAuth {
-		case "network", "any":
-			// Serve page
-		case "login", "both":
-			if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
-				http.Redirect(w, r, "/login", http.StatusSeeOther)
-				return
-			}
-		}
-	}
-
-	user, err = s.userWithRequestedMode(r.Context(), r, user, user.CatalogEditable, false)
-	if err != nil {
-		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
-		return
-	}
-	view, err := s.selection(r.Context(), user, !user.SelectionLocked, false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	// Add CSRF token to selection view for the template
-	csrfToken := ""
-	if tokenVal := r.Context().Value(csrfCtxKey{}); tokenVal != nil {
-		csrfToken = tokenVal.(string)
-	}
-	view.CSRFToken = csrfToken
-	view.Saved = r.URL.Query().Get("saved")
-	view.SessionUser = validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
-	s.render(w, r, http.StatusOK, "title.selection", "selection", view)
-}
-
-func (s *Server) userLoginPage(w http.ResponseWriter, r *http.Request) {
-	// If already logged in, redirect to /
-	cookie, err := r.Cookie("wdbgp_user")
-	if err == nil {
-		// Check if the cookie is valid for any user
-		parts := strings.SplitN(cookie.Value, ".", 4)
-		if len(parts) == 4 {
-			userID, err := strconv.ParseInt(parts[2], 16, 64)
-			if err == nil {
-				user, err := s.store.User(r.Context(), userID)
-				if err == nil && user.Enabled && validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
-					http.Redirect(w, r, "/", http.StatusSeeOther)
-					return
-				}
-			}
-		}
-	}
-	// Show login form with optional error message
-	lang, _ := requestLocale(r, s.defaultLang)
-	errorMsg := r.URL.Query().Get("error")
-	s.renderTitle(w, r, http.StatusOK, translate(lang, "title.login"), "user-login", map[string]string{
-		"Error": errorMsg,
-	})
-}
-
-func (s *Server) userLogin(w http.ResponseWriter, r *http.Request) {
-	lang, _ := requestLocale(r, s.defaultLang)
-
-	if err := r.ParseForm(); err != nil {
-		http.Redirect(w, r, "/login?error=bad_request", http.StatusSeeOther)
-		return
-	}
-
-	// Rate-limit login attempts
-	clientIP := s.clientIP(r)
-	if !s.loginLimiter.allow(clientIP) {
-		http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.rate_limit")), http.StatusSeeOther)
-		return
-	}
-
-	login := strings.TrimSpace(r.FormValue("login"))
-	password := r.FormValue("password")
-
-	if login == "" || password == "" {
-		http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.error_empty")), http.StatusSeeOther)
-		return
-	}
-
-	user, err := s.store.AuthenticateUser(r.Context(), login, password)
-	if err != nil {
-		s.logAdminAction(r, "USER_LOGIN_FAILED", fmt.Sprintf("login=%s", login))
-		http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.error_invalid")), http.StatusSeeOther)
-		return
-	}
-
-	// For web_auth=both, also verify IP match
-	if strings.ToLower(user.WebAuth) == "both" {
-		clientIP := s.clientIP(r)
-		ipUser, err := s.store.UserByIP(r.Context(), clientIP)
-		if err != nil || ipUser.ID != user.ID {
-			s.logAdminAction(r, "USER_LOGIN_IP_MISMATCH", fmt.Sprintf("user=%d login=%s ip=%s", user.ID, login, clientIP))
-			http.Redirect(w, r, "/login?error="+url.QueryEscape(translate(lang, "login.error_ip")), http.StatusSeeOther)
-			return
-		}
-	}
-
-	// Set session cookie
-	maxAge := 0 // session cookie
-	if s.cfg.SessionMaxAge > 0 {
-		maxAge = s.cfg.SessionMaxAge
-	}
-	setUserSessionCookie(w, user.ID, s.cfg.SessionSecret, maxAge, s.userCookieSecure(r))
-
-	s.logAdminAction(r, "USER_LOGIN_SUCCESS", fmt.Sprintf("user=%d login=%s", user.ID, login))
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (s *Server) userLogout(w http.ResponseWriter, r *http.Request) {
-	// Clear the user session cookie
-		http.SetCookie(w, &http.Cookie{
-			Name:     userSessionCookieName,
-			Value:    "",
-			Path:     "/",
-			MaxAge:   -1,
-			HttpOnly: true,
-			Secure:   s.userCookieSecure(r),
-			SameSite: http.SameSiteStrictMode,
-		})
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-}
-
-func (s *Server) saveOwnSelection(w http.ResponseWriter, r *http.Request) {
-	user, err := s.store.UserByIP(r.Context(), s.clientIP(r))
-	if store.IsNotFound(err) {
-		s.httpError(w, r, "error.forbidden", http.StatusForbidden)
-		return
-	}
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	// For credential-based users, require valid session
-	if user.WebAuth == "login" || user.WebAuth == "both" {
-		if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
-			s.httpError(w, r, "error.forbidden", http.StatusForbidden)
-			return
-		}
-	}
-	modeID, err := formModeID(r, user.CatalogModeID)
-	if err != nil {
-		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
-		return
-	}
-	if user.SelectionLocked {
-		if modeID == user.CatalogModeID {
-			s.httpError(w, r, "error.selection_locked", http.StatusForbidden)
-			return
-		}
-		if !user.CatalogEditable {
-			s.httpError(w, r, "error.catalog_managed", http.StatusForbidden)
-			return
-		}
-		err = s.store.SetUserCatalogMode(r.Context(), user.ID, modeID, true)
-		if err == nil {
-			err = s.bgp.Reconcile(r.Context())
-		}
-		if err != nil {
-			logger := logging.FromContext(r.Context())
-			logger.Error("failed to save catalog mode", "user_id", user.ID, "error", err)
-			http.Redirect(w, r, "/?saved=0", http.StatusSeeOther)
-			return
-		}
-		http.Redirect(w, r, "/?saved=1", http.StatusSeeOther)
-		return
-	}
-	categories, services, err := parseSelection(r)
-	if err == nil && modeID != user.CatalogModeID && !user.CatalogEditable {
-		s.httpError(w, r, "error.catalog_managed", http.StatusForbidden)
-		return
-	}
-	if err == nil {
-		err = s.store.SetUserCatalogModeSelection(
-			r.Context(), user.ID, modeID, true, categories, services)
-	}
-	if err == nil {
-		err = s.bgp.Reconcile(r.Context())
-	}
-	if err != nil {
-		logger := logging.FromContext(r.Context())
-		logger.Error("failed to save selection", "user_id", user.ID, "error", err)
-		http.Redirect(w, r, "/?saved=0", http.StatusSeeOther)
-		return
-	}
-	http.Redirect(w, r, "/?saved=1", http.StatusSeeOther)
-}
-
-// identifyUser resolves a user from the request using the same logic as userPage:
-// IP match first, then session cookie. Returns the user or an error.
-func (s *Server) identifyUser(r *http.Request) (store.User, error) {
-	clientIP := s.clientIP(r)
-	user, err := s.store.UserByIP(r.Context(), clientIP)
-	if err != nil {
-		// No IP match — try session-based auth
-		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
-		if sessionID > 0 {
-			user, err = s.store.User(r.Context(), sessionID)
-		if err == nil && user.Enabled && (user.WebAuth == "login" || user.WebAuth == "any") {
-			return user, nil
-		}
-		return store.User{}, err
-		}
-		return store.User{}, err
-	}
-	// IP matched — check web_auth mode
-	switch user.WebAuth {
-		case "network", "any":
-		return user, nil
-	case "login", "both":
-		if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
-			return store.User{}, errors.New("session required")
-		}
-		return user, nil
-	}
-	return user, nil
-}
-
-func (s *Server) selectionCount(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-
-	user, err := s.identifyUser(r)
-	if err != nil {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-
-	categories, services, err := selectionFromValues(r.Form)
-	if err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-
-	modeID := user.CatalogModeID
-	if rawMode := r.FormValue("catalog_mode_id"); rawMode != "" {
-		if id, parseErr := strconv.ParseInt(rawMode, 10, 64); parseErr == nil && id > 0 {
-			modeID = id
-		}
-	}
-
-	v4, v6, err := s.store.CountPrefixes(r.Context(), modeID, categories, services, user.ID)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, "IPv4: <strong id=total-prefix-v4>%d</strong> pref. · IPv6: <strong id=total-prefix-v6>%d</strong> pref.", v4, v6)
-}
-
-func (s *Server) saveOwnFilters(w http.ResponseWriter, r *http.Request) {
-	user, err := s.store.UserByIP(r.Context(), s.clientIP(r))
-	if store.IsNotFound(err) {
-		s.httpError(w, r, "error.forbidden", http.StatusForbidden)
-		return
-	}
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	// For credential-based users, require valid session
-	if user.WebAuth == "login" || user.WebAuth == "both" {
-		if !validUserSession(r, user.ID, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second) {
-			s.httpError(w, r, "error.forbidden", http.StatusForbidden)
-			return
-		}
-	}
-	if !user.FilterEditable {
-		s.httpError(w, r, "error.filters_managed", http.StatusForbidden)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-	filters, err := routeFiltersFromForm(r)
-	if err == nil {
-		err = s.store.SetUserRouteFilterConfig(r.Context(), user.ID, r.FormValue("filter_mode"), filters)
-	}
-	if err == nil {
-		err = s.bgp.Reconcile(r.Context())
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	http.Redirect(w, r, "/?saved=1", http.StatusSeeOther)
-}
-
-func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
-	s.render(w, r, http.StatusOK, "title.login", "login", "")
-}
-
-func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	// Apply rate limiting
-	clientIP := s.clientIP(r)
-	if !s.loginLimiter.allow(clientIP) {
-		s.logAdminAction(r, "LOGIN_RATE_LIMIT", "Rate limit exceeded")
-		lang, _ := requestLocale(r, s.defaultLang)
-		s.render(w, r, http.StatusTooManyRequests, "title.login", "login",
-			translate(lang, "login.rate_limit"))
-		return
-	}
-	
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-	if !hmac.Equal([]byte(r.FormValue("password")), []byte(s.cfg.AdminPassword)) {
-		s.logAdminAction(r, "LOGIN_FAILED", "Invalid password")
-		lang, _ := requestLocale(r, s.defaultLang)
-		s.render(w, r, http.StatusUnauthorized, "title.login", "login",
-			translate(lang, "login.invalid_password"))
-		return
-	}
-	
-	// Create session with expiration
-	maxAge := 0 // session cookie
-	if s.cfg.SessionMaxAge > 0 {
-		maxAge = s.cfg.SessionMaxAge
-	}
-	
-	http.SetCookie(w, &http.Cookie{
-		Name:     "wdbgp_admin",
-		Value:    sessionToken(s.cfg.SessionSecret),
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   s.adminCookieSecure(r),
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   maxAge,
-		Expires:  time.Now().Add(time.Duration(s.cfg.SessionMaxAge) * time.Second),
-	})
-	
-	// Log successful login
-	s.logAdminAction(r, "LOGIN_SUCCESS", "Admin logged in")
-	
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-func (s *Server) adminCookieSecure(r *http.Request) bool {
-	switch s.cfg.AdminCookieSecure {
-	case "true":
-		return true
-	case "false":
-		return false
-	}
-	if r.TLS != nil {
-		return true
-	}
-	if s.cfg.TrustProxyHeader && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-		return true
-	}
-	return false
-}
-
-func (s *Server) userCookieSecure(r *http.Request) bool {
-	return s.adminCookieSecure(r)
-}
-
-func (s *Server) communitiesPage(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	modes, err := s.store.CatalogModes(ctx, false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	if len(modes) == 0 {
-		s.httpError(w, r, "error.internal", http.StatusInternalServerError)
-		return
-	}
-	modeID := store.DefaultCatalogModeID
-	if rawMode := r.URL.Query().Get("mode"); rawMode != "" {
-		if id, parseErr := strconv.ParseInt(rawMode, 10, 64); parseErr == nil && id > 0 {
-			for _, m := range modes {
-				if m.ID == id {
-					modeID = id
-					break
-				}
-			}
-		}
-	}
-	mode, err := s.store.CatalogMode(ctx, modeID)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	comms, err := s.store.GetCommunities(ctx, modeID)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	// Load categories and services for this mode to know their alphabetical positions.
-	catalog, err := s.store.CatalogForMode(ctx, modeID, true)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	catNames := make([]string, 0, len(catalog))
-	for name := range catalog {
-		catNames = append(catNames, name)
-	}
-	sortStrings(catNames)
-
-	view := communitiesView{Modes: modes, Mode: mode, Error: r.URL.Query().Get("error"), Saved: r.URL.Query().Get("saved")}
-	groupIndex := 0
-	for _, catName := range catNames {
-		svcNames := catalog[catName]
-		sortStrings(svcNames)
-		// Auto group community is always (groupIndex+1)*10000
-
-		group := communityGroupView{
-			Category:  catName,
-			Community: comms[catName],
-			AutoGroup: uint32((groupIndex+1)*10000),
-		}
-		svcCounter := 0
-		curGroup := groupIndex
-		for _, svcName := range svcNames {
-			group.Services = append(group.Services, communityServiceView{
-				Name:      svcName,
-				Community: comms[catName+"|"+svcName],
-				AutoSvc:   store.AutoCommunity(curGroup, svcCounter),
-			})
-			svcCounter++
-			if svcCounter >= 9999 {
-				curGroup++
-				svcCounter = 0
-			}
-		}
-		groupIndex = curGroup + 1
-		view.Groups = append(view.Groups, group)
-	}
-	lang, _ := requestLocale(r, s.defaultLang)
-	s.renderAdmin(w, r, http.StatusOK, translate(lang, "communities.title"), "communities", view)
-}
-
-func (s *Server) saveCommunities(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-	modeID := store.DefaultCatalogModeID
-	if rawMode := r.FormValue("mode"); rawMode != "" {
-		if id, err := strconv.ParseInt(rawMode, 10, 64); err == nil && id > 0 {
-			modeID = id
-		}
-	}
-	updated := 0
-	var saveErrors []string
-	for key, values := range r.PostForm {
-		if len(values) == 0 {
-			continue
-		}
-		if !strings.HasPrefix(key, "cat_") && !strings.HasPrefix(key, "svc_") {
-			continue
-		}
-		community64, err := strconv.ParseUint(values[0], 10, 32)
-		if err != nil || community64 == 0 {
-			continue
-		}
-		community := uint32(community64)
-		if strings.HasPrefix(key, "cat_") {
-			category := key[4:]
-			if err := s.store.SetCommunity(ctx, modeID, category, "", community); err != nil {
-				if strings.Contains(err.Error(), "already used") {
-					saveErrors = append(saveErrors, category+": "+err.Error())
-					continue
-				}
-				s.internalError(w, r, err)
-				return
-			}
-			updated++
-		} else {
-			// svc_key = "svc_category|service"
-			rest := key[4:]
-			parts := strings.SplitN(rest, "|", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			category := parts[0]
-			service := parts[1]
-			if err := s.store.SetCommunity(ctx, modeID, category, service, community); err != nil {
-				if strings.Contains(err.Error(), "already used") {
-					saveErrors = append(saveErrors, service+": "+err.Error())
-					continue
-				}
-				s.internalError(w, r, err)
-				return
-			}
-			updated++
-		}
-	}
-	if len(saveErrors) > 0 {
-		http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d&error=%s", modeID, url.QueryEscape(strings.Join(saveErrors, "; "))), http.StatusSeeOther)
-		return
-	}
-	s.logAdminAction(r, "communities_update", fmt.Sprintf("mode=%d, updated=%d", modeID, updated))
-	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		logger := logging.FromContext(r.Context())
-		logger.Warn("reconcile after communities update failed", "error", err)
-	}
-	http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d", modeID), http.StatusSeeOther)
-}
-
-func (s *Server) resetCommunities(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-	modeID := store.DefaultCatalogModeID
-	if rawMode := r.FormValue("mode"); rawMode != "" {
-		if id, err := strconv.ParseInt(rawMode, 10, 64); err == nil && id > 0 {
-			modeID = id
-		}
-	}
-	// Delete all communities for this mode.
-	if _, err := s.store.DB.ExecContext(ctx, "DELETE FROM catalog_communities WHERE mode_id = ?", modeID); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	// Regenerate from scratch.
-	if _, err := s.store.GenerateCommunities(ctx, modeID); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		logger := logging.FromContext(r.Context())
-		logger.Warn("reconcile after reset communities failed", "error", err)
-	}
-	s.logAdminAction(r, "communities_reset", fmt.Sprintf("mode=%d", modeID))
-	http.Redirect(w, r, fmt.Sprintf("/admin/communities?mode=%d&saved=reset", modeID), http.StatusSeeOther)
-}
-
-func (s *Server) debugPage(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	type debugPageView struct {
-		CIDR   string
-		Result *cidrDebugResult
-		Modes  []store.CatalogMode
-		ModeID int64
-	}
-
-	cidr := r.URL.Query().Get("cidr")
-	modeID := store.DefaultCatalogModeID
-	if mid, err := strconv.ParseInt(r.URL.Query().Get("mode"), 10, 64); err == nil && mid > 0 {
-		modeID = mid
-	}
-
-	modes, _ := s.store.CatalogModes(ctx, false)
-
-	view := debugPageView{
-		CIDR:   cidr,
-		Modes:  modes,
-		ModeID: modeID,
-	}
-
-	if cidr != "" {
-		result, err := s.debugCIDR(ctx, cidr, modeID)
-		if err == nil {
-			view.Result = &result
-		}
-	}
-
-	s.renderAdmin(w, r, http.StatusOK, "CIDR diagnostics", "debug", view)
-}
-
-func (s *Server) debugCIDRHandler(w http.ResponseWriter, r *http.Request) {
-	modeID := store.DefaultCatalogModeID
-	if rawMode := strings.TrimSpace(r.URL.Query().Get("mode")); rawMode != "" {
-		var err error
-		modeID, err = strconv.ParseInt(rawMode, 10, 64)
-		if err != nil || modeID <= 0 {
-			http.Error(w, "invalid catalog mode", http.StatusBadRequest)
-			return
-		}
-	}
-	result, err := s.debugCIDR(r.Context(), r.URL.Query().Get("cidr"), modeID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if err := json.NewEncoder(w).Encode(result); err != nil {
-		logger := logging.FromContext(r.Context())
-		logger.Error("failed to encode CIDR debug response", "error", err)
-	}
-}
-
-func (s *Server) updateCatalogMode(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-	name := strings.TrimSpace(r.FormValue("name"))
-	if name == "" {
-		http.Error(w, "mode name is required", http.StatusBadRequest)
-		return
-	}
-	if err := s.store.UpdateCatalogMode(r.Context(), store.CatalogMode{
-		ID: id, Name: name, Enabled: r.Form.Has("enabled"),
-	}); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/modes", http.StatusSeeOther)
-}
-
-func (s *Server) modesPage(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	modes, err := s.store.CatalogModes(ctx, false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	feedCounts, _ := s.store.ModeFeedCounts(ctx)
-	type modeRow struct {
-		Mode      store.CatalogMode
-		FeedCount int
-	}
-	rows := make([]modeRow, 0, len(modes))
-	for _, m := range modes {
-		rows = append(rows, modeRow{Mode: m, FeedCount: feedCounts[m.ID]})
-	}
-	s.renderAdmin(w, r, http.StatusOK, "Catalog Modes", "modes", map[string]any{
-		"Modes": rows,
-		"Saved": r.URL.Query().Get("saved") == "1",
-	})
-}
-
-func (s *Server) addMode(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-	name := strings.TrimSpace(r.FormValue("name"))
-	if name == "" {
-		http.Error(w, "mode name is required", http.StatusBadRequest)
-		return
-	}
-	key := strings.TrimSpace(r.FormValue("key"))
-	if key == "" {
-		key = strings.ToLower(strings.ReplaceAll(name, " ", "-"))
-	}
-	enabled := r.Form.Has("enabled")
-	_, err := s.store.AddCatalogMode(r.Context(), key, name, enabled)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/modes?saved=1", http.StatusSeeOther)
-}
-
-func (s *Server) deleteMode(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
-		return
-	}
-	if id <= 3 {
-		http.Error(w, "built-in modes cannot be deleted", http.StatusBadRequest)
-		return
-	}
-	if err := s.store.DeleteCatalogMode(r.Context(), id); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		logger := logging.FromContext(r.Context())
-		logger.Error("delete mode reconcile failed", "error", err)
-	}
-	http.Redirect(w, r, "/admin/modes?saved=1", http.StatusSeeOther)
-}
-
-func (s *Server) modeEditPage(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	id, err := pathID(r)
-	if err != nil {
-		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
-		return
-	}
-	mode, err := s.store.CatalogMode(ctx, id)
-	if store.IsNotFound(err) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	feeds, err := s.store.Feeds(ctx, false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	modeFeeds, _ := s.store.ModeFeeds(ctx, id)
-	modeFeedSet := make(map[int64]bool)
-	for _, f := range modeFeeds {
-		modeFeedSet[f.ID] = true
-	}
-	s.renderAdmin(w, r, http.StatusOK, mode.Name, "mode-edit", map[string]any{
-		"Mode":        mode,
-		"Feeds":       feeds,
-		"ModeFeedIDs": modeFeedSet,
-	})
-}
-
-func (s *Server) modeFeedToggle(w http.ResponseWriter, r *http.Request) {
-	modeID, err := pathID(r)
-	if err != nil {
-		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-	feedID, err := strconv.ParseInt(r.FormValue("feed_id"), 10, 64)
-	if err != nil || feedID <= 0 {
-		http.Error(w, "invalid feed id", http.StatusBadRequest)
-		return
-	}
-	if r.FormValue("action") == "remove" {
-		if err := s.store.RemoveFeedFromMode(r.Context(), modeID, feedID); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	} else {
-		if err := s.store.AddFeedToMode(r.Context(), modeID, feedID); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	}
-	// Generate communities before reconcile so new categories/services have community values
-	s.store.GenerateCommunities(r.Context(), modeID)
-	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	http.Redirect(w, r, fmt.Sprintf("/admin/mode/%d", modeID), http.StatusSeeOther)
-}
-
-func (s *Server) addFeed(w http.ResponseWriter, r *http.Request) {
-	feed, modeIDs, err := parseFeed(r, 0)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	// Validate all mode IDs before inserting the feed.
-	for _, mid := range modeIDs {
-		if _, err := s.store.CatalogMode(r.Context(), mid); store.IsNotFound(err) {
-			http.Error(w, fmt.Sprintf("mode %d not found", mid), http.StatusBadRequest)
-			return
-		} else if err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-	}
-	feedID, err := s.store.AddFeedForModeAdapter(
-		r.Context(), feed.Name, feed.URL, feed.ModeID, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if feedID > 0 {
-		if len(modeIDs) > 0 {
-			if err := s.store.SetFeedModes(r.Context(), feedID, modeIDs); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-		}
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-func (s *Server) feedEditPage(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var feed store.Feed
-	isNew := true
-	var feedModeIDs []int64
-
-	if rawID := r.PathValue("id"); rawID != "" {
-		id, err := strconv.ParseInt(rawID, 10, 64)
-		if err != nil {
-			s.httpError(w, r, "error.bad_feed_id", http.StatusBadRequest)
-			return
-		}
-		feed, err = s.store.Feed(ctx, id)
-		if store.IsNotFound(err) {
-			http.NotFound(w, r)
-			return
-		}
-		if err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-		feedModeIDs, _ = s.store.FeedModes(ctx, id)
-		isNew = false
-	}
-
-	modes, _ := s.store.CatalogModes(ctx, false)
-	adapters, _ := s.store.FeedAdapters(ctx)
-
-	lang, _ := requestLocale(r, s.defaultLang)
-	title := translate(lang, "feeds.add")
-	if !isNew {
-		title = translate(lang, "feeds.edit")
-	}
-
-	// Build mode ID set for checkbox checked state
-	feedModeSet := make(map[int64]bool)
-	for _, mid := range feedModeIDs {
-		feedModeSet[mid] = true
-	}
-	// Default mode selected for new feeds.
-	if isNew {
-		feedModeSet[store.DefaultCatalogModeID] = true
-	}
-
-	s.renderAdmin(w, r, http.StatusOK, title, "feed-edit", map[string]any{
-		"Feed": feed, "IsNew": isNew, "Modes": modes, "Adapters": adapters,
-		"FeedModeIDs": feedModeSet,
-	})
-}
-
-func (s *Server) addFeedAdapter(w http.ResponseWriter, r *http.Request) {
-	adapter, err := parseFeedAdapter(r, 0, maxSource(s.cfg.JSMaxSourceBytes))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	id, err := s.store.AddFeedAdapter(r.Context(), adapter)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	http.Redirect(w, r, fmt.Sprintf("/admin/adapter/%d", id), http.StatusSeeOther)
-}
-
-func (s *Server) feedAdapterPage(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		http.Error(w, "bad adapter id", http.StatusBadRequest)
-		return
-	}
-	if id == 0 {
-		// New adapter creation form
-		feeds, _ := s.store.Feeds(r.Context(), false)
-		lang, _ := requestLocale(r, s.defaultLang)
-		emptyAdapter := store.FeedAdapter{
-			Language:   "javascript",
-			APIVersion: 1,
-		}
-		s.renderAdmin(w, r, http.StatusOK, translate(lang, "title.adapter_edit"), "adapter-edit", adapterEditView{Adapter: emptyAdapter, Feeds: feeds})
-		return
-	}
-	adapter, err := s.store.FeedAdapter(r.Context(), id)
-	if err != nil {
-		if store.IsNotFound(err) {
-			http.NotFound(w, r)
-		} else {
-			s.internalError(w, r, err)
-		}
-		return
-	}
-	s.renderFeedAdapterEditor(w, r, http.StatusOK, adapter, "")
-}
-
-func (s *Server) updateFeedAdapter(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		http.Error(w, "bad adapter id", http.StatusBadRequest)
-		return
-	}
-	adapter, err := parseFeedAdapter(r, id, maxSource(s.cfg.JSMaxSourceBytes))
-	if err != nil {
-		s.renderFeedAdapterEditor(w, r, http.StatusBadRequest,
-			adapter, feeds.FormatAdapterError(err))
-		return
-	}
-	if s.cfg.AdapterBackupDir != "" {
-		if old, err := s.store.FeedAdapter(r.Context(), id); err == nil {
-			backupAdapterSource(old, s.cfg.AdapterBackupDir, s.cfg.AdapterBackupMax)
-		}
-	}
-	if err := s.store.UpdateFeedAdapter(r.Context(), adapter); err != nil {
-		if store.IsNotFound(err) {
-			http.NotFound(w, r)
-		} else {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		}
-		return
-	}
-	http.Redirect(w, r, fmt.Sprintf("/admin/adapter/%d", id), http.StatusSeeOther)
-}
-
-func (s *Server) testFeedAdapter(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		http.Error(w, "bad adapter id", http.StatusBadRequest)
-		return
-	}
-	adapter, err := parseFeedAdapter(r, id, maxSource(s.cfg.JSMaxSourceBytes))
-	if err != nil {
-		s.renderFeedAdapterEditor(w, r, http.StatusBadRequest,
-			adapter, feeds.FormatAdapterError(err))
-		return
-	}
-	feedID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("feed_id")), 10, 64)
-	if err != nil || feedID <= 0 {
-		http.Error(w, "invalid feed id", http.StatusBadRequest)
-		return
-	}
-	feed, err := s.store.Feed(r.Context(), feedID)
-	if err != nil {
-		if store.IsNotFound(err) {
-			http.NotFound(w, r)
-		} else {
-			s.internalError(w, r, err)
-		}
-		return
-	}
-	if feed.AdapterID != id {
-		http.Error(w, "feed does not use this adapter", http.StatusBadRequest)
-		return
-	}
-	stored, err := s.store.FeedAdapter(r.Context(), id)
-	if err != nil {
-		if store.IsNotFound(err) {
-			http.NotFound(w, r)
-		} else {
-			s.internalError(w, r, err)
-		}
-		return
-	}
-	adapter.Key = stored.Key
-	adapter.Revision = stored.Revision
-	entries, err := s.syncer.TestAdapter(r.Context(), feed, adapter)
-	if err != nil {
-		s.renderFeedAdapterEditor(w, r, http.StatusBadRequest,
-			adapter, feeds.FormatAdapterError(err))
-		return
-	}
-	const previewLimit = 100
-	view := adapterTestView{
-		Adapter: adapter, Feed: feed, Entries: entries, TotalEntries: len(entries),
-	}
-	if len(view.Entries) > previewLimit {
-		view.Entries = view.Entries[:previewLimit]
-		view.Truncated = true
-	}
-	lang, _ := requestLocale(r, s.defaultLang)
-	s.renderAdmin(w, r, http.StatusOK, translate(lang, "title.adapter_test"), "adapter-test", view)
-}
-
-func (s *Server) resetFeedAdapter(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		http.Error(w, "bad adapter id", http.StatusBadRequest)
-		return
-	}
-	// Backup old source before reset
-	if s.cfg.AdapterBackupDir != "" {
-		if old, err := s.store.FeedAdapter(r.Context(), id); err == nil {
-			backupAdapterSource(old, s.cfg.AdapterBackupDir, s.cfg.AdapterBackupMax)
-		}
-	}
-	if err := s.store.ResetFeedAdapter(r.Context(), id); err != nil {
-		if store.IsNotFound(err) {
-			http.NotFound(w, r)
-		} else {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		}
-		return
-	}
-	http.Redirect(w, r, fmt.Sprintf("/admin/adapter/%d", id), http.StatusSeeOther)
-}
-
-func (s *Server) deleteFeedAdapter(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-	if s.cfg.AdapterBackupDir != "" {
-		if adapter, err := s.store.FeedAdapter(r.Context(), id); err == nil {
-			backupAdapterSource(adapter, s.cfg.AdapterBackupDir, s.cfg.AdapterBackupMax)
-		}
-	}
-	if err := s.store.DeleteFeedAdapter(r.Context(), id); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin/adapters", http.StatusSeeOther)
-}
-
-func backupAdapterSource(adapter store.FeedAdapter, backupDir string, maxCopies int) {
-	if backupDir == "" || adapter.Source == "" {
-		return
-	}
-	os.MkdirAll(backupDir, 0755)
-	name := fmt.Sprintf("%s_r%d_%s.js", adapter.Key, adapter.Revision, time.Now().UTC().Format("20060102T150405Z"))
-	os.WriteFile(filepath.Join(backupDir, name), []byte(adapter.Source), 0644)
-	pruneAdapterBackups(adapter.Key, backupDir, maxCopies)
-}
-
-func pruneAdapterBackups(key, dir string, max int) {
-	if max <= 0 {
-		return
-	}
-	entries, _ := os.ReadDir(dir)
-	var files []string
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), key+"_") {
-			files = append(files, e.Name())
-		}
-	}
-	if len(files) <= max {
-		return
-	}
-	sort.Strings(files)
-	for _, f := range files[:len(files)-max] {
-		os.Remove(filepath.Join(dir, f))
-	}
-}
-
-func (s *Server) renderFeedAdapterEditor(
-	w http.ResponseWriter,
-	r *http.Request,
-	status int,
-	adapter store.FeedAdapter,
-	errorMessage string,
-) {
-	stored, err := s.store.FeedAdapter(r.Context(), adapter.ID)
-	if err != nil {
-		if store.IsNotFound(err) {
-			http.NotFound(w, r)
-		} else {
-			s.internalError(w, r, err)
-		}
-		return
-	}
-	if adapter.Key == "" {
-		adapter.Key = stored.Key
-	}
-	adapter.Revision = stored.Revision
-	adapter.BuiltIn = stored.BuiltIn
-	feedList, err := s.store.Feeds(r.Context(), false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	var adapterFeeds []store.Feed
-	for _, feed := range feedList {
-		if feed.AdapterID == adapter.ID {
-			adapterFeeds = append(adapterFeeds, feed)
-		}
-	}
-	lang, _ := requestLocale(r, s.defaultLang)
-	s.renderAdmin(w, r, status, translate(lang, "title.adapter_edit"), "adapter-edit", adapterEditView{
-		Adapter: adapter, Feeds: adapterFeeds, Error: errorMessage,
-	})
-}
-
-func (s *Server) updateFeed(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		s.httpError(w, r, "error.bad_feed_id", http.StatusBadRequest)
-		return
-	}
-	feed, modeIDs, err := parseFeed(r, id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	// Validate mode IDs exist before updating feed
-	if len(modeIDs) > 0 {
-		for _, mid := range modeIDs {
-			if _, err := s.store.CatalogMode(r.Context(), mid); store.IsNotFound(err) {
-				http.Error(w, fmt.Sprintf("mode %d not found", mid), http.StatusBadRequest)
-				return
-			} else if err != nil {
-				s.internalError(w, r, err)
-				return
-			}
-		}
-	}
-	if err := s.store.UpdateFeed(r.Context(), feed); err != nil {
-		if store.IsNotFound(err) {
-			http.NotFound(w, r)
-		} else {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		}
-		return
-	}
-	if err := s.store.SetFeedModes(r.Context(), feed.ID, modeIDs); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	for _, mid := range modeIDs {
-		s.store.GenerateCommunities(r.Context(), mid)
-	}
-	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-func (s *Server) deleteFeed(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		s.httpError(w, r, "error.bad_feed_id", http.StatusBadRequest)
-		return
-	}
-	if err := s.store.DeleteFeed(r.Context(), id); err != nil {
-		if store.IsNotFound(err) {
-			http.NotFound(w, r)
-		} else {
-			s.internalError(w, r, err)
-		}
-		return
-	}
-	s.syncer.RemoveFeedLock(id)
-	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-func (s *Server) syncFeeds(w http.ResponseWriter, r *http.Request) {
-	logger := logging.FromContext(r.Context())
-	for _, err := range s.syncer.SyncAll(r.Context()) {
-		logger.Error("feed sync error", "error", err)
-	}
-	if err := s.bgp.Reconcile(r.Context()); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-func parseFeed(r *http.Request, id int64) (store.Feed, []int64, error) {
-	if err := r.ParseForm(); err != nil {
-		return store.Feed{}, nil, err
-	}
-	name := strings.TrimSpace(r.FormValue("name"))
-	if name == "" {
-		return store.Feed{}, nil, fmt.Errorf("feed name is required")
-	}
-	rawURL := strings.TrimSpace(r.FormValue("url"))
-	parsedURL, err := url.ParseRequestURI(rawURL)
-	if err != nil || parsedURL.Host == "" ||
-		(parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
-		return store.Feed{}, nil, fmt.Errorf("feed URL must be an absolute HTTP or HTTPS URL")
-	}
-	// Parse mode_ids from checkboxes; only use catalog_mode_id as fallback
-	// when present. If neither is in the form, return empty (admin wants to
-	// unassign all modes).
-	var modeIDs []int64
-	if r.Form["mode_ids"] != nil {
-		for _, raw := range r.Form["mode_ids"] {
-			if id, err := strconv.ParseInt(raw, 10, 64); err == nil && id > 0 {
-				modeIDs = append(modeIDs, id)
-			}
-		}
-	}
-	if len(modeIDs) == 0 && r.Form.Has("catalog_mode_id") {
-		modeID, err := formModeID(r, store.DefaultCatalogModeID)
-		if err != nil {
-			return store.Feed{}, nil, err
-		}
-		modeIDs = []int64{modeID}
-	}
-	adapterID := int64(1)
-	if rawAdapterID := strings.TrimSpace(r.FormValue("adapter_id")); rawAdapterID != "" {
-		adapterID, err = strconv.ParseInt(rawAdapterID, 10, 64)
-		if err != nil || adapterID <= 0 {
-			return store.Feed{}, nil, fmt.Errorf("invalid adapter id")
-		}
-	}
-	data := strings.TrimSpace(r.FormValue("data"))
-	if data != "" && !json.Valid([]byte(data)) {
-		return store.Feed{}, nil, fmt.Errorf("feed data must be valid JSON")
-	}
-	modeID := int64(0)
-	if len(modeIDs) > 0 {
-		modeID = modeIDs[0]
-	}
-	return store.Feed{
-		ID: id, Name: name, URL: rawURL, ModeID: modeID, AdapterID: adapterID,
-		Enabled:      r.Form.Has("enabled"),
-		SyncInterval: formInt(r, "sync_interval"),
-		Data:         data,
-	}, modeIDs, nil
-}
-
-func maxSource(configured int) int {
-	if configured <= 0 {
-		return 1 << 20 // default 1MB
-	}
-	return configured
-}
-
-func parseFeedAdapter(r *http.Request, id int64, maxSourceBytes int) (store.FeedAdapter, error) {
-	if err := r.ParseForm(); err != nil {
-		return store.FeedAdapter{ID: id}, err
-	}
-	adapter := store.FeedAdapter{
-		ID:           id,
-		Key:          strings.TrimSpace(r.FormValue("key")),
-		Name:         strings.TrimSpace(r.FormValue("name")),
-		Language:     "javascript",
-		APIVersion:   1,
-		Source:       r.FormValue("source"),
-		AllowedHosts: strings.TrimSpace(r.FormValue("allowed_hosts")),
-	}
-	if err := store.ValidateFeedAdapter(adapter); err != nil {
-		return adapter, err
-	}
-	if err := feeds.ValidateAdapterSource(adapter.Source, maxSourceBytes); err != nil {
-		return adapter, err
-	}
-	return adapter, nil
-}
-
-func (s *Server) saveGlobalFilters(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-	filters, err := routeFiltersFromForm(r)
-	if err == nil {
-		err = s.store.SetGlobalRouteFilters(r.Context(), filters)
-	}
-	if err == nil {
-		err = s.bgp.Reconcile(r.Context())
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-// validatePeerUniqueness validates a user's BGP peer configuration against
-// existing peers. skipUserID is the user's own ID (0 for new users).
-// Step A: Same IP + same ASN → reject (UNIQUE constraint)
-// Step B: Dynamic peers (0.0.0.0 or ::) require globally unique ASN
-// Step C: Shared IP + different ASN → password required when RequirePasswordForNonUniqueIP is ON
-func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, skipUserID int64) error {
-	// Step A: Same IP + same ASN → reject
-	var existingID int64
-	var existingName string
-	err := s.store.DB.QueryRowContext(ctx,
-		"SELECT id, name FROM users WHERE peer_ip = ? AND peer_asn = ? AND id != ?",
-		user.PeerIP, user.PeerASN, skipUserID).Scan(&existingID, &existingName)
-	if err == nil {
-		return fmt.Errorf("peer %s with ASN %d already exists as user %s", user.PeerIP, user.PeerASN, existingName)
-	}
-	if err != sql.ErrNoRows {
-		return fmt.Errorf("failed to check peer uniqueness: %w", err)
-	}
-
-	// Step B: Dynamic peers (0.0.0.0 or ::) require globally unique ASN
-	if user.PeerIP == "0.0.0.0" || user.PeerIP == "::" {
-		var count int
-		err := s.store.DB.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM users WHERE peer_asn = ? AND id != ?",
-			user.PeerASN, skipUserID).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("failed to check dynamic peer uniqueness: %w", err)
-		}
-		if count > 0 {
-			return fmt.Errorf("dynamic peer with ASN %d already exists", user.PeerASN)
-		}
-		return nil
-	}
-
-	// Step C: Shared IP + different ASN → require matching password
-	var sharedCount int
-	err = s.store.DB.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ?",
-		user.PeerIP, skipUserID).Scan(&sharedCount)
-	if err != nil {
-		return fmt.Errorf("failed to check shared IP peers: %w", err)
-	}
-	if sharedCount > 0 {
-		if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
-			return fmt.Errorf("BGP password required when sharing IP %s with another ASN", user.PeerIP)
-		}
-		// If new peer has password, existing same-IP peers must also have passwords
-		if user.BGPPassword != "" {
-			var pwLessCount int
-			err = s.store.DB.QueryRowContext(ctx,
-				"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ? AND (bgp_password = '' OR bgp_password IS NULL)",
-				user.PeerIP, skipUserID).Scan(&pwLessCount)
-			if err != nil {
-				return fmt.Errorf("failed to check shared IP passwords: %w", err)
-			}
-			if pwLessCount > 0 {
-				return fmt.Errorf("cannot set BGP password on peer %s: existing peers on same IP have no password", user.PeerIP)
-			}
-		}
-		// If any existing peer on same IP has a password, new peer's must match.
-		var existingPwd string
-		err = s.store.DB.QueryRowContext(ctx,
-			"SELECT DISTINCT bgp_password FROM users WHERE peer_ip = ? AND id != ? AND bgp_password != ''",
-			user.PeerIP, skipUserID).Scan(&existingPwd)
-		if err != nil && err != sql.ErrNoRows {
-			return fmt.Errorf("failed to check shared IP passwords: %w", err)
-		}
-		if existingPwd != "" && user.BGPPassword != existingPwd {
-			return fmt.Errorf("BGP password must match existing peer on IP %s", user.PeerIP)
-		}
-	}
-
-	return nil
-}
-
-func (s *Server) addUser(w http.ResponseWriter, r *http.Request) {
-	user, _, err := parseUser(r, 0)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	// Validate peer uniqueness (three-step)
-	if err := s.validatePeerUniqueness(r.Context(), user, 0); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	userID, err := s.store.AddUser(r.Context(), user)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	user.ID = userID
-	if err := s.bgp.AddPeer(r.Context(), user); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-func (s *Server) adminUserPage(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		s.httpError(w, r, "error.bad_user_id", http.StatusBadRequest)
-		return
-	}
-	if id == 0 {
-		// New user creation form
-		lang, _ := requestLocale(r, s.defaultLang)
-		emptyUser := store.User{
-			WebAuth:       s.cfg.DefaultWebAuth,
-			CatalogModeID: store.DefaultCatalogModeID,
-			Enabled:       true,
-		}
-		var dynamicReadonly bool
-		if !s.cfg.AllowDynamicPeers {
-			dynamicReadonly = true
-		}
-		activeDialDisabled := !s.cfg.ActiveDial
-		activeDialHint := ""
-		if activeDialDisabled {
-			activeDialHint = "hints.active_dial_system_disabled"
-		}
-		// Compute form-component attributes
-		peerIPAttrs := template.HTMLAttr(" id=peer-ip")
-		dynamicIPAttrs := template.HTMLAttr(" id=dynamic-ip")
-		if dynamicReadonly {
-			dynamicIPAttrs = template.HTMLAttr(fmt.Sprintf(` id=dynamic-ip readonly title="%s"`, translate(lang, "hint.dynamic_peers_disabled")))
-		}
-		activeDialAttrs := template.HTMLAttr("")
-		if activeDialDisabled {
-			activeDialAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, activeDialHint)))
-		}
-		activeDialHintResolved := activeDialHint
-		if activeDialHintResolved == "" {
-			activeDialHintResolved = "hints.active_dial"
-		}
-		webAuthOptions := []modeOption{
-			{Value: "network", Text: translate(lang, "users.web_auth_network"), Selected: emptyUser.WebAuth == "network"},
-			{Value: "login", Text: translate(lang, "users.web_auth_login"), Selected: emptyUser.WebAuth == "login"},
-			{Value: "both", Text: translate(lang, "users.web_auth_both"), Selected: emptyUser.WebAuth == "both"},
-			{Value: "any", Text: translate(lang, "users.web_auth_any"), Selected: emptyUser.WebAuth == "any"},
-		}
-		modes, _ := s.store.CatalogModes(r.Context(), false)
-		modeOptions := make([]modeOption, len(modes))
-		for i, m := range modes {
-			modeOptions[i] = modeOption{Value: strconv.FormatInt(m.ID, 10), Text: m.Name, Selected: m.ID == emptyUser.CatalogModeID}
-		}
-		s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), translate(lang, "common.add")), "user-edit",
-			userEditView{User: emptyUser, DynamicReadonly: dynamicReadonly,
-				ActiveDial: true, ActiveDialDisabled: activeDialDisabled, ActiveDialHint: activeDialHint,
-				PeerIPAttrs: peerIPAttrs, DynamicIPAttrs: dynamicIPAttrs, ActiveDialAttrs: activeDialAttrs,
-				PasswordAttrs: template.HTMLAttr(""), ActiveDialHintResolved: activeDialHintResolved, NetworksStr: "", WebAuthOptions: webAuthOptions, ModeOptions: modeOptions})
-		return
-	}
-	user, err := s.store.User(r.Context(), id)
-	if store.IsNotFound(err) {
-		http.NotFound(w, r)
-		return
-	}
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	user, err = s.userWithRequestedMode(r.Context(), r, user, true, true)
-	if err != nil {
-		s.httpError(w, r, "error.bad_mode_id", http.StatusBadRequest)
-		return
-	}
-	selection, err := s.selection(r.Context(), user, true, true)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	// Add CSRF token to selection view for the template
-	csrfToken := ""
-	if tokenVal := r.Context().Value(csrfCtxKey{}); tokenVal != nil {
-		csrfToken = tokenVal.(string)
-	}
-	selection.CSRFToken = csrfToken
-	
-	credentials, _ := s.store.GetUserCredentials(r.Context(), id)
-	lang, _ := requestLocale(r, s.defaultLang)
-	var dynamicReadonly bool
-	var dynamicChecked bool
-	var passwordDisabled bool
-	var passwordHint string
-	if !s.cfg.AllowDynamicPeers {
-		dynamicReadonly = true
-	}
-	if user.PeerIP == "0.0.0.0" || user.PeerIP == "::" {
-		dynamicChecked = true
-		passwordDisabled = true
-	} else if user.PeerIP != "" {
-		var sameIPCount int
-		s.store.DB.QueryRowContext(r.Context(),
-			"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ?",
-			user.PeerIP, id).Scan(&sameIPCount)
-		if sameIPCount > 0 {
-			passwordHint = "hint.same_ip_password"
-		}
-	}
-	activeDialDisabled := !s.cfg.ActiveDial
-	activeDialHint := ""
-	if activeDialDisabled {
-		activeDialHint = "hints.active_dial_system_disabled"
-	}
-	// Compute form-component attributes
-	peerIPAttrs := template.HTMLAttr(" id=peer-ip")
-	if user.PeerIP == "0.0.0.0" || user.PeerIP == "::" {
-		peerIPAttrs = template.HTMLAttr(" id=peer-ip readonly")
-	}
-	dynamicIPAttrs := template.HTMLAttr(" id=dynamic-ip")
-	if dynamicReadonly {
-		dynamicIPAttrs = template.HTMLAttr(fmt.Sprintf(` id=dynamic-ip readonly title="%s"`, translate(lang, "hint.dynamic_peers_disabled")))
-	}
-	passwordAttrs := template.HTMLAttr("")
-	if passwordDisabled {
-		passwordAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, "hint.dynamic_no_password")))
-	} else if passwordHint != "" {
-		passwordAttrs = template.HTMLAttr(fmt.Sprintf(` title="%s"`, translate(lang, passwordHint)))
-	}
-	activeDialAttrs := template.HTMLAttr("")
-	if activeDialDisabled {
-		activeDialAttrs = template.HTMLAttr(fmt.Sprintf(` disabled title="%s"`, translate(lang, activeDialHint)))
-	}
-	activeDialHintResolved := activeDialHint
-	if activeDialHintResolved == "" {
-		activeDialHintResolved = "hints.active_dial"
-	}
-	webAuthOptions := []modeOption{
-		{Value: "network", Text: translate(lang, "users.web_auth_network"), Selected: user.WebAuth == "network"},
-		{Value: "login", Text: translate(lang, "users.web_auth_login"), Selected: user.WebAuth == "login"},
-		{Value: "both", Text: translate(lang, "users.web_auth_both"), Selected: user.WebAuth == "both"},
-		{Value: "any", Text: translate(lang, "users.web_auth_any"), Selected: user.WebAuth == "any"},
-	}
-	modes, _ := s.store.CatalogModes(r.Context(), false)
-	modeOptions := make([]modeOption, len(modes))
-	for i, m := range modes {
-		modeOptions[i] = modeOption{Value: strconv.FormatInt(m.ID, 10), Text: m.Name, Selected: m.ID == user.CatalogModeID}
-	}
-	networksStr := strings.Join(user.Networks, ", ")
-	s.renderAdmin(w, r, http.StatusOK, fmt.Sprintf(translate(lang, "title.user"), user.Name), "user-edit",
-		userEditView{User: user, Selection: selection, Credentials: credentials,
-			DynamicReadonly: dynamicReadonly, DynamicChecked: dynamicChecked,
-			PasswordDisabled: passwordDisabled, PasswordHint: passwordHint,
-			ActiveDial: user.ActiveDial, ActiveDialDisabled: activeDialDisabled, ActiveDialHint: activeDialHint,
-			PeerIPAttrs: peerIPAttrs, DynamicIPAttrs: dynamicIPAttrs, ActiveDialAttrs: activeDialAttrs,
-			PasswordAttrs: passwordAttrs, ActiveDialHintResolved: activeDialHintResolved,
-			NetworksStr: networksStr, WebAuthOptions: webAuthOptions, ModeOptions: modeOptions})
-}
-
-func (s *Server) saveAdminUser(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		s.httpError(w, r, "error.bad_user_id", http.StatusBadRequest)
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-	if r.FormValue("action") == "settings" {
-		user, clearPassword, err := parseUserForm(r, id)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		// Reload stored password if not clearing and field is empty
-		if user.BGPPassword == "" && !clearPassword {
-			current, _ := s.store.User(r.Context(), id)
-			if current.ID != 0 {
-				user.BGPPassword = current.BGPPassword
-			}
-		}
-		// Validate peer uniqueness (three-step), excluding self
-		if err := s.validatePeerUniqueness(r.Context(), user, id); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		switch user.WebAuth {
-		case "network", "login", "both", "any":
-		default:
-			http.Error(w, `web_auth must be "network", "login", "both", or "any"`, http.StatusBadRequest)
-			return
-		}
-		if err := s.store.UpdateUser(r.Context(), user, clearPassword); err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-
-		// Process existing credentials
-		for i := 0; ; i++ {
-			loginKey := fmt.Sprintf("cred_login_%d", i)
-			deleteKey := fmt.Sprintf("cred_delete_%d", i)
-			passwordKey := fmt.Sprintf("cred_password_%d", i)
-
-			login := r.FormValue(loginKey)
-			if login == "" {
-				break
-			}
-
-			if r.FormValue(deleteKey) == "on" {
-				s.store.SetUserCredential(r.Context(), id, login, "")
-			} else if pw := r.FormValue(passwordKey); pw != "" {
-				s.store.SetUserCredential(r.Context(), id, login, pw)
-			}
-		}
-
-		// Process new credential
-		if newLogin := r.FormValue("cred_login_new"); newLogin != "" {
-			if newPassword := r.FormValue("cred_password_new"); newPassword != "" {
-				s.store.SetUserCredential(r.Context(), id, newLogin, newPassword)
-			}
-		}
-
-		if !user.Enabled {
-			err = s.bgp.DeletePeer(r.Context(), user.PeerIP, user.ID)
-		} else {
-			// Reload user to get correct BGPPassword preserved by store when field was empty.
-			user, err = s.store.User(r.Context(), id)
-			if err != nil {
-				s.internalError(w, r, err)
-				return
-			}
-			err = s.bgp.UpdatePeer(r.Context(), user)
-		}
-		if err == nil {
-			err = s.bgp.Reconcile(r.Context())
-		}
-	} else if r.FormValue("action") == "filters" {
-		filters, parseErr := routeFiltersFromForm(r)
-		if parseErr != nil {
-			http.Error(w, parseErr.Error(), http.StatusBadRequest)
-			return
-		}
-		err = s.store.SetUserRouteFilterConfig(r.Context(), id, r.FormValue("filter_mode"), filters)
-		if err == nil {
-			err = s.bgp.Reconcile(r.Context())
-		}
-	} else {
-		categories, services, parseErr := selectionFromValues(r.Form)
-		if parseErr != nil {
-			http.Error(w, parseErr.Error(), http.StatusBadRequest)
-			return
-		}
-		currentUser, userErr := s.store.User(r.Context(), id)
-		if userErr != nil {
-			s.internalError(w, r, userErr)
-			return
-		}
-		modeID, modeErr := formModeID(r, currentUser.CatalogModeID)
-		if modeErr != nil {
-			http.Error(w, modeErr.Error(), http.StatusBadRequest)
-			return
-		}
-		err = s.store.SetUserCatalogModeSelection(
-			r.Context(), id, modeID, false, categories, services)
-		if err == nil {
-			err = s.bgp.Reconcile(r.Context())
-		}
-	}
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	http.Redirect(w, r, fmt.Sprintf("/admin/user/%d", id), http.StatusSeeOther)
-}
-
-func (s *Server) deleteAdminUser(w http.ResponseWriter, r *http.Request) {
-	id, err := pathID(r)
-	if err != nil {
-		s.httpError(w, r, "error.bad_user_id", http.StatusBadRequest)
-		return
-	}
-	// Get user first to know the peer IP
-	user, err := s.store.User(r.Context(), id)
-	if err != nil && !store.IsNotFound(err) {
-		s.internalError(w, r, err)
-		return
-	}
-	if err := s.store.DeleteUser(r.Context(), id); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	// Only delete peer if user exists (not already deleted)
-	if err == nil {
-		if err := s.bgp.DeletePeer(r.Context(), user.PeerIP, user.ID); err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-	}
-	http.Redirect(w, r, "/admin", http.StatusSeeOther)
-}
-
-func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	// Clear admin session cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "wdbgp_admin",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   s.adminCookieSecure(r),
-		SameSite: http.SameSiteStrictMode,
-		MaxAge:   -1,
-		Expires:  time.Now().Add(-time.Hour),
-	})
-	
-	s.logAdminAction(r, "LOGOUT", "Admin logged out")
-	http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -2049,7 +343,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, r, err)
 		return
 	}
-	
+
 	// Get BGP peer status
 	peerStates, err := s.bgp.PeerStates(ctx)
 	if err != nil {
@@ -2057,7 +351,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		logger.Error("failed to read BGP peer states", "error", err)
 		peerStates = map[string]string{}
 	}
-	
+
 	// Count connected peers
 	connectedPeers := 0
 	for _, state := range peerStates {
@@ -2065,25 +359,25 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			connectedPeers++
 		}
 	}
-	
+
 	// Get feed sync status
 	feeds, err := s.store.Feeds(ctx, false)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	
+
 	var feedStatus []map[string]any
 	var successfulSyncs, failedSyncs int
 	var lastSyncTime *time.Time
-	
+
 	for _, feed := range feeds {
 		status := map[string]any{
-			"name": feed.Name,
+			"name":    feed.Name,
 			"enabled": feed.Enabled,
-			"url": feed.URL,
+			"url":     feed.URL,
 		}
-		
+
 		if feed.LastSuccess != "" {
 			if t, err := time.Parse(time.RFC3339, feed.LastSuccess); err == nil {
 				status["last_success"] = t
@@ -2093,341 +387,53 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 				successfulSyncs++
 			}
 		}
-		
+
 		if feed.LastError != "" {
 			status["last_error"] = feed.LastError
 			failedSyncs++
 		}
-		
+
 		feedStatus = append(feedStatus, status)
 	}
-	
+
 	// Get version/build info (simple placeholder for now)
 	// In a real deployment, this could be set via ldflags
 	buildInfo := map[string]string{
-		"version": "dev",
+		"version":    "dev",
 		"go_version": "1.26",
 	}
-	
 
-	
 	// Prepare response
 	response := map[string]any{
-		"uptime": time.Since(s.startTime).Seconds(),
+		"uptime":   time.Since(s.startTime).Seconds(),
 		"prefixes": totalPrefixes,
 		"database": map[string]any{
-			"connected": true, // health check already passed
-			"categories": categories,
-			"services": services,
+			"connected":     true, // health check already passed
+			"categories":    categories,
+			"services":      services,
 			"total_prefixes": totalPrefixes,
 		},
 		"bgp": map[string]any{
-			"total_peers": len(peerStates),
+			"total_peers":    len(peerStates),
 			"connected_peers": connectedPeers,
-			"peer_states": peerStates,
+			"peer_states":     peerStates,
 		},
 		"feeds": map[string]any{
-			"total": len(feeds),
-			"enabled": countEnabledFeeds(feeds),
+			"total":            len(feeds),
+			"enabled":          countEnabledFeeds(feeds),
 			"successful_syncs": successfulSyncs,
-			"failed_syncs": failedSyncs,
-			"last_sync": lastSyncTime,
-			"details": feedStatus,
+			"failed_syncs":     failedSyncs,
+			"last_sync":        lastSyncTime,
+			"details":          feedStatus,
 		},
-		"build": buildInfo,
+		"build":     buildInfo,
 		"timestamp": time.Now().UTC(),
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		logger := logging.FromContext(ctx)
 		logger.Error("failed to encode status response", "error", err)
-	}
-}
-
-func (s *Server) selection(ctx context.Context, user store.User, editable, admin bool) (selectionView, error) {
-	modes, err := s.store.CatalogModes(ctx, !admin)
-	if err != nil {
-		return selectionView{}, err
-	}
-	if admin {
-		// Administrators can inspect retained selections for disabled modes.
-	} else if !containsMode(modes, user.CatalogModeID) {
-		if current, currentErr := s.store.CatalogMode(ctx, user.CatalogModeID); currentErr == nil {
-			modes = append(modes, current)
-		}
-	}
-	catalog, err := s.store.CatalogForMode(ctx, user.CatalogModeID, admin)
-	if err != nil {
-		return selectionView{}, err
-	}
-	selectedCategories, selectedServices, err := s.store.UserModeSelection(
-		ctx, user.ID, user.CatalogModeID)
-	if err != nil {
-		return selectionView{}, err
-	}
-	names := make([]string, 0, len(catalog))
-	for name := range catalog {
-		names = append(names, name)
-	}
-	sortStrings(names)
-	userFilters, err := s.store.UserRouteFilters(ctx, user.ID)
-	if err != nil {
-		return selectionView{}, err
-	}
-	view := selectionView{
-		User: user, Modes: modes, CanChangeMode: admin || user.CatalogEditable,
-		Editable: editable, Admin: admin,
-		Filters: filterView{
-			AllowText: strings.Join(userFilters.Allow, "\n"),
-			DenyText:  strings.Join(userFilters.Deny, "\n"),
-			Override:  user.FilterOverride,
-			Mode:      user.FilterMode,
-			Editable:  admin || user.FilterEditable,
-			Admin:     admin,
-		},
-	}
-	comms, _ := s.store.GetCommunities(ctx, user.CatalogModeID)
-	view.Communities = comms
-	prefixCountsV4, prefixCountsV6, err := s.store.PrefixCounts(ctx, user.CatalogModeID)
-	if err != nil {
-		return selectionView{}, err
-	}
-	view.PrefixCountsV4 = prefixCountsV4
-	view.PrefixCountsV6 = prefixCountsV6
-	view.TotalPrefixesV4, view.TotalPrefixesV6, err = s.store.CountSelectionPrefixes(ctx, user.ID)
-	if err != nil {
-		return selectionView{}, err
-	}
-	categoryCountsV4, categoryCountsV6, err := s.store.CategoryPrefixCounts(ctx, user.CatalogModeID)
-	if err != nil {
-		view.CategoryCountsV4 = map[string]int{}
-		view.CategoryCountsV6 = map[string]int{}
-	} else {
-		view.CategoryCountsV4 = categoryCountsV4
-		view.CategoryCountsV6 = categoryCountsV6
-	}
-	for _, category := range names {
-		categorySelected := selectedCategories[category]
-		item := categoryView{Name: category, Selected: selectedCategories[category], PrefixCountV4: view.CategoryCountsV4[category], PrefixCountV6: view.CategoryCountsV6[category]}
-		if categorySelected {
-			view.SelectedCategoryCount++
-			view.SelectedCoveredServices += len(catalog[category])
-		}
-		for _, service := range catalog[category] {
-			key := store.ServiceKey{Category: category, Service: service}
-			if !categorySelected && selectedServices[key] {
-				view.SelectedServiceCount++
-			}
-			svcPrefixCountV4 := 0
-			svcPrefixCountV6 := 0
-			if svcCounts, ok := prefixCountsV4[category]; ok {
-				svcPrefixCountV4 = svcCounts[service]
-			}
-			if svcCounts, ok := prefixCountsV6[category]; ok {
-				svcPrefixCountV6 = svcCounts[service]
-			}
-			item.Services = append(item.Services, serviceView{
-				Name: service, Value: serviceValue(category, service),
-				Selected: !categorySelected && selectedServices[key],
-				Disabled: categorySelected,
-				PrefixCountV4: svcPrefixCountV4,
-				PrefixCountV6: svcPrefixCountV6,
-			})
-		}
-		view.Categories = append(view.Categories, item)
-	}
-	return view, nil
-}
-
-func (s *Server) userWithRequestedMode(
-	ctx context.Context,
-	r *http.Request,
-	user store.User,
-	canChange bool,
-	admin bool,
-) (store.User, error) {
-	raw := strings.TrimSpace(r.URL.Query().Get("mode"))
-	if raw == "" {
-		return user, nil
-	}
-	if !canChange {
-		return user, fmt.Errorf("catalog mode is managed by the administrator")
-	}
-	modeID, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || modeID <= 0 {
-		return store.User{}, fmt.Errorf("invalid catalog mode")
-	}
-	mode, err := s.store.CatalogMode(ctx, modeID)
-	if err != nil {
-		return store.User{}, err
-	}
-	if !admin && !mode.Enabled {
-		return store.User{}, fmt.Errorf("catalog mode is disabled")
-	}
-	user.CatalogModeID = mode.ID
-	user.CatalogModeName = mode.Name
-	return user, nil
-}
-
-func containsMode(modes []store.CatalogMode, id int64) bool {
-	for _, mode := range modes {
-		if mode.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
-func parseSelection(r *http.Request) ([]string, []store.ServiceKey, error) {
-	if err := r.ParseForm(); err != nil {
-		return nil, nil, err
-	}
-	return selectionFromValues(r.Form)
-}
-
-func selectionFromValues(values url.Values) ([]string, []store.ServiceKey, error) {
-	categories := uniqueNonEmpty(values["category"])
-	categorySelected := map[string]bool{}
-	for _, category := range categories {
-		categorySelected[category] = true
-	}
-	var services []store.ServiceKey
-	seen := map[store.ServiceKey]bool{}
-	for _, value := range values["service"] {
-		parts := strings.SplitN(value, ":", 2)
-		if len(parts) != 2 {
-			return nil, nil, fmt.Errorf("invalid service selection")
-		}
-		category, err := url.QueryUnescape(parts[0])
-		if err != nil {
-			return nil, nil, err
-		}
-		service, err := url.QueryUnescape(parts[1])
-		if err != nil {
-			return nil, nil, err
-		}
-		key := store.ServiceKey{Category: category, Service: service}
-		if category != "" && service != "" && !categorySelected[category] && !seen[key] {
-			seen[key] = true
-			services = append(services, key)
-		}
-	}
-	return categories, services, nil
-}
-
-func routeFiltersFromForm(r *http.Request) (store.RouteFilters, error) {
-	filters := store.RouteFilters{
-		Allow: splitCIDRs(r.FormValue("filter_allow")),
-		Deny:  splitCIDRs(r.FormValue("filter_deny")),
-	}
-	return store.NormalizeRouteFilters(filters)
-}
-
-func splitCIDRs(value string) []string {
-	return strings.FieldsFunc(value, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
-	})
-}
-
-func parseUser(r *http.Request, id int64) (store.User, bool, error) {
-	if err := r.ParseForm(); err != nil {
-		return store.User{}, false, err
-	}
-	return parseUserForm(r, id)
-}
-
-func parseUserForm(r *http.Request, id int64) (store.User, bool, error) {
-	peerIP, err := netip.ParseAddr(strings.TrimSpace(r.FormValue("peer_ip")))
-	if err != nil {
-		return store.User{}, false, fmt.Errorf("invalid BGP peer IP: %w", err)
-	}
-	peerASN, err := strconv.ParseUint(r.FormValue("peer_asn"), 10, 32)
-	if err != nil || peerASN == 0 {
-		return store.User{}, false, fmt.Errorf("invalid peer ASN")
-	}
-	nextHop := strings.TrimSpace(r.FormValue("next_hop"))
-	if nextHop != "" {
-		if _, err := netip.ParseAddr(nextHop); err != nil {
-			return store.User{}, false, fmt.Errorf("invalid next hop: %w", err)
-		}
-	}
-	var networks []string
-	for _, raw := range strings.Split(r.FormValue("networks"), ",") {
-		if strings.TrimSpace(raw) == "" {
-			continue
-		}
-		network, err := store.NormalizePrefix(raw)
-		if err != nil {
-			return store.User{}, false, fmt.Errorf("invalid client network %q: %w", raw, err)
-		}
-		networks = append(networks, network)
-	}
-	if len(networks) == 0 {
-		return store.User{}, false, fmt.Errorf("at least one client network is required")
-	}
-	name := strings.TrimSpace(r.FormValue("name"))
-	if name == "" {
-		return store.User{}, false, fmt.Errorf("user name is required")
-	}
-	modeID, err := formModeID(r, store.DefaultCatalogModeID)
-	if err != nil {
-		return store.User{}, false, err
-	}
-	return store.User{
-		ID: id, Name: name, PeerIP: peerIP.String(), PeerASN: uint32(peerASN),
-		NextHop: nextHop, BGPPassword: r.FormValue("bgp_password"),
-		SelectionLocked: r.Form.Has("locked"), Enabled: id == 0 || r.Form.Has("enabled"),
-		FilterOverride:  r.FormValue("filter_override") == "on",
-		FilterMode:      r.FormValue("filter_mode"),
-		FilterEditable:  r.Form.Has("filter_editable"),
-		CatalogModeID:   modeID,
-		CatalogEditable: r.Form.Has("catalog_mode_editable"),
-		ActiveDial:      r.Form.Has("active_dial"),
-		WebAuth:         r.FormValue("web_auth"),
-		Networks:        networks,
-	}, r.Form.Has("clear_bgp_password"), nil
-}
-
-func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie("wdbgp_admin")
-		sessionMaxAge := time.Duration(s.cfg.SessionMaxAge) * time.Second
-		if sessionMaxAge <= 0 {
-			sessionMaxAge = 8 * time.Hour
-		}
-		if err != nil || !validSession(s.cfg.SessionSecret, cookie.Value, sessionMaxAge) {
-			http.Redirect(w, r, "/admin/login", http.StatusSeeOther)
-			return
-		}
-		
-		// Renew session if it's more than 1 hour old
-		parts := strings.SplitN(cookie.Value, ".", 3)
-		if len(parts) == 3 {
-			timestamp, err := strconv.ParseInt(parts[0], 16, 64)
-			if err == nil {
-				sessionTime := time.Unix(timestamp, 0)
-				if time.Since(sessionTime) > time.Hour && time.Since(sessionTime) < sessionMaxAge-time.Hour {
-					maxAge := 0 // session cookie
-					if s.cfg.SessionMaxAge > 0 {
-						maxAge = s.cfg.SessionMaxAge
-					}
-					
-					http.SetCookie(w, &http.Cookie{
-						Name:     "wdbgp_admin",
-						Value:    sessionToken(s.cfg.SessionSecret),
-						Path:     "/",
-						HttpOnly: true,
-						Secure:   s.adminCookieSecure(r),
-						SameSite: http.SameSiteStrictMode,
-						MaxAge:   maxAge,
-						Expires:  time.Now().Add(time.Duration(s.cfg.SessionMaxAge) * time.Second),
-					})
-				}
-			}
-		}
-		
-		next(w, r)
 	}
 }
 
@@ -2444,30 +450,6 @@ func (s *Server) clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-func (s *Server) statusAuthorized(r *http.Request) bool {
-	// Check IP
-	if len(s.cfg.StatusAllowed) > 0 {
-		clientIP := s.clientIP(r)
-		ip, err := netip.ParseAddr(clientIP)
-		if err == nil {
-			for _, cidr := range s.cfg.StatusAllowed {
-				prefix, err := netip.ParsePrefix(cidr)
-				if err == nil && prefix.Contains(ip) {
-					return true
-				}
-			}
-		}
-	}
-	// Check token
-	if s.cfg.StatusToken != "" {
-		auth := r.Header.Get("Authorization")
-		if strings.TrimPrefix(auth, "Bearer ") == s.cfg.StatusToken {
-			return true
-		}
-	}
-	return false
-}
-
 func compileTemplates() map[locale]map[string]*template.Template {
 	bodies := map[string]string{
 		"access-denied": accessDeniedTemplate,
@@ -2478,17 +460,17 @@ func compileTemplates() map[locale]map[string]*template.Template {
 	}
 	// Fragment templates (body only, no pageStart/pageEnd) for htmx and shell embedding
 	fragments := map[string]string{
-		"debug":        debugTemplate,
-		"dashboard":    dashboardTemplate,
-		"communities":  communitiesTemplate,
-		"adapter-edit": adapterEditTemplate,
-		"adapter-test": adapterTestTemplate,
+		"debug":         debugTemplate,
+		"dashboard":     dashboardTemplate,
+		"communities":   communitiesTemplate,
+		"adapter-edit":  adapterEditTemplate,
+		"adapter-test":  adapterTestTemplate,
 		"user-edit":     userEditTemplate,
 		"users-list":    usersListTemplate,
 		"feeds-list":    feedsListTemplate,
 		"feed-edit":     feedEditTemplate,
 		"adapters-list": adaptersListTemplate,
-		"settings":     settingsTemplate,
+		"settings":      settingsTemplate,
 		"modes":         modesTemplate,
 		"mode-edit":     modeEditTemplate,
 	}
@@ -2555,13 +537,13 @@ func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	
+
 	// Get CSRF token from context
 	csrfToken := ""
 	if tokenVal := r.Context().Value(csrfCtxKey{}); tokenVal != nil {
 		csrfToken = tokenVal.(string)
 	}
-	
+
 	if err := s.templates[lang][name].Execute(w, struct {
 		Title      string
 		Lang       string
@@ -2573,7 +555,7 @@ func (s *Server) renderTitle(w http.ResponseWriter, r *http.Request, status int,
 		Title: title, Lang: string(lang),
 		EnglishURL: languageURL(r, localeEnglish),
 		RussianURL: languageURL(r, localeRussian),
-		CSRFToken: csrfToken,
+		CSRFToken:  csrfToken,
 		Data:       data,
 	}); err != nil {
 		logger := logging.FromContext(r.Context())
@@ -2621,252 +603,6 @@ func (s *Server) renderAdmin(w http.ResponseWriter, r *http.Request, status int,
 		CSRFToken   string
 		ContentHTML template.HTML
 	}{Title: title, Lang: string(lang), EnglishURL: languageURL(r, localeEnglish), RussianURL: languageURL(r, localeRussian), CSRFToken: csrfToken, ContentHTML: template.HTML(contentBuf.String())})
-}
-
-func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	// Gather stats
-	categories, services, totalPrefixes, _ := s.store.Stats(ctx)
-	peerStates, _ := s.bgp.PeerStates(ctx)
-	connectedPeers := 0
-	for _, state := range peerStates {
-		if state == "ESTABLISHED" {
-			connectedPeers++
-		}
-	}
-	feeds, _ := s.store.Feeds(ctx, false)
-	enabledFeeds := 0
-	for _, f := range feeds {
-		if f.Enabled {
-			enabledFeeds++
-		}
-	}
-	users, _ := s.store.Users(ctx, false)
-
-	data := map[string]any{
-		"Categories":     categories,
-		"Services":       services,
-		"TotalPrefixes":  totalPrefixes,
-		"ConnectedPeers": connectedPeers,
-		"TotalPeers":     len(peerStates),
-		"EnabledFeeds":   enabledFeeds,
-		"TotalFeeds":     len(feeds),
-		"TotalUsers":     len(users),
-	}
-
-	s.renderAdmin(w, r, http.StatusOK, "Dashboard", "dashboard", data)
-}
-
-func (s *Server) usersList(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	users, err := s.store.Users(ctx, false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-
-	// Get peer states for status
-	peerStates, _ := s.bgp.PeerStates(ctx)
-
-	type userRow struct {
-		User      store.User
-		PeerState string
-		Networks  string
-	}
-
-	rows := make([]userRow, 0, len(users))
-	for _, u := range users {
-		peerKey := fmt.Sprintf("%s:%d", u.PeerIP, u.PeerASN)
-		state := peerStates[peerKey]
-		if state == "" {
-			state = "—"
-		}
-		rows = append(rows, userRow{
-			User:       u,
-			PeerState:  state,
-			Networks:   strings.Join(u.Networks, ", "),
-		})
-	}
-
-	s.renderAdmin(w, r, http.StatusOK, "Users", "users-list", map[string]any{
-		"Users": rows,
-	})
-}
-
-func (s *Server) feedsList(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	feeds, err := s.store.Feeds(ctx, false)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	modes, err := s.store.CatalogModes(ctx, false)
-	if err != nil {
-		modes = nil
-	}
-
-	type feedRow struct {
-		Feed      store.Feed
-		ModeNames string
-		LastSync  string
-	}
-
-	modeMap := make(map[int64]string)
-	for _, m := range modes {
-		modeMap[m.ID] = m.Name
-	}
-
-	// Build feed→mode multi-mapping
-	feedModes := make(map[int64][]int64)
-	for _, f := range feeds {
-		modeIDs, err := s.store.FeedModes(ctx, f.ID)
-		if err != nil {
-			s.internalError(w, r, err)
-			return
-		}
-		feedModes[f.ID] = modeIDs
-	}
-
-	rows := make([]feedRow, 0, len(feeds))
-	for _, f := range feeds {
-		names := make([]string, 0)
-		for _, mid := range feedModes[f.ID] {
-			if name, ok := modeMap[mid]; ok {
-				names = append(names, name)
-			}
-		}
-		modeNames := strings.Join(names, ", ")
-		if modeNames == "" {
-			modeNames = "—"
-		}
-		rows = append(rows, feedRow{
-			Feed:      f,
-			ModeNames: modeNames,
-			LastSync:  f.LastSuccess,
-		})
-	}
-
-	s.renderAdmin(w, r, http.StatusOK, "Feeds", "feeds-list", map[string]any{
-		"Feeds": rows,
-		"Modes": modes,
-	})
-}
-
-func (s *Server) handleFeedForceSync(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.Error(w, "invalid feed ID", http.StatusBadRequest)
-		return
-	}
-	feed, err := s.store.Feed(r.Context(), id)
-	if err != nil {
-		if store.IsNotFound(err) {
-			http.Error(w, "feed not found", http.StatusNotFound)
-		} else {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-		return
-	}
-	if !feed.Enabled {
-		http.Error(w, "feed is disabled", http.StatusBadRequest)
-		return
-	}
-
-	// Double-click prevention: if a sync is already in progress for this feed,
-	// Skip without launching a new goroutine.
-	// Hold the lock until the goroutine finishes to prevent TOCTOU races.
-	mu, ok := s.syncer.TryLockFeed(id)
-	if !ok {
-		http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
-		return
-	}
-
-	// Only clear last_error to trigger re-sync; keep last_success
-	_, err = s.store.DB.ExecContext(r.Context(),
-		"UPDATE feeds SET last_error = NULL WHERE id = ?", id)
-	if err != nil {
-		s.syncer.UnlockFeed(mu)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	go func() {
-		defer s.syncer.UnlockFeed(mu)
-		// SyncOneLocked skips the internal lock since we already hold it.
-		var syncErr error
-		executedRevision, err := s.syncer.SyncOneLocked(context.Background(), feed)
-		if err != nil {
-			syncErr = err
-			// Verify feed and adapter haven't been edited since the
-			// goroutine was launched. If any field (url, adapter_id,
-			// data, mode_id, enabled, name, or adapter revision)
-			// changed, the error is from a stale sync and must not
-			// overwrite the new feed's status.
-			var currentURL, currentData, currentName string
-			var currentAdapterID, currentRevision int64
-			var currentEnabled bool
-			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT f.url, f.adapter_id, f.data, f.enabled, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentEnabled, &currentName, &currentRevision)
-			if checkErr == nil &&
-				currentURL == feed.URL &&
-				currentAdapterID == feed.AdapterID &&
-				currentData == feed.Data &&
-				currentEnabled == feed.Enabled &&
-				currentName == feed.Name &&
-				currentRevision == executedRevision {
-				s.store.DB.ExecContext(context.Background(),
-					"UPDATE feeds SET last_error = ? WHERE id = ?", err.Error(), id)
-			}
-		}
-		if err := s.bgp.Reconcile(context.Background()); err != nil {
-			// Re-check guard before writing BGP error: if the feed or
-			// adapter was edited between sync and reconcile, the error
-			// must not overwrite the new feed's status.
-			var currentURL, currentData, currentName string
-			var currentAdapterID, currentRevision int64
-			var currentEnabled bool
-			checkErr := s.store.DB.QueryRowContext(context.Background(),
-				"SELECT f.url, f.adapter_id, f.data, f.enabled, f.name, a.revision FROM feeds f JOIN feed_adapters a ON a.id = f.adapter_id WHERE f.id = ?", id).
-				Scan(&currentURL, &currentAdapterID, &currentData, &currentEnabled, &currentName, &currentRevision)
-			if checkErr == nil &&
-				currentURL == feed.URL &&
-				currentAdapterID == feed.AdapterID &&
-				currentData == feed.Data &&
-				currentEnabled == feed.Enabled &&
-				currentName == feed.Name &&
-				currentRevision == executedRevision {
-				msg := "BGP reconcile failed: " + err.Error()
-				if syncErr != nil {
-					msg = syncErr.Error() + "; " + msg
-				}
-				s.store.DB.ExecContext(context.Background(),
-					"UPDATE feeds SET last_error = ? WHERE id = ?", msg, id)
-			}
-		}
-	}()
-	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
-}
-
-func (s *Server) handleSyncAll(w http.ResponseWriter, r *http.Request) {
-	go func() {
-		_ = s.syncer.SyncAll(context.Background())
-		if err := s.bgp.Reconcile(context.Background()); err != nil {
-			// logged inside
-		}
-	}()
-	http.Redirect(w, r, "/admin/feeds", http.StatusSeeOther)
-}
-
-func (s *Server) adaptersList(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	adapters, err := s.store.FeedAdapters(ctx)
-	if err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-	s.renderAdmin(w, r, http.StatusOK, "Adapters", "adapters-list", map[string]any{
-		"Adapters": adapters,
-	})
 }
 
 func (s *Server) httpError(w http.ResponseWriter, r *http.Request, key string, status int) {
@@ -2942,7 +678,7 @@ func validSession(secret, value string, sessionMaxAge time.Duration) bool {
 	if len(parts) != 3 {
 		return false
 	}
-	
+
 	timestamp, err := strconv.ParseInt(parts[0], 16, 64)
 	if err != nil {
 		return false
@@ -2951,7 +687,7 @@ func validSession(secret, value string, sessionMaxAge time.Duration) bool {
 	if time.Since(sessionTime) > sessionMaxAge {
 		return false
 	}
-	
+
 	signature, err := hex.DecodeString(parts[2])
 	if err != nil {
 		return false
@@ -3096,25 +832,25 @@ func securityHeaders(next http.Handler) http.Handler {
 		// Content Security Policy - restrict resource loading
 		// Allow inline styles/scripts for simplicity, plus unpkg CDN for htmx/alpine
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
-		
+
 		// Prevent clickjacking
 		w.Header().Set("X-Frame-Options", "DENY")
-		
+
 		// Prevent MIME sniffing
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		
+
 		// Control referrer information
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		
+
 		// Restrict browser features
 		w.Header().Set("Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=(), usb=(), serial=(), magnetometer=(), gyroscope=(), accelerometer=()")
-		
+
 		// Enable HSTS would require HTTPS configuration
 		// w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		
+
 		// XSS protection (legacy but still useful)
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
-		
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -3138,16 +874,16 @@ type csrfCtxKey struct{}
 
 // rateLimiter implements per-IP rate limiting
 type rateLimiter struct {
-	mu         sync.RWMutex
-	limits     map[string][]time.Time
-	window     time.Duration
+	mu          sync.RWMutex
+	limits      map[string][]time.Time
+	window      time.Duration
 	maxRequests int
 }
 
 func newRateLimiter(window time.Duration, maxRequests int) *rateLimiter {
 	return &rateLimiter{
-		limits:     make(map[string][]time.Time),
-		window:     window,
+		limits:      make(map[string][]time.Time),
+		window:      window,
 		maxRequests: maxRequests,
 	}
 }
@@ -3157,11 +893,11 @@ func (rl *rateLimiter) allow(ip string) bool {
 	if rl.maxRequests <= 0 {
 		return true
 	}
-	
+
 	now := time.Now()
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	
+
 	// Clean old entries
 	cutoff := now.Add(-rl.window)
 	requests := rl.limits[ip]
@@ -3171,12 +907,12 @@ func (rl *rateLimiter) allow(ip string) bool {
 			valid = append(valid, t)
 		}
 	}
-	
+
 	// Check if allowed
 	if len(valid) >= rl.maxRequests {
 		return false
 	}
-	
+
 	// Add current request
 	valid = append(valid, now)
 	rl.limits[ip] = valid
@@ -3197,39 +933,39 @@ func csrfProtection(next http.Handler, secret string) http.Handler {
 			}
 		}
 		ctx := context.WithValue(r.Context(), csrfCtxKey{}, token)
-		
+
 		// Skip CSRF validation for test secret or empty secret
 		if secret == "" || secret == "test-secret" {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
-		
+
 		// Skip CSRF validation for safe methods and login endpoint
-		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" || 
-		   r.URL.Path == "/healthz" || r.URL.Path == "/admin/login" || r.URL.Path == "/login" {
+		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" ||
+			r.URL.Path == "/healthz" || r.URL.Path == "/admin/login" || r.URL.Path == "/login" {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
-		
+
 		// For state-changing methods, validate CSRF token
 		if r.Method == "POST" || r.Method == "PUT" || r.Method == "DELETE" || r.Method == "PATCH" {
 			// Parse form if needed to get CSRF token
 			if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" {
 				r.ParseForm()
 			}
-			
+
 			csrfTokenFromRequest := r.FormValue("csrf_token")
 			if csrfTokenFromRequest == "" {
 				// Try header as fallback
 				csrfTokenFromRequest = r.Header.Get("X-CSRF-Token")
 			}
-			
+
 			if !validCSRFToken(secret, csrfTokenFromRequest) {
 				http.Error(w, "Invalid CSRF token", http.StatusForbidden)
 				return
 			}
 		}
-		
+
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -3240,7 +976,7 @@ func (s *Server) adminRateLimitMiddleware(next http.Handler) http.Handler {
 		// Only apply to admin paths
 		if strings.HasPrefix(r.URL.Path, "/admin") && r.URL.Path != "/admin/login" && r.URL.Path != "/login" {
 			clientIP := s.clientIP(r)
-			
+
 			if !s.adminLimiter.allow(clientIP) {
 				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 				return
@@ -3260,7 +996,21 @@ func countEnabledFeeds(feeds []store.Feed) int {
 	return count
 }
 
-// --- Settings page ---
+func routeFiltersFromForm(r *http.Request) (store.RouteFilters, error) {
+	filters := store.RouteFilters{
+		Allow: splitCIDRs(r.FormValue("filter_allow")),
+		Deny:  splitCIDRs(r.FormValue("filter_deny")),
+	}
+	return store.NormalizeRouteFilters(filters)
+}
+
+func splitCIDRs(value string) []string {
+	return strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+}
+
+// --- Settings page field definitions (shared infrastructure) ---
 
 type settingField struct {
 	Key          string            // DB key like "default_language"
@@ -3448,76 +1198,6 @@ type globalFiltersView struct {
 	Deny  string // newline-separated CIDRs
 }
 
-func (s *Server) settingsPage(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	dbSettings, _ := s.store.GetAllSettings(ctx)
-
-	sections := buildSettingsSections(s.cfg, dbSettings)
-
-	// Global route filters
-	globalFilters, _ := s.store.GlobalRouteFilters(ctx)
-
-	s.renderAdmin(w, r, http.StatusOK, "Settings", "settings", map[string]any{
-		"Sections":           sections,
-		"Saved":              r.URL.Query().Get("saved") == "1",
-		"AllowDynamicPeers":  s.cfg.AllowDynamicPeers,
-		"AutoRestoreEnabled": s.cfg.AutoRestoreEnabled,
-		"GlobalFilters": globalFiltersView{
-			Allow: strings.Join(globalFilters.Allow, "\n"),
-			Deny:  strings.Join(globalFilters.Deny, "\n"),
-		},
-	})
-}
-
-func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseForm(); err != nil {
-		s.httpError(w, r, "error.bad_request", http.StatusBadRequest)
-		return
-	}
-
-	settings := make(map[string]string)
-	knownKeys := allSettingKeys()
-	for _, key := range knownKeys {
-		f := fieldByKey(key)
-		if f == nil {
-			continue
-		}
-		if isEnvOverridden(f.EnvVar) {
-			continue
-		}
-		if f.Type == "bool" {
-			// Unchecked checkbox doesn't send a value; treat missing as "false"
-			if r.Form.Has(key) {
-				settings[key] = "true"
-			} else {
-				settings[key] = "false"
-			}
-		} else {
-			if val, ok := r.Form[key]; ok && len(val) > 0 {
-				settings[key] = val[0]
-			}
-		}
-	}
-
-	if err := s.store.SaveSettings(r.Context(), settings); err != nil {
-		s.internalError(w, r, err)
-		return
-	}
-
-	// Save global route filters if the fields are present in the form
-	if r.Form.Has("filter_allow") || r.Form.Has("filter_deny") {
-		if filters, err := routeFiltersFromForm(r); err == nil {
-			if err := s.store.SetGlobalRouteFilters(r.Context(), filters); err != nil {
-				s.internalError(w, r, err)
-				return
-			}
-			_ = s.bgp.Reconcile(r.Context())
-		}
-	}
-
-	http.Redirect(w, r, "/admin/settings?saved=1", http.StatusSeeOther)
-}
-
 func fieldByKey(key string) *settingField {
 	for _, f := range allSettings() {
 		if f.Key == key {
@@ -3526,5 +1206,3 @@ func fieldByKey(key string) *settingField {
 	}
 	return nil
 }
-
-
