@@ -39,9 +39,9 @@ func TestEncodeDecodeOpen(t *testing.T) {
 	if decoded.BGPID != [4]byte{192, 0, 2, 1} {
 		t.Fatalf("bgp_id = %v, want {192, 0, 2, 1}", decoded.BGPID)
 	}
-	// OptParmLen reflects IPv6 unicast + AS4 capabilities (14 bytes: 2 header + 12 TLV data)
-	if decoded.OptParmLen != 14 {
-		t.Fatalf("opt_parm_len = %d, want 14", decoded.OptParmLen)
+	// OptParmLen reflects IPv6 unicast + IPv4 unicast + AS4 capabilities (20 bytes: 2 header + 18 TLV data)
+	if decoded.OptParmLen != 20 {
+		t.Fatalf("opt_parm_len = %d, want 20", decoded.OptParmLen)
 	}
 }
 
@@ -183,8 +183,8 @@ func TestOpenIncludesIPv6UnicastCapability(t *testing.T) {
 		t.Fatalf("param type = %d, want 2 (Capability)", paramType)
 	}
 	paramLen := int(opts[1])
-	if paramLen < 12 {
-		t.Fatalf("param length = %d, want at least 12 (IPv6 + AS4 capabilities)", paramLen)
+	if paramLen < 18 {
+		t.Fatalf("param length = %d, want at least 18 (IPv6 + IPv4 + AS4 capabilities)", paramLen)
 	}
 
 	capData := opts[2 : 2+paramLen]
