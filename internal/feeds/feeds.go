@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -269,7 +270,11 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		if err != nil {
 			return err
 		}
-		defer statement.Close()
+		defer func() {
+			if err := statement.Close(); err != nil {
+				log.Printf("DEBUG: close statement: %v", err)
+			}
+		}()
 		for _, entry := range entries {
 			if _, err := statement.ExecContext(ctx,
 				feed.ID, entry.Category, entry.Service, entry.CIDR); err != nil {
@@ -342,7 +347,11 @@ func (s *Syncer) doDownload(ctx context.Context, rawURL string) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		if err := response.Body.Close(); err != nil {
+			log.Printf("DEBUG: close response body: %v", err)
+		}
+	}()
 	
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, fmt.Errorf("HTTP %s", response.Status)

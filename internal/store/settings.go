@@ -18,7 +18,7 @@ func (s *Store) GetAllSettings(ctx context.Context) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	settings := make(map[string]string)
 	for rows.Next() {
 		var key, value string

@@ -42,7 +42,7 @@ func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]ui
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make(map[string]uint32)
 	for rows.Next() {
 		var category, service string
@@ -98,7 +98,7 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, err
 		for rows.Next() {
 			var category, service string
 			if err := rows.Scan(&category, &service); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return err
 			}
 			if service == "" {
@@ -129,7 +129,7 @@ func genCommunitiesRuntime(tx *sql.Tx, existing map[string]bool, modeID int64) (
 		if err != nil {
 			return 0, err
 		}
-		defer modes.Close()
+		defer func() { _ = modes.Close() }()
 
 		for modes.Next() {
 			var id int64
@@ -157,7 +157,7 @@ func genCommunitiesRuntime(tx *sql.Tx, existing map[string]bool, modeID int64) (
 			var category, service string
 			var community uint32
 			if err := commRows.Scan(&category, &service, &community); err != nil {
-				commRows.Close()
+				_ = commRows.Close()
 				return 0, err
 			}
 			used[community] = true
@@ -167,7 +167,7 @@ func genCommunitiesRuntime(tx *sql.Tx, existing map[string]bool, modeID int64) (
 				keyComm["svc:"+category+"|"+service] = community
 			}
 		}
-		commRows.Close()
+		_ = commRows.Close()
 
 		catRows, err := tx.Query(`
 SELECT DISTINCT ce.category
@@ -184,12 +184,12 @@ ORDER BY ce.category`, mid)
 		for catRows.Next() {
 			var cat string
 			if err := catRows.Scan(&cat); err != nil {
-				catRows.Close()
+				_ = catRows.Close()
 				return 0, err
 			}
 			categories = append(categories, cat)
 		}
-		catRows.Close()
+		_ = catRows.Close()
 
 		groupIndex := 0
 		for _, category := range categories {
@@ -229,12 +229,12 @@ ORDER BY ce.service`, mid, category)
 			for svcRows.Next() {
 				var svc string
 				if err := svcRows.Scan(&svc); err != nil {
-					svcRows.Close()
+					_ = svcRows.Close()
 					return generated, err
 				}
 				services = append(services, svc)
 			}
-			svcRows.Close()
+			_ = svcRows.Close()
 
 			for _, service := range services {
 				svcKey := "svc:" + category + "|" + service

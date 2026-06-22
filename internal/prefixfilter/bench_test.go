@@ -73,7 +73,7 @@ func BenchmarkApplyManyDeny(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		Apply(input, lists, 1000000)
+		_, _ = Apply(input, lists, 1000000)
 	}
 }
 

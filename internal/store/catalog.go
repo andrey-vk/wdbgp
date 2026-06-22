@@ -32,7 +32,7 @@ ORDER BY ce.category, ce.service`, includeDisabledInt, modeID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	catalog := map[string][]string{}
 	for rows.Next() {
 		var category, service string
@@ -56,7 +56,7 @@ ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var prefixes []CatalogPrefix
 	for rows.Next() {
 		var prefix CatalogPrefix
@@ -80,7 +80,7 @@ ORDER BY ce.category`, modeID)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	v4 = map[string]int{}
 	v6 = map[string]int{}
 	seen := map[string]map[netip.Prefix]struct{}{}
@@ -122,7 +122,7 @@ ORDER BY ce.category, ce.service`, modeID)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	v4 = map[string]map[string]int{}
 	v6 = map[string]map[string]int{}
 	ens := ensureCount
@@ -221,7 +221,7 @@ WHERE cmf.mode_id = ?1
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	seen := make(map[netip.Prefix]struct{})
 	for rows.Next() {
@@ -339,7 +339,7 @@ WHERE cmf.mode_id = ?1
 	if err != nil {
 		return 0, 0, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	seen := make(map[netip.Prefix]struct{})
 	for rows.Next() {

@@ -39,7 +39,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var feeds []Feed
 	for rows.Next() {
 		var feed Feed
@@ -178,7 +178,7 @@ func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var modeIDs []int64
 	for rows.Next() {
 		var modeID int64

@@ -24,7 +24,7 @@ func (s *Store) CatalogModes(ctx context.Context, enabledOnly bool) ([]CatalogMo
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var modes []CatalogMode
 	for rows.Next() {
 		var mode CatalogMode
@@ -94,7 +94,7 @@ func (s *Store) ModeFeedCounts(ctx context.Context) (map[int64]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	counts := make(map[int64]int)
 	for rows.Next() {
 		var modeID int64
@@ -121,7 +121,7 @@ ORDER BY f.id`, modeID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var feeds []Feed
 	for rows.Next() {
 		var feed Feed

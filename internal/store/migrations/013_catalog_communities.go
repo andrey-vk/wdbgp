@@ -48,7 +48,7 @@ func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, er
 		if err != nil {
 			return 0, err
 		}
-		defer modes.Close()
+		defer func() { _ = modes.Close() }()
 
 		for modes.Next() {
 			var id int64
@@ -77,7 +77,7 @@ func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, er
 			var category, service string
 			var community uint32
 			if err := commRows.Scan(&category, &service, &community); err != nil {
-				commRows.Close()
+				_ = commRows.Close()
 				return 0, err
 			}
 			used[community] = true
@@ -87,7 +87,7 @@ func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, er
 				keyComm["svc:"+category+"|"+service] = community
 			}
 		}
-		commRows.Close()
+		_ = commRows.Close()
 
 		// Get categories in alphabetical order.
 		catRows, err := tx.Query(`
@@ -104,12 +104,12 @@ ORDER BY ce.category`, mid)
 		for catRows.Next() {
 			var cat string
 			if err := catRows.Scan(&cat); err != nil {
-				catRows.Close()
+				_ = catRows.Close()
 				return 0, err
 			}
 			categories = append(categories, cat)
 		}
-		catRows.Close()
+		_ = catRows.Close()
 
 		groupIndex := 0
 		for _, category := range categories {
@@ -151,12 +151,12 @@ ORDER BY ce.service`, mid, category)
 			for svcRows.Next() {
 				var svc string
 				if err := svcRows.Scan(&svc); err != nil {
-					svcRows.Close()
+					_ = svcRows.Close()
 					return generated, err
 				}
 				services = append(services, svc)
 			}
-			svcRows.Close()
+			_ = svcRows.Close()
 
 			for _, service := range services {
 				svcKey := "svc:" + category + "|" + service

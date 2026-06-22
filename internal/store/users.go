@@ -53,7 +53,7 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var users []User
 	for rows.Next() {
 		var user User
@@ -111,7 +111,7 @@ func (s *Store) UserNetworks(ctx context.Context, userID int64) ([]string, error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var networks []string
 	for rows.Next() {
 		var network string
@@ -132,7 +132,7 @@ func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	bestBits, bestID := -1, int64(0)
 	for rows.Next() {
 		var userID int64
@@ -280,7 +280,7 @@ func (s *Store) GetUserCredentials(ctx context.Context, userID int64) ([]UserCre
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var credentials []UserCredential
 	for rows.Next() {
 		var cred UserCredential
@@ -333,18 +333,18 @@ func (s *Store) UserModeSelection(
 	for rows.Next() {
 		var category string
 		if err := rows.Scan(&category); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, nil, err
 		}
 		categories[category] = true
 	}
-	rows.Close()
+	_ = rows.Close()
 	rows, err = s.DB.QueryContext(ctx,
 		"SELECT category, service FROM selected_services WHERE user_id = ? AND mode_id = ?", userID, modeID)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var key ServiceKey
 		if err := rows.Scan(&key.Category, &key.Service); err != nil {
@@ -449,7 +449,7 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
 	for rows.Next() {
 		var category string
 		if err := rows.Scan(&category); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		categories = append(categories, category)
@@ -488,7 +488,7 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
 	for rows.Next() {
 		var service ServiceKey
 		if err := rows.Scan(&service.Category, &service.Service); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return err
 		}
 		services = append(services, service)

@@ -83,12 +83,12 @@ func Open(path string, cfg config.Config) (*Store, error) {
 		PRAGMA temp_store = MEMORY;
 		PRAGMA busy_timeout = 30000;
 	`); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	s := &Store{DB: db, dbPath: path, backupEnabled: cfg.BackupEnabled, backupDir: cfg.BackupDir, autoRestore: cfg.AutoRestoreEnabled}
 	if err := s.Migrate(context.Background()); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
@@ -103,7 +103,7 @@ func (s *Store) readAppliedMigrations(ctx context.Context) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var applied []int
 	for rows.Next() {
 		var version int
@@ -147,21 +147,21 @@ func (s *Store) tryRestore(ctx context.Context, applied []int) error {
 		backupDB.SetMaxOpenConns(1)
 		rows, err := backupDB.QueryContext(ctx, "SELECT version FROM schema_migrations ORDER BY version")
 		if err != nil {
-			backupDB.Close()
+			_ = backupDB.Close()
 			continue
 		}
 		var versions []int
 		for rows.Next() {
 			var v int
 			if err := rows.Scan(&v); err != nil {
-				rows.Close()
-				backupDB.Close()
+				_ = rows.Close()
+				_ = backupDB.Close()
 				continue
 			}
 			versions = append(versions, v)
 		}
-		rows.Close()
-		backupDB.Close()
+		_ = rows.Close()
+		_ = backupDB.Close()
 		if len(versions) == 0 {
 			continue
 		}
@@ -194,16 +194,16 @@ func (s *Store) tryRestore(ctx context.Context, applied []int) error {
 	}
 	dst, err := os.Create(s.dbPath)
 	if err != nil {
-		src.Close()
+		_ = src.Close()
 		return fmt.Errorf("create new DB: %w", err)
 	}
 	if _, err := dst.ReadFrom(src); err != nil {
-		src.Close()
-		dst.Close()
+		_ = src.Close()
+		_ = dst.Close()
 		return fmt.Errorf("copy backup: %w", err)
 	}
-	src.Close()
-	dst.Close()
+	_ = src.Close()
+	_ = dst.Close()
 
 	log.Printf("DB auto-restored from %s (saved incompatible DB as %s)", best.path, savedPath)
 	return nil
@@ -240,7 +240,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 				return nil
 			}
 			// Re-open the restored DB
-			s.DB.Close()
+			_ = s.DB.Close()
 			db, err := sql.Open("sqlite", s.dbPath)
 			if err != nil {
 				return fmt.Errorf("reopen after restore: %w", err)
@@ -254,7 +254,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 				PRAGMA temp_store = MEMORY;
 				PRAGMA busy_timeout = 30000;
 			`); err != nil {
-				db.Close()
+				_ = db.Close()
 				return fmt.Errorf("reopen pragmas: %w", err)
 			}
 			s.DB = db
@@ -295,18 +295,18 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		srcInfo, _ := src.Stat()
 		dst, err := os.Create(backupPath)
 		if err != nil {
-			src.Close()
+			_ = src.Close()
 			return fmt.Errorf("backup: create backup: %w", err)
 		}
 		if _, err := dst.ReadFrom(src); err != nil {
-			src.Close()
-			dst.Close()
+			_ = src.Close()
+			_ = dst.Close()
 			return fmt.Errorf("backup: copy: %w", err)
 		}
-		src.Close()
-		dst.Close()
+		_ = src.Close()
+		_ = dst.Close()
 		if srcInfo != nil {
-			os.Chmod(backupPath, srcInfo.Mode())
+			_ = os.Chmod(backupPath, srcInfo.Mode())
 		}
 
 		// Strip catalog_entries from backup (recreatable by feed sync)
@@ -315,9 +315,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			return fmt.Errorf("backup: open backup DB: %w", err)
 		}
 		backupDB.SetMaxOpenConns(1)
-		backupDB.Exec("DELETE FROM catalog_entries")
-		backupDB.Exec("VACUUM")
-		backupDB.Close()
+		_, _ = backupDB.Exec("DELETE FROM catalog_entries")
+		_, _ = backupDB.Exec("VACUUM")
+		_ = backupDB.Close()
 
 		log.Printf("DB backup saved to %s", backupPath)
 	}
@@ -346,7 +346,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			)
 		}
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("migration %d (%s): %w", migration.Version, migration.Name, err)
 		}
 		if err := tx.Commit(); err != nil {
@@ -386,7 +386,7 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 				return err
 			}
 			if err := fn(tx); err != nil {
-				tx.Rollback()
+				_ = tx.Rollback()
 				return err
 			}
 			return tx.Commit()
@@ -403,7 +403,7 @@ ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var adapters []FeedAdapter
 	for rows.Next() {
 		var adapter FeedAdapter

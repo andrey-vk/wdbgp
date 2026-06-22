@@ -287,17 +287,23 @@ func (c *Config) ApplyDBOverrides(settings map[string]string) {
 	}
 	if os.Getenv("WDBGP_JS_MAX_SOURCE") == "" {
 		if v, ok := settings["js_max_source"]; ok && v != "" {
-			c.JSMaxSourceBytes, _ = strconv.Atoi(v)
+			if n, err := strconv.Atoi(v); err == nil {
+				c.JSMaxSourceBytes = n
+			}
 		}
 	}
 	if os.Getenv("WDBGP_JS_MAX_RESPONSE") == "" {
 		if v, ok := settings["js_max_response"]; ok && v != "" {
-			c.JSMaxResponseBytes, _ = strconv.Atoi(v)
+			if n, err := strconv.Atoi(v); err == nil {
+				c.JSMaxResponseBytes = n
+			}
 		}
 	}
 	if os.Getenv("WDBGP_JS_MAX_TOTAL") == "" {
 		if v, ok := settings["js_max_total"]; ok && v != "" {
-			c.JSMaxTotalBytes, _ = strconv.Atoi(v)
+			if n, err := strconv.Atoi(v); err == nil {
+				c.JSMaxTotalBytes = n
+			}
 		}
 	}
 	if os.Getenv("WDBGP_JS_MAX_ENTRIES") == "" {

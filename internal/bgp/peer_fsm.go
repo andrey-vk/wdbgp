@@ -151,7 +151,11 @@ func (p *Peer) connectAndRun() error {
 	p.conn = conn
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); p.conn = nil; p.mu.Unlock() }()
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
+	}()
 
 	// Deadlines for read/write
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -240,7 +244,7 @@ func (p *Peer) connectAndRun() error {
 	case *KeepaliveMessage:
 		// All good, established
 	case *NotificationMessage:
-		nm := msg.(*NotificationMessage)
+		nm := msg.(*NotificationMessage) //nolint:errcheck // guarded by type switch
 		return fmt.Errorf("received notification: code=%d sub=%d", nm.ErrorCode, nm.ErrorSubcode)
 	default:
 		p.sendNotification(conn, 5, 0, nil) // FSM error
@@ -308,7 +312,7 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 		case *UpdateMessage:
 			// Invoke route callback if set
 			if p.routeCB != nil {
-				upd := msg.(*UpdateMessage)
+				upd := msg.(*UpdateMessage) //nolint:errcheck // guarded by type switch
 				nlri := upd.NLRI
 				// Extract NLRI from MP_REACH attributes for IPv6 (RFC 4760).
 				for _, attr := range upd.PathAttributes {
@@ -319,7 +323,7 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 				p.routeCB(nlri)
 			}
 		case *NotificationMessage:
-			nm := msg.(*NotificationMessage)
+			nm := msg.(*NotificationMessage) //nolint:errcheck // guarded by type switch
 			return fmt.Errorf("received notification: code=%d sub=%d", nm.ErrorCode, nm.ErrorSubcode)
 		}
 	}
@@ -333,7 +337,11 @@ func (p *Peer) Accept(conn net.Conn) {
 	p.conn = conn
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); p.conn = nil; p.mu.Unlock() }()
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
+	}()
 
 	// Receive OPEN first (passive side)
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -365,7 +373,9 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	}
 	if remoteASN != p.cfg.ASN {
 		p.sendNotification(conn, 2, 2, nil)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	}
 
@@ -384,14 +394,18 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 			// and OPEN password is not validated. Accept silently.
 		} else if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
 			p.logger.Error("accept: tcp md5 set failed", "error", err)
-			conn.Close()
+			if err := conn.Close(); err != nil {
+				p.logger.Debug("close connection", "error", err)
+			}
 			return
 		}
 		// Fallback: validate password from OPEN message when TCP MD5
 		// is skipped (e.g., on loopback where MD5 is not enforced).
 		if remoteIP.IsLoopback() && openIn.Password != p.cfg.Password {
 			p.sendNotification(conn, 5, 0, nil)
-			conn.Close()
+			if err := conn.Close(); err != nil {
+				p.logger.Debug("close connection", "error", err)
+			}
 			return
 		}
 	}
@@ -419,7 +433,9 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		p.logger.Error("accept: write open", "error", err)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	}
 	p.setState(StateOpenSent)
@@ -428,7 +444,9 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	ka := &KeepaliveMessage{}
 	if _, err := conn.Write(ka.Serialize()); err != nil {
 		p.logger.Error("accept: write keepalive", "error", err)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	}
 	p.setState(StateOpenConfirm)
@@ -438,20 +456,26 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	msg, err := ReadMessage(conn)
 	if err != nil {
 		p.logger.Error("accept: read keepalive", "error", err)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	}
 	switch msg.(type) {
 	case *KeepaliveMessage:
 		// established
 	case *NotificationMessage:
-		nm := msg.(*NotificationMessage)
+		nm := msg.(*NotificationMessage) //nolint:errcheck // guarded by type switch
 		p.logger.Error("accept: received notification", "code", nm.ErrorCode, "sub", nm.ErrorSubcode)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	default:
 		p.sendNotification(conn, 5, 0, nil)
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		return
 	}
 
@@ -471,7 +495,9 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 		p.logger.Error("main loop error", "error", err)
 	}
 	p.setState(StateIdle)
-	conn.Close()
+	if err := conn.Close(); err != nil {
+		p.logger.Debug("close connection", "error", err)
+	}
 }
 
 // sendNotification sends a BGP NOTIFICATION message.
@@ -481,7 +507,9 @@ func (p *Peer) sendNotification(conn net.Conn, code, subcode uint8, data []byte)
 		ErrorSubcode: subcode,
 		Data:         data,
 	}
-	conn.Write(notif.Serialize())
+	if _, err := conn.Write(notif.Serialize()); err != nil {
+		p.logger.Debug("send notification write", "error", err)
+	}
 	// Write error is intentionally ignored — the session is being torn down
 	// and the connection may already be closed by the peer.
 }
@@ -490,7 +518,9 @@ func (p *Peer) Stop() {
 	p.stopping.Store(true)
 	p.mu.Lock()
 	if p.conn != nil {
-		p.conn.Close()
+		if err := p.conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
+		}
 		p.conn = nil
 	}
 	p.mu.Unlock()

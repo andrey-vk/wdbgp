@@ -70,7 +70,7 @@ ORDER BY 1, 2`)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type selectedUser struct {
 		filterMode string
 		routes     []userRoute
@@ -264,7 +264,7 @@ func (s *Store) allUserRouteFilters(ctx context.Context) (map[int64]RouteFilters
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	filtersMap := make(map[int64]RouteFilters)
 	for rows.Next() {
@@ -401,7 +401,7 @@ func readRouteFilters(ctx context.Context, db queryer, query string, args ...any
 	if err != nil {
 		return RouteFilters{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var filters RouteFilters
 	for rows.Next() {
 		var action, cidr string

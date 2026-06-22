@@ -3,6 +3,7 @@ package bgp
 import (
 	"context"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -72,7 +73,9 @@ func (s *Speaker) Start(ctx context.Context) error {
 		// Set TCP MD5 on listener BEFORE accepting connections so the
 		// kernel enforces MD5 during the TCP handshake (RFC 2385).
 		if err := applyListenerMD5(s.listener, s.peerConfigs); err != nil {
-			s.listener.Close()
+			if cerr := s.listener.Close(); cerr != nil {
+				log.Printf("DEBUG: close listener: %v", cerr)
+			}
 			s.listener = nil
 			return fmt.Errorf("tcp md5 on listener failed: %w", err)
 		}
@@ -93,7 +96,9 @@ func (s *Speaker) Stop() error {
 		s.cancel()
 	}
 	if s.listener != nil {
-		s.listener.Close()
+		if err := s.listener.Close(); err != nil {
+			log.Printf("DEBUG: close listener: %v", err)
+		}
 		s.listener = nil
 	}
 	s.mu.Lock()
@@ -253,12 +258,16 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 	msg, err := ReadMessage(conn)
 	if err != nil {
-		conn.Close()
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("DEBUG: close: %v", cerr)
+		}
 		return
 	}
 	open, ok := msg.(*OpenMessage)
 	if !ok {
-		conn.Close()
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("DEBUG: close: %v", cerr)
+		}
 		return
 	}
 	remoteASN := open.MyASN32
@@ -284,7 +293,9 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 
 	if !ok {
 		s.logger.Warn("unknown peer", "addr", addr, "asn", remoteASN)
-		conn.Close()
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("DEBUG: close: %v", cerr)
+		}
 		return
 	}
 
@@ -294,7 +305,9 @@ func (s *Speaker) handleConnection(conn net.Conn) {
 	if peer.hasEstablishedConn() {
 		s.logger.Warn("duplicate connection rejected, peer session in progress",
 			"addr", addr, "asn", remoteASN)
-		conn.Close()
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("DEBUG: close: %v", cerr)
+		}
 		return
 	}
 

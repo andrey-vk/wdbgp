@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 )
 
 // SRS binary format constants.
@@ -86,7 +87,11 @@ func ParseSRS(ctx context.Context, data []byte, cfgJSON string) ([]canonicalEntr
 	if err != nil {
 		return nil, fmt.Errorf("srs: zlib decompress: %w", err)
 	}
-	defer zr.Close()
+	defer func() {
+		if err := zr.Close(); err != nil {
+			log.Printf("DEBUG: close zlib reader: %v", err)
+		}
+	}()
 	cr := &countReader{r: zr, limit: maxDecompressedSRS}
 
 	ruleCount, err := binary.ReadUvarint(&byteReader{r: cr})
