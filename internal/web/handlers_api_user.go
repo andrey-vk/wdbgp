@@ -192,7 +192,7 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set session cookie
-	secure := r.TLS != nil
+	secure := s.adminCookieSecure(r)
 	maxAge := s.cfg.SessionMaxAge
 	if maxAge <= 0 {
 		maxAge = 28800 // 8 hours default
