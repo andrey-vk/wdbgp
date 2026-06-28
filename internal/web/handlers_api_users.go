@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -705,13 +706,26 @@ func (s *Server) apiAdminUserCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build sets of visible categories/services from catalog
+	visibleCats := make(map[string]bool)
+	visibleSvcs := make(map[string]bool)
+	for cat, svcList := range catalog {
+		visibleCats[cat] = true
+		for _, svc := range svcList {
+			visibleSvcs[cat+"|"+svc] = true
+		}
+	}
 	catList := make([]string, 0, len(categories))
 	for c := range categories {
-		catList = append(catList, c)
+		if visibleCats[c] {
+			catList = append(catList, c)
+		}
 	}
 	svcList := make([]store.ServiceKey, 0, len(services))
 	for k := range services {
-		svcList = append(svcList, k)
+		if visibleSvcs[k.Category+"|"+k.Service] {
+			svcList = append(svcList, k)
+		}
 	}
 
 	prefixCountsV4, prefixCountsV6, err := s.store.PrefixCounts(r.Context(), modeID)
@@ -748,9 +762,16 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 	}
 
 	var body struct {
-		Categories []string           `json:"categories"`
-		Services   []store.ServiceKey `json:"services"`
-		ModeID     int64              `json:"mode_id"`
+		Categories []struct {
+			Category string `json:"category"`
+			Checked  bool   `json:"checked"`
+		} `json:"categories"`
+		Services []struct {
+			Category string `json:"category"`
+			Service  string `json:"service"`
+			Checked  bool   `json:"checked"`
+		} `json:"services"`
+		ModeID int64 `json:"mode_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid body"})
@@ -772,7 +793,40 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 		modeID = body.ModeID
 	}
 
-	if err := s.store.SetUserCatalogModeSelection(r.Context(), id, modeID, false, body.Categories, body.Services); err != nil {
+	err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
+		for _, c := range body.Categories {
+			if c.Checked {
+				if _, err := tx.ExecContext(r.Context(),
+					"INSERT OR IGNORE INTO selected_categories(user_id, mode_id, category) VALUES (?, ?, ?)",
+					id, modeID, c.Category); err != nil {
+					return err
+				}
+			} else {
+				if _, err := tx.ExecContext(r.Context(),
+					"DELETE FROM selected_categories WHERE user_id = ? AND mode_id = ? AND category = ?",
+					id, modeID, c.Category); err != nil {
+					return err
+				}
+			}
+		}
+		for _, s := range body.Services {
+			if s.Checked {
+				if _, err := tx.ExecContext(r.Context(),
+					"INSERT OR IGNORE INTO selected_services(user_id, mode_id, category, service) VALUES (?, ?, ?, ?)",
+					id, modeID, s.Category, s.Service); err != nil {
+					return err
+				}
+			} else {
+				if _, err := tx.ExecContext(r.Context(),
+					"DELETE FROM selected_services WHERE user_id = ? AND mode_id = ? AND category = ? AND service = ?",
+					id, modeID, s.Category, s.Service); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
@@ -809,9 +863,16 @@ func (s *Server) apiAdminUserCountPrefixes(w http.ResponseWriter, r *http.Reques
 	}
 
 	var body struct {
-		Categories []string           `json:"categories"`
-		Services   []store.ServiceKey `json:"services"`
-		ModeID     int64              `json:"mode_id"`
+		Categories []struct {
+			Category string `json:"category"`
+			Checked  bool   `json:"checked"`
+		} `json:"categories"`
+		Services []struct {
+			Category string `json:"category"`
+			Service  string `json:"service"`
+			Checked  bool   `json:"checked"`
+		} `json:"services"`
+		ModeID int64 `json:"mode_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid body"})
@@ -823,8 +884,22 @@ func (s *Server) apiAdminUserCountPrefixes(w http.ResponseWriter, r *http.Reques
 		modeID = body.ModeID
 	}
 
+	// Extract checked items for prefix counting
+	catList := make([]string, 0)
+	for _, c := range body.Categories {
+		if c.Checked {
+			catList = append(catList, c.Category)
+		}
+	}
+	svcList := make([]store.ServiceKey, 0)
+	for _, s := range body.Services {
+		if s.Checked {
+			svcList = append(svcList, store.ServiceKey{Category: s.Category, Service: s.Service})
+		}
+	}
+
 	// Count prefixes for the proposed selection
-	newV4, newV6, err := s.store.CountPrefixes(r.Context(), modeID, body.Categories, body.Services, id)
+	newV4, newV6, err := s.store.CountPrefixes(r.Context(), modeID, catList, svcList, id)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return

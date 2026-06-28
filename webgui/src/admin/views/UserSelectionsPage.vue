@@ -241,13 +241,21 @@ async function fetchCounts(): Promise<void> {
 }
 
 function buildSelectionPayload() {
-  return {
-    categories: Array.from(checkedCategories.value),
-    services: Array.from(checkedServices.value).map((key) => {
-      const idx = key.indexOf('::')
-      return { category: key.slice(0, idx), service: key.slice(idx + 2) }
-    }),
+  const categories: { category: string; checked: boolean }[] = []
+  const services: { category: string; service: string; checked: boolean }[] = []
+
+  for (const cat of Object.keys(catalog.value)) {
+    categories.push({ category: cat, checked: checkedCategories.value.has(cat) })
+    for (const svc of (catalog.value[cat] || []) as string[]) {
+      services.push({
+        category: cat,
+        service: svc,
+        checked: isServiceChecked(svc, cat),
+      })
+    }
   }
+
+  return { categories, services }
 }
 
 // ── Save ────────────────────────────────────────────────────

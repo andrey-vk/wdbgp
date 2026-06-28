@@ -1085,7 +1085,7 @@ func TestUsersPartialUpdateDoubleToggleNoPassword(t *testing.T) {
 
 // =============================================================================
 // TestAdminSaveSelectionsPreservesHidden — admin saves selections, disabled feed
-// items are preserved (SetVisibleUserModeSelection re-adds hidden selections).
+// items are preserved (per-item INSERT/DELETE leaves unmentioned items unchanged).
 // =============================================================================
 
 func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
@@ -1147,7 +1147,7 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 	cfg := testConfig()
 
 	// 6. Save selections for both via admin endpoint
-	body := fmt.Sprintf(`{"categories":["Cat1","Cat2"],"services":[{"category":"Cat1","service":"Svc1"},{"category":"Cat2","service":"Svc2"}],"mode_id":%d}`, modeID)
+	body := fmt.Sprintf(`{"categories":[{"category":"Cat1","checked":true},{"category":"Cat2","checked":true}],"services":[{"category":"Cat1","service":"Svc1","checked":true},{"category":"Cat2","service":"Svc2","checked":true}],"mode_id":%d}`, modeID)
 	req := httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d/selections", userID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", fmt.Sprintf("%d", userID))
@@ -1163,8 +1163,8 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 		t.Fatalf("disable f2: %v", err)
 	}
 
-	// 8. Call admin save again with ONLY Cat1::Svc1
-	body = fmt.Sprintf(`{"categories":["Cat1"],"services":[{"category":"Cat1","service":"Svc1"}],"mode_id":%d}`, modeID)
+	// 8. Call admin save again with ONLY Cat1::Svc1 (Cat2 not in payload — preserved by omission)
+	body = fmt.Sprintf(`{"categories":[{"category":"Cat1","checked":true}],"services":[{"category":"Cat1","service":"Svc1","checked":true}],"mode_id":%d}`, modeID)
 	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d/selections", userID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", fmt.Sprintf("%d", userID))
