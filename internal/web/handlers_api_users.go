@@ -190,6 +190,11 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if body.PeerASN == 0 {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Peer ASN is required"})
+		return
+	}
+
 	user := store.User{
 		Name:            body.Name,
 		PeerIP:          body.PeerIP,
@@ -366,6 +371,11 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		current.Networks = *body.Networks
+	}
+
+	if body.PeerASN != nil && *body.PeerASN == 0 {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Peer ASN cannot be zero"})
+		return
 	}
 
 	// Validate name if provided
