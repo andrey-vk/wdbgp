@@ -364,3 +364,48 @@ func (s *Server) apiUserCountPrefixes(w http.ResponseWriter, r *http.Request) {
 		"delta_v6": newV6 - curV6,
 	})
 }
+
+// apiUserSwitchMode handles PUT /api/user/mode.
+// Changes the user's catalog mode. Only allowed if catalog_editable.
+func (s *Server) apiUserSwitchMode(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	if !user.CatalogEditable {
+		writeJSON(w, http.StatusForbidden, apiResponse{OK: false, Error: "Catalog mode switching is disabled for this user"})
+		return
+	}
+	var body struct {
+		ModeID int64 `json:"mode_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
+		return
+	}
+	if body.ModeID <= 0 {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
+		return
+	}
+	// Verify mode exists and is enabled
+	mode, err := s.store.CatalogMode(r.Context(), body.ModeID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode not found"})
+		return
+	}
+	if !mode.Enabled {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode is disabled"})
+		return
+	}
+	// Update user's catalog_mode_id
+	err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
+		_, execErr := tx.ExecContext(r.Context(),
+			"UPDATE users SET catalog_mode_id = ? WHERE id = ?", body.ModeID, user.ID)
+		return execErr
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to update catalog mode"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}

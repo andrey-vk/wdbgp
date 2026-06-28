@@ -118,6 +118,7 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	mux.HandleFunc("POST /api/user/logout", server.apiUserLogout)
 	mux.HandleFunc("GET /api/user/me", server.requireUser(server.apiUserMe))
 	mux.HandleFunc("POST /api/user/selections", server.requireUser(server.apiUserSaveSelections))
+	mux.HandleFunc("PUT /api/user/mode", server.requireUser(server.apiUserSwitchMode))
 	mux.HandleFunc("POST /api/user/filters", server.requireUser(server.apiUserSaveFilters))
 	mux.HandleFunc("POST /api/user/count-prefixes", server.requireUser(server.apiUserCountPrefixes))
 

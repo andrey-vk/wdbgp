@@ -227,13 +227,13 @@ async function reloadUserData(): Promise<void> {
 // ── Mode switch ─────────────────────────────────────────────
 async function switchMode(modeId: number): Promise<void> {
   if (modeId === selectedModeId.value) return
-  selectedModeId.value = modeId
   try {
-    await userApi.post('/user/selections', { mode_id: modeId })
+    await userApi.put('/user/mode', { mode_id: modeId })
+    selectedModeId.value = modeId
     await reloadUserData()
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch {
-    toast.add({ severity: 'error', summary: 'Error', life: 5000 })
+    toast.add({ severity: 'error', summary: t('user.save_error'), life: 5000 })
   }
 }
 
