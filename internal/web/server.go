@@ -292,29 +292,45 @@ func (s *Server) adminSpaHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // userSpaHandler serves the Vue user SPA at root.
-// It tries to serve the exact file from dist/ first; if not found,
-// falls back to user.html for client-side Vue Router navigation.
+// Uses http.FileServer for static files (CodeQL-safe via http.Dir path sanitization)
+// and falls back to user.html for client-side Vue Router navigation.
 func (s *Server) userSpaHandler(w http.ResponseWriter, r *http.Request) {
 	if _, err := os.Stat(spaDistDir); os.IsNotExist(err) {
 		http.Error(w, "SPA build directory not found", http.StatusServiceUnavailable)
 		return
 	}
 
-	// Try to serve the exact requested file from dist/
-	filePath := filepath.Clean(filepath.Join(spaDistDir, filepath.Clean(r.URL.Path)))
-	cleanBase := filepath.Clean(spaDistDir)
-	if !strings.HasPrefix(filePath, cleanBase+string(os.PathSeparator)) && filePath != cleanBase {
-		http.Error(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+	catcher := &notFoundCatcher{ResponseWriter: w}
+	http.FileServer(http.Dir(spaDistDir)).ServeHTTP(catcher, r)
+	if catcher.notFound {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeFile(w, r, filePath)
+		http.ServeFile(w, r, filepath.Join(spaDistDir, "user.html"))
+	}
+}
+
+// notFoundCatcher intercepts 404 responses for SPA fallback.
+type notFoundCatcher struct {
+	http.ResponseWriter
+	headerWritten bool
+	notFound      bool
+}
+
+func (c *notFoundCatcher) WriteHeader(code int) {
+	if c.headerWritten {
 		return
 	}
+	c.headerWritten = true
+	if code == http.StatusNotFound {
+		c.notFound = true
+		return
+	}
+	c.ResponseWriter.WriteHeader(code)
+}
 
-	// SPA fallback: serve user.html for client-side routing
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	http.ServeFile(w, r, filepath.Join(spaDistDir, "user.html"))
+func (c *notFoundCatcher) Write(b []byte) (int, error) {
+	if c.notFound {
+		return len(b), nil
+	}
+	return c.ResponseWriter.Write(b)
 }
