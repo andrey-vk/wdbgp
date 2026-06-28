@@ -18,9 +18,9 @@ import '@/assets/styles.scss';
 
 const app = createApp(App);
 
-app.use(router);
 const pinia = createPinia();
 app.use(pinia);
+app.use(router);
 const themeStore = useThemeStore();
 themeStore.applyTheme();
 app.use(i18n);
