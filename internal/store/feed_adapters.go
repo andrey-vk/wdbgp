@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 )
 
@@ -317,7 +318,7 @@ func (s *Store) ForkAdapter(ctx context.Context, sourceID int64) (FeedAdapter, e
 	if err != nil {
 		return FeedAdapter{}, fmt.Errorf("load source adapter: %w", err)
 	}
-	suffix, err := s.maxForkedAdapterSuffix(ctx, src.Key)
+	suffix, err := s.maxForkedAdapterSuffix(ctx, src.Key, src.Name)
 	if err != nil {
 		return FeedAdapter{}, fmt.Errorf("compute fork suffix: %w", err)
 	}
@@ -402,8 +403,32 @@ ORDER BY name`, key)
 	return adapters, rows.Err()
 }
 
-func (s *Store) maxForkedAdapterSuffix(ctx context.Context, forkedFrom string) (int, error) {
-	var count int
-	err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM feed_adapters WHERE forked_from = ?", forkedFrom).Scan(&count)
-	return count, err
+func (s *Store) maxForkedAdapterSuffix(ctx context.Context, forkedFrom string, srcName string) (int, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT name FROM feed_adapters WHERE forked_from = ? AND name LIKE ?",
+		forkedFrom, srcName+"_copy_%")
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
+	maxSuffix := 0
+	prefix := "_copy_"
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return 0, err
+		}
+		idx := strings.LastIndex(name, prefix)
+		if idx >= 0 {
+			numStr := name[idx+len(prefix):]
+			if n, err := strconv.Atoi(numStr); err == nil && n > maxSuffix {
+				maxSuffix = n
+			}
+		}
+	}
+	return maxSuffix, rows.Err()
 }

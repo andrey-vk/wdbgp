@@ -157,3 +157,83 @@ func TestNonBuiltinCannotReset(t *testing.T) {
 		t.Fatal("expected error resetting custom adapter")
 	}
 }
+
+func TestMaxForkedAdapterSuffix(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "maxsuffix.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("close: %v", err)
+		}
+	}()
+	ctx := context.Background()
+
+	// Find a built-in adapter
+	adapters, err := db.FeedAdapters(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var builtin FeedAdapter
+	for _, a := range adapters {
+		if a.BuiltIn {
+			builtin = a
+			break
+		}
+	}
+	if builtin.ID == 0 {
+		t.Fatal("no built-in adapter")
+	}
+
+	// Should return 0 when no forks exist
+	suffix, err := db.maxForkedAdapterSuffix(ctx, builtin.Key, builtin.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if suffix != 0 {
+		t.Fatalf("expected suffix 0, got %d", suffix)
+	}
+
+	// Create a fork with _copy_1 suffix
+	if _, err := db.AddFeedAdapter(ctx, FeedAdapter{
+		Name:          builtin.Name + "_copy_1",
+		Source:        builtin.Source,
+		Language:      builtin.Language,
+		APIVersion:    builtin.APIVersion,
+		ForkedFrom:    builtin.Key,
+		ForkedVersion: builtin.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now suffix should be 1
+	suffix, err = db.maxForkedAdapterSuffix(ctx, builtin.Key, builtin.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if suffix != 1 {
+		t.Fatalf("expected suffix 1, got %d", suffix)
+	}
+
+	// Create another fork with _copy_5 suffix
+	if _, err := db.AddFeedAdapter(ctx, FeedAdapter{
+		Name:          builtin.Name + "_copy_5",
+		Source:        builtin.Source,
+		Language:      builtin.Language,
+		APIVersion:    builtin.APIVersion,
+		ForkedFrom:    builtin.Key,
+		ForkedVersion: builtin.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now suffix should be 5 (max of 1 and 5)
+	suffix, err = db.maxForkedAdapterSuffix(ctx, builtin.Key, builtin.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if suffix != 5 {
+		t.Fatalf("expected suffix 5, got %d", suffix)
+	}
+}
