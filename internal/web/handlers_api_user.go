@@ -96,19 +96,32 @@ func (s *Server) apiUserMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Selections
+	// Selections — only include items visible in the catalog (enabled feeds)
 	categories, services, err := s.store.UserModeSelection(ctx, user.ID, user.CatalogModeID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	catList := make([]string, 0, len(categories))
-	for c := range categories {
-		catList = append(catList, c)
+	// Build sets of visible categories/services from catalog
+	visibleCats := make(map[string]bool)
+	visibleSvcs := make(map[string]bool)
+	for cat, svcList := range catalog {
+		visibleCats[cat] = true
+		for _, svc := range svcList {
+			visibleSvcs[cat+"|"+svc] = true
+		}
 	}
-	svcList := make([]store.ServiceKey, 0, len(services))
+	catList := make([]string, 0)
+	for c := range categories {
+		if visibleCats[c] {
+			catList = append(catList, c)
+		}
+	}
+	svcList := make([]store.ServiceKey, 0)
 	for k := range services {
-		svcList = append(svcList, k)
+		if visibleSvcs[k.Category+"|"+k.Service] {
+			svcList = append(svcList, k)
+		}
 	}
 
 	// Communities
@@ -199,17 +212,59 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	setUserSessionCookie(w, user.ID, s.cfg.SessionSecret, maxAge, secure)
 
-	writeJSON(w, http.StatusOK, userPublic{
-		ID:              user.ID,
-		Name:            user.Name,
-		CatalogModeID:   user.CatalogModeID,
-		CatalogModeName: user.CatalogModeName,
-		SelectionLocked: user.SelectionLocked,
-		FilterEditable:  user.FilterEditable,
-		FilterOverride:  user.FilterOverride,
-		FilterMode:      user.FilterMode,
-		CatalogEditable: user.CatalogEditable,
-		Networks:        user.Networks,
+	// Load catalog and filtered selections for the response
+	loginCatalog, err := s.store.CatalogForMode(ctx, user.CatalogModeID, false)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	loginCategories, loginServices, err := s.store.UserModeSelection(ctx, user.ID, user.CatalogModeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	visibleCats := make(map[string]bool)
+	visibleSvcs := make(map[string]bool)
+	for cat, svcList := range loginCatalog {
+		visibleCats[cat] = true
+		for _, svc := range svcList {
+			visibleSvcs[cat+"|"+svc] = true
+		}
+	}
+	loginCatList := make([]string, 0)
+	for c := range loginCategories {
+		if visibleCats[c] {
+			loginCatList = append(loginCatList, c)
+		}
+	}
+	loginSvcList := make([]store.ServiceKey, 0)
+	for k := range loginServices {
+		if visibleSvcs[k.Category+"|"+k.Service] {
+			loginSvcList = append(loginSvcList, k)
+		}
+	}
+	loginFilters, err := s.store.UserRouteFilters(ctx, user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user": userPublic{
+			ID:              user.ID,
+			Name:            user.Name,
+			CatalogModeID:   user.CatalogModeID,
+			CatalogModeName: user.CatalogModeName,
+			SelectionLocked: user.SelectionLocked,
+			FilterEditable:  user.FilterEditable,
+			FilterOverride:  user.FilterOverride,
+			FilterMode:      user.FilterMode,
+			CatalogEditable: user.CatalogEditable,
+			Networks:        user.Networks,
+		},
+		"catalog":    loginCatalog,
+		"selections": map[string]any{"categories": loginCatList, "services": loginSvcList},
+		"filters":    loginFilters,
 	})
 }
 
@@ -245,8 +300,15 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Categories []string           `json:"categories"`
-		Services   []store.ServiceKey `json:"services"`
+		Categories []struct {
+			Category string `json:"category"`
+			Checked  bool   `json:"checked"`
+		} `json:"categories"`
+		Services []struct {
+			Category string `json:"category"`
+			Service  string `json:"service"`
+			Checked  bool   `json:"checked"`
+		} `json:"services"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
@@ -254,7 +316,37 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err := s.store.Transaction(ctx, func(tx *sql.Tx) error {
-		return store.SetUserModeSelection(ctx, tx, user.ID, user.CatalogModeID, body.Categories, body.Services)
+		for _, c := range body.Categories {
+			if c.Checked {
+				if _, err := tx.ExecContext(ctx,
+					"INSERT OR IGNORE INTO selected_categories(user_id, mode_id, category) VALUES (?, ?, ?)",
+					user.ID, user.CatalogModeID, c.Category); err != nil {
+					return err
+				}
+			} else {
+				if _, err := tx.ExecContext(ctx,
+					"DELETE FROM selected_categories WHERE user_id = ? AND mode_id = ? AND category = ?",
+					user.ID, user.CatalogModeID, c.Category); err != nil {
+					return err
+				}
+			}
+		}
+		for _, s := range body.Services {
+			if s.Checked {
+				if _, err := tx.ExecContext(ctx,
+					"INSERT OR IGNORE INTO selected_services(user_id, mode_id, category, service) VALUES (?, ?, ?, ?)",
+					user.ID, user.CatalogModeID, s.Category, s.Service); err != nil {
+					return err
+				}
+			} else {
+				if _, err := tx.ExecContext(ctx,
+					"DELETE FROM selected_services WHERE user_id = ? AND mode_id = ? AND category = ? AND service = ?",
+					user.ID, user.CatalogModeID, s.Category, s.Service); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
@@ -318,16 +410,37 @@ func (s *Server) apiUserCountPrefixes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Categories []string           `json:"categories"`
-		Services   []store.ServiceKey `json:"services"`
+		Categories []struct {
+			Category string `json:"category"`
+			Checked  bool   `json:"checked"`
+		} `json:"categories"`
+		Services []struct {
+			Category string `json:"category"`
+			Service  string `json:"service"`
+			Checked  bool   `json:"checked"`
+		} `json:"services"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
 
+	// Extract checked items for prefix counting
+	catList := make([]string, 0)
+	for _, c := range body.Categories {
+		if c.Checked {
+			catList = append(catList, c.Category)
+		}
+	}
+	svcList := make([]store.ServiceKey, 0)
+	for _, s := range body.Services {
+		if s.Checked {
+			svcList = append(svcList, store.ServiceKey{Category: s.Category, Service: s.Service})
+		}
+	}
+
 	// Count prefixes for the proposed selection
-	newV4, newV6, err := s.store.CountPrefixes(ctx, user.CatalogModeID, body.Categories, body.Services, user.ID)
+	newV4, newV6, err := s.store.CountPrefixes(ctx, user.CatalogModeID, catList, svcList, user.ID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
