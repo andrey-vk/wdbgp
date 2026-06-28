@@ -248,7 +248,6 @@ func printStats(ctx context.Context, db *store.Store) error {
 			"name", feed.Name,
 			"status", status,
 			"enabled", feed.Enabled,
-			"mode_id", feed.ModeID,
 		)
 	}
 	return nil

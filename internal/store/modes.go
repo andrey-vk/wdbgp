@@ -143,7 +143,6 @@ ORDER BY f.id`, modeID)
 	var feeds []Feed
 	for rows.Next() {
 		var feed Feed
-		feed.ModeID = modeID
 		if err := rows.Scan(
 			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
 			&feed.Enabled, &feed.SyncInterval, &feed.Data,

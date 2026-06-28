@@ -16,7 +16,7 @@ import FormField from '@/components/FormField.vue'
 
 interface Feed {
   id: number; name: string; url: string; enabled: boolean
-  sync_interval: number; mode_id: number;
+  sync_interval: number;
   adapter_id: number;
   allowed_hosts: string; restrict_hosts: boolean
   data?: string

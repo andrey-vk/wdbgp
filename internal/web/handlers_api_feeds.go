@@ -16,7 +16,6 @@ type feedJSON struct {
 	Enabled       bool   `json:"enabled"`
 	SyncInterval  int64  `json:"sync_interval"`
 	Data          string `json:"data,omitempty"`
-	ModeID        int64  `json:"mode_id"`
 	AdapterID     int64  `json:"adapter_id"`
 	AllowedHosts  string `json:"allowed_hosts"`
 	RestrictHosts bool   `json:"restrict_hosts"`
@@ -28,7 +27,7 @@ func feedToJSON(f store.Feed) feedJSON {
 	return feedJSON{
 		ID: f.ID, Name: f.Name, URL: f.URL, Enabled: f.Enabled,
 		SyncInterval: int64(f.SyncInterval), Data: f.Data,
-		ModeID: f.ModeID, AdapterID: f.AdapterID,
+		AdapterID: f.AdapterID,
 		AllowedHosts: f.AllowedHosts, RestrictHosts: f.RestrictHosts,
 		LastSuccess: f.LastSuccess, LastError: f.LastError,
 	}
@@ -73,7 +72,6 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 		Enabled       bool   `json:"enabled"`
 		SyncInterval  int64  `json:"sync_interval"`
 		Data          string `json:"data"`
-		ModeID        int64  `json:"mode_id"`
 		AdapterID     int64  `json:"adapter_id"`
 		AllowedHosts  string `json:"allowed_hosts"`
 		RestrictHosts bool   `json:"restrict_hosts"`
@@ -82,7 +80,7 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	id, err := s.store.AddFeedForModeAdapter(r.Context(), body.Name, body.URL, body.ModeID, body.AdapterID, body.Enabled, int(body.SyncInterval), body.Data, body.AllowedHosts, body.RestrictHosts)
+	id, err := s.store.AddFeedForModeAdapter(r.Context(), body.Name, body.URL, 0, body.AdapterID, body.Enabled, int(body.SyncInterval), body.Data, body.AllowedHosts, body.RestrictHosts)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
@@ -108,7 +106,6 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		Enabled       bool   `json:"enabled"`
 		SyncInterval  int64  `json:"sync_interval"`
 		Data          string `json:"data"`
-		ModeID        int64  `json:"mode_id"`
 		AdapterID     int64  `json:"adapter_id"`
 		AllowedHosts  string `json:"allowed_hosts"`
 		RestrictHosts bool   `json:"restrict_hosts"`
@@ -120,7 +117,7 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 	f := store.Feed{
 		ID: id, Name: body.Name, URL: body.URL, Enabled: body.Enabled,
 		SyncInterval: int(body.SyncInterval), Data: body.Data,
-		ModeID: body.ModeID, AdapterID: body.AdapterID,
+		AdapterID: body.AdapterID,
 		AllowedHosts: body.AllowedHosts, RestrictHosts: body.RestrictHosts,
 	}
 	if err := s.store.UpdateFeed(r.Context(), f); err != nil {

@@ -11,7 +11,6 @@ type Feed struct {
 	ID            int64
 	Name          string
 	URL           string
-	ModeID        int64
 	AdapterID     int64
 	Enabled       bool
 	SyncInterval  int
@@ -24,7 +23,6 @@ type Feed struct {
 
 func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	query := `SELECT f.id, f.name, f.url,
-	                 COALESCE((SELECT cmf.mode_id FROM catalog_mode_feeds cmf WHERE cmf.feed_id = f.id LIMIT 1), 0) as mode_id,
 	                 f.adapter_id, f.enabled,
 	                 COALESCE(f.sync_interval, 0),
 	                 COALESCE(f.data, ''),
@@ -52,7 +50,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	for rows.Next() {
 		var feed Feed
 		if err := rows.Scan(
-			&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
+			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
 			&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.AllowedHosts, &feed.RestrictHosts,
 			&feed.LastSuccess, &feed.LastError,
 		); err != nil {
@@ -67,7 +65,6 @@ func (s *Store) Feed(ctx context.Context, id int64) (Feed, error) {
 	var feed Feed
 	err := s.DB.QueryRowContext(ctx, `
 SELECT id, name, url,
-       COALESCE((SELECT cmf.mode_id FROM catalog_mode_feeds cmf WHERE cmf.feed_id = feeds.id LIMIT 1), 0) as mode_id,
        adapter_id, enabled,
        COALESCE(sync_interval, 0),
        COALESCE(data, ''),
@@ -75,7 +72,7 @@ SELECT id, name, url,
        COALESCE(last_success, ''), COALESCE(last_error, '')
 FROM feeds
 WHERE id = ?`, id).Scan(
-		&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
+		&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
 		&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.AllowedHosts, &feed.RestrictHosts,
 		&feed.LastSuccess, &feed.LastError,
 	)
