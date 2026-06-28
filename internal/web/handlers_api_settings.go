@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -174,7 +175,12 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 				Deny:  splitCIDRs(deny),
 			}
 			if normalized, err := store.NormalizeRouteFilters(filters); err == nil {
-				_ = s.store.SetGlobalRouteFilters(r.Context(), normalized) //nolint:errcheck // best-effort filter update in settings save
+			_ = s.store.SetGlobalRouteFilters(r.Context(), normalized) //nolint:errcheck // best-effort filter update in settings save
+			if s.bgp != nil {
+				if err := s.bgp.Reconcile(r.Context()); err != nil {
+					logging.FromContext(r.Context()).Debug("bgp reconcile failed after global filter change", "error", err)
+				}
+			}
 			}
 		}
 	}
