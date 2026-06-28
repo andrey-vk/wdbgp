@@ -2,8 +2,11 @@ package web
 
 import (
 	"context"
+	"html/template"
 	"net/http"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +17,25 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
+// spaDistDir is the directory containing the Vue SPA production build.
+// Relative to the working directory when the server starts.
+const spaDistDir = "webgui/dist"
+
+const degradedTemplateHTML = `<!DOCTYPE html>
+<html lang="{{.Lang}}">
+<head><meta charset="utf-8"><title>{{.Title}}</title>
+<style>body{font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}
+.card{background:white;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);max-width:500px}
+h1{color:#d32f2f}.lang-switch{margin-top:1rem;font-size:.875rem}</style>
+</head><body><div class=card>
+<h1>{{.Title}}</h1>
+<p>Database schema version <strong>{{.CurrentVersion}}</strong> requires server version <strong>{{.ServerVersion}}</strong> or higher.</p>
+{{if .Reason}}<p>{{.Reason}}</p>{{end}}
+<div class=lang-switch><a href="{{.EnglishURL}}">English</a> · <a href="{{.RussianURL}}">Русский</a></div>
+</div></body></html>`
+
+var degradedTemplate = template.Must(template.New("degraded").Parse(degradedTemplateHTML))
+
 func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Server {
 	defaultLang, ok := parseLocale(cfg.DefaultLanguage)
 	if !ok {
@@ -21,64 +43,83 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	}
 	server := &Server{
 		cfg: cfg, store: s, syncer: syncer, bgp: bgp,
-		defaultLang: defaultLang, templates: compileTemplates(),
-		loginLimiter: newRateLimiter(time.Minute, cfg.RateLimitLogin), // per minute
-		adminLimiter: newRateLimiter(time.Minute, cfg.RateLimitAdmin), // per minute
-		startTime:    time.Now(),
+		defaultLang:        defaultLang,
+		loginLimiter:       newRateLimiter(time.Minute, cfg.RateLimitLogin), // per minute
+		adminLimiter:       newRateLimiter(time.Minute, cfg.RateLimitAdmin), // per minute
+		startTime:          time.Now(),
+		metricsEnabled:     false,
+		metricsHistoryDays: 14,
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", server.userPage)
-	mux.HandleFunc("POST /selection", server.saveOwnSelection)
-	mux.HandleFunc("POST /filters", server.saveOwnFilters)
-	mux.HandleFunc("GET /admin/login", server.loginPage)
-	mux.HandleFunc("POST /admin/login", server.login)
-	mux.HandleFunc("GET /admin", server.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/admin/dashboard", http.StatusSeeOther)
-	}))
-	mux.HandleFunc("GET /admin/dashboard", server.requireAdmin(server.dashboard))
-	mux.HandleFunc("GET /admin/communities", server.requireAdmin(server.communitiesPage))
-	mux.HandleFunc("POST /admin/communities", server.requireAdmin(server.saveCommunities))
-	mux.HandleFunc("POST /admin/communities/reset", server.requireAdmin(server.resetCommunities))
-	mux.HandleFunc("GET /admin/debug/cidr", server.requireAdmin(server.debugCIDRHandler))
-	mux.HandleFunc("GET /admin/debug", server.requireAdmin(server.debugPage))
-	mux.HandleFunc("POST /admin/mode/{id}", server.requireAdmin(server.updateCatalogMode))
-	mux.HandleFunc("GET /admin/modes", server.requireAdmin(server.modesPage))
-	mux.HandleFunc("POST /admin/modes", server.requireAdmin(server.addMode))
-	mux.HandleFunc("POST /admin/modes/{id}", server.requireAdmin(server.updateCatalogMode))
-	mux.HandleFunc("POST /admin/modes/{id}/delete", server.requireAdmin(server.deleteMode))
-	mux.HandleFunc("GET /admin/mode/{id}", server.requireAdmin(server.modeEditPage))
-	mux.HandleFunc("POST /admin/modes/{id}/feeds", server.requireAdmin(server.modeFeedToggle))
-	mux.HandleFunc("GET /admin/feed", server.requireAdmin(server.feedEditPage))
-	mux.HandleFunc("GET /admin/feed/{id}", server.requireAdmin(server.feedEditPage))
-	mux.HandleFunc("POST /admin/feed", server.requireAdmin(server.addFeed))
-	mux.HandleFunc("POST /admin/feed/{id}", server.requireAdmin(server.updateFeed))
-	mux.HandleFunc("POST /admin/feed/{id}/delete", server.requireAdmin(server.deleteFeed))
-	mux.HandleFunc("POST /admin/adapter", server.requireAdmin(server.addFeedAdapter))
-	mux.HandleFunc("GET /admin/adapter/{id}", server.requireAdmin(server.feedAdapterPage))
-	mux.HandleFunc("POST /admin/adapter/{id}", server.requireAdmin(server.updateFeedAdapter))
-	mux.HandleFunc("POST /admin/adapter/{id}/test", server.requireAdmin(server.testFeedAdapter))
-	mux.HandleFunc("POST /admin/adapter/{id}/reset", server.requireAdmin(server.resetFeedAdapter))
-	mux.HandleFunc("POST /admin/adapter/{id}/delete", server.requireAdmin(server.deleteFeedAdapter))
-	mux.HandleFunc("POST /admin/sync", server.requireAdmin(server.syncFeeds))
-	mux.HandleFunc("POST /admin/filters", server.requireAdmin(server.saveGlobalFilters))
-	mux.HandleFunc("POST /admin/user", server.requireAdmin(server.addUser))
-	mux.HandleFunc("GET /admin/user/{id}", server.requireAdmin(server.adminUserPage))
-	mux.HandleFunc("POST /admin/user/{id}", server.requireAdmin(server.saveAdminUser))
-	mux.HandleFunc("POST /admin/user/{id}/delete", server.requireAdmin(server.deleteAdminUser))
-	mux.HandleFunc("POST /admin/logout", server.requireAdmin(server.logout))
-	mux.HandleFunc("GET /login", server.userLoginPage)
-	mux.HandleFunc("POST /login", server.userLogin)
-	mux.HandleFunc("GET /logout", server.userLogout)
-	mux.HandleFunc("POST /selection/count", server.selectionCount)
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /status", server.status)
-	mux.HandleFunc("GET /admin/users", server.requireAdmin(server.usersList))
-	mux.HandleFunc("GET /admin/feeds", server.requireAdmin(server.feedsList))
-	mux.HandleFunc("POST /admin/feeds/{id}/force-sync", server.requireAdmin(server.handleFeedForceSync))
-	mux.HandleFunc("POST /admin/feeds/sync-all", server.requireAdmin(server.handleSyncAll))
-	mux.HandleFunc("GET /admin/adapters", server.requireAdmin(server.adaptersList))
-	mux.HandleFunc("GET /admin/settings", server.requireAdmin(server.settingsPage))
-	mux.HandleFunc("POST /admin/settings", server.requireAdmin(server.saveSettings))
+
+	// === SPA static file serving ===
+	mux.Handle("GET /assets/", http.StripPrefix("/assets/",
+		http.FileServer(http.Dir(spaDistDir+"/assets"))))
+	// Admin SPA at /admin (must be before user catch-all)
+	mux.HandleFunc("GET /admin", server.adminSpaHandler)
+	mux.HandleFunc("GET /admin/{path...}", server.adminSpaHandler)
+
+	// Catch-all for user SPA: any remaining path serves user.html
+	mux.HandleFunc("GET /{path...}", server.userSpaHandler)
+
+	// === API routes ===
+	mux.HandleFunc("POST /api/admin/login", server.apiAdminLogin)
+	mux.HandleFunc("GET /api/admin/me", server.apiRequireAdmin(server.apiAdminMe))
+	mux.HandleFunc("POST /api/admin/logout", server.apiRequireAdmin(server.apiAdminLogout))
+	mux.HandleFunc("GET /api/admin/settings", server.apiRequireAdmin(server.apiSettingsGet))
+	mux.HandleFunc("PUT /api/admin/settings", server.apiRequireAdmin(server.apiSettingsPut))
+	mux.HandleFunc("GET /api/admin/adapters", server.apiRequireAdmin(server.apiAdaptersList))
+	mux.HandleFunc("GET /api/admin/adapters/{id}", server.apiRequireAdmin(server.apiAdaptersGet))
+	mux.HandleFunc("POST /api/admin/adapters", server.apiRequireAdmin(server.apiAdaptersCreate))
+	mux.HandleFunc("PUT /api/admin/adapters/{id}", server.apiRequireAdmin(server.apiAdaptersUpdate))
+	mux.HandleFunc("DELETE /api/admin/adapters/{id}", server.apiRequireAdmin(server.apiAdaptersDelete))
+	mux.HandleFunc("POST /api/admin/adapters/{id}/fork", server.apiRequireAdmin(server.apiAdaptersFork))
+	mux.HandleFunc("POST /api/admin/adapters/{id}/acknowledge", server.apiRequireAdmin(server.apiAdaptersAcknowledge))
+	mux.HandleFunc("GET /api/admin/feeds", server.apiRequireAdmin(server.apiFeedsList))
+	mux.HandleFunc("GET /api/admin/feeds/{id}", server.apiRequireAdmin(server.apiFeedsGet))
+	mux.HandleFunc("POST /api/admin/feeds", server.apiRequireAdmin(server.apiFeedsCreate))
+	mux.HandleFunc("PUT /api/admin/feeds/{id}", server.apiRequireAdmin(server.apiFeedsUpdate))
+	mux.HandleFunc("DELETE /api/admin/feeds/{id}", server.apiRequireAdmin(server.apiFeedsDelete))
+	mux.HandleFunc("POST /api/admin/feeds/{id}/sync", server.apiRequireAdmin(server.apiFeedsSyncOne))
+	mux.HandleFunc("POST /api/admin/feeds/sync-all", server.apiRequireAdmin(server.apiFeedsSyncAll))
+	mux.HandleFunc("GET /api/admin/modes", server.apiRequireAdmin(server.apiModesList))
+	mux.HandleFunc("GET /api/admin/modes/{id}", server.apiRequireAdmin(server.apiModesGet))
+	mux.HandleFunc("POST /api/admin/modes", server.apiRequireAdmin(server.apiModesCreate))
+	mux.HandleFunc("PUT /api/admin/modes/{id}", server.apiRequireAdmin(server.apiModesUpdate))
+	mux.HandleFunc("DELETE /api/admin/modes/{id}", server.apiRequireAdmin(server.apiModesDelete))
+	mux.HandleFunc("GET /api/admin/modes/{id}/feeds", server.apiRequireAdmin(server.apiModeFeedsGet))
+	mux.HandleFunc("PUT /api/admin/modes/{id}/feeds", server.apiRequireAdmin(server.apiModeFeedsSet))
+	mux.HandleFunc("GET /api/admin/modes/{id}/communities", server.apiRequireAdmin(server.apiModeCommunitiesGet))
+	mux.HandleFunc("PUT /api/admin/modes/{id}/communities", server.apiRequireAdmin(server.apiModeCommunitiesPut))
+	mux.HandleFunc("POST /api/admin/modes/{id}/communities/reset", server.apiRequireAdmin(server.apiModeCommunitiesReset))
+	mux.HandleFunc("POST /api/admin/modes/{id}/communities/generate", server.apiRequireAdmin(server.apiModeCommunitiesGenerate))
+
+	mux.HandleFunc("GET /api/admin/users", server.apiRequireAdmin(server.apiUsersList))
+	mux.HandleFunc("GET /api/admin/users/{id}", server.apiRequireAdmin(server.apiUsersGet))
+	mux.HandleFunc("POST /api/admin/users", server.apiRequireAdmin(server.apiUsersCreate))
+	mux.HandleFunc("PUT /api/admin/users/{id}", server.apiRequireAdmin(server.apiUsersUpdate))
+	mux.HandleFunc("DELETE /api/admin/users/{id}", server.apiRequireAdmin(server.apiUsersDelete))
+	mux.HandleFunc("GET /api/admin/users/{id}/credentials", server.apiRequireAdmin(server.apiUserCredentialsList))
+	mux.HandleFunc("PUT /api/admin/users/{id}/credentials", server.apiRequireAdmin(server.apiUserCredentialsSet))
+	mux.HandleFunc("DELETE /api/admin/users/{id}/credentials", server.apiRequireAdmin(server.apiUserCredentialsDelete))
+	mux.HandleFunc("GET /api/admin/users/{id}/peer-state", server.apiRequireAdmin(server.apiUserPeerState))
+	mux.HandleFunc("GET /api/admin/users/statuses", server.apiRequireAdmin(server.apiUserStatuses))
+	mux.HandleFunc("GET /api/admin/users/{id}/catalog", server.apiRequireAdmin(server.apiAdminUserCatalog))
+	mux.HandleFunc("PUT /api/admin/users/{id}/selections", server.apiRequireAdmin(server.apiAdminUserSaveSelections))
+	mux.HandleFunc("POST /api/admin/users/{id}/count-selections", server.apiRequireAdmin(server.apiAdminUserCountPrefixes))
+	mux.HandleFunc("GET /api/admin/dashboard", server.apiRequireAdmin(server.apiDashboard))
+	mux.HandleFunc("GET /api/admin/debug", server.apiRequireAdmin(server.apiDebugCIDR))
+	mux.HandleFunc("POST /api/admin/settings/purge-metrics", server.apiRequireAdmin(server.apiSettingsPurgeMetrics))
+
+	// User API routes (user-facing, cookie-based or IP-based auth)
+	mux.HandleFunc("POST /api/user/login", server.apiUserLogin)
+	mux.HandleFunc("POST /api/user/logout", server.apiUserLogout)
+	mux.HandleFunc("GET /api/user/me", server.requireUser(server.apiUserMe))
+	mux.HandleFunc("POST /api/user/selections", server.requireUser(server.apiUserSaveSelections))
+	mux.HandleFunc("POST /api/user/filters", server.requireUser(server.apiUserSaveFilters))
+	mux.HandleFunc("POST /api/user/count-prefixes", server.requireUser(server.apiUserCountPrefixes))
 
 	// Build middleware chain
 	handler := http.Handler(mux)
@@ -137,6 +178,19 @@ func (s *Server) reloadRuntimeSettings(ctx context.Context) {
 		}
 	} else {
 		s.adminLimiter.SetMax(s.cfg.RateLimitAdmin)
+	}
+
+	// Metrics collection toggle
+	if v, ok := settings["metrics_enabled"]; ok && v != "" {
+		s.metricsEnabled = v == "true"
+	} else {
+		s.metricsEnabled = false
+	}
+	// Metrics history depth
+	if v, ok := settings["metrics_history_days"]; ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			s.metricsHistoryDays = n
+		}
 	}
 }
 
@@ -216,8 +270,46 @@ func (s *Server) degradedHandler(w http.ResponseWriter, r *http.Request) {
 		RussianURL:     russianURL,
 	}
 
-	if err := s.templates[lang]["degraded"].Execute(w, info); err != nil {
+	if err := degradedTemplate.Execute(w, info); err != nil {
 		logger := logging.FromContext(r.Context())
 		logger.Error("failed to render degraded template", "error", err)
 	}
+}
+
+// adminSpaHandler serves the Vue admin SPA at /admin.
+// It tries to serve the exact file from dist/ first; if not found,
+// falls back to admin.html for client-side Vue Router navigation.
+func (s *Server) adminSpaHandler(w http.ResponseWriter, r *http.Request) {
+	if _, err := os.Stat(spaDistDir); os.IsNotExist(err) {
+		http.Error(w, "SPA build directory not found", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Serve admin.html for all admin routes (client-side Vue Router handles the rest)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeFile(w, r, filepath.Join(spaDistDir, "admin.html"))
+}
+
+// userSpaHandler serves the Vue user SPA at root.
+// It tries to serve the exact file from dist/ first; if not found,
+// falls back to user.html for client-side Vue Router navigation.
+func (s *Server) userSpaHandler(w http.ResponseWriter, r *http.Request) {
+	if _, err := os.Stat(spaDistDir); os.IsNotExist(err) {
+		http.Error(w, "SPA build directory not found", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Try to serve the exact requested file from dist/
+	filePath := filepath.Join(spaDistDir, filepath.Clean(r.URL.Path))
+	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFile(w, r, filePath)
+		return
+	}
+
+	// SPA fallback: serve user.html for client-side routing
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	http.ServeFile(w, r, filepath.Join(spaDistDir, "user.html"))
 }

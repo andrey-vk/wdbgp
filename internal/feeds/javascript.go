@@ -94,6 +94,7 @@ func (r adapterRunner) run(
 	if err := api.Set("httpGet", func(call goja.FunctionCall) goja.Value {
 		body, requestErr := httpAPI.get(call.Argument(0).String())
 		if requestErr != nil {
+			// Panic propagates to JavaScript as a catchable exception — documented goja interop pattern.
 			panic(vm.NewGoError(requestErr))
 		}
 		return vm.ToValue(body)
@@ -108,10 +109,12 @@ func (r adapterRunner) run(
 		}
 		body, requestErr := httpAPI.getBytes(rawURL)
 		if requestErr != nil {
+			// Panic propagates to JavaScript as a catchable exception — documented goja interop pattern.
 			panic(vm.NewGoError(requestErr))
 		}
 		entries, parseErr := ParseSRS(runCtx, body, cfgJSON)
 		if parseErr != nil {
+			// Panic propagates to JavaScript as a catchable exception — documented goja interop pattern.
 			panic(vm.NewGoError(parseErr))
 		}
 		return vm.ToValue(entries)

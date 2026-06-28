@@ -1,12 +1,7 @@
 package web
 
 import (
-	"net/http"
-	"os"
 	"strings"
-
-	"github.com/andrey-vk/wdbgp/internal/config"
-	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
 // --- Settings page field definitions (shared infrastructure) ---
@@ -25,11 +20,6 @@ type settingField struct {
 	DefaultValue string            // default value text (for placeholder when Value is empty)
 }
 
-type settingSection struct {
-	TitleKey string // i18n key
-	Fields   []settingField
-}
-
 func allSettings() []settingField {
 	return []settingField{
 		// General
@@ -43,6 +33,8 @@ func allSettings() []settingField {
 		{Key: "status_token", Name: "settings.status_token", EnvVar: "WDBGP_STATUS_TOKEN", Type: "text", Section: "settings.section_general", Placeholder: "settings.status_token_placeholder"},
 		{Key: "adapter_backup_dir", Name: "settings.adapter_backup_dir", EnvVar: "WDBGP_ADAPTER_BACKUP_DIR", Type: "text", Section: "settings.section_general", Placeholder: "settings.adapter_backup_dir_placeholder"},
 		{Key: "adapter_backup_max", Name: "settings.adapter_backup_max", EnvVar: "WDBGP_ADAPTER_BACKUP_MAX", Type: "number", Section: "settings.section_general", Placeholder: "settings.adapter_backup_max_placeholder"},
+		{Key: "metrics_enabled", Name: "settings.metrics_enabled", Type: "bool", Section: "settings.section_general"},
+		{Key: "metrics_history_days", Name: "settings.metrics_history_days", Type: "number", Section: "settings.section_general"},
 
 		// Rate Limiting
 		{Key: "rate_limit_login", Name: "settings.rate_limit_login", EnvVar: "WDBGP_RATE_LIMIT_LOGIN", Type: "number", Section: "settings.section_rate_limit", Placeholder: "settings.rate_limit_login_placeholder"},
@@ -84,49 +76,6 @@ func allSettingKeys() []string {
 		keys[i] = s.Key
 	}
 	return keys
-}
-
-func buildSettingsSections(cfg config.Config, dbSettings map[string]string) []settingSection {
-	all := allSettings()
-	sectionMap := make(map[string][]settingField)
-	sectionOrder := []string{} // preserve order
-
-	for _, f := range all {
-		// Populate value and env override
-		if v := os.Getenv(f.EnvVar); v != "" {
-			f.Value = v
-			f.EnvOverride = true
-		} else if v, ok := dbSettings[f.Key]; ok {
-			f.Value = v
-			f.EnvOverride = false
-		} else {
-			f.Value = "" // zero value, template shows placeholder/default
-			f.EnvOverride = false
-			f.DefaultValue = configDefaultValue(cfg, f.Key)
-		}
-
-		if _, ok := sectionMap[f.Section]; !ok {
-			sectionOrder = append(sectionOrder, f.Section)
-		}
-		sectionMap[f.Section] = append(sectionMap[f.Section], f)
-	}
-
-	sections := make([]settingSection, 0, len(sectionOrder))
-	for _, sKey := range sectionOrder {
-		sections = append(sections, settingSection{
-			TitleKey: sKey,
-			Fields:   sectionMap[sKey],
-		})
-	}
-	return sections
-}
-
-func routeFiltersFromForm(r *http.Request) (store.RouteFilters, error) {
-	filters := store.RouteFilters{
-		Allow: splitCIDRs(r.FormValue("filter_allow")),
-		Deny:  splitCIDRs(r.FormValue("filter_deny")),
-	}
-	return store.NormalizeRouteFilters(filters)
 }
 
 func splitCIDRs(value string) []string {

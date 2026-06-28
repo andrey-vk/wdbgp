@@ -162,10 +162,14 @@ func (p *Peer) connectAndRun() error {
 
 	// Step 1: Send OPEN
 	bgpID := p.spk.RouterID.As4()
+	ht := p.spk.HoldTime
+	if ht == 0 {
+		ht = 90
+	}
 	openOut := &OpenMessage{
 		Version:  4,
 		MyASN32:  p.spk.ASN,
-		HoldTime: 90,
+		HoldTime: ht,
 		BGPID:    bgpID,
 	}
 	// Only include Password in OPEN for loopback connections where TCP MD5
@@ -212,13 +216,17 @@ func (p *Peer) connectAndRun() error {
 	}
 
 	// Negotiate hold time per RFC 4271: use min(local, remote), 0 means disabled.
+	localHold := time.Duration(p.spk.HoldTime) * time.Second
+	if localHold == 0 {
+		localHold = 90 * time.Second
+	}
 	remoteHold := time.Duration(openIn.HoldTime) * time.Second
 	if openIn.HoldTime == 0 { //nolint:gocritic // switch doesn't improve clarity with time.Duration comparisons
 		p.holdTime = 0 // no hold timer
-	} else if remoteHold < 90*time.Second {
+	} else if remoteHold < localHold {
 		p.holdTime = remoteHold
 	} else {
-		p.holdTime = 90 * time.Second
+		p.holdTime = localHold
 	}
 
 	// Track remote IPv6 unicast capability so we skip IPv6 routes
@@ -411,14 +419,18 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	}
 
 	// Send OPEN — hold time negotiation per RFC 4271
-	holdTime := uint16(90)
+	localHold := p.spk.HoldTime
+	if localHold == 0 {
+		localHold = 90
+	}
+	holdTime := localHold
 	if openIn.HoldTime == 0 { //nolint:gocritic // switch doesn't improve clarity with time.Duration comparisons
 		p.holdTime = 0
-	} else if openIn.HoldTime < 90 {
+	} else if openIn.HoldTime < localHold {
 		holdTime = openIn.HoldTime
 		p.holdTime = time.Duration(openIn.HoldTime) * time.Second
 	} else {
-		p.holdTime = 90 * time.Second
+		p.holdTime = time.Duration(localHold) * time.Second
 	}
 	bgpID := p.spk.RouterID.As4()
 	var id [4]byte

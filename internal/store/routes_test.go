@@ -192,6 +192,50 @@ func TestDesiredPrefixesDropsFeedDefaultRoute(t *testing.T) {
 	}
 }
 
+func TestDesiredPrefixesClearsRoutesOnModeChange(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Step 1: Create a user in mode 1 (default) with selections
+	userID := addFilteredTestUser(t, s, false)
+
+	// Verify user is in mode 1 with selections → prefixes exist
+	prefixes, _, err := s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) == 0 {
+		t.Fatal("expected prefixes in mode 1 with selections")
+	}
+
+	// Step 2: Change user to mode 2 (IPRanges is id 2, should already exist)
+	_, err = s.DB.ExecContext(ctx, "UPDATE users SET catalog_mode_id = 2 WHERE id = ?", userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 3: DesiredPrefixes should return 0 for this user
+	// (mode 2 has no selections for this user)
+	prefixes, _, err = s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Find prefixes for this specific user
+	var userPrefixes int
+	for _, users := range prefixes {
+		for _, uid := range users {
+			if uid == userID {
+				userPrefixes++
+			}
+		}
+	}
+
+	if userPrefixes > 0 {
+		t.Errorf("user %d still has %d prefixes after mode change, want 0", userID, userPrefixes)
+	}
+}
+
 func addFilteredTestUser(t *testing.T, s *Store, override bool) int64 {
 	t.Helper()
 	ctx := context.Background()

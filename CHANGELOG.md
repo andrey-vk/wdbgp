@@ -8,8 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Vue 3 SPA** with PrimeVue v4 + Tailwind CSS: multi-page Vite build serving admin (`/admin`) and user (`/`) interfaces.
+- **Admin pages**: Dashboard with metrics charts (user/feed history), Users, Modes, Feeds, Adapters, Settings, Debug with CIDR diagnostics.
+- **User-facing page** with catalog selection and web authentication (network, login, both, any modes).
+- **Metrics history**: user and feed snapshots with stacked area charts, configurable retention period in Settings.
+- **Batch peer-status endpoint** (`/api/admin/users/statuses`) with 5-second frontend polling for live BGP state.
+- **Partial update APIs**: users and modes endpoints using pointer fields (`*string`, `*bool`) — nil means "not provided".
+- **Credential management**: add, reset password, and delete via Dialog modals in the admin Users page.
+- `ForkAdapter` store method with auto-naming for adapter forks.
+
 ### Changed
-- StatusAllowed, StatusToken, RateLimitLogin, RateLimitAdmin now reloadable at runtime from DB — no restart needed.
+- **Vue 3 SPA replaces legacy Go HTML templates** (~3800 lines of server-rendered pages removed).
+- `AddFeedAdapter` returns full `FeedAdapter` struct via SQLite `RETURNING` clause — no separate lookup after insert.
+- **Snapshots use Unix epoch INTEGER** timestamps instead of RFC3339 TEXT — eliminates `time.Parse` overhead on constrained hardware.
+- **Migration renumbering** (23–27) for compatibility with old production databases. Migration 25 is idempotent (checks column existence before use).
+- `seedBuiltInAdapters` checks column existence at startup for databases that predate fork-column migrations.
+- Admin rate limiter excludes `/api/admin/me` and `/api/admin/users/statuses` — lightweight auth and polling endpoints.
+- **Static analysis**: zero `golangci-lint` warnings (43 issues resolved), zero ESLint warnings. All error paths checked, logged, or returned.
+
+### Fixed
+- Admin session cookie `Expires` incorrectly set to current time when `SessionMaxAge=0`, causing cookie to be deleted immediately.
+- Route filter deny list: broader prefix (e.g. `/19`) covering narrower prefix (`/24`) with different base address was not properly excluded.
+- BGP `UpdatePeer` now re-adds the peer when it is not found in the speaker (fixes enable/disable toggle leaving stale state).
 
 ## [0.14.0-alpha] — 2026-06-20
 

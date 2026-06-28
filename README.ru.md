@@ -10,15 +10,20 @@
 ![Custom BGP](https://img.shields.io/badge/BGP-Custom%20Speaker-blue)
 ![RouterOS](https://img.shields.io/badge/RouterOS-container-blue)
 ![Dual Stack](https://img.shields.io/badge/IP-IPv4%20%2B%20IPv6-blueviolet)
+![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
 
 [English version](README.md)
 
 `wdbgp` скачивает категоризированные IPv4/IPv6 CIDR-фиды, формирует каталог
 сервисов и анонсирует выбранные пользователями префиксы их роутерам через BGP.
 
-Это один статически собранный Go-бинарник со встроенными HTTP-сервером,
-SQLite-хранилищем и собственным BGP-спикером.
-Маршруты анонсируются каждому пиру напрямую из таблицы маршрутов в памяти.
+Это один статически собранный Go-бинарник с Vue 3 SPA админ-интерфейсом на
+PrimeVue v4 + Tailwind CSS, HTTP API сервером, SQLite-хранилищем и собственным
+BGP-спикером. Админка включает страницы Dashboard, Users, Modes, Feeds, Adapters,
+Settings и Debug. Пользовательская страница позволяет выбирать категории сервисов
+с веб-аутентификацией. Маршруты анонсируются каждому пиру напрямую из таблицы
+маршрутов в памяти.
 
 ## Режимы каталогов
 
@@ -197,8 +202,6 @@ cookie и после правильного пароля снова переки
 | `WDBGP_ALLOW_DYNAMIC_PEERS` | `false` |
 
 `WDBGP_ADMIN_PASSWORD` и `WDBGP_SESSION_SECRET` обязательны для `serve`.
-Старые имена `WDBGP_BIRD_LOCAL_ADDRESS` и
-`WDBGP_BIRD_LOCAL_ADDRESS_V6` пока принимаются как совместимые aliases.
 Если `WDBGP_BGP_LOCAL_ADDRESS_V6` не задан, IPv6-выбор сохраняется в базе, но
 анонсируются только IPv4-префиксы.
 
@@ -282,6 +285,7 @@ docker run --rm -v wdbgp-data:/data wh1ted/wdbgp:latest sync
 go test ./...
 go vet ./...
 go build ./cmd/wdbgp
+cd webgui && npm install && npm run build
 docker build -t wdbgp:latest .
 ```
 
@@ -314,5 +318,5 @@ destination-префиксам. Для IPv6 добавьте адрес конт
 
 ## Ограничения
 
-- Изменение BGP-параметров пользователя перезапускает встроенный BGP server;
-  изменение выбора маршрутов применяется без перезапуска.
+- Изменение выбора маршрутов применяется без перезапуска; включение/выключение
+  пира обновляет BGP-спикер динамически.

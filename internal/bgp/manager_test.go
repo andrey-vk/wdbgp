@@ -376,6 +376,98 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	}
 }
 
+func TestReconcileClearsRoutesOnModeChange(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	userID, err := s.AddUser(ctx, store.User{
+		Name: "modeswitch", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
+		(feed_id, category, service, cidr) VALUES
+		(1, 'video', 'youtube', '8.8.8.0/24'),
+		(1, 'video', 'youtube', '8.8.4.0/24'),
+		(1, 'chat', 'telegram', '149.154.160.0/20')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, userID, []string{"video"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(config.Config{
+		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
+		LocalAddressV4: "192.0.2.1",
+	}, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Verify routes were announced.
+	manager.mu.Lock()
+	routes := manager.peerRoutes["192.0.2.2:65001"]
+	manager.mu.Unlock()
+	if len(routes) == 0 {
+		t.Fatal("expected routes after initial reconcile, got none")
+	}
+
+	// Change user to mode 2 (IPRanges, disabled by default).
+	// Enable it first so the disabled filter doesn't hide the bug:
+	// UpdatePeer clears peerRoutes, so Reconcile sees nil vs empty
+	// and never withdraws old routes from the speaker.
+	_, err = s.DB.ExecContext(ctx, "UPDATE catalog_modes SET enabled = 1 WHERE id = 2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.DB.ExecContext(ctx, "UPDATE users SET catalog_mode_id = 2 WHERE id = ?", userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fetch updated user from store.
+	users, err := s.Users(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updatedUser store.User
+	for _, u := range users {
+		if u.ID == userID {
+			updatedUser = u
+			break
+		}
+	}
+
+	// Update peer in manager and reconcile.
+	if err := manager.UpdatePeer(ctx, updatedUser); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify routes were cleared — check speaker's peer routes (the wire),
+	// not manager's peerRoutes cache which UpdatePeer already emptied.
+	manager.speaker.mu.Lock()
+	speakerPeer := manager.speaker.peers["192.0.2.2:65001"]
+	manager.speaker.mu.Unlock()
+	if speakerPeer != nil {
+		speakerPeer.mu.Lock()
+		routes = speakerPeer.routes
+		speakerPeer.mu.Unlock()
+	}
+	if len(routes) != 0 {
+		t.Errorf("peer still has %d routes on speaker after mode change, want 0", len(routes))
+	}
+}
+
 func TestDeletePeerHandlesSameIPDifferentASN(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})

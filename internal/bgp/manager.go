@@ -233,17 +233,23 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 		}
 	}
 	if !found {
-		return fmt.Errorf("peer %s does not exist", user.PeerIP)
+		m.peerConfigs = append(m.peerConfigs, user)
+		cfgs, err := m.buildPeerConfigs()
+		if err != nil {
+			m.peerConfigs = m.peerConfigs[:len(m.peerConfigs)-1]
+			return err
+		}
+		if err := m.speaker.SetPeers(cfgs); err != nil {
+			m.peerConfigs = m.peerConfigs[:len(m.peerConfigs)-1]
+			return err
+		}
+		return nil
 	}
-	// Clear old peer routes when IP or ASN changed
-	if oldPeerKey != "" {
+	// Clear old peer routes only if IP or ASN actually changed.
+	if oldPeerKey != "" && oldPeerKey != fmt.Sprintf("%s:%d", user.PeerIP, user.PeerASN) {
 		delete(m.peerRoutes, oldPeerKey)
 	}
-	// Clear new peer routes since the peer may have changed
 	peerKey := fmt.Sprintf("%s:%d", user.PeerIP, user.PeerASN)
-	if peerKey != oldPeerKey {
-		delete(m.peerRoutes, peerKey)
-	}
 	cfgs, err := m.buildPeerConfigs()
 	if err != nil {
 		// Rollback: restore old peer config to avoid inconsistency.

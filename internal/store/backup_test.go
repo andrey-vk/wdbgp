@@ -338,7 +338,7 @@ func TestRestoreFromBackup(t *testing.T) {
 	}
 
 	// Step 3: Add a fake higher migration to simulate "newer version".
-	extraVersion := len(migrations) + 1
+	extraVersion := migrations[len(migrations)-1].Version + 1
 	{
 		db, err := sql.Open("sqlite", dbPath)
 		if err != nil {
@@ -370,8 +370,8 @@ func TestRestoreFromBackup(t *testing.T) {
 	if err := s.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != len(migrations) {
-		t.Fatalf("restored DB version = %d, want %d", version, len(migrations))
+	if version != migrations[len(migrations)-1].Version {
+		t.Fatalf("restored DB version = %d, want %d", version, migrations[len(migrations)-1].Version)
 	}
 
 	// Verify restored DB has 1 user.
@@ -418,7 +418,7 @@ func TestDegradedWhenAutoRestoreDisabled(t *testing.T) {
 			t.Fatal(err)
 		}
 		db.SetMaxOpenConns(1)
-		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, 'future', 'now')`, len(migrations)+1); err != nil {
+		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, 'future', 'now')`, migrations[len(migrations)-1].Version+1); err != nil {
 			db.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}
@@ -434,8 +434,8 @@ func TestDegradedWhenAutoRestoreDisabled(t *testing.T) {
 	if !s.Degraded {
 		t.Fatal("Store.Degraded should be true")
 	}
-	if s.DBVersion != len(migrations)+1 {
-		t.Fatalf("DBVersion = %d, want %d", s.DBVersion, len(migrations)+1)
+	if s.DBVersion != migrations[len(migrations)-1].Version+1 {
+		t.Fatalf("DBVersion = %d, want %d", s.DBVersion, migrations[len(migrations)-1].Version+1)
 	}
 	if !strings.Contains(s.DegradedReason, "auto-restore disabled") {
 		t.Fatalf("DegradedReason = %q, want to contain 'auto-restore disabled'", s.DegradedReason)
@@ -474,7 +474,7 @@ func TestDegradedWhenNoBackupFound(t *testing.T) {
 			t.Fatal(err)
 		}
 		db.SetMaxOpenConns(1)
-		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, 'future', 'now')`, len(migrations)+1); err != nil {
+		if _, err := db.Exec(`INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, 'future', 'now')`, migrations[len(migrations)-1].Version+1); err != nil {
 			db.Close() //nolint:errcheck,gosec // test cleanup
 			t.Fatal(err)
 		}

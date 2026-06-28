@@ -9,10 +9,10 @@ import (
 
 // CatalogMode represents a catalog mode (OpenCCK, IPRanges, sing-box SRS, etc.).
 type CatalogMode struct {
-	ID      int64
-	Key     string
-	Name    string
-	Enabled bool
+	ID      int64  `json:"id"`
+	Key     string `json:"key"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
 }
 
 func (s *Store) CatalogModes(ctx context.Context, enabledOnly bool) ([]CatalogMode, error) {
@@ -126,6 +126,7 @@ func (s *Store) ModeFeeds(ctx context.Context, modeID int64) ([]Feed, error) {
 SELECT f.id, f.name, f.url, f.adapter_id, f.enabled,
        COALESCE(f.sync_interval, 0),
        COALESCE(f.data, ''),
+       f.allowed_hosts, f.restrict_hosts,
        COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
 FROM feeds f
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
@@ -145,7 +146,9 @@ ORDER BY f.id`, modeID)
 		feed.ModeID = modeID
 		if err := rows.Scan(
 			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
-			&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
+			&feed.Enabled, &feed.SyncInterval, &feed.Data,
+			&feed.AllowedHosts, &feed.RestrictHosts,
+			&feed.LastSuccess, &feed.LastError,
 		); err != nil {
 			return nil, err
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 )
 
@@ -219,13 +220,29 @@ WHERE key = ?`,
 				return err
 			}
 		}
+
+		// Set forked_version for built-ins that have it unset.
+		// Must run after builtin_version is updated above.
+		if _, err := s.DB.ExecContext(ctx,
+			`UPDATE feed_adapters SET forked_version = builtin_version WHERE key = ? AND forked_version = 0`,
+			key); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func IsBuiltInFeedAdapter(key string) bool {
-	_, ok := builtInAdapters[key]
-	return ok
+// ForkedAdapterNeedsReview returns true when the built-in adapter that a fork
+// was created from has been updated since the fork was made.
+func ForkedAdapterNeedsReview(forkedFrom string, forkedVersion int64) bool {
+	if forkedFrom == "" {
+		return false
+	}
+	builtin, ok := builtInAdapters[forkedFrom]
+	if !ok {
+		return false
+	}
+	return int64(builtin.builtinVersion) > forkedVersion
 }
 
 func (s *Store) ResetFeedAdapter(ctx context.Context, id int64) error {
@@ -261,15 +278,53 @@ func normalizedBuiltInSource(source string) string {
 	return strings.TrimSpace(source) + "\n"
 }
 
-func (s *Store) AddFeedAdapter(ctx context.Context, adapter FeedAdapter) (int64, error) {
-	result, err := s.DB.ExecContext(ctx, `
-INSERT INTO feed_adapters(key, name, language, api_version, source, allowed_hosts)
-VALUES (?, ?, 'javascript', 1, ?, ?)`,
-		adapter.Key, adapter.Name, adapter.Source, adapter.AllowedHosts)
-	if err != nil {
-		return 0, err
+func (s *Store) AddFeedAdapter(ctx context.Context, adapter FeedAdapter) (FeedAdapter, error) {
+	key := adapter.Key
+	if key == "" {
+		// Auto-generate a key from the name when not provided (e.g., forked adapters).
+		key = strings.Map(func(r rune) rune {
+			if r >= 'A' && r <= 'Z' {
+				return r + 32 // lowercase
+			}
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+				return r
+			}
+			return '-'
+		}, adapter.Name)
 	}
-	return result.LastInsertId()
+	var a FeedAdapter
+	err := s.DB.QueryRowContext(ctx, `
+INSERT INTO feed_adapters(key, name, language, api_version, source, allowed_hosts, forked_from, forked_version, is_builtin)
+VALUES (?, ?, 'javascript', 1, ?, ?, ?, ?, 0)
+RETURNING id, key, name, language, api_version, source, allowed_hosts, revision, is_builtin, forked_from, forked_version`,
+		key, adapter.Name, adapter.Source, adapter.AllowedHosts, adapter.ForkedFrom, adapter.ForkedVersion,
+	).Scan(&a.ID, &a.Key, &a.Name, &a.Language, &a.APIVersion, &a.Source, &a.AllowedHosts, &a.Revision, &a.BuiltIn, &a.ForkedFrom, &a.ForkedVersion)
+	if err != nil {
+		return FeedAdapter{}, err
+	}
+	return a, nil
+}
+
+// ForkAdapter creates a copy of the adapter with auto-naming (_copy_N suffix).
+func (s *Store) ForkAdapter(ctx context.Context, sourceID int64) (FeedAdapter, error) {
+	src, err := s.FeedAdapter(ctx, sourceID)
+	if err != nil {
+		return FeedAdapter{}, fmt.Errorf("load source adapter: %w", err)
+	}
+	suffix, err := s.maxForkedAdapterSuffix(ctx, src.Key)
+	if err != nil {
+		return FeedAdapter{}, fmt.Errorf("compute fork suffix: %w", err)
+	}
+	fork := FeedAdapter{
+		Name:          fmt.Sprintf("%s_copy_%d", src.Name, suffix+1),
+		Source:        src.Source,
+		AllowedHosts:  src.AllowedHosts,
+		Language:      src.Language,
+		APIVersion:    src.APIVersion,
+		ForkedFrom:    src.Key,
+		ForkedVersion: src.Revision,
+	}
+	return s.AddFeedAdapter(ctx, fork)
 }
 
 // DeleteFeedAdapter deletes an adapter. Fails if any feeds reference it (FK constraint).
@@ -289,9 +344,10 @@ func (s *Store) DeleteFeedAdapter(ctx context.Context, id int64) error {
 func (s *Store) UpdateFeedAdapter(ctx context.Context, adapter FeedAdapter) error {
 	result, err := s.DB.ExecContext(ctx, `
 UPDATE feed_adapters
-SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1, is_customized = 1
+SET name = ?, source = ?, allowed_hosts = ?, revision = revision + 1, is_customized = 1,
+    forked_version = ?
 WHERE id = ?`,
-		adapter.Name, adapter.Source, adapter.AllowedHosts, adapter.ID)
+		adapter.Name, adapter.Source, adapter.AllowedHosts, adapter.ForkedVersion, adapter.ID)
 	if err != nil {
 		return err
 	}
@@ -306,20 +362,6 @@ WHERE id = ?`,
 }
 
 func ValidateFeedAdapter(adapter FeedAdapter) error {
-	if adapter.ID == 0 {
-		key := strings.TrimSpace(adapter.Key)
-		if key == "" {
-			return fmt.Errorf("adapter key is required")
-		}
-		for _, character := range key {
-			if character >= 'a' && character <= 'z' ||
-				character >= '0' && character <= '9' ||
-				character == '.' || character == '_' || character == '-' {
-				continue
-			}
-			return fmt.Errorf("adapter key contains unsupported character %q", character)
-		}
-	}
 	if strings.TrimSpace(adapter.Name) == "" {
 		return fmt.Errorf("adapter name is required")
 	}
@@ -327,4 +369,36 @@ func ValidateFeedAdapter(adapter FeedAdapter) error {
 		return fmt.Errorf("adapter source is required")
 	}
 	return nil
+}
+
+func (s *Store) ForkedAdaptersByKey(ctx context.Context, key string) ([]FeedAdapter, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT id, key, name, language, api_version, source, allowed_hosts, revision, forked_from, forked_version
+FROM feed_adapters
+WHERE forked_from = ?
+ORDER BY name`, key)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
+	var adapters []FeedAdapter
+	for rows.Next() {
+		var a FeedAdapter
+		if err := rows.Scan(&a.ID, &a.Key, &a.Name, &a.Language, &a.APIVersion,
+			&a.Source, &a.AllowedHosts, &a.Revision, &a.ForkedFrom, &a.ForkedVersion); err != nil {
+			return nil, err
+		}
+		adapters = append(adapters, a)
+	}
+	return adapters, rows.Err()
+}
+
+func (s *Store) maxForkedAdapterSuffix(ctx context.Context, forkedFrom string) (int, error) {
+	var count int
+	err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM feed_adapters WHERE forked_from = ?", forkedFrom).Scan(&count)
+	return count, err
 }

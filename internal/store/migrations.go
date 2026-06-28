@@ -35,5 +35,9 @@ var migrations = []Migration{
 	{18, "add data column to feeds", m.V018, nil},
 	{19, "add sing-box SRS catalog mode", m.V019, nil},
 	{20, "add adapter upgrade support, catalog mode M:M", m.V020, m.V020NoTxSQL},
-	{21, "add active_dial column to users", m.V021, nil},
+	{23, "add active_dial column to users", m.V023, nil},
+	{24, "add adapter fork columns", m.V024, nil},
+	{25, "add restrict_hosts and allowed_hosts to feeds", m.V025, nil},
+	{26, "add metric snapshots", m.V026, nil},
+	{27, "add is_builtin to feed_adapters", m.V027, nil},
 }

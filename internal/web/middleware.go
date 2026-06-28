@@ -128,9 +128,10 @@ func csrfProtection(next http.Handler, secret string) http.Handler {
 			return
 		}
 
-		// Skip CSRF validation for safe methods and login endpoint
+		// Skip CSRF validation for safe methods, API endpoints, and login endpoints
 		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" ||
-			r.URL.Path == "/healthz" || r.URL.Path == "/admin/login" || r.URL.Path == "/login" {
+			r.URL.Path == "/healthz" ||
+			strings.HasPrefix(r.URL.Path, "/api/") {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -163,7 +164,7 @@ func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Content Security Policy - restrict resource loading
 		// Allow inline styles/scripts for simplicity, plus unpkg CDN for htmx/alpine
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
 
 		// Prevent clickjacking
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -204,8 +205,8 @@ func panicRecovery(next http.Handler) http.Handler {
 // adminRateLimitMiddleware applies rate limiting to admin endpoints
 func (s *Server) adminRateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Only apply to admin paths
-		if strings.HasPrefix(r.URL.Path, "/admin") && r.URL.Path != "/admin/login" && r.URL.Path != "/login" {
+		// Only apply to admin API paths
+		if strings.HasPrefix(r.URL.Path, "/api/admin") && r.URL.Path != "/api/admin/login" && r.URL.Path != "/api/admin/me" && r.URL.Path != "/api/admin/users/statuses" {
 			clientIP := s.clientIP(r)
 
 			if !s.adminLimiter.allow(clientIP) {

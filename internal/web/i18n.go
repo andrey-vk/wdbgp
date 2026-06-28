@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http"
-	"net/url"
 	"strings"
 
 	"golang.org/x/text/language"
@@ -93,22 +92,4 @@ func parseLocale(value string) (locale, bool) {
 	default:
 		return "", false
 	}
-}
-
-func languageURL(r *http.Request, lang locale) string {
-	query := cloneQuery(r.URL.Query())
-	query.Set("lang", string(lang))
-	path := r.URL.Path
-	if queryString := query.Encode(); queryString != "" {
-		path += "?" + queryString
-	}
-	return path
-}
-
-func cloneQuery(source url.Values) url.Values {
-	result := make(url.Values, len(source))
-	for key, values := range source {
-		result[key] = append([]string(nil), values...)
-	}
-	return result
 }

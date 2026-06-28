@@ -18,8 +18,8 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err := s.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != len(migrations) {
-		t.Fatalf("schema version = %d, want %d", version, len(migrations))
+	if version != migrations[len(migrations)-1].Version {
+		t.Fatalf("schema version = %d, want %d", version, migrations[len(migrations)-1].Version)
 	}
 	feeds, err := s.Feeds(context.Background(), false)
 	if err != nil {
@@ -84,14 +84,14 @@ func TestResetBuiltInFeedAdapter(t *testing.T) {
 		t.Fatalf("reset adapter = %#v, original = %#v", reset, original)
 	}
 
-	customID, err := s.AddFeedAdapter(ctx, FeedAdapter{
+	custom, err := s.AddFeedAdapter(ctx, FeedAdapter{
 		Key: "custom", Name: "Custom",
 		Source: "function sync() { return []; }\n",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResetFeedAdapter(ctx, customID); err == nil {
+	if err := s.ResetFeedAdapter(ctx, custom.ID); err == nil {
 		t.Fatal("custom adapter reset succeeded")
 	}
 }

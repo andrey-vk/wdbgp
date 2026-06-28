@@ -72,15 +72,6 @@ func userSessionToken(secret string, userID int64) string {
 	return text + "." + hex.EncodeToString(signature.Sum(nil))
 }
 
-func validUserSession(r *http.Request, userID int64, secret string, maxAge time.Duration) bool {
-	cookie, err := r.Cookie(userSessionCookieName)
-	if err != nil {
-		return false
-	}
-	sessionID := parseUserSessionToken(secret, cookie.Value, maxAge)
-	return sessionID == userID
-}
-
 func getUserSessionID(r *http.Request, secret string, maxAge time.Duration) int64 {
 	cookie, err := r.Cookie(userSessionCookieName)
 	if err != nil {

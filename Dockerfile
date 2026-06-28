@@ -1,3 +1,11 @@
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
+
+WORKDIR /src/webgui
+COPY webgui/package.json webgui/package-lock.json ./
+RUN npm ci
+COPY webgui/ ./
+RUN npm run build
+
 FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine3.23 AS build
 
 WORKDIR /src
@@ -23,6 +31,7 @@ FROM scratch
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=certs /data /data
 COPY --from=build /out/wdbgp /usr/local/bin/wdbgp
+COPY --from=frontend /src/webgui/dist /webgui/dist
 
 ENV WDBGP_DB=/data/wdbgp.sqlite3 \
     WDBGP_HOST=0.0.0.0 \

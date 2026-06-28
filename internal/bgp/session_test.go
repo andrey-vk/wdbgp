@@ -655,6 +655,7 @@ func TestKeepaliveMaintainsSession(t *testing.T) {
 		ASN: 64512, Name: "keepalive-client",
 	}, SpeakerConfig{
 		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
+		HoldTime: 3,
 	}, logger, nil)
 	go client.Run()
 	t.Cleanup(func() { client.Stop() })
@@ -662,8 +663,8 @@ func TestKeepaliveMaintainsSession(t *testing.T) {
 	waitForPeerState(t, client, StateEstablished, 10*time.Second)
 	waitForSpeakerPeerState(t, speaker, stateKey("127.0.0.1", 65001), StateEstablished, 10*time.Second)
 
-	// Wait for at least one keepalive interval (30s) + buffer
-	time.Sleep(35 * time.Second)
+	// Wait for at least one keepalive interval (holdTime/3) + buffer
+	time.Sleep(5 * time.Second)
 
 	// Both sides should still be established
 	if client.State() != StateEstablished {

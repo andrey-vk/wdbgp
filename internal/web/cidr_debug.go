@@ -72,7 +72,13 @@ func (s *Server) debugCIDR(
 		}
 	}
 
-	result := cidrDebugResult{Query: target.String()}
+	result := cidrDebugResult{
+		Query:            target.String(),
+		FullServices:     []coverageItem{},
+		PartialServices:  []coverageItem{},
+		CombinedServices: []coverageItem{},
+		Users:            []coverageItem{},
+	}
 	for key, ranges := range serviceRanges {
 		percentage := coveragePercentage(target, ranges)
 		if percentage == 0 {

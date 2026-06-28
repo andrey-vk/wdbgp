@@ -8,16 +8,18 @@ import (
 
 // Feed represents a data feed source.
 type Feed struct {
-	ID           int64
-	Name         string
-	URL          string
-	ModeID       int64
-	AdapterID    int64
-	Enabled      bool
-	SyncInterval int
-	Data         string // JSON parameterization for adapters
-	LastSuccess  string
-	LastError    string
+	ID            int64
+	Name          string
+	URL           string
+	ModeID        int64
+	AdapterID     int64
+	Enabled       bool
+	SyncInterval  int
+	Data          string // JSON parameterization for adapters
+	AllowedHosts  string
+	RestrictHosts bool
+	LastSuccess   string
+	LastError     string
 }
 
 func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
@@ -26,6 +28,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	                 f.adapter_id, f.enabled,
 	                 COALESCE(f.sync_interval, 0),
 	                 COALESCE(f.data, ''),
+	                 f.allowed_hosts, f.restrict_hosts,
 	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
 	          FROM feeds f
 	          JOIN feed_adapters a ON a.id = f.adapter_id`
@@ -50,7 +53,8 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 		var feed Feed
 		if err := rows.Scan(
 			&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
-			&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
+			&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.AllowedHosts, &feed.RestrictHosts,
+			&feed.LastSuccess, &feed.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -67,11 +71,13 @@ SELECT id, name, url,
        adapter_id, enabled,
        COALESCE(sync_interval, 0),
        COALESCE(data, ''),
+       allowed_hosts, restrict_hosts,
        COALESCE(last_success, ''), COALESCE(last_error, '')
 FROM feeds
 WHERE id = ?`, id).Scan(
 		&feed.ID, &feed.Name, &feed.URL, &feed.ModeID, &feed.AdapterID,
-		&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.LastSuccess, &feed.LastError,
+		&feed.Enabled, &feed.SyncInterval, &feed.Data, &feed.AllowedHosts, &feed.RestrictHosts,
+		&feed.LastSuccess, &feed.LastError,
 	)
 	return feed, err
 }
@@ -88,7 +94,7 @@ func (s *Store) AddFeedForMode(
 	enabled bool,
 	syncInterval int,
 ) error {
-	_, err := s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval, "")
+	_, err := s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval, "", "", true)
 	return err
 }
 
@@ -101,12 +107,14 @@ func (s *Store) AddFeedForModeAdapter(
 	enabled bool,
 	syncInterval int,
 	data string,
+	allowedHosts string,
+	restrictHosts bool,
 ) (int64, error) {
 	var feedID int64
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx,
-			"INSERT INTO feeds(name, url, adapter_id, enabled, sync_interval, data) VALUES (?, ?, ?, ?, ?, ?)",
-			name, url, adapterID, enabled, syncInterval, data)
+			"INSERT INTO feeds(name, url, adapter_id, enabled, sync_interval, data, allowed_hosts, restrict_hosts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			name, url, adapterID, enabled, syncInterval, data, allowedHosts, restrictHosts)
 		if err != nil {
 			return err
 		}
@@ -137,9 +145,10 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE feeds
-			 SET name = ?, url = ?, adapter_id = ?, enabled = ?, sync_interval = ?, data = ?
+			 SET name = ?, url = ?, adapter_id = ?, enabled = ?, sync_interval = ?, data = ?, allowed_hosts = ?, restrict_hosts = ?
 			 WHERE id = ?`,
-			feed.Name, feed.URL, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data, feed.ID); err != nil {
+			feed.Name, feed.URL, feed.AdapterID, feed.Enabled, feed.SyncInterval, feed.Data,
+			feed.AllowedHosts, feed.RestrictHosts, feed.ID); err != nil {
 			return err
 		}
 		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name {
@@ -152,27 +161,6 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		_, err := tx.ExecContext(ctx,
 			"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", feed.ID)
 		return err
-	})
-}
-
-// SetFeedModes replaces all mode assignments for a feed with the given mode IDs.
-func (s *Store) SetFeedModes(ctx context.Context, feedID int64, modeIDs []int64) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM catalog_mode_feeds WHERE feed_id = ?", feedID); err != nil {
-			return err
-		}
-		for _, modeID := range modeIDs {
-			if modeID <= 0 {
-				continue
-			}
-			if _, err := tx.ExecContext(ctx,
-				"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
-				modeID, feedID); err != nil {
-				return err
-			}
-		}
-		return nil
 	})
 }
 

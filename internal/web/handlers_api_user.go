@@ -1,0 +1,358 @@
+package web
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"github.com/andrey-vk/wdbgp/internal/store"
+)
+
+// userCtxKey is the context key for the authenticated user ID.
+type userCtxKey struct{}
+
+// requireUser is middleware that authenticates a user by source IP or session cookie.
+// Sets user ID in context. Returns 401 JSON on failure.
+func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		clientIP := s.clientIP(r)
+
+		// Try source IP match first (web_auth=network, any, both)
+		user, err := s.store.UserByIP(ctx, clientIP)
+		if err == nil {
+			if user.WebAuth == "network" || user.WebAuth == "any" || user.WebAuth == "both" {
+				r = r.WithContext(context.WithValue(ctx, userCtxKey{}, user))
+				next(w, r)
+				return
+			}
+		}
+
+		// Try session cookie (web_auth=login, any, both)
+		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
+		if sessionID > 0 {
+			userByCookie, err := s.store.User(ctx, sessionID)
+			if err == nil {
+				if userByCookie.WebAuth == "login" || userByCookie.WebAuth == "any" || userByCookie.WebAuth == "both" {
+					r = r.WithContext(context.WithValue(ctx, userCtxKey{}, userByCookie))
+					next(w, r)
+					return
+				}
+			}
+		}
+
+		writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "Authentication required"})
+	}
+}
+
+// requireUser extracts the authenticated user from the request context.
+// Writes a 401 JSON response and returns false if the user is not authenticated.
+func requireUser(w http.ResponseWriter, r *http.Request) (*store.User, bool) {
+	u, ok := r.Context().Value(userCtxKey{}).(store.User)
+	if !ok || u.ID == 0 {
+		writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "not authenticated"})
+		return nil, false
+	}
+	return &u, true
+}
+
+// userPublic returns a subset of user fields safe for JSON responses (no password).
+type userPublic struct {
+	ID              int64    `json:"id"`
+	Name            string   `json:"name"`
+	CatalogModeID   int64    `json:"catalog_mode_id"`
+	CatalogModeName string   `json:"catalog_mode_name"`
+	SelectionLocked bool     `json:"selection_locked"`
+	FilterEditable  bool     `json:"filter_editable"`
+	FilterOverride  bool     `json:"filter_override"`
+	FilterMode      string   `json:"filter_mode"`
+	CatalogEditable bool     `json:"catalog_editable"`
+	Networks        []string `json:"networks"`
+}
+
+// apiUserMe handles GET /api/user/me.
+// Returns the authenticated user's full data: user info, catalog, selections, communities, prefix counts, filters.
+func (s *Server) apiUserMe(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	// Catalog
+	catalog, err := s.store.CatalogForMode(ctx, user.CatalogModeID, false)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	// Selections
+	categories, services, err := s.store.UserModeSelection(ctx, user.ID, user.CatalogModeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	catList := make([]string, 0, len(categories))
+	for c := range categories {
+		catList = append(catList, c)
+	}
+	svcList := make([]store.ServiceKey, 0, len(services))
+	for k := range services {
+		svcList = append(svcList, k)
+	}
+
+	// Communities
+	communities, err := s.store.GetCommunities(ctx, user.CatalogModeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	// Prefix counts
+	v4Prefixes, v6Prefixes, err := s.store.PrefixCounts(ctx, user.CatalogModeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	// Filters
+	filters, err := s.store.UserRouteFilters(ctx, user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user": userPublic{
+			ID:              user.ID,
+			Name:            user.Name,
+			CatalogModeID:   user.CatalogModeID,
+			CatalogModeName: user.CatalogModeName,
+			SelectionLocked: user.SelectionLocked,
+			FilterEditable:  user.FilterEditable,
+			FilterOverride:  user.FilterOverride,
+			FilterMode:      user.FilterMode,
+			CatalogEditable: user.CatalogEditable,
+			Networks:        user.Networks,
+		},
+		"catalog":       catalog,
+		"selections":    map[string]any{"categories": catList, "services": svcList},
+		"communities":   communities,
+		"prefix_counts": map[string]any{"v4": v4Prefixes, "v6": v6Prefixes},
+		"filters":       filters,
+	})
+}
+
+// apiUserLogin handles POST /api/user/login.
+// Authenticates a user by login credentials and sets a session cookie.
+func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Rate limiting
+	clientIP := s.clientIP(r)
+	if !s.loginLimiter.allow(clientIP) {
+		writeJSON(w, http.StatusTooManyRequests, apiResponse{OK: false, Error: "Rate limit exceeded"})
+		return
+	}
+
+	var body struct {
+		Login    string `json:"login"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
+		return
+	}
+
+	if body.Login == "" || body.Password == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Login and password required"})
+		return
+	}
+
+	user, err := s.store.AuthenticateUser(ctx, body.Login, body.Password)
+	if err != nil {
+		writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "Invalid credentials"})
+		return
+	}
+
+	// Check web_auth allows login
+	if user.WebAuth != "login" && user.WebAuth != "any" && user.WebAuth != "both" {
+		writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "Login not allowed for this user"})
+		return
+	}
+
+	// Set session cookie
+	secure := r.TLS != nil
+	maxAge := s.cfg.SessionMaxAge
+	if maxAge <= 0 {
+		maxAge = 28800 // 8 hours default
+	}
+	setUserSessionCookie(w, user.ID, s.cfg.SessionSecret, maxAge, secure)
+
+	writeJSON(w, http.StatusOK, userPublic{
+		ID:              user.ID,
+		Name:            user.Name,
+		CatalogModeID:   user.CatalogModeID,
+		CatalogModeName: user.CatalogModeName,
+		SelectionLocked: user.SelectionLocked,
+		FilterEditable:  user.FilterEditable,
+		FilterOverride:  user.FilterOverride,
+		FilterMode:      user.FilterMode,
+		CatalogEditable: user.CatalogEditable,
+		Networks:        user.Networks,
+	})
+}
+
+// apiUserLogout handles POST /api/user/logout.
+// Clears the user session cookie.
+func (s *Server) apiUserLogout(w http.ResponseWriter, r *http.Request) {
+	secure := r.TLS != nil
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime
+		Name:     "wdbgp_user",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+	writeJSON(w, http.StatusOK, apiResponse{OK: true})
+}
+
+// apiUserSaveSelections handles POST /api/user/selections.
+// Saves the user's category and service selections, then reconciles BGP.
+// Only allowed if the user is not selection_locked.
+func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	if user.SelectionLocked {
+		writeJSON(w, http.StatusForbidden, apiResponse{OK: false, Error: "Selections are locked for this user"})
+		return
+	}
+
+	var body struct {
+		Categories []string           `json:"categories"`
+		Services   []store.ServiceKey `json:"services"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
+		return
+	}
+
+	err := s.store.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserModeSelection(ctx, tx, user.ID, user.CatalogModeID, body.Categories, body.Services)
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	if s.bgp != nil {
+		if err := s.bgp.Reconcile(ctx); err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Selection saved but BGP reconciliation failed: " + err.Error()})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, apiResponse{OK: true})
+}
+
+// apiUserSaveFilters handles POST /api/user/filters.
+// Saves the user's route filters, then reconciles BGP.
+// Only allowed if filter_editable is enabled for the user.
+func (s *Server) apiUserSaveFilters(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	if !user.FilterEditable {
+		writeJSON(w, http.StatusForbidden, apiResponse{OK: false, Error: "Filter editing is not allowed for this user"})
+		return
+	}
+
+	var body store.RouteFilters
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
+		return
+	}
+
+	if err := s.store.SetUserRouteFilters(ctx, user.ID, body); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	if s.bgp != nil {
+		if err := s.bgp.Reconcile(ctx); err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Filters saved but BGP reconciliation failed: " + err.Error()})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, apiResponse{OK: true})
+}
+
+// apiUserCountPrefixes handles POST /api/user/count-prefixes.
+// Returns the number of v4/v6 prefixes that would be announced for a given selection,
+// along with deltas compared to the user's currently saved selections.
+func (s *Server) apiUserCountPrefixes(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		Categories []string           `json:"categories"`
+		Services   []store.ServiceKey `json:"services"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
+		return
+	}
+
+	// Count prefixes for the proposed selection
+	newV4, newV6, err := s.store.CountPrefixes(ctx, user.CatalogModeID, body.Categories, body.Services, user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	// Load current saved selections
+	curCats, curSvcs, err := s.store.UserModeSelection(ctx, user.ID, user.CatalogModeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	// Convert current selections to slices
+	curCatList := make([]string, 0, len(curCats))
+	for c := range curCats {
+		curCatList = append(curCatList, c)
+	}
+	curSvcList := make([]store.ServiceKey, 0, len(curSvcs))
+	for k := range curSvcs {
+		curSvcList = append(curSvcList, k)
+	}
+
+	// Count prefixes for current selections
+	curV4, curV6, err := s.store.CountPrefixes(ctx, user.CatalogModeID, curCatList, curSvcList, user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"v4":       newV4,
+		"v6":       newV6,
+		"delta_v4": newV4 - curV4,
+		"delta_v6": newV6 - curV6,
+	})
+}

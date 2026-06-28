@@ -27,6 +27,8 @@ linters:
 
   exclusions:
     generated: lax
+    paths:
+      - webgui/node_modules/.*
 
 formatters:
   enable:
