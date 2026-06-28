@@ -294,6 +294,7 @@
   "users.cancel": "Отмена",
   "users.delete_confirm": "Удалить этого пользователя и все его настройки?",
   "users.saved": "Пользователь сохранён.",
+  "users.save_failed": "Не удалось сохранить пользователя",
   "users.deleted": "Пользователь удалён.",
   "users.error_name": "Имя обязательно.",
   "users.error_peer_ip": "Требуется корректный IP пира.",

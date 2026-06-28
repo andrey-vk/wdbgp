@@ -295,6 +295,7 @@
   "users.cancel": "Cancel",
   "users.delete_confirm": "Delete this user and all their settings?",
   "users.saved": "User saved.",
+  "users.save_failed": "Failed to save user",
   "users.deleted": "User deleted.",
   "users.error_name": "Name is required.",
   "users.error_peer_ip": "Valid peer IP is required.",

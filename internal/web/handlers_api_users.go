@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/store"
@@ -182,6 +183,12 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "At least one network is required"})
 		return
 	}
+	for _, raw := range body.Networks {
+		if _, err := netip.ParsePrefix(strings.TrimSpace(raw)); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid network CIDR: " + raw})
+			return
+		}
+	}
 
 	user := store.User{
 		Name:            body.Name,
@@ -352,6 +359,12 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		current.WebAuth = *body.WebAuth
 	}
 	if body.Networks != nil {
+		for _, raw := range *body.Networks {
+			if _, err := netip.ParsePrefix(strings.TrimSpace(raw)); err != nil {
+				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid network CIDR: " + raw})
+				return
+			}
+		}
 		current.Networks = *body.Networks
 	}
 

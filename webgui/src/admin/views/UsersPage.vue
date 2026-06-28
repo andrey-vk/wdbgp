@@ -316,6 +316,9 @@ async function handleSave() {
     dynamicPeer.value = isDynamic(resp.data.peer_ip)
     editMode.value = false
     toast.add({ severity: 'success', summary: t('users.saved'), life: 3000 })
+  } catch (e: any) {
+    const msg = e.response?.data?.error || t('users.save_failed')
+    toast.add({ severity: 'error', summary: msg, life: 3000 })
   } finally { saving.value = false }
 }
 
