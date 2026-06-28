@@ -20,30 +20,38 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 		ctx := r.Context()
 		clientIP := s.clientIP(r)
 
-		// Try source IP match first (web_auth=network, any, both)
-		user, err := s.store.UserByIP(ctx, clientIP)
-		if err == nil {
-			if user.WebAuth == "network" || user.WebAuth == "any" || user.WebAuth == "both" {
-				r = r.WithContext(context.WithValue(ctx, userCtxKey{}, user))
-				next(w, r)
-				return
-			}
-		}
+		// Try source IP match
+		ipUser, ipErr := s.store.UserByIP(ctx, clientIP)
+		ipMatch := ipErr == nil && ipUser.Enabled
 
-		// Try session cookie (web_auth=login, any, both)
+		// Try session cookie
 		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
+		var cookieMatch bool
+		var cookieUser store.User
 		if sessionID > 0 {
-			userByCookie, err := s.store.User(ctx, sessionID)
-			if err == nil {
-				if userByCookie.WebAuth == "login" || userByCookie.WebAuth == "any" || userByCookie.WebAuth == "both" {
-					r = r.WithContext(context.WithValue(ctx, userCtxKey{}, userByCookie))
-					next(w, r)
-					return
-				}
-			}
+			cookieUser, cookieErr := s.store.User(ctx, sessionID)
+			cookieMatch = cookieErr == nil && cookieUser.Enabled
 		}
 
-		writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "Authentication required"})
+		// Authorize based on web_auth mode
+		switch {
+		case ipMatch && ipUser.WebAuth == "network":
+			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, ipUser))
+		case cookieMatch && cookieUser.WebAuth == "login":
+			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, cookieUser))
+		case ipMatch && cookieMatch &&
+			ipUser.WebAuth == "both" && ipUser.ID == cookieUser.ID:
+			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, ipUser))
+		case ipMatch && ipUser.WebAuth == "any":
+			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, ipUser))
+		case cookieMatch && cookieUser.WebAuth == "any":
+			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, cookieUser))
+		default:
+			writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "Authentication required"})
+			return
+		}
+
+		next(w, r)
 	}
 }
 
