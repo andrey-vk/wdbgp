@@ -242,6 +242,15 @@ func ForkedAdapterNeedsReview(forkedFrom string, forkedVersion int64) bool {
 	return int64(builtin.builtinVersion) > forkedVersion
 }
 
+// BuiltInAdapterVersion returns the current builtin version for a given key.
+func BuiltInAdapterVersion(key string) (int64, bool) {
+	a, ok := builtInAdapters[key]
+	if !ok {
+		return 0, false
+	}
+	return int64(a.builtinVersion), true
+}
+
 func (s *Store) ResetFeedAdapter(ctx context.Context, id int64) error {
 	var key string
 	if err := s.DB.QueryRowContext(ctx,

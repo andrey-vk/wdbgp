@@ -132,6 +132,7 @@ func (s *Server) apiAdaptersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	update := store.FeedAdapter{
 		ID: id, Name: body.Name, Source: body.Source,
+		ForkedVersion: adapter.ForkedVersion, // preserve fork point
 	}
 	if err := store.ValidateFeedAdapter(update); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
@@ -219,8 +220,10 @@ func (s *Server) apiAdaptersAcknowledge(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Not a forked adapter"})
 		return
 	}
-	// Update forked_version to match current builtin
-	adapter.ForkedVersion = adapter.Revision
+	// Update forked_version to match current builtin version
+	if v, ok := store.BuiltInAdapterVersion(adapter.ForkedFrom); ok {
+		adapter.ForkedVersion = v
+	}
 	if err := s.store.UpdateFeedAdapter(r.Context(), adapter); err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
