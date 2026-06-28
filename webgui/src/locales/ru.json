@@ -369,6 +369,7 @@
   "user.delta_loss": "-{n}",
   "user.save": "Сохранить выбор",
   "user.saved": "Выбор сохранён",
+  "user.save_error": "Не удалось сохранить",
   "user.save_filters": "Сохранить фильтры",
   "user.filters_saved": "Фильтры сохранены",
   "user.filters_allow": "Разрешить CIDR",

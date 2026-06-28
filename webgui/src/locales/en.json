@@ -370,6 +370,7 @@
   "user.delta_loss": "-{n}",
   "user.save": "Save selection",
   "user.saved": "Selection saved",
+  "user.save_error": "Failed to save",
   "user.save_filters": "Save filters",
   "user.filters_saved": "Filters saved",
   "user.filters_allow": "Allow CIDRs",
