@@ -70,7 +70,7 @@ func TestAdapterForkAutoNaming(t *testing.T) {
 		Source:        builtin.Source,
 		Language:      builtin.Language,
 		APIVersion:    builtin.APIVersion,
-		ForkedFrom:    builtin.Key,
+		ForkedFrom:    builtin.ID,
 		ForkedVersion: builtin.Revision,
 	}
 	forked1, err := db.AddFeedAdapter(ctx, forked)
@@ -86,10 +86,10 @@ func TestAdapterForkAutoNaming(t *testing.T) {
 	}
 
 	// Read them back
-	if forked1.ForkedFrom != builtin.Key {
+	if forked1.ForkedFrom != builtin.ID {
 		t.Fatal("forked_from not set on first copy")
 	}
-	if forked2.ForkedFrom != builtin.Key {
+	if forked2.ForkedFrom != builtin.ID {
 		t.Fatal("forked_from not set on second copy")
 	}
 	if forked1.ForkedVersion == 0 {
@@ -187,7 +187,7 @@ func TestMaxForkedAdapterSuffix(t *testing.T) {
 	}
 
 	// Should return 0 when no forks exist
-	suffix, err := db.maxForkedAdapterSuffix(ctx, builtin.Key, builtin.Name)
+	suffix, err := db.maxForkedAdapterSuffix(ctx, builtin.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,14 +201,14 @@ func TestMaxForkedAdapterSuffix(t *testing.T) {
 		Source:        builtin.Source,
 		Language:      builtin.Language,
 		APIVersion:    builtin.APIVersion,
-		ForkedFrom:    builtin.Key,
+		ForkedFrom:    builtin.ID,
 		ForkedVersion: builtin.Revision,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Now suffix should be 1
-	suffix, err = db.maxForkedAdapterSuffix(ctx, builtin.Key, builtin.Name)
+	suffix, err = db.maxForkedAdapterSuffix(ctx, builtin.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,14 +222,14 @@ func TestMaxForkedAdapterSuffix(t *testing.T) {
 		Source:        builtin.Source,
 		Language:      builtin.Language,
 		APIVersion:    builtin.APIVersion,
-		ForkedFrom:    builtin.Key,
+		ForkedFrom:    builtin.ID,
 		ForkedVersion: builtin.Revision,
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Now suffix should be 5 (max of 1 and 5)
-	suffix, err = db.maxForkedAdapterSuffix(ctx, builtin.Key, builtin.Name)
+	suffix, err = db.maxForkedAdapterSuffix(ctx, builtin.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,7 +24,7 @@ type adapterJSON struct {
 	Source         string `json:"source"`
 	Revision       int64  `json:"revision"`
 	BuiltIn        bool   `json:"builtin"`
-	ForkedFrom     string `json:"forked_from,omitempty"`
+	ForkedFrom     int64 `json:"forked_from,omitempty"`
 	ForkedVersion  int64  `json:"forked_version,omitempty"`
 	RequiresReview bool   `json:"requires_review"`
 }
@@ -37,7 +37,7 @@ func adapterToJSON(a store.FeedAdapter) adapterJSON {
 		Revision: a.Revision, BuiltIn: a.BuiltIn,
 		ForkedFrom: a.ForkedFrom, ForkedVersion: a.ForkedVersion,
 	}
-	if a.ForkedFrom != "" {
+	if a.ForkedFrom != 0 {
 		if store.ForkedAdapterNeedsReview(a.ForkedFrom, a.ForkedVersion) {
 			aj.RequiresReview = true
 		}
@@ -216,7 +216,7 @@ func (s *Server) apiAdaptersAcknowledge(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load adapter"})
 		return
 	}
-	if adapter.ForkedFrom == "" {
+	if adapter.ForkedFrom == 0 {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Not a forked adapter"})
 		return
 	}

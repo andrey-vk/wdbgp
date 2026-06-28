@@ -33,9 +33,9 @@ func V024(ctx context.Context, tx *sql.Tx) error {
 		log.Printf("WARNING: rows close: %v", err)
 	}
 
-	// Add forked_from column (empty for built-ins, references built-in key for forks)
+	// Add forked_from column (NULL for built-ins, references built-in adapter ID for forks)
 	if !hasForkedFrom {
-		if _, err := tx.Exec(`ALTER TABLE feed_adapters ADD COLUMN forked_from TEXT NOT NULL DEFAULT ''`); err != nil {
+		if _, err := tx.Exec(`ALTER TABLE feed_adapters ADD COLUMN forked_from INTEGER DEFAULT NULL`); err != nil {
 			return err
 		}
 	}

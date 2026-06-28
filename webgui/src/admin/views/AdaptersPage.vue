@@ -14,7 +14,7 @@ import FormField from '@/components/FormField.vue'
 interface Adapter {
   id: number; name: string; source: string
   revision: number; builtin: boolean
-  forked_from?: string; forked_version?: number; requires_review?: boolean
+  forked_from?: number; forked_version?: number; requires_review?: boolean
 }
 
 const { t } = useI18n()
@@ -112,6 +112,14 @@ async function handleAcknowledge() {
   if (idx >= 0) adapters.value[idx] = resp.data
   selected.value = resp.data
   toast.add({ severity: 'success', summary: t('adapters.acknowledged'), life: 3000 })
+}
+
+function getForkedFromName(adapter: Adapter): string {
+  if (adapter.forked_from) {
+    const src = adapters.value.find(a => a.id === adapter.forked_from)
+    if (src) return src.name
+  }
+  return ''
 }
 
 async function loadList() { const resp = await apiClient.get('/admin/adapters'); adapters.value = resp.data.adapters; adapters.value.sort((a, b) => (a.name || '').localeCompare(b.name || '')) }
@@ -234,8 +242,8 @@ async function loadList() { const resp = await apiClient.get('/admin/adapters');
               class="flex flex-col gap-1"
             >
               <span class="font-medium">{{ t('adapters.forked_from') }}</span><p class="m-0">
-                {{ selected.forked_from }} (v{{ selected.forked_version }})
-              </p>
+                  {{ getForkedFromName(selected) }} (v{{ selected.forked_version }})
+                </p>
             </div>
             <div class="flex flex-col gap-1">
               <span class="font-medium">{{ t('adapters.source') }}</span><pre class="m-0 p-3 font-mono whitespace-pre-wrap overflow-y-auto min-h-24 max-h-[40vh] text-sm border border-gray-200 dark:border-gray-700 rounded bg-gray-50 dark:bg-gray-950">{{ selected.source }}</pre>

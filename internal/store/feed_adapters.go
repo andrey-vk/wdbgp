@@ -167,6 +167,8 @@ var builtInAdapters = map[string]builtInAdapter{
 	},
 }
 
+var builtInAdapterVersionByID = map[int64]int{}
+
 func (s *Store) seedBuiltInAdapters(ctx context.Context) error {
 	for key, adapter := range builtInAdapters {
 		// First, INSERT OR IGNORE any built-in adapters that don't exist yet.
@@ -176,6 +178,11 @@ VALUES (?, ?, 'javascript', 1, ?, ?)`,
 			key, adapter.name, normalizedBuiltInSource(adapter.source),
 			adapter.builtinVersion); err != nil {
 			return err
+		}
+		// Capture the adapter ID for the version map (regardless of whether it was just inserted or already existed).
+		var id int64
+		if err := s.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE key = ?", key).Scan(&id); err == nil {
+			builtInAdapterVersionByID[id] = adapter.builtinVersion
 		}
 		// Then, read current state of the adapter.
 		var isCustomized, builtinVersion int
@@ -196,6 +203,7 @@ VALUES (?, ?, 'javascript', 1, ?, ?)`,
 				adapter.builtinVersion, key); err != nil {
 				return err
 			}
+			builtInAdapterVersionByID[id] = adapter.builtinVersion
 		} else if builtinVersion == 0 && storedSource != "" && (strings.TrimSpace(storedSource) != strings.TrimSpace(normBuiltIn) ||
 			currentName != adapter.name) {
 			// Freshly migrated adapter (builtin_version == 0) whose source
@@ -207,6 +215,7 @@ VALUES (?, ?, 'javascript', 1, ?, ?)`,
 				adapter.builtinVersion, key); err != nil {
 				return err
 			}
+			builtInAdapterVersionByID[id] = adapter.builtinVersion
 		} else {
 			// Not customized: update name, source, builtin_version.
 			if _, err := s.DB.ExecContext(ctx, `
@@ -217,6 +226,7 @@ WHERE key = ?`,
 				adapter.builtinVersion, key); err != nil {
 				return err
 			}
+			builtInAdapterVersionByID[id] = adapter.builtinVersion
 		}
 
 		// Set forked_version for built-ins that have it unset.
@@ -232,24 +242,21 @@ WHERE key = ?`,
 
 // ForkedAdapterNeedsReview returns true when the built-in adapter that a fork
 // was created from has been updated since the fork was made.
-func ForkedAdapterNeedsReview(forkedFrom string, forkedVersion int64) bool {
-	if forkedFrom == "" {
+func ForkedAdapterNeedsReview(forkedFromID int64, forkedVersion int64) bool {
+	if forkedFromID == 0 {
 		return false
 	}
-	builtin, ok := builtInAdapters[forkedFrom]
+	builtinVer, ok := builtInAdapterVersionByID[forkedFromID]
 	if !ok {
 		return false
 	}
-	return int64(builtin.builtinVersion) > forkedVersion
+	return int64(builtinVer) > forkedVersion
 }
 
-// BuiltInAdapterVersion returns the current builtin version for a given key.
-func BuiltInAdapterVersion(key string) (int64, bool) {
-	a, ok := builtInAdapters[key]
-	if !ok {
-		return 0, false
-	}
-	return int64(a.builtinVersion), true
+// BuiltInAdapterVersion returns the current builtin version for a given adapter ID.
+func BuiltInAdapterVersion(id int64) (int64, bool) {
+	v, ok := builtInAdapterVersionByID[id]
+	return int64(v), ok
 }
 
 func (s *Store) ResetFeedAdapter(ctx context.Context, id int64) error {
@@ -302,8 +309,9 @@ func (s *Store) AddFeedAdapter(ctx context.Context, adapter FeedAdapter) (FeedAd
 	var a FeedAdapter
 	err := s.DB.QueryRowContext(ctx, `
 INSERT INTO feed_adapters(key, name, language, api_version, source, forked_from, forked_version, is_builtin)
-VALUES (?, ?, 'javascript', 1, ?, ?, ?, 0)
-RETURNING id, key, name, language, api_version, source, revision, is_builtin, forked_from, forked_version`,
+VALUES (?, ?, 'javascript', 1, ?, NULLIF(?, 0), ?, 0)
+RETURNING id, key, name, language, api_version, source, revision, is_builtin, COALESCE(forked_from, 0), forked_version`,
+
 		key, adapter.Name, adapter.Source, adapter.ForkedFrom, adapter.ForkedVersion,
 	).Scan(&a.ID, &a.Key, &a.Name, &a.Language, &a.APIVersion, &a.Source, &a.Revision, &a.BuiltIn, &a.ForkedFrom, &a.ForkedVersion)
 	if err != nil {
@@ -318,7 +326,7 @@ func (s *Store) ForkAdapter(ctx context.Context, sourceID int64) (FeedAdapter, e
 	if err != nil {
 		return FeedAdapter{}, fmt.Errorf("load source adapter: %w", err)
 	}
-	suffix, err := s.maxForkedAdapterSuffix(ctx, src.Key, src.Name)
+	suffix, err := s.maxForkedAdapterSuffix(ctx, src.ID)
 	if err != nil {
 		return FeedAdapter{}, fmt.Errorf("compute fork suffix: %w", err)
 	}
@@ -327,7 +335,7 @@ func (s *Store) ForkAdapter(ctx context.Context, sourceID int64) (FeedAdapter, e
 		Source:        src.Source,
 		Language:      src.Language,
 		APIVersion:    src.APIVersion,
-		ForkedFrom:    src.Key,
+		ForkedFrom:    src.ID,
 		ForkedVersion: src.Revision,
 	}
 	return s.AddFeedAdapter(ctx, fork)
@@ -377,12 +385,12 @@ func ValidateFeedAdapter(adapter FeedAdapter) error {
 	return nil
 }
 
-func (s *Store) ForkedAdaptersByKey(ctx context.Context, key string) ([]FeedAdapter, error) {
+func (s *Store) ForkedAdaptersByKey(ctx context.Context, forkedFromID int64) ([]FeedAdapter, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT id, key, name, language, api_version, source, revision, forked_from, forked_version
+SELECT id, key, name, language, api_version, source, revision, COALESCE(forked_from, 0), forked_version
 FROM feed_adapters
 WHERE forked_from = ?
-ORDER BY name`, key)
+ORDER BY name`, forkedFromID)
 	if err != nil {
 		return nil, err
 	}
@@ -403,10 +411,20 @@ ORDER BY name`, key)
 	return adapters, rows.Err()
 }
 
-func (s *Store) maxForkedAdapterSuffix(ctx context.Context, forkedFrom string, srcName string) (int, error) {
+func (s *Store) maxForkedAdapterSuffix(ctx context.Context, forkedFromID int64) (int, error) {
+	var isBuiltin bool
+	var srcName string
+	if err := s.DB.QueryRowContext(ctx,
+		"SELECT is_builtin, name FROM feed_adapters WHERE id = ?", forkedFromID,
+	).Scan(&isBuiltin, &srcName); err != nil {
+		return 0, err
+	}
+	if !isBuiltin {
+		return 0, fmt.Errorf("adapter %d is not built-in", forkedFromID)
+	}
 	rows, err := s.DB.QueryContext(ctx,
 		"SELECT name FROM feed_adapters WHERE forked_from = ? AND name LIKE ?",
-		forkedFrom, srcName+"_copy_%")
+		forkedFromID, srcName+"_copy_%")
 	if err != nil {
 		return 0, err
 	}

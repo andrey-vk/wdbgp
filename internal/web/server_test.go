@@ -740,7 +740,7 @@ func TestAdapterCRUDAPI(t *testing.T) {
 			ID         int64  `json:"id"`
 			BuiltIn    bool   `json:"builtin"`
 			Name       string `json:"name"`
-			ForkedFrom string `json:"forked_from"`
+			ForkedFrom int64  `json:"forked_from"`
 		} `json:"adapters"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&listResp); err != nil {
@@ -773,12 +773,12 @@ func TestAdapterCRUDAPI(t *testing.T) {
 	var forked struct {
 		ID         int64  `json:"id"`
 		Name       string `json:"name"`
-		ForkedFrom string `json:"forked_from"`
+		ForkedFrom int64  `json:"forked_from"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&forked); err != nil {
 		t.Fatal(err)
 	}
-	if forked.ForkedFrom == "" {
+	if forked.ForkedFrom == 0 {
 		t.Fatal("forked adapter missing forked_from")
 	}
 	if !strings.Contains(forked.Name, "_copy_") {
