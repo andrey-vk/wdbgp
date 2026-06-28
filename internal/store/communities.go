@@ -86,6 +86,15 @@ ON CONFLICT(mode_id, category, service) DO UPDATE SET community = excluded.commu
 	return err
 }
 
+// DeleteCommunity removes a manual community override.
+// After deletion, GenerateCommunities fills the auto value.
+func (s *Store) DeleteCommunity(ctx context.Context, modeID int64, category, service string) error {
+	_, err := s.DB.ExecContext(ctx,
+		`DELETE FROM catalog_communities WHERE mode_id = ? AND category = ? AND service = ?`,
+		modeID, category, service)
+	return err
+}
+
 // GenerateCommunities fills missing communities for all categories/services in a mode.
 // Uses the 10000*gap scheme. Skips categories/services that already have a community.
 // Returns count of newly generated communities.
