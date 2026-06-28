@@ -68,7 +68,6 @@ func TestAdapterForkAutoNaming(t *testing.T) {
 	forked := FeedAdapter{
 		Name:          builtin.Name + "_copy_1",
 		Source:        builtin.Source,
-		AllowedHosts:  builtin.AllowedHosts,
 		Language:      builtin.Language,
 		APIVersion:    builtin.APIVersion,
 		ForkedFrom:    builtin.Key,

@@ -40,4 +40,5 @@ var migrations = []Migration{
 	{25, "add restrict_hosts and allowed_hosts to feeds", m.V025, nil},
 	{26, "add metric snapshots", m.V026, nil},
 	{27, "add is_builtin to feed_adapters", m.V027, nil},
+	{28, "drop allowed_hosts from feed_adapters", m.V028, nil},
 }

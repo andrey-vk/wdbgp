@@ -65,7 +65,6 @@ func TestResetBuiltInFeedAdapter(t *testing.T) {
 	changed := original
 	changed.Name = "Changed"
 	changed.Source = "function sync() { return []; }\n"
-	changed.AllowedHosts = "example.test"
 	if err := s.UpdateFeedAdapter(ctx, changed); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +77,6 @@ func TestResetBuiltInFeedAdapter(t *testing.T) {
 	}
 	if reset.Name != original.Name ||
 		reset.Source != original.Source ||
-		reset.AllowedHosts != original.AllowedHosts ||
 		reset.Revision != original.Revision+2 ||
 		!reset.BuiltIn {
 		t.Fatalf("reset adapter = %#v, original = %#v", reset, original)

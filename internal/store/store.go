@@ -43,7 +43,6 @@ type FeedAdapter struct {
 	Language      string
 	APIVersion    int
 	Source        string
-	AllowedHosts  string
 	Revision      int64
 	BuiltIn       bool
 	ForkedFrom    string // built-in key this adapter was forked from (empty for built-ins and customs)
@@ -479,7 +478,7 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 
 func (s *Store) FeedAdapters(ctx context.Context) ([]FeedAdapter, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT id, key, name, language, api_version, source, allowed_hosts, revision, forked_from, forked_version, is_builtin
+SELECT id, key, name, language, api_version, source, revision, forked_from, forked_version, is_builtin
 FROM feed_adapters
 ORDER BY id`)
 	if err != nil {
@@ -496,7 +495,7 @@ ORDER BY id`)
 		var isBuiltin int
 		if err := rows.Scan(
 			&adapter.ID, &adapter.Key, &adapter.Name, &adapter.Language,
-			&adapter.APIVersion, &adapter.Source, &adapter.AllowedHosts,
+			&adapter.APIVersion, &adapter.Source,
 			&adapter.Revision, &adapter.ForkedFrom, &adapter.ForkedVersion,
 			&isBuiltin,
 		); err != nil {
@@ -512,11 +511,11 @@ func (s *Store) FeedAdapter(ctx context.Context, id int64) (FeedAdapter, error) 
 	var adapter FeedAdapter
 	var isBuiltin int
 	err := s.DB.QueryRowContext(ctx, `
-SELECT id, key, name, language, api_version, source, allowed_hosts, revision, forked_from, forked_version, is_builtin
+		SELECT id, key, name, language, api_version, source, revision, forked_from, forked_version, is_builtin
 FROM feed_adapters
 WHERE id = ?`, id).Scan(
 		&adapter.ID, &adapter.Key, &adapter.Name, &adapter.Language,
-		&adapter.APIVersion, &adapter.Source, &adapter.AllowedHosts,
+		&adapter.APIVersion, &adapter.Source,
 		&adapter.Revision, &adapter.ForkedFrom, &adapter.ForkedVersion,
 		&isBuiltin,
 	)

@@ -46,5 +46,22 @@ func V025(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 	}
+
+	// Copy allowed_hosts from adapter to existing feeds (one-time migration).
+	// This captures the adapter's host list for each feed before the adapter
+	// column is dropped in migration 028.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE feeds SET allowed_hosts = (
+			SELECT fa.allowed_hosts
+			FROM feed_adapters fa
+			WHERE fa.id = feeds.adapter_id
+		)
+		WHERE EXISTS (
+			SELECT 1 FROM feed_adapters fa
+			WHERE fa.id = feeds.adapter_id AND fa.allowed_hosts != ''
+		)
+	`); err != nil {
+		return err
+	}
 	return nil
 }

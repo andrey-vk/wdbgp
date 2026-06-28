@@ -22,7 +22,6 @@ type adapterJSON struct {
 	Language       string `json:"language"`
 	APIVersion     int    `json:"api_version"`
 	Source         string `json:"source"`
-	AllowedHosts   string `json:"allowed_hosts"`
 	Revision       int64  `json:"revision"`
 	BuiltIn        bool   `json:"builtin"`
 	ForkedFrom     string `json:"forked_from,omitempty"`
@@ -34,7 +33,7 @@ func adapterToJSON(a store.FeedAdapter) adapterJSON {
 	aj := adapterJSON{
 		ID: a.ID, Key: a.Key, Name: a.Name,
 		Language: a.Language, APIVersion: a.APIVersion,
-		Source: a.Source, AllowedHosts: a.AllowedHosts,
+		Source: a.Source,
 		Revision: a.Revision, BuiltIn: a.BuiltIn,
 		ForkedFrom: a.ForkedFrom, ForkedVersion: a.ForkedVersion,
 	}
@@ -79,9 +78,8 @@ func (s *Server) apiAdaptersGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiAdaptersCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name         string `json:"name"`
-		Source       string `json:"source"`
-		AllowedHosts string `json:"allowed_hosts"`
+		Name   string `json:"name"`
+		Source string `json:"source"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
@@ -89,8 +87,7 @@ func (s *Server) apiAdaptersCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	adapter := store.FeedAdapter{
 		Name: body.Name, Source: body.Source,
-		AllowedHosts: body.AllowedHosts,
-		Language:     "javascript", APIVersion: 1,
+		Language: "javascript", APIVersion: 1,
 	}
 	if err := store.ValidateFeedAdapter(adapter); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
@@ -126,9 +123,8 @@ func (s *Server) apiAdaptersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Name         string `json:"name"`
-		Source       string `json:"source"`
-		AllowedHosts string `json:"allowed_hosts"`
+		Name   string `json:"name"`
+		Source string `json:"source"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
@@ -136,7 +132,6 @@ func (s *Server) apiAdaptersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	update := store.FeedAdapter{
 		ID: id, Name: body.Name, Source: body.Source,
-		AllowedHosts: body.AllowedHosts,
 	}
 	if err := store.ValidateFeedAdapter(update); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})

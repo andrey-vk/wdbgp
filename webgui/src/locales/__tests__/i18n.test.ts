@@ -124,7 +124,6 @@ describe('i18n locale consistency', () => {
       // The static regex misses some keys because they're used in ways our
       // regex doesn't handle: variable interpolation, conditional ternary, etc.
       // We include all these as known-false-negatives of our static analysis.
-      'adapters.allowed_hosts',
       'adapters.revision',
       'adapters.builtin',
       'adapters.reset',
@@ -132,7 +131,6 @@ describe('i18n locale consistency', () => {
       'adapters.reset_done',
       'adapters.view',
       'adapters.fork_confirm',
-      'adapters.hosts_placeholder',
       'adapters.empty',
       'feeds.adapter_placeholder',
       'feeds.hosts_placeholder',

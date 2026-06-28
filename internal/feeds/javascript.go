@@ -86,7 +86,11 @@ func (r adapterRunner) run(
 		return nil, fmt.Errorf("adapter must define function sync(feed, api)")
 	}
 
-	httpAPI, err := newAdapterHTTP(runCtx, r.client, feed.URL, adapter.AllowedHosts, r.limits)
+	hosts := ""
+	if feed.RestrictHosts {
+		hosts = feed.AllowedHosts
+	}
+	httpAPI, err := newAdapterHTTP(runCtx, r.client, feed.URL, hosts, r.limits)
 	if err != nil {
 		return nil, err
 	}
