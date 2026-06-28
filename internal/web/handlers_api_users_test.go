@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1079,5 +1080,117 @@ func TestUsersPartialUpdateDoubleToggleNoPassword(t *testing.T) {
 	}
 	if !updated.Enabled {
 		t.Fatal("enabled should be true in GET after second toggle")
+	}
+}
+
+// =============================================================================
+// TestAdminSaveSelectionsPreservesHidden — admin saves selections, disabled feed
+// items are preserved (SetVisibleUserModeSelection re-adds hidden selections).
+// =============================================================================
+
+func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	// 1. Create a catalog mode (id > 3 so it's custom)
+	modeID, err := st.AddCatalogMode(ctx, "test-mode", "Test Mode", true)
+	if err != nil {
+		t.Fatalf("add mode: %v", err)
+	}
+	if modeID <= 3 {
+		t.Fatalf("mode id %d should be > 3", modeID)
+	}
+
+	// 2. Create two feeds: f1 (enabled), f2 (enabled initially)
+	f1ID, err := st.AddFeed(ctx, "f1", "https://example.test/f1.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed1: %v", err)
+	}
+	f2ID, err := st.AddFeed(ctx, "f2", "https://example.test/f2.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed2: %v", err)
+	}
+
+	// 3. Assign both feeds to the mode
+	if err := st.AddFeedToMode(ctx, modeID, f1ID); err != nil {
+		t.Fatalf("assign f1 to mode: %v", err)
+	}
+	if err := st.AddFeedToMode(ctx, modeID, f2ID); err != nil {
+		t.Fatalf("assign f2 to mode: %v", err)
+	}
+
+	// 4. Create catalog entries: feed1 has "Cat1::Svc1", feed2 has "Cat2::Svc2"
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
+		f1ID, "Cat1", "Svc1", "10.0.0.0/8"); err != nil {
+		t.Fatalf("insert entry f1: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
+		f2ID, "Cat2", "Svc2", "192.168.0.0/16"); err != nil {
+		t.Fatalf("insert entry f2: %v", err)
+	}
+
+	// 5. Create a user with catalog_mode_id = modeID
+	userID, err := st.AddUser(ctx, store.User{
+		Name:          "test-user",
+		PeerIP:        "172.16.0.1",
+		PeerASN:       65001,
+		Enabled:       true,
+		CatalogModeID: modeID,
+		Networks:      []string{"10.0.0.0/8"},
+	})
+	if err != nil {
+		t.Fatalf("add user: %v", err)
+	}
+
+	cfg := testConfig()
+
+	// 6. Save selections for both via admin endpoint
+	body := fmt.Sprintf(`{"categories":["Cat1","Cat2"],"services":[{"category":"Cat1","service":"Svc1"},{"category":"Cat2","service":"Svc2"}],"mode_id":%d}`, modeID)
+	req := httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d/selections", userID), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", fmt.Sprintf("%d", userID))
+	req.AddCookie(adminCookie(cfg))
+	w := httptest.NewRecorder()
+	srv.apiAdminUserSaveSelections(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save selections: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	// 7. Disable feed2
+	if _, err := st.DB.ExecContext(ctx, "UPDATE feeds SET enabled = 0 WHERE id = ?", f2ID); err != nil {
+		t.Fatalf("disable f2: %v", err)
+	}
+
+	// 8. Call admin save again with ONLY Cat1::Svc1
+	body = fmt.Sprintf(`{"categories":["Cat1"],"services":[{"category":"Cat1","service":"Svc1"}],"mode_id":%d}`, modeID)
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d/selections", userID), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", fmt.Sprintf("%d", userID))
+	req.AddCookie(adminCookie(cfg))
+	w = httptest.NewRecorder()
+	srv.apiAdminUserSaveSelections(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save selections after disable: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	// 9. Verify Cat1::Svc1 remains selected
+	// 10. Verify Cat2::Svc2 is ALSO still selected (hidden, from disabled feed, preserved)
+	categories, services, err := st.UserModeSelection(ctx, userID, modeID)
+	if err != nil {
+		t.Fatalf("get selections: %v", err)
+	}
+	if !categories["Cat1"] {
+		t.Fatal("Cat1 should be selected")
+	}
+	if !categories["Cat2"] {
+		t.Fatal("Cat2 should be selected (preserved from disabled feed)")
+	}
+	if !services[store.ServiceKey{Category: "Cat1", Service: "Svc1"}] {
+		t.Fatal("Cat1::Svc1 should be selected")
+	}
+	if !services[store.ServiceKey{Category: "Cat2", Service: "Svc2"}] {
+		t.Fatal("Cat2::Svc2 should be selected (preserved from disabled feed)")
 	}
 }
