@@ -11,7 +11,7 @@ import (
 func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if err := s.AddFeed(ctx, "custom", "https://example.test/old.json", true, 0); err != nil {
+	if _, err := s.AddFeed(ctx, "custom", "https://example.test/old.json", 1, true, 0, "", "", true); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)

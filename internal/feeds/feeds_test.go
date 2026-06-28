@@ -401,10 +401,15 @@ func TestSyncAllSkipsDisabledFeeds(t *testing.T) {
 	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", true, 0); err != nil {
+	enabledID, err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", 1, true, 0, "", "", true)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", false, 0); err != nil {
+	disabledID, err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", 1, false, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(context.Background(), "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?), (1, ?)", enabledID, disabledID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -444,7 +449,11 @@ func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	}
 	const oldURL = "https://example.test/old"
 	const newURL = "https://example.test/new"
-	if err := db.AddFeed(ctx, "custom", oldURL, true, 0); err != nil {
+	feedID, err := db.AddFeed(ctx, "custom", oldURL, 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(ctx, true)
@@ -503,7 +512,11 @@ func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(ctx, "custom", "https://example.test/feed", true, 0); err != nil {
+	feedID, err := db.AddFeed(ctx, "custom", "https://example.test/feed", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(ctx, true)

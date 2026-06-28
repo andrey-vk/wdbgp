@@ -221,11 +221,11 @@ func TestModeFeedsAssign(t *testing.T) {
 
 	// --- Create 2 feeds via store ---
 	ctx := context.Background()
-	feedID1, err := st.AddFeedForModeAdapter(ctx, "Test Feed 1", "http://example.com/feed1.json", 0, 1, true, 0, "", "", true)
+	feedID1, err := st.AddFeed(ctx, "Test Feed 1", "http://example.com/feed1.json", 1, true, 0, "", "", true)
 	if err != nil {
 		t.Fatalf("create feed 1: %v", err)
 	}
-	feedID2, err := st.AddFeedForModeAdapter(ctx, "Test Feed 2", "http://example.com/feed2.json", 0, 1, true, 0, "", "", true)
+	feedID2, err := st.AddFeed(ctx, "Test Feed 2", "http://example.com/feed2.json", 1, true, 0, "", "", true)
 	if err != nil {
 		t.Fatalf("create feed 2: %v", err)
 	}
@@ -313,9 +313,12 @@ func TestModeCommunities(t *testing.T) {
 
 	// --- Create a feed and assign to mode ---
 	ctx := context.Background()
-	feedID, err := st.AddFeedForModeAdapter(ctx, "Comm Feed", "http://example.com/comm.json", modeID, 1, true, 0, "", "", true)
+	feedID, err := st.AddFeed(ctx, "Comm Feed", "http://example.com/comm.json", 1, true, 0, "", "", true)
 	if err != nil {
 		t.Fatalf("create feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
 	}
 
 	// --- Insert catalog entry so GenerateCommunities has data to work with ---
@@ -559,8 +562,8 @@ func TestModeFeedReplaceAtomic(t *testing.T) {
 	modeID := created.ID
 
 	// Create 2 feeds
-	f1, _ := st.AddFeedForModeAdapter(ctx, "F1", "http://a.com/f1.json", modeID, 1, true, 0, "", "", true)
-	f2, _ := st.AddFeedForModeAdapter(ctx, "F2", "http://a.com/f2.json", modeID, 1, true, 0, "", "", true)
+	f1, _ := st.AddFeed(ctx, "F1", "http://a.com/f1.json", 1, true, 0, "", "", true)
+	f2, _ := st.AddFeed(ctx, "F2", "http://a.com/f2.json", 1, true, 0, "", "", true)
 
 	// Assign both feeds to mode
 	assignBody := fmt.Sprintf(`{"feed_ids":[%d,%d]}`, f1, f2)

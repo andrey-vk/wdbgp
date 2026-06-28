@@ -79,27 +79,10 @@ WHERE id = ?`, id).Scan(
 	return feed, err
 }
 
-func (s *Store) AddFeed(ctx context.Context, name, url string, enabled bool, syncInterval int) error {
-	return s.AddFeedForMode(ctx, name, url, DefaultCatalogModeID, enabled, syncInterval)
-}
-
-func (s *Store) AddFeedForMode(
+func (s *Store) AddFeed(
 	ctx context.Context,
 	name string,
 	url string,
-	modeID int64,
-	enabled bool,
-	syncInterval int,
-) error {
-	_, err := s.AddFeedForModeAdapter(ctx, name, url, modeID, 1, enabled, syncInterval, "", "", true)
-	return err
-}
-
-func (s *Store) AddFeedForModeAdapter(
-	ctx context.Context,
-	name string,
-	url string,
-	modeID int64,
 	adapterID int64,
 	enabled bool,
 	syncInterval int,
@@ -116,14 +99,6 @@ func (s *Store) AddFeedForModeAdapter(
 			return err
 		}
 		feedID, err = result.LastInsertId()
-		if err != nil {
-			return err
-		}
-		if modeID > 0 {
-			_, err = tx.ExecContext(ctx,
-				"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
-				modeID, feedID)
-		}
 		return err
 	})
 	return feedID, err

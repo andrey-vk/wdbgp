@@ -81,9 +81,9 @@ func TestDashboardWithData(t *testing.T) {
 	}
 
 	// Create a feed
-	_, err = st.AddFeedForModeAdapter(ctx, "test-feed", "http://example.com/feed.json", 1, 1, true, 0, "", "", true)
+	_, err = st.AddFeed(ctx, "test-feed", "http://example.com/feed.json", 1, true, 0, "", "", true)
 	if err != nil {
-		t.Fatalf("AddFeedForModeAdapter: %v", err)
+		t.Fatalf("AddFeed: %v", err)
 	}
 
 	req := httptest.NewRequest("GET", "/api/admin/dashboard", nil)

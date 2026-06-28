@@ -80,7 +80,7 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	id, err := s.store.AddFeedForModeAdapter(r.Context(), body.Name, body.URL, 0, body.AdapterID, body.Enabled, int(body.SyncInterval), body.Data, body.AllowedHosts, body.RestrictHosts)
+	id, err := s.store.AddFeed(r.Context(), body.Name, body.URL, body.AdapterID, body.Enabled, int(body.SyncInterval), body.Data, body.AllowedHosts, body.RestrictHosts)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return

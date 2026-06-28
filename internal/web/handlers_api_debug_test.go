@@ -53,9 +53,9 @@ func TestDebugCIDRValid(t *testing.T) {
 		t.Fatalf("setup adapter: %v", err)
 	}
 
-	feedID, err := st.AddFeedForModeAdapter(ctx, "debug-feed", "http://example.com/debug.json", 1, 1, true, 0, "", "", true)
+	feedID, err := st.AddFeed(ctx, "debug-feed", "http://example.com/debug.json", 1, true, 0, "", "", true)
 	if err != nil {
-		t.Fatalf("AddFeedForModeAdapter: %v", err)
+		t.Fatalf("AddFeed: %v", err)
 	}
 
 	// Insert a catalog entry matching 10.0.0.0/8

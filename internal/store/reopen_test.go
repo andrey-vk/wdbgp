@@ -29,8 +29,8 @@ func TestMigrationReopenPreservesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AddFeedForModeAdapter(
-		ctx, "persist-feed", "https://example.test/persist", 1, 1, true, 0, "", "", true); err != nil {
+	if _, err := s.AddFeed(
+		ctx, "persist-feed", "https://example.test/persist", 1, true, 0, "", "", true); err != nil {
 		t.Fatal(err)
 	}
 	s.Close() //nolint:gosec // test cleanup

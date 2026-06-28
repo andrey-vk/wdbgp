@@ -93,11 +93,10 @@ func TestStatusEndpoint(t *testing.T) {
 	}
 
 	// Add a feed
-	_, err = db.AddFeedForModeAdapter(
+	_, err = db.AddFeed(
 		context.Background(),
 		"test-feed",
 		"http://example.com/feed.json",
-		1,
 		1,
 		true,
 		0,
