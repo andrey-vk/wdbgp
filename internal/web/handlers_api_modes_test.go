@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -532,5 +533,68 @@ func TestModeGetNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+// =============================================================================
+// TestModeFeedReplaceAtomic — feed replacement uses a transaction: on invalid
+// feed ID the original assignments must be preserved (rollback).
+// =============================================================================
+
+func TestModeFeedReplaceAtomic(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	// Create a mode
+	modeBody := `{"name":"AtomicMode","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/modes", strings.NewReader(modeBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiModesCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create mode: %d %s", w.Code, w.Body.String())
+	}
+	var created modeJSON
+	json.NewDecoder(w.Body).Decode(&created)
+	modeID := created.ID
+
+	// Create 2 feeds
+	f1, _ := st.AddFeedForModeAdapter(ctx, "F1", "http://a.com/f1.json", modeID, 1, true, 0, "", "", true)
+	f2, _ := st.AddFeedForModeAdapter(ctx, "F2", "http://a.com/f2.json", modeID, 1, true, 0, "", "", true)
+
+	// Assign both feeds to mode
+	assignBody := fmt.Sprintf(`{"feed_ids":[%d,%d]}`, f1, f2)
+	req = httptest.NewRequest("PUT", "/api/admin/modes/"+strconv.FormatInt(modeID, 10)+"/feeds", strings.NewReader(assignBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeFeedsSet(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("assign feeds: %d %s", w.Code, w.Body.String())
+	}
+
+	// Now try replacing with an INVALID feed ID (9999 doesn't exist → FK violation)
+	badBody := fmt.Sprintf(`{"feed_ids":[%d,9999]}`, f1)
+	req = httptest.NewRequest("PUT", "/api/admin/modes/"+strconv.FormatInt(modeID, 10)+"/feeds", strings.NewReader(badBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeFeedsSet(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("invalid feed: got %d, want 500", w.Code)
+	}
+
+	// Verify BOTH original feeds are still assigned (rollback worked)
+	req = httptest.NewRequest("GET", "/api/admin/modes/"+strconv.FormatInt(modeID, 10)+"/feeds", nil)
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeFeedsGet(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get feeds: %d", w.Code)
+	}
+	var feedsResp struct{ Feeds []modeFeedJSON `json:"feeds"` }
+	json.NewDecoder(w.Body).Decode(&feedsResp)
+	if len(feedsResp.Feeds) != 2 {
+		t.Errorf("after failed replace: got %d feeds, want 2 (rollback should preserve both)", len(feedsResp.Feeds))
 	}
 }
