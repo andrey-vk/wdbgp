@@ -301,7 +301,12 @@ func (s *Server) userSpaHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to serve the exact requested file from dist/
-	filePath := filepath.Join(spaDistDir, filepath.Clean(r.URL.Path))
+	filePath := filepath.Clean(filepath.Join(spaDistDir, filepath.Clean(r.URL.Path)))
+	cleanBase := filepath.Clean(spaDistDir)
+	if !strings.HasPrefix(filePath, cleanBase+string(os.PathSeparator)) && filePath != cleanBase {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
 		w.Header().Set("Cache-Control", "no-cache")
 		http.ServeFile(w, r, filePath)
