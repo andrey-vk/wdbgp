@@ -117,6 +117,10 @@ async function handleSave() {
       })
       // Fire-and-forget regenerate communities
       apiClient.post('/admin/modes/' + savedMode.id + '/communities/generate').catch(() => {})
+    } catch {
+      toast.add({ severity: 'error', summary: t('modes.feeds_save_failed'), life: 3000 })
+      savingFeeds.value = false
+      return
     } finally { savingFeeds.value = false }
     await loadList()
     selected.value = savedMode

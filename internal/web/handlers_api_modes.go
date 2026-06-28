@@ -254,8 +254,15 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	// Replace all assignments: delete existing, insert new
-	if _, err := s.store.DB.ExecContext(r.Context(),
+	// Replace all assignments atomically: delete existing + insert new in a transaction.
+	tx, err := s.store.DB.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to begin transaction"})
+		return
+	}
+	defer tx.Rollback() // safe no-op if Commit succeeds
+
+	if _, err := tx.ExecContext(r.Context(),
 		"DELETE FROM catalog_mode_feeds WHERE mode_id = ?", modeID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
@@ -264,14 +271,18 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		if feedID <= 0 {
 			continue
 		}
-		if _, err := s.store.DB.ExecContext(r.Context(),
+		if _, err := tx.ExecContext(r.Context(),
 			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
 			modeID, feedID); err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 			return
 		}
 	}
-	// Generate communities and reconcile
+	if err := tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save feed assignments"})
+		return
+	}
+	// Generate communities and reconcile (best-effort side effects, after commit)
 	s.store.GenerateCommunities(r.Context(), modeID) //nolint:errcheck,gosec // best-effort community generation
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
