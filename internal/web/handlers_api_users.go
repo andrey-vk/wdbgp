@@ -247,7 +247,7 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if s.bgp != nil {
+	if s.bgp != nil && user.Enabled {
 		if err := s.bgp.AddPeer(r.Context(), user); err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 			return
