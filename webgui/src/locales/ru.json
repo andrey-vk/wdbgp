@@ -354,10 +354,11 @@
   "dialog.no": "Нет",
 
   "user.title": "WDBGP",
+  "user.login": "Логин",
   "user.login_title": "Вход",
   "user.login_subtitle": "Введите данные для продолжения",
   "user.login_button": "Войти",
-  "user.login_error": "Неверный email или пароль",
+  "user.login_error": "Неверный логин или пароль",
   "user.logout": "Выход",
   "user.catalog_mode": "Каталог",
   "user.category": "Категория",

@@ -24,7 +24,7 @@ const userApi = axios.create({
 const authenticated = ref(false)
 const authChecking = ref(true)
 
-const loginForm = reactive({ email: '', password: '' })
+const loginForm = reactive({ login: '', password: '' })
 const loginError = ref('')
 const loginLoading = ref(false)
 
@@ -154,12 +154,14 @@ async function handleLogin(): Promise<void> {
   loginLoading.value = true
   try {
     const resp = await userApi.post('/user/login', {
-      email: loginForm.email,
+      login: loginForm.login,
       password: loginForm.password,
     })
-    if (resp.data?.user) {
+    if (resp.data?.id) {
       authenticated.value = true
       await loadUserData(resp.data)
+    } else {
+      loginError.value = t('user.login_error')
     }
   } catch {
     loginError.value = t('user.login_error')
@@ -179,7 +181,7 @@ async function handleLogout(): Promise<void> {
   countData.value = null
   checkedCategories.value = new Set()
   checkedServices.value = new Set()
-  loginForm.email = ''
+  loginForm.login = ''
   loginForm.password = ''
 }
 
@@ -396,11 +398,11 @@ onMounted(() => {
           </div>
 
           <div>
-            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Email</label>
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{{ t('user.login') }}</label>
             <input
-              v-model="loginForm.email"
-              type="email"
-              autocomplete="email"
+              v-model="loginForm.login"
+              type="text"
+              autocomplete="username"
               required
               class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
             >

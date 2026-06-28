@@ -355,10 +355,11 @@
   "dialog.no": "No",
 
   "user.title": "WDBGP",
+  "user.login": "Login",
   "user.login_title": "Sign in",
   "user.login_subtitle": "Enter your credentials to continue",
   "user.login_button": "Sign in",
-  "user.login_error": "Invalid email or password",
+  "user.login_error": "Invalid login or password",
   "user.logout": "Logout",
   "user.catalog_mode": "Catalog",
   "user.category": "Category",
