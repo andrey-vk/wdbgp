@@ -83,7 +83,7 @@ func TestJavaScriptAdapterNormalizesResult(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})}
-	entries, err := (adapterRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
+	entries, err := (feedRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
 		context.Background(),
 		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed"},
 		store.FeedAdapter{
@@ -175,7 +175,7 @@ func TestJavaScriptAdapterSRSGet(t *testing.T) {
 		}, nil
 	})}
 
-	entries, err := (adapterRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
+	entries, err := (feedRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
 		context.Background(),
 		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed.srs"},
 		store.FeedAdapter{
@@ -209,7 +209,7 @@ func TestJavaScriptAdapterRejectsUnlistedHost(t *testing.T) {
 		t.Fatal("HTTP client must not be called")
 		return nil, nil
 	})}
-	_, err := (adapterRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
+	_, err := (feedRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
 		context.Background(),
 		store.Feed{URL: "https://example.test/feed"},
 		store.FeedAdapter{
@@ -226,7 +226,7 @@ func TestJavaScriptAdapterRejectsUnlistedHost(t *testing.T) {
 }
 
 func TestJavaScriptAdapterTimesOut(t *testing.T) {
-	_, err := (adapterRunner{
+	_, err := (feedRunner{
 		limits: testLimits(), client: &http.Client{}, timeout: 10 * time.Millisecond,
 	}).run(
 		context.Background(),
@@ -250,7 +250,7 @@ func TestJavaScriptAdapterStopsWhenContextIsCanceled(t *testing.T) {
 		cancel()
 	}()
 	started := time.Now()
-	_, err := (adapterRunner{
+	_, err := (feedRunner{
 		limits: testLimits(), client: &http.Client{}, timeout: 5 * time.Second,
 	}).run(
 		ctx,
@@ -287,8 +287,8 @@ func TestAdapterHTTPFollowsValidatedRedirect(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader("ok")),
 		}, nil
 	})}
-	api, err := newAdapterHTTP(
-		context.Background(), client, "https://example.test/feed", "",
+	api, err := newAdapterRunner(
+		context.Background(), client, "https://example.test/feed", "", true,
 		AdapterLimits{MaxRequests: 200, MaxResponseBytes: 16 << 20, MaxTotalBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
@@ -312,8 +312,8 @@ func TestAdapterHTTPRejectsRedirectToUnlistedHost(t *testing.T) {
 			Body: io.NopCloser(strings.NewReader("")),
 		}, nil
 	})}
-	api, err := newAdapterHTTP(
-		context.Background(), client, "https://example.test/feed", "",
+	api, err := newAdapterRunner(
+		context.Background(), client, "https://example.test/feed", "", true,
 		AdapterLimits{MaxRequests: 200, MaxResponseBytes: 16 << 20, MaxTotalBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)

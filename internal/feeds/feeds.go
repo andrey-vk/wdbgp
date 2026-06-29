@@ -193,7 +193,7 @@ func (s *Syncer) TestAdapter(
 	feed store.Feed,
 	adapter store.FeedAdapter,
 ) ([]Entry, error) {
-	return (adapterRunner{
+	return (feedRunner{
 		client: s.Client, timeout: s.ScriptTimeout, limits: s.Limits,
 	}).run(ctx, feed, adapter)
 }
