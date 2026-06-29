@@ -16,11 +16,12 @@ export const useAuthStore = defineStore('auth', () => {
         return null // success, no error
       }
       return response.data.error || 'Login failed'
-    } catch (err: any) {
-      if (err.response?.status === 401) {
-        return err.response.data?.error || 'Invalid password'
+    } catch (err: unknown) {
+      const e = err as { response?: { status?: number; data?: { error?: string } } }
+      if (e.response?.status === 401) {
+        return e.response.data?.error || 'Invalid password'
       }
-      if (err.response?.status === 429) {
+      if (e.response?.status === 429) {
         return 'Rate limit exceeded. Please try again later.'
       }
       return 'Network error. Please try again.'

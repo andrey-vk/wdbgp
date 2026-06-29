@@ -56,8 +56,9 @@ async function analyze() {
       params: { cidr: cidr.value.trim(), mode: modeId.value },
     })
     result.value = resp.data
-  } catch (e: any) {
-    error.value = e.response?.data?.error || 'Analysis failed'
+  } catch (e: unknown) {
+    const err = e as { response?: { data?: { error?: string } } }
+    error.value = err.response?.data?.error || 'Analysis failed'
   } finally {
     loading.value = false
   }
