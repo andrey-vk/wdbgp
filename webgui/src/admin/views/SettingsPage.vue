@@ -20,7 +20,7 @@ const toast = useToast()
 interface SettingField {
   key: string; name: string; type: string
   options?: Record<string, string>
-  value: string; env_override: boolean; env_var: string
+  value: string | null; env_override: boolean; env_var: string
   restart: boolean; hint?: string
   default_value?: string
 }
@@ -41,7 +41,7 @@ onMounted(async () => {
     for (const f of s.fields) {
       if (f.type === 'bool') v[f.key] = f.value === 'true'
       else if (f.type === 'number') v[f.key] = f.value ? parseInt(f.value, 10) : null
-      else v[f.key] = f.value || ''
+      else v[f.key] = f.value ?? null
     }
   }
   values.value = v
