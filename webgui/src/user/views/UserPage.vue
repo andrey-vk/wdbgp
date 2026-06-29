@@ -8,6 +8,7 @@ import FormField from '@/components/FormField.vue'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { useThemeStore } from '@/admin/stores/theme'
 import { getCurrentLocale } from '@/plugins/i18n'
+import type { UserDataResponse } from '@/types/user-page'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -30,7 +31,7 @@ const loginLoading = ref(false)
 
 // ── Data state ──────────────────────────────────────────────
 const loading = ref(false)
-const data = ref<any>(null)
+const data = ref<UserDataResponse | null>(null)
 
 // ── Checkbox state ──────────────────────────────────────────
 // Fully checked categories (when all services are selected)
@@ -66,8 +67,8 @@ function getCategoryCounts(category: string): { v4: number; v6: number } {
   const catV4 = data.value.prefix_counts.v4?.[category] || {}
   const catV6 = data.value.prefix_counts.v6?.[category] || {}
   return {
-    v4: Object.values(catV4).reduce((a: number, b: any) => a + (b as number), 0),
-    v6: Object.values(catV6).reduce((a: number, b: any) => a + (b as number), 0),
+    v4: Object.values(catV4).reduce((a: number, b: number) => a + b, 0),
+    v6: Object.values(catV6).reduce((a: number, b: number) => a + b, 0),
   }
 }
 
@@ -140,8 +141,8 @@ async function checkAuth(): Promise<void> {
       authenticated.value = true
       await loadUserData(resp.data)
     }
-  } catch (err: any) {
-    if (err.response?.status === 401) {
+  } catch (err: unknown) {
+    if (axios.isAxiosError(err) && err.response?.status === 401) {
       authenticated.value = false
     }
   } finally {
@@ -159,7 +160,7 @@ async function handleLogin(): Promise<void> {
     })
     if (resp.data?.user?.id) {
       authenticated.value = true
-      await loadUserData(resp.data)
+      await loadUserData(resp.data as UserDataResponse)
     }
   } catch {
     loginError.value = t('user.login_error')
@@ -184,7 +185,7 @@ async function handleLogout(): Promise<void> {
 }
 
 // ── Data loading ────────────────────────────────────────────
-async function loadUserData(userData: any): Promise<void> {
+async function loadUserData(userData: UserDataResponse): Promise<void> {
   data.value = userData
   selectedModeId.value = userData.user.catalog_mode_id
 
@@ -329,12 +330,11 @@ function buildSelectionPayload() {
 
   for (const cat of Object.keys(data.value?.catalog || {})) {
     categories.push({ category: cat, checked: checkedCategories.value.has(cat) })
-    for (const svc of (data.value?.catalog?.[cat] || []) as any[]) {
-      const svcName = svc.service || svc
+    for (const svc of (data.value?.catalog?.[cat] || [])) {
       services.push({
         category: cat,
-        service: svcName,
-        checked: checkedServices.value.has(`${cat}::${svcName}`),
+        service: svc,
+        checked: checkedServices.value.has(`${cat}::${svc}`),
       })
     }
   }

@@ -7,6 +7,7 @@ import Button from 'primevue/button'
 import Select from 'primevue/select'
 import apiClient from '@/api/client'
 import { useUIStore } from '@/admin/stores/ui'
+import type { UserCatalogResponse } from '@/types/user-selections'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -17,7 +18,7 @@ const userId = computed(() => Number(route.params.id))
 
 // ── Data state ──────────────────────────────────────────────
 const loading = ref(true)
-const data = ref<any>(null)
+const data = ref<UserCatalogResponse | null>(null)
 
 // ── Checkbox state ──────────────────────────────────────────
 const checkedCategories = ref<Set<string>>(new Set())
@@ -46,8 +47,8 @@ function getCategoryCounts(category: string): { v4: number; v6: number } {
   const catV4 = data.value.prefix_counts.v4?.[category] || {}
   const catV6 = data.value.prefix_counts.v6?.[category] || {}
   return {
-    v4: Object.values(catV4).reduce((a: number, b: any) => a + (b as number), 0),
-    v6: Object.values(catV6).reduce((a: number, b: any) => a + (b as number), 0),
+    v4: Object.values(catV4).reduce((a: number, b: number) => a + b, 0),
+    v6: Object.values(catV6).reduce((a: number, b: number) => a + b, 0),
   }
 }
 
@@ -321,7 +322,7 @@ onMounted(() => {
             option-label="name"
             option-value="id"
             size="small"
-            @change="switchMode(Number(($event as any).value))"
+            @change="switchMode(Number(($event as { value: number }).value))"
           />
         </div>
 
