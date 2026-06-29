@@ -148,6 +148,11 @@ func (s *Server) apiFeedsDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	if s.bgp != nil {
+		if err := s.bgp.Reconcile(r.Context()); err != nil {
+			logging.FromContext(r.Context()).Debug("bgp reconcile failed after feed delete", "error", err)
+		}
+	}
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
 
