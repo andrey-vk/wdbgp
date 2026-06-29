@@ -33,18 +33,20 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 			cookieMatch = cookieErr == nil && cookieUser.Enabled
 		}
 
-		// Authorize based on web_auth mode
+		// Authorize based on web_auth mode.
+		// Cookie-authenticated users take priority over IP-matched users.
 		switch {
-		case ipMatch && ipUser.WebAuth == "network":
-			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, ipUser))
-		case cookieMatch && cookieUser.WebAuth == "login":
+		case cookieMatch && (cookieUser.WebAuth == "login" || cookieUser.WebAuth == "any"):
 			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, cookieUser))
 		case ipMatch && cookieMatch &&
 			ipUser.WebAuth == "both" && ipUser.ID == cookieUser.ID:
 			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, ipUser))
+		case ipMatch && ipUser.WebAuth == "network":
+			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, ipUser))
 		case ipMatch && ipUser.WebAuth == "any":
 			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, ipUser))
-		case cookieMatch && cookieUser.WebAuth == "any":
+		case cookieMatch && cookieUser.WebAuth == "both":
+			// Cookie-only for both user (IP didn't match, or different user)
 			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, cookieUser))
 		default:
 			writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "Authentication required"})
