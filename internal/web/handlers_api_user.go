@@ -46,9 +46,6 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, ipUser))
 		case ipMatch && ipUser.WebAuth == "any":
 			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, ipUser))
-		case cookieMatch && cookieUser.WebAuth == "both":
-			// Cookie-only for both user (IP didn't match, or different user)
-			r = r.WithContext(context.WithValue(ctx, userCtxKey{}, cookieUser))
 		default:
 			writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "Authentication required"})
 			return
