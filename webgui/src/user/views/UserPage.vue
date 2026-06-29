@@ -157,11 +157,9 @@ async function handleLogin(): Promise<void> {
       login: loginForm.login,
       password: loginForm.password,
     })
-    if (resp.data?.id) {
+    if (resp.data?.user?.id) {
       authenticated.value = true
       await loadUserData(resp.data)
-    } else {
-      loginError.value = t('user.login_error')
     }
   } catch {
     loginError.value = t('user.login_error')
