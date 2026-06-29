@@ -211,7 +211,7 @@ func TestJavaScriptAdapterRejectsUnlistedHost(t *testing.T) {
 	})}
 	_, err := (feedRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
 		context.Background(),
-		store.Feed{URL: "https://example.test/feed"},
+		store.Feed{URL: "https://example.test/feed", RestrictHosts: true},
 		store.FeedAdapter{
 			Key: "test", APIVersion: 1,
 			Source: `function sync(feed, api) {
