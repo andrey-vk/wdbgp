@@ -197,12 +197,15 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 				Allow: splitCIDRs(allow),
 				Deny:  splitCIDRs(deny),
 			}
-			if normalized, err := store.NormalizeRouteFilters(filters); err == nil {
-				_ = s.store.SetGlobalRouteFilters(r.Context(), normalized) //nolint:errcheck // best-effort filter update in settings save
-				if s.bgp != nil {
-					if err := s.bgp.Reconcile(r.Context()); err != nil {
-						logging.FromContext(r.Context()).Debug("bgp reconcile failed after global filter change", "error", err)
-					}
+			normalized, err := store.NormalizeRouteFilters(filters)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid route filter: " + err.Error()})
+				return
+			}
+			_ = s.store.SetGlobalRouteFilters(r.Context(), normalized) //nolint:errcheck // best-effort filter update in settings save
+			if s.bgp != nil {
+				if err := s.bgp.Reconcile(r.Context()); err != nil {
+					logging.FromContext(r.Context()).Debug("bgp reconcile failed after global filter change", "error", err)
 				}
 			}
 		}

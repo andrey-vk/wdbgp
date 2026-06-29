@@ -110,9 +110,11 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		var oldAdapterID int64
 		var oldData string
 		var oldName string
+		var oldAllowedHosts string
+		var oldRestrictHosts bool
 		if err := tx.QueryRowContext(ctx,
-			"SELECT url, adapter_id, data, name FROM feeds WHERE id = ?", feed.ID).
-			Scan(&oldURL, &oldAdapterID, &oldData, &oldName); err != nil {
+			"SELECT url, adapter_id, data, name, allowed_hosts, restrict_hosts FROM feeds WHERE id = ?", feed.ID).
+			Scan(&oldURL, &oldAdapterID, &oldData, &oldName, &oldAllowedHosts, &oldRestrictHosts); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -123,7 +125,7 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 			feed.AllowedHosts, feed.RestrictHosts, feed.ID); err != nil {
 			return err
 		}
-		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name {
+		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name && oldAllowedHosts == feed.AllowedHosts && oldRestrictHosts == feed.RestrictHosts {
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx,

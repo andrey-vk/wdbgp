@@ -350,6 +350,10 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		current.Name = *body.Name
 	}
 	if body.PeerIP != nil {
+		if *body.PeerIP == "" || !isValidIP(*body.PeerIP) {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid peer IP address"})
+			return
+		}
 		current.PeerIP = *body.PeerIP
 	}
 	if body.PeerASN != nil {
