@@ -603,7 +603,9 @@ func TestModeFeedReplaceAtomic(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("get feeds: %d", w.Code)
 	}
-	var feedsResp struct{ Feeds []modeFeedJSON `json:"feeds"` }
+	var feedsResp struct {
+		Feeds []modeFeedJSON `json:"feeds"`
+	}
 	if err := json.NewDecoder(w.Body).Decode(&feedsResp); err != nil {
 		t.Fatal(err)
 	}

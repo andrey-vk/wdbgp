@@ -27,7 +27,7 @@ func feedToJSON(f store.Feed) feedJSON {
 	return feedJSON{
 		ID: f.ID, Name: f.Name, URL: f.URL, Enabled: f.Enabled,
 		SyncInterval: int64(f.SyncInterval), Data: f.Data,
-		AdapterID: f.AdapterID,
+		AdapterID:    f.AdapterID,
 		AllowedHosts: f.AllowedHosts, RestrictHosts: f.RestrictHosts,
 		LastSuccess: f.LastSuccess, LastError: f.LastError,
 	}
@@ -117,7 +117,7 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 	f := store.Feed{
 		ID: id, Name: body.Name, URL: body.URL, Enabled: body.Enabled,
 		SyncInterval: int(body.SyncInterval), Data: body.Data,
-		AdapterID: body.AdapterID,
+		AdapterID:    body.AdapterID,
 		AllowedHosts: body.AllowedHosts, RestrictHosts: body.RestrictHosts,
 	}
 	if err := s.store.UpdateFeed(r.Context(), f); err != nil {
