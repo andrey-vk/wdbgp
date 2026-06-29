@@ -24,7 +24,7 @@ type adapterJSON struct {
 	Source         string `json:"source"`
 	Revision       int64  `json:"revision"`
 	BuiltIn        bool   `json:"builtin"`
-	ForkedFrom     int64 `json:"forked_from,omitempty"`
+	ForkedFrom     int64  `json:"forked_from,omitempty"`
 	ForkedVersion  int64  `json:"forked_version,omitempty"`
 	RequiresReview bool   `json:"requires_review"`
 }
@@ -33,7 +33,7 @@ func adapterToJSON(a store.FeedAdapter) adapterJSON {
 	aj := adapterJSON{
 		ID: a.ID, Key: a.Key, Name: a.Name,
 		Language: a.Language, APIVersion: a.APIVersion,
-		Source: a.Source,
+		Source:   a.Source,
 		Revision: a.Revision, BuiltIn: a.BuiltIn,
 		ForkedFrom: a.ForkedFrom, ForkedVersion: a.ForkedVersion,
 	}

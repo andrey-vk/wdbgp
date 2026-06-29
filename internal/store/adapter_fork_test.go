@@ -160,16 +160,31 @@ func TestNonBuiltinCannotReset(t *testing.T) {
 
 func TestMigrationForkedFromToInteger(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "forkint.sqlite3"), config.Config{})
-	if err != nil { t.Fatal(err) }
-	defer func() { if err := db.Close(); err != nil { t.Logf("close: %v", err) } }()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("close: %v", err)
+		}
+	}()
 	ctx := context.Background()
 
 	// Find a built-in
 	adapters, err := db.FeedAdapters(ctx)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	var builtin FeedAdapter
-	for _, a := range adapters { if a.BuiltIn { builtin = a; break } }
-	if builtin.ID == 0 { t.Fatal("no built-in adapter") }
+	for _, a := range adapters {
+		if a.BuiltIn {
+			builtin = a
+			break
+		}
+	}
+	if builtin.ID == 0 {
+		t.Fatal("no built-in adapter")
+	}
 
 	// Create a fork
 	forked, err := db.AddFeedAdapter(ctx, FeedAdapter{
@@ -177,7 +192,9 @@ func TestMigrationForkedFromToInteger(t *testing.T) {
 		Language: builtin.Language, APIVersion: builtin.APIVersion,
 		ForkedFrom: builtin.ID, ForkedVersion: builtin.Revision,
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Verify forked_from is a valid adapter ID (not 0)
 	if forked.ForkedFrom == 0 {
@@ -209,61 +226,110 @@ func TestMaxForkedAdapterSuffix(t *testing.T) {
 	// non-existent ID
 	t.Run("nonExistentID", func(t *testing.T) {
 		db, err := Open(filepath.Join(t.TempDir(), "suffix1.sqlite3"), config.Config{})
-		if err != nil { t.Fatal(err) }
-		defer func() { if err := db.Close(); err != nil { t.Logf("close: %v", err) } }()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := db.Close(); err != nil {
+				t.Logf("close: %v", err)
+			}
+		}()
 		_, err = db.maxForkedAdapterSuffix(context.Background(), 99999)
-		if err == nil { t.Fatal("expected error for non-existent ID") }
+		if err == nil {
+			t.Fatal("expected error for non-existent ID")
+		}
 	})
 
 	// exists but not built-in
 	t.Run("notBuiltIn", func(t *testing.T) {
 		db, err := Open(filepath.Join(t.TempDir(), "suffix2.sqlite3"), config.Config{})
-		if err != nil { t.Fatal(err) }
-		defer func() { if err := db.Close(); err != nil { t.Logf("close: %v", err) } }()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := db.Close(); err != nil {
+				t.Logf("close: %v", err)
+			}
+		}()
 		ctx := context.Background()
 		// Create a custom adapter
 		custom, err := db.AddFeedAdapter(ctx, FeedAdapter{Name: "Custom", Source: "function sync(){}", Language: "javascript", APIVersion: 1})
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		_, err = db.maxForkedAdapterSuffix(ctx, custom.ID)
-		if err == nil { t.Fatal("expected error for non-built-in") }
+		if err == nil {
+			t.Fatal("expected error for non-built-in")
+		}
 	})
 
 	// find a built-in and run remaining tests
 	t.Run("builtIn", func(t *testing.T) {
 		db, err := Open(filepath.Join(t.TempDir(), "suffix3.sqlite3"), config.Config{})
-		if err != nil { t.Fatal(err) }
-		defer func() { if err := db.Close(); err != nil { t.Logf("close: %v", err) } }()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := db.Close(); err != nil {
+				t.Logf("close: %v", err)
+			}
+		}()
 		ctx := context.Background()
 
 		adapters, err := db.FeedAdapters(ctx)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		var builtin FeedAdapter
-		for _, a := range adapters { if a.BuiltIn { builtin = a; break } }
-		if builtin.ID == 0 { t.Fatal("no built-in adapter") }
+		for _, a := range adapters {
+			if a.BuiltIn {
+				builtin = a
+				break
+			}
+		}
+		if builtin.ID == 0 {
+			t.Fatal("no built-in adapter")
+		}
 
 		// no forks → suffix 0
 		suffix, err := db.maxForkedAdapterSuffix(ctx, builtin.ID)
-		if err != nil { t.Fatal(err) }
-		if suffix != 0 { t.Fatalf("no forks: expected 0, got %d", suffix) }
+		if err != nil {
+			t.Fatal(err)
+		}
+		if suffix != 0 {
+			t.Fatalf("no forks: expected 0, got %d", suffix)
+		}
 
 		// create _copy_1 → suffix 1
 		if _, err := db.AddFeedAdapter(ctx, FeedAdapter{
 			Name: builtin.Name + "_copy_1", Source: builtin.Source,
 			Language: builtin.Language, APIVersion: builtin.APIVersion,
 			ForkedFrom: builtin.ID, ForkedVersion: builtin.Revision,
-		}); err != nil { t.Fatal(err) }
+		}); err != nil {
+			t.Fatal(err)
+		}
 		suffix, err = db.maxForkedAdapterSuffix(ctx, builtin.ID)
-		if err != nil { t.Fatal(err) }
-		if suffix != 1 { t.Fatalf("expected 1, got %d", suffix) }
+		if err != nil {
+			t.Fatal(err)
+		}
+		if suffix != 1 {
+			t.Fatalf("expected 1, got %d", suffix)
+		}
 
 		// create _copy_5 (gap) → suffix 5
 		if _, err := db.AddFeedAdapter(ctx, FeedAdapter{
 			Name: builtin.Name + "_copy_5", Source: builtin.Source,
 			Language: builtin.Language, APIVersion: builtin.APIVersion,
 			ForkedFrom: builtin.ID, ForkedVersion: builtin.Revision,
-		}); err != nil { t.Fatal(err) }
+		}); err != nil {
+			t.Fatal(err)
+		}
 		suffix, err = db.maxForkedAdapterSuffix(ctx, builtin.ID)
-		if err != nil { t.Fatal(err) }
-		if suffix != 5 { t.Fatalf("gap: expected 5, got %d", suffix) }
+		if err != nil {
+			t.Fatal(err)
+		}
+		if suffix != 5 {
+			t.Fatalf("gap: expected 5, got %d", suffix)
+		}
 	})
 }

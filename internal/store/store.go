@@ -46,7 +46,7 @@ type FeedAdapter struct {
 	Revision      int64
 	BuiltIn       bool
 	ForkedFrom    int64 // built-in adapter ID this adapter was forked from (0 for built-ins and customs)
-	ForkedVersion int64  // version of the built-in at time of fork
+	ForkedVersion int64 // version of the built-in at time of fork
 }
 
 const (
