@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import FloatingConfigurator from '@/admin/components/FloatingConfigurator.vue';
 </script>
 
