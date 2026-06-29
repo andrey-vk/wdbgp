@@ -1,12 +1,11 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { useLayout } from '@/admin/layout/composables/layout';
 import { onMounted, ref, watch } from 'vue';
 
 const { layoutConfig, isDarkTheme } = useLayout();
 
-const chartData = ref(null);
-const chartOptions = ref(null);
+const chartData = ref<Record<string, unknown>>();
+const chartOptions = ref<Record<string, unknown>>();
 
 function setChartData() {
     const documentStyle = getComputedStyle(document.documentElement);

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import AppConfigurator from '@/admin/layout/AppConfigurator.vue';
 import { useLayout } from '@/admin/layout/composables/layout';
 

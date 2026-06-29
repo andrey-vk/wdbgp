@@ -1,8 +1,7 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { ref } from 'vue';
 
-const menu = ref(null);
+const menu = ref<{ toggle: (e: Event) => void }>();
 
 const items = ref([
     { label: 'Add New', icon: 'pi pi-fw pi-plus' },
@@ -20,7 +19,7 @@ const items = ref([
         <Button
           icon="pi pi-ellipsis-v"
           class="p-button-text p-button-plain p-button-rounded"
-          @click="$refs.menu.toggle($event)"
+          @click="menu?.toggle($event)"
         />
         <Menu
           ref="menu"

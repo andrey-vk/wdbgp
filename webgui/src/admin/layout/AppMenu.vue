@@ -1,12 +1,20 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import type { RouteLocationRaw } from 'vue-router';
 import AppMenuItem from './AppMenuItem.vue';
+
+interface MenuItem {
+    label?: string;
+    icon?: string;
+    to?: RouteLocationRaw;
+    separator?: boolean;
+    items?: MenuItem[];
+}
 
 const { t } = useI18n();
 
-const model = computed(() => [
+const model = computed<MenuItem[]>(() => [
     {
         label: t('menu.group.main'),
         items: [

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { useLayout } from './composables/layout';
 import { onBeforeUnmount, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
@@ -7,8 +6,8 @@ import AppMenu from './AppMenu.vue';
 
 const { layoutState, isDesktop, hasOpenOverlay } = useLayout();
 const route = useRoute();
-const sidebarRef = ref(null);
-let outsideClickListener = null;
+const sidebarRef = ref<HTMLElement | null>(null);
+let outsideClickListener: ((e: MouseEvent) => void) | null = null;
 
 watch(
     () => route.path,
@@ -32,7 +31,7 @@ watch(hasOpenOverlay, (newVal) => {
 
 const bindOutsideClickListener = () => {
     if (!outsideClickListener) {
-        outsideClickListener = (event) => {
+        outsideClickListener = (event: MouseEvent) => {
             if (isOutsideClicked(event)) {
                 layoutState.overlayMenuActive = false;
             }
@@ -49,10 +48,11 @@ const unbindOutsideClickListener = () => {
     }
 };
 
-const isOutsideClicked = (event) => {
+const isOutsideClicked = (event: MouseEvent) => {
     const topbarButtonEl = document.querySelector('.layout-menu-button');
 
-    return !(sidebarRef.value.isSameNode(event.target) || sidebarRef.value.contains(event.target) || topbarButtonEl?.isSameNode(event.target) || topbarButtonEl?.contains(event.target));
+    if (!sidebarRef.value) return false;
+    return !(sidebarRef.value.isSameNode(event.target as Node) || sidebarRef.value.contains(event.target as Node) || topbarButtonEl?.isSameNode(event.target as Node) || topbarButtonEl?.contains(event.target as Node));
 };
 
 onBeforeUnmount(() => {

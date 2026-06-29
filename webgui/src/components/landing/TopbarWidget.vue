@@ -1,6 +1,5 @@
 <script setup lang="ts">
-// @ts-nocheck
-function smoothScroll(id) {
+function smoothScroll(id: string) {
     document.body.click();
     const element = document.getElementById(id);
     if (element) {

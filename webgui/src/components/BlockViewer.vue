@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { reactive, ref } from 'vue';
 
 const props = defineProps({
@@ -37,12 +36,12 @@ const blockView = ref(0);
 const codeCopied = ref(false);
 const codeCopyLoading = ref(false);
 
-function activateView(event, blockViewValue) {
+function activateView(event: Event, blockViewValue: number) {
     blockView.value = blockViewValue;
     event.preventDefault();
 }
 
-async function copyCode(event) {
+async function copyCode(event: Event) {
     if (codeCopied.value || codeCopyLoading.value) return;
 
     codeCopyLoading.value = true;

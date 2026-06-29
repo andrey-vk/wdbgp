@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { useLayout } from './composables/layout';
 import { computed } from 'vue';
 
@@ -26,7 +25,7 @@ const isActive = computed(() => {
     return props.item.path ? layoutState.activePath?.startsWith(fullPath.value) : layoutState.activePath === props.item.to;
 });
 
-const itemClick = (event, item) => {
+const itemClick = (event: Event, item: Record<string, unknown> & { disabled?: boolean; command?: (arg: { originalEvent: Event; item: Record<string, unknown> }) => void; items?: unknown[]; path?: string }) => {
     if (item.disabled) {
         event.preventDefault();
         return;
@@ -38,7 +37,7 @@ const itemClick = (event, item) => {
 
     if (item.items) {
         if (isActive.value) {
-            layoutState.activePath = layoutState.activePath.replace(item.path, '');
+            layoutState.activePath = ((layoutState.activePath || '') as string).replace(item.path || '', '');
         } else {
             layoutState.activePath = fullPath.value;
             layoutState.menuHoverActive = true;

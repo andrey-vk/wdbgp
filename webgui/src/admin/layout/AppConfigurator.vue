@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { useLayout } from './composables/layout';
 import { $t, updatePreset, updateSurfacePalette } from '@primeuix/themes';
 import Aura from '@primeuix/themes/aura';
@@ -79,7 +78,7 @@ const surfaces = ref([
 ]);
 
 function getPresetExt() {
-    const color = primaryColors.value.find((c) => c.name === layoutConfig.primary);
+    const color = primaryColors.value.find((c) => c.name === layoutConfig.primary)!;
 
     if (color.name === 'noir') {
         return {
@@ -168,7 +167,7 @@ function getPresetExt() {
     }
 }
 
-function updateColors(type, color) {
+function updateColors(type: string, color: { name: string; palette: Partial<Record<string, string>> }) {
     if (type === 'primary') {
         layoutConfig.primary = color.name;
     } else if (type === 'surface') {
@@ -178,7 +177,7 @@ function updateColors(type, color) {
     applyTheme(type, color);
 }
 
-function applyTheme(type, color) {
+function applyTheme(type: string, color: { name: string; palette: Partial<Record<string, string>> }) {
     if (type === 'primary') {
         updatePreset(getPresetExt());
     } else if (type === 'surface') {
@@ -187,8 +186,8 @@ function applyTheme(type, color) {
 }
 
 function onPresetChange() {
-    layoutConfig.preset = preset.value;
-    const presetValue = presets[preset.value];
+        layoutConfig.preset = preset.value;
+    const presetValue = presets[preset.value as keyof typeof presets];
     const surfacePalette = surfaces.value.find((s) => s.name === layoutConfig.surface)?.palette;
 
     $t().preset(presetValue).preset(getPresetExt()).surfacePalette(surfacePalette).use({ useDefaultOptions: true });

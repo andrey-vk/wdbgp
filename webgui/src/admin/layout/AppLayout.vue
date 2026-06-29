@@ -1,5 +1,4 @@
 <script setup lang="ts">
-// @ts-nocheck
 import { useLayout } from './composables/layout';
 import { computed } from 'vue';
 import AppFooter from './AppFooter.vue';
