@@ -81,6 +81,7 @@
   "settings.purge_metrics_done": "Metrics history purged.",
   "settings.purge_metrics_error": "Failed to purge metrics history.",
   "settings.default": "Default",
+  "settings.use_default": "Use default",
   "settings.saved": "Settings saved.",
   "settings.env_override": "ENV override",
   "settings.env_override_hint": "This setting is controlled by an environment variable and cannot be changed here.",

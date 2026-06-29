@@ -80,6 +80,7 @@
   "settings.purge_metrics_done": "История метрик очищена.",
   "settings.purge_metrics_error": "Ошибка очистки истории метрик.",
   "settings.default": "По умолчанию",
+  "settings.use_default": "По умолчанию",
   "settings.saved": "Настройки сохранены.",
   "settings.env_override": "ENV",
   "settings.env_override_hint": "Эта настройка задана переменной окружения и не может быть изменена здесь.",
