@@ -716,6 +716,7 @@ func (s *Server) apiAdminUserCatalog(w http.ResponseWriter, r *http.Request) {
 	if rawMode := r.URL.Query().Get("mode"); rawMode != "" {
 		if mid, parseErr := strconv.ParseInt(rawMode, 10, 64); parseErr == nil && mid > 0 {
 			modeID = mid
+			user.CatalogModeID = modeID // override for response
 		}
 	}
 
