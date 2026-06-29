@@ -52,7 +52,9 @@ func TestUserAuthBothRequiresBothFactors(t *testing.T) {
 	}
 
 	// 2. Disable the user, then try with matching IP → should fail
-	st.DB.ExecContext(ctx, "UPDATE users SET enabled = 0 WHERE id = 1")
+	if _, err := st.DB.ExecContext(ctx, "UPDATE users SET enabled = 0 WHERE id = 1"); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
 	req = httptest.NewRequest("GET", "/api/user/me", nil)
 	req.RemoteAddr = "10.1.1.1:1234"
 	w = httptest.NewRecorder()
