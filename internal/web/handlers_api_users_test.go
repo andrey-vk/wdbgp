@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1193,4 +1194,139 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 	if !services[store.ServiceKey{Category: "Cat2", Service: "Svc2"}] {
 		t.Fatal("Cat2::Svc2 should be selected (preserved from disabled feed)")
 	}
+}
+
+// =============================================================================
+// TestUserBGPPasswordToggle — 4-way BGP password enable/disable logic
+// =============================================================================
+
+func TestUserBGPPasswordToggle(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+
+	// Helper: create user with password
+	createWithPW := func(name, ip, password, network string) int64 {
+		body := fmt.Sprintf(`{"name":"%s","peer_ip":"%s","peer_asn":65100,"bgp_password":"%s","password_enabled":true,"networks":["%s"],"web_auth":"network","enabled":true}`, name, ip, password, network)
+		req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.apiUsersCreate(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", name, w.Code, w.Body.String())
+		}
+		var u userJSON
+		json.NewDecoder(w.Body).Decode(&u)
+		return u.ID
+	}
+
+	// Case 1: enable + set new password → works
+	t.Run("enableWithPassword", func(t *testing.T) {
+		id := createWithPW("pwt-1", "10.99.1.1", "secret1", "10.99.1.0/24")
+		body := `{"bgp_password":"newsecret","password_enabled":true}`
+		req := httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(id, 10), strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", strconv.FormatInt(id, 10))
+		w := httptest.NewRecorder()
+		srv.apiUsersUpdate(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("enable+password: %d %s", w.Code, w.Body.String())
+		}
+		// Verify password changed
+		u, _ := st.User(context.Background(), id)
+		if u.BGPPassword != "newsecret" {
+			t.Fatalf("BGPPassword = %q, want newsecret", u.BGPPassword)
+		}
+	})
+
+	// Case 2: enable + empty password, has existing → works
+	t.Run("enableKeepExisting", func(t *testing.T) {
+		id := createWithPW("pwt-2", "10.99.2.1", "existing", "10.99.2.0/24")
+		body := `{"bgp_password":"","password_enabled":true}`
+		req := httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(id, 10), strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", strconv.FormatInt(id, 10))
+		w := httptest.NewRecorder()
+		srv.apiUsersUpdate(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("enable keep existing: %d %s", w.Code, w.Body.String())
+		}
+		u, _ := st.User(context.Background(), id)
+		if u.BGPPassword != "existing" {
+			t.Fatalf("BGPPassword = %q, want existing", u.BGPPassword)
+		}
+	})
+
+	// Case 3: enable + empty password, no existing → error 400
+	t.Run("enableNoPassword", func(t *testing.T) {
+		// Create user WITHOUT password first
+		body := `{"name":"pwt-3","peer_ip":"10.99.3.1","peer_asn":65100,"networks":["10.99.3.0/24"],"web_auth":"network","enabled":true,"password_enabled":false}`
+		req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.apiUsersCreate(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d", w.Code)
+		}
+		var u userJSON
+		json.NewDecoder(w.Body).Decode(&u)
+
+		body = `{"bgp_password":"","password_enabled":true}`
+		req = httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(u.ID, 10), strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", strconv.FormatInt(u.ID, 10))
+		w = httptest.NewRecorder()
+		srv.apiUsersUpdate(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("enable without password: got %d, want 400", w.Code)
+		}
+	})
+
+	// Case 4: disable + empty password → clears password
+	t.Run("disableClearPassword", func(t *testing.T) {
+		id := createWithPW("pwt-4", "10.99.4.1", "willclear", "10.99.4.0/24")
+		body := `{"bgp_password":"","password_enabled":false}`
+		req := httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(id, 10), strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", strconv.FormatInt(id, 10))
+		w := httptest.NewRecorder()
+		srv.apiUsersUpdate(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("disable clear: %d %s", w.Code, w.Body.String())
+		}
+		u, _ := st.User(context.Background(), id)
+		if u.BGPPassword != "" {
+			t.Fatalf("BGPPassword = %q, want empty", u.BGPPassword)
+		}
+	})
+
+	// Case 5: disable + non-empty password → error 400
+	t.Run("disableWithPassword", func(t *testing.T) {
+		id := createWithPW("pwt-5", "10.99.5.1", "secret", "10.99.5.0/24")
+		body := `{"bgp_password":"newpass","password_enabled":false}`
+		req := httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(id, 10), strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", strconv.FormatInt(id, 10))
+		w := httptest.NewRecorder()
+		srv.apiUsersUpdate(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("disable with password: got %d, want 400", w.Code)
+		}
+	})
+
+	// Case 6: create without password_enabled → works, no password
+	t.Run("createNoToggle", func(t *testing.T) {
+		body := `{"name":"pwt-6","peer_ip":"10.99.6.1","peer_asn":65100,"networks":["10.99.6.0/24"],"web_auth":"network","enabled":true}`
+		req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.apiUsersCreate(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create no toggle: %d %s", w.Code, w.Body.String())
+		}
+		var u userJSON
+		json.NewDecoder(w.Body).Decode(&u)
+		usr, _ := st.User(context.Background(), u.ID)
+		if usr.BGPPassword != "" {
+			t.Fatal("password should be empty when no toggle provided")
+		}
+	})
 }
