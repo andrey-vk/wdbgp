@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -260,7 +261,11 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to begin transaction"})
 		return
 	}
-	defer tx.Rollback() // safe no-op if Commit succeeds
+	defer func() {
+		if err := tx.Rollback(); err != nil {
+			log.Printf("WARNING: mode feeds transaction rollback: %v", err)
+		}
+	}()
 
 	if _, err := tx.ExecContext(r.Context(),
 		"DELETE FROM catalog_mode_feeds WHERE mode_id = ?", modeID); err != nil {
