@@ -196,6 +196,9 @@
   "feeds.data": "Custom data (JSON)",
   "feeds.data_hint": "Custom JSON data passed to the adapter.",
   "feeds.restricted_label": "restricted",
+  "feeds.sync_interval": "Sync interval",
+  "feeds.sync_interval_hint": "Seconds between automatic syncs. 0 means use global interval.",
+  "feeds.sync_interval_global": "global",
 
   "modes.title": "Catalog Modes",
   "modes.name": "Name",

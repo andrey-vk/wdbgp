@@ -195,6 +195,9 @@
   "feeds.data": "Произвольные данные (JSON)",
   "feeds.data_hint": "Произвольные JSON-данные, передаваемые адаптеру.",
   "feeds.restricted_label": "ограничен",
+  "feeds.sync_interval": "Интервал синхронизации",
+  "feeds.sync_interval_hint": "Интервал автосинхронизации в секундах. 0 — использовать глобальный интервал.",
+  "feeds.sync_interval_global": "глобальный",
 
   "modes.title": "Режимы каталога",
   "modes.name": "Название",

@@ -10,6 +10,7 @@ import type { Feed as ApiFeed } from '@/types/feeds'
 import type { AdaptersListResponse } from '@/types/adapters'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
+import InputNumber from 'primevue/inputnumber'
 import Textarea from 'primevue/textarea'
 import ToggleSwitch from 'primevue/toggleswitch'
 import Button from 'primevue/button'
@@ -39,6 +40,7 @@ const form = ref({
   restrict_hosts: true,
   enabled: true,
   data: '',
+  sync_interval: 0,
 })
 const loading = ref(true)
 const saving = ref(false)
@@ -69,6 +71,7 @@ function selectFeed(feed: Feed) {
     restrict_hosts: feed.restrict_hosts,
     enabled: feed.enabled,
     data: feed.data || '',
+    sync_interval: feed.sync_interval,
   }
   editMode.value = false
 }
@@ -83,6 +86,7 @@ function startNew() {
     restrict_hosts: true,
     enabled: true,
     data: '',
+    sync_interval: 0,
   }
   editMode.value = true
 }
@@ -101,6 +105,7 @@ function cancelEdit() {
       restrict_hosts: selected.value.restrict_hosts,
       enabled: selected.value.enabled,
       data: selected.value.data || '',
+      sync_interval: selected.value.sync_interval,
     }
   }
   editMode.value = false
@@ -124,6 +129,7 @@ async function handleSave() {
       restrict_hosts: resp.data.restrict_hosts,
       enabled: resp.data.enabled,
       data: resp.data.data || '',
+      sync_interval: resp.data.sync_interval,
     }
     editMode.value = false
     toast.add({ severity: 'success', summary: t('feeds.saved'), life: 3000 })
@@ -162,6 +168,7 @@ async function handleSync() {
         restrict_hosts: updated.restrict_hosts,
         enabled: updated.enabled,
         data: updated.data || '',
+        sync_interval: updated.sync_interval,
       }
     }
   } catch {
@@ -317,6 +324,11 @@ async function loadList() {
                 {{ selected.allowed_hosts || '—' }}
               </p>
             </div>
+            <div class="flex flex-col gap-1">
+              <span class="font-medium">{{ t('feeds.sync_interval') }}</span><p class="m-0">
+                {{ selected.sync_interval ? selected.sync_interval + 's' : t('feeds.sync_interval_global') }}
+              </p>
+            </div>
             <div
               v-if="selected.data"
               class="flex flex-col gap-1"
@@ -406,6 +418,18 @@ async function loadList() {
                 v-model="form.data"
                 rows="5"
                 class="font-mono text-sm"
+                fluid
+              />
+            </FormField>
+            <FormField
+              :label="t('feeds.sync_interval')"
+              :hint="'feeds.sync_interval_hint'"
+              input-id="fsyncint"
+            >
+              <InputNumber
+                id="fsyncint"
+                v-model="form.sync_interval"
+                :min="0"
                 fluid
               />
             </FormField>
