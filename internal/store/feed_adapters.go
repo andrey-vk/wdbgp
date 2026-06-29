@@ -331,12 +331,17 @@ func (s *Store) ForkAdapter(ctx context.Context, sourceID int64) (FeedAdapter, e
 		return FeedAdapter{}, fmt.Errorf("compute fork suffix: %w", err)
 	}
 	fork := FeedAdapter{
-		Name:          fmt.Sprintf("%s_copy_%d", src.Name, suffix+1),
-		Source:        src.Source,
-		Language:      src.Language,
-		APIVersion:    src.APIVersion,
-		ForkedFrom:    src.ID,
-		ForkedVersion: src.Revision,
+		Name:       fmt.Sprintf("%s_copy_%d", src.Name, suffix+1),
+		Source:     src.Source,
+		Language:   src.Language,
+		APIVersion: src.APIVersion,
+		ForkedFrom: src.ID,
+		ForkedVersion: func() int64 {
+			if v, ok := BuiltInAdapterVersion(src.ID); ok {
+				return v
+			}
+			return src.Revision
+		}(),
 	}
 	return s.AddFeedAdapter(ctx, fork)
 }

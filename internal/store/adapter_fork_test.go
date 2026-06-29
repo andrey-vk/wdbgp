@@ -71,7 +71,7 @@ func TestAdapterForkAutoNaming(t *testing.T) {
 		Language:      builtin.Language,
 		APIVersion:    builtin.APIVersion,
 		ForkedFrom:    builtin.ID,
-		ForkedVersion: builtin.Revision,
+		ForkedVersion: 1,
 	}
 	forked1, err := db.AddFeedAdapter(ctx, forked)
 	if err != nil {
@@ -190,7 +190,7 @@ func TestMigrationForkedFromToInteger(t *testing.T) {
 	forked, err := db.AddFeedAdapter(ctx, FeedAdapter{
 		Name: builtin.Name + "_copy_1", Source: builtin.Source,
 		Language: builtin.Language, APIVersion: builtin.APIVersion,
-		ForkedFrom: builtin.ID, ForkedVersion: builtin.Revision,
+		ForkedFrom: builtin.ID, ForkedVersion: 1,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +299,7 @@ func TestMaxForkedAdapterSuffix(t *testing.T) {
 		if _, err := db.AddFeedAdapter(ctx, FeedAdapter{
 			Name: builtin.Name + "_copy_1", Source: builtin.Source,
 			Language: builtin.Language, APIVersion: builtin.APIVersion,
-			ForkedFrom: builtin.ID, ForkedVersion: builtin.Revision,
+			ForkedFrom: builtin.ID, ForkedVersion: 1,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -315,7 +315,7 @@ func TestMaxForkedAdapterSuffix(t *testing.T) {
 		if _, err := db.AddFeedAdapter(ctx, FeedAdapter{
 			Name: builtin.Name + "_copy_5", Source: builtin.Source,
 			Language: builtin.Language, APIVersion: builtin.APIVersion,
-			ForkedFrom: builtin.ID, ForkedVersion: builtin.Revision,
+			ForkedFrom: builtin.ID, ForkedVersion: 1,
 		}); err != nil {
 			t.Fatal(err)
 		}
