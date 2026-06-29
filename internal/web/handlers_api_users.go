@@ -181,7 +181,7 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid peer IP address"})
 		return
 	}
-	if len(body.Networks) == 0 {
+	if body.WebAuth != "login" && len(body.Networks) == 0 {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "At least one network is required"})
 		return
 	}
