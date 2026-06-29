@@ -1214,7 +1214,9 @@ func TestUserBGPPasswordToggle(t *testing.T) {
 			t.Fatalf("create %s: %d %s", name, w.Code, w.Body.String())
 		}
 		var u userJSON
-		json.NewDecoder(w.Body).Decode(&u)
+		if err := json.NewDecoder(w.Body).Decode(&u); err != nil {
+			t.Fatal(err)
+		}
 		return u.ID
 	}
 
@@ -1231,7 +1233,10 @@ func TestUserBGPPasswordToggle(t *testing.T) {
 			t.Fatalf("enable+password: %d %s", w.Code, w.Body.String())
 		}
 		// Verify password changed
-		u, _ := st.User(context.Background(), id)
+		u, err := st.User(context.Background(), id)
+		if err != nil {
+			t.Fatalf("read user: %v", err)
+		}
 		if u.BGPPassword != "newsecret" {
 			t.Fatalf("BGPPassword = %q, want newsecret", u.BGPPassword)
 		}
@@ -1249,7 +1254,10 @@ func TestUserBGPPasswordToggle(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("enable keep existing: %d %s", w.Code, w.Body.String())
 		}
-		u, _ := st.User(context.Background(), id)
+		u, err := st.User(context.Background(), id)
+		if err != nil {
+			t.Fatalf("read user: %v", err)
+		}
 		if u.BGPPassword != "existing" {
 			t.Fatalf("BGPPassword = %q, want existing", u.BGPPassword)
 		}
@@ -1267,7 +1275,9 @@ func TestUserBGPPasswordToggle(t *testing.T) {
 			t.Fatalf("create: %d", w.Code)
 		}
 		var u userJSON
-		json.NewDecoder(w.Body).Decode(&u)
+		if err := json.NewDecoder(w.Body).Decode(&u); err != nil {
+			t.Fatal(err)
+		}
 
 		body = `{"bgp_password":"","password_enabled":true}`
 		req = httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(u.ID, 10), strings.NewReader(body))
@@ -1292,7 +1302,10 @@ func TestUserBGPPasswordToggle(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("disable clear: %d %s", w.Code, w.Body.String())
 		}
-		u, _ := st.User(context.Background(), id)
+		u, err := st.User(context.Background(), id)
+		if err != nil {
+			t.Fatalf("read user: %v", err)
+		}
 		if u.BGPPassword != "" {
 			t.Fatalf("BGPPassword = %q, want empty", u.BGPPassword)
 		}
@@ -1323,8 +1336,13 @@ func TestUserBGPPasswordToggle(t *testing.T) {
 			t.Fatalf("create no toggle: %d %s", w.Code, w.Body.String())
 		}
 		var u userJSON
-		json.NewDecoder(w.Body).Decode(&u)
-		usr, _ := st.User(context.Background(), u.ID)
+		if err := json.NewDecoder(w.Body).Decode(&u); err != nil {
+			t.Fatal(err)
+		}
+		usr, err := st.User(context.Background(), u.ID)
+		if err != nil {
+			t.Fatalf("read user: %v", err)
+		}
 		if usr.BGPPassword != "" {
 			t.Fatal("password should be empty when no toggle provided")
 		}
