@@ -146,7 +146,7 @@ func (s *Server) apiUserMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Modes list (for catalog mode selector)
-	modes, err := s.store.CatalogModes(r.Context(), false)
+	modes, err := s.store.CatalogModes(r.Context(), true)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
@@ -274,7 +274,7 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Modes list (for catalog mode selector)
-	modes, err := s.store.CatalogModes(r.Context(), false)
+	modes, err := s.store.CatalogModes(r.Context(), true)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
