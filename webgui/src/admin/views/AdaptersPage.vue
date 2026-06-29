@@ -242,8 +242,8 @@ async function loadList() { const resp = await apiClient.get('/admin/adapters');
               class="flex flex-col gap-1"
             >
               <span class="font-medium">{{ t('adapters.forked_from') }}</span><p class="m-0">
-                  {{ getForkedFromName(selected) }} (v{{ selected.forked_version }})
-                </p>
+                {{ getForkedFromName(selected) }} (v{{ selected.forked_version }})
+              </p>
             </div>
             <div class="flex flex-col gap-1">
               <span class="font-medium">{{ t('adapters.source') }}</span><pre class="m-0 p-3 font-mono whitespace-pre-wrap overflow-y-auto min-h-24 max-h-[40vh] text-sm border border-gray-200 dark:border-gray-700 rounded bg-gray-50 dark:bg-gray-950">{{ selected.source }}</pre>
