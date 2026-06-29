@@ -155,6 +155,7 @@
   "adapters.acknowledged": "Review acknowledged. Adapter marked as up-to-date.",
   "adapters.builtin_label": "built-in",
   "adapters.forked_label": "forked",
+  "adapters.invalid_source": "Invalid adapter source",
   "adapters.error_name": "Name is required.",
   "adapters.error_source": "Source code is required.",
   "adapters.empty": "No adapters found.",

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrey-vk/wdbgp/internal/feeds"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -93,6 +94,10 @@ func (s *Server) apiAdaptersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	if err := feeds.ValidateAdapterSource(adapter.Source, s.cfg.JSMaxSourceBytes); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
 	created, err := s.store.AddFeedAdapter(r.Context(), adapter)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
@@ -135,6 +140,10 @@ func (s *Server) apiAdaptersUpdate(w http.ResponseWriter, r *http.Request) {
 		ForkedVersion: adapter.ForkedVersion, // preserve fork point
 	}
 	if err := store.ValidateFeedAdapter(update); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	if err := feeds.ValidateAdapterSource(update.Source, s.cfg.JSMaxSourceBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}

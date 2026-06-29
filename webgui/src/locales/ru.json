@@ -154,6 +154,7 @@
   "adapters.acknowledged": "Проверка подтверждена. Адаптер помечен как актуальный.",
   "adapters.builtin_label": "встроенный",
   "adapters.forked_label": "копия",
+  "adapters.invalid_source": "Некорректный код адаптера",
   "adapters.error_name": "Название обязательно.",
   "adapters.error_source": "Исходный код обязателен.",
   "adapters.empty": "Адаптеры не найдены.",
