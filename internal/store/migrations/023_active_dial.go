@@ -14,6 +14,9 @@ func V023(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.Exec("ALTER TABLE users ADD COLUMN active_dial INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return err
 		}
+		if _, err := tx.Exec("UPDATE users SET active_dial = 1"); err != nil {
+			return err
+		}
 	}
 	return nil
 }
