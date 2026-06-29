@@ -33,6 +33,7 @@ type dashboardPeerJSON struct {
 }
 
 type dashboardFeedJSON struct {
+	ID        int64  `json:"id"`
 	Name      string `json:"name"`
 	Enabled   bool   `json:"enabled"`
 	LastError string `json:"last_error,omitempty"`
@@ -98,7 +99,7 @@ func (s *Server) apiDashboard(w http.ResponseWriter, r *http.Request) {
 			failedFeeds++
 		}
 		feedItems = append(feedItems, dashboardFeedJSON{
-			Name: f.Name, Enabled: f.Enabled, LastError: f.LastError,
+			ID: f.ID, Name: f.Name, Enabled: f.Enabled, LastError: f.LastError,
 		})
 	}
 

@@ -76,7 +76,7 @@ const feedChartData = computed(() => {
   const labels = feedHistory.map((h: FeedHistoryPoint) => h.time.substring(0, 16).replace('T', ' '))
   const feedNames = new Map<number, string>()
   if (data.value?.feeds?.items) {
-    data.value.feeds.items.forEach((f: FeedItem, i: number) => feedNames.set(i + 1, f.name))
+    data.value.feeds.items.forEach((f: FeedItem) => feedNames.set(f.id, f.name))
   }
   const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
   const datasets = Array.from(feedIds).map((id, i) => ({

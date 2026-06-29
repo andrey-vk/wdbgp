@@ -11,6 +11,7 @@ export interface FeedHistoryPoint {
 }
 
 export interface FeedItem {
+  id: number
   name: string
 }
 
