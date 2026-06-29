@@ -558,12 +558,20 @@ func TestModeFeedReplaceAtomic(t *testing.T) {
 		t.Fatalf("create mode: %d %s", w.Code, w.Body.String())
 	}
 	var created modeJSON
-	json.NewDecoder(w.Body).Decode(&created)
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
 	modeID := created.ID
 
 	// Create 2 feeds
-	f1, _ := st.AddFeed(ctx, "F1", "http://a.com/f1.json", 1, true, 0, "", "", true)
-	f2, _ := st.AddFeed(ctx, "F2", "http://a.com/f2.json", 1, true, 0, "", "", true)
+	f1, err := st.AddFeed(ctx, "F1", "http://a.com/f1.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed F1: %v", err)
+	}
+	f2, err := st.AddFeed(ctx, "F2", "http://a.com/f2.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed F2: %v", err)
+	}
 
 	// Assign both feeds to mode
 	assignBody := fmt.Sprintf(`{"feed_ids":[%d,%d]}`, f1, f2)
@@ -596,7 +604,9 @@ func TestModeFeedReplaceAtomic(t *testing.T) {
 		t.Fatalf("get feeds: %d", w.Code)
 	}
 	var feedsResp struct{ Feeds []modeFeedJSON `json:"feeds"` }
-	json.NewDecoder(w.Body).Decode(&feedsResp)
+	if err := json.NewDecoder(w.Body).Decode(&feedsResp); err != nil {
+		t.Fatal(err)
+	}
 	if len(feedsResp.Feeds) != 2 {
 		t.Errorf("after failed replace: got %d feeds, want 2 (rollback should preserve both)", len(feedsResp.Feeds))
 	}
