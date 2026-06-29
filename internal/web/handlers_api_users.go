@@ -234,7 +234,7 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		user.CatalogModeID = store.DefaultCatalogModeID
 	}
 	if user.WebAuth == "" {
-		user.WebAuth = "network"
+		user.WebAuth = s.cfg.DefaultWebAuth
 	}
 
 	// Reject dynamic peers when feature flag is off
@@ -431,7 +431,7 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		current.CatalogModeID = store.DefaultCatalogModeID
 	}
 	if current.WebAuth == "" {
-		current.WebAuth = "network"
+		current.WebAuth = s.cfg.DefaultWebAuth
 	}
 
 	// Reject dynamic peers when feature flag is off
