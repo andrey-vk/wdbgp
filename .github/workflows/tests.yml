@@ -2,9 +2,9 @@ name: Tests
 
 on:
   push:
-    branches: [main, gui-rework]
+    branches: [main]
   pull_request:
-    branches: [main, gui-rework]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
