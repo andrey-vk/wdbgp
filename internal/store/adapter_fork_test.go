@@ -204,13 +204,8 @@ func TestMigrationForkedFromToInteger(t *testing.T) {
 		t.Fatalf("ForkedFrom=%d, want %d", forked.ForkedFrom, builtin.ID)
 	}
 
-	// Verify ForkedAdapterNeedsReview works with ID
-	needsReview := ForkedAdapterNeedsReview(forked.ForkedFrom, forked.ForkedVersion)
-	// Should NOT need review if versions match
-	if needsReview && forked.ForkedVersion >= int64(builtin.Revision) {
-		// This is fine — migration may set versions differently
-		// Just verify it doesn't panic
-	}
+	// Verify ForkedAdapterNeedsReview works with ID (at minimum, doesn't panic).
+	_ = ForkedAdapterNeedsReview(forked.ForkedFrom, forked.ForkedVersion)
 
 	// Verify BuiltInAdapterVersion works with ID
 	ver, ok := BuiltInAdapterVersion(forked.ForkedFrom)
