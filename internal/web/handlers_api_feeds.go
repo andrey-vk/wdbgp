@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
@@ -80,6 +81,11 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
+	u, uErr := url.Parse(body.URL)
+	if uErr != nil || u.Scheme == "" || u.Host == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed URL"})
+		return
+	}
 	id, err := s.store.AddFeed(r.Context(), body.Name, body.URL, body.AdapterID, body.Enabled, int(body.SyncInterval), body.Data, body.AllowedHosts, body.RestrictHosts)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
@@ -112,6 +118,11 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
+		return
+	}
+	u, uErr := url.Parse(body.URL)
+	if uErr != nil || u.Scheme == "" || u.Host == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed URL"})
 		return
 	}
 	f := store.Feed{
@@ -172,6 +183,11 @@ func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.syncer.SyncOne(r.Context(), f); err != nil {
+		if _, execErr := s.store.DB.ExecContext(r.Context(),
+			"UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1",
+			err.Error(), id, f.URL); execErr != nil {
+			logging.FromContext(r.Context()).Debug("failed to write last_error", "feed_id", id, "error", execErr)
+		}
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
