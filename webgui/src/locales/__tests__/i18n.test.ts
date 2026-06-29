@@ -132,6 +132,7 @@ describe('i18n locale consistency', () => {
       'adapters.view',
       'adapters.fork_confirm',
       'adapters.empty',
+      'adapters.invalid_source',
       'feeds.adapter_placeholder',
       'feeds.hosts_placeholder',
       'modes.no_feeds',
