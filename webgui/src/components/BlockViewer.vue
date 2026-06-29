@@ -7,7 +7,10 @@ const props = defineProps({
         type: String,
         default: null
     },
-    code: null,
+    code: {
+        type: String,
+        default: ''
+    },
     recent: {
         type: Boolean,
         default: false
@@ -16,8 +19,14 @@ const props = defineProps({
         type: Boolean,
         default: false
     },
-    containerClass: null,
-    previewStyle: null
+    containerClass: {
+        type: [String, Object],
+        default: null
+    },
+    previewStyle: {
+        type: [String, Object],
+        default: null
+    }
 });
 
 const BlockView = reactive({

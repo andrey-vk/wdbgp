@@ -574,8 +574,8 @@ function calculateCustomerTotal(name) {
               header="Amount"
               sortable
             >
-              <template #body="slotProps">
-                {{ formatCurrency(slotProps.data.amount) }}
+              <template #body="bodySlotProps">
+                {{ formatCurrency(bodySlotProps.data.amount) }}
               </template>
             </Column>
             <Column
@@ -583,10 +583,10 @@ function calculateCustomerTotal(name) {
               header="Status"
               sortable
             >
-              <template #body="slotProps">
+              <template #body="bodySlotProps">
                 <Tag
-                  :value="slotProps.data.status.toLowerCase()"
-                  :severity="getOrderSeverity(slotProps.data)"
+                  :value="bodySlotProps.data.status.toLowerCase()"
+                  :severity="getOrderSeverity(bodySlotProps.data)"
                 />
               </template>
             </Column>
