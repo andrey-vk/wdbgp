@@ -49,3 +49,9 @@ func (s *Store) SaveSettings(ctx context.Context, settings map[string]string) er
 		return nil
 	})
 }
+
+// DeleteSetting removes a single setting key from the database.
+func (s *Store) DeleteSetting(ctx context.Context, key string) error {
+	_, err := s.DB.ExecContext(ctx, "DELETE FROM app_settings WHERE key = ?", key)
+	return err
+}

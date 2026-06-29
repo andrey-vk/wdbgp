@@ -711,6 +711,64 @@ func TestAdminSettingsAPI(t *testing.T) {
 	}
 }
 
+// TestSettingsNullValueDeletesOverride verifies that sending null for a setting
+// key removes it from the database (use default / clear override).
+func TestSettingsNullValueDeletesOverride(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "null-settings.sqlite3"), config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("close: %v", err)
+		}
+	}()
+
+	cfg := testConfig()
+	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	cookie := adminCookie(cfg)
+
+	// 1. Save a setting with a non-null value.
+	put1 := `{"default_language":"en"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/settings", strings.NewReader(put1))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT settings (set): status=%d", rec.Code)
+	}
+
+	// Verify it exists in DB.
+	all, err := db.GetAllSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all["default_language"] != "en" {
+		t.Fatalf("expected default_language=en, got %q", all["default_language"])
+	}
+
+	// 2. PUT with null value for that key — should delete the override.
+	put2 := `{"default_language":null}`
+	req = httptest.NewRequest(http.MethodPut, "/api/admin/settings", strings.NewReader(put2))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT settings (null): status=%d", rec.Code)
+	}
+
+	// Verify it is gone from DB.
+	all, err = db.GetAllSettings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := all["default_language"]; exists {
+		t.Fatal("expected default_language to be deleted from DB, but it still exists")
+	}
+}
+
 // TestAdapterCRUDAPI tests adapter CRUD + fork + acknowledge
 func TestAdapterCRUDAPI(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "api.sqlite3"), config.Config{})

@@ -63,7 +63,7 @@ function toggleDefault(checked: boolean) {
 
 <template>
   <FormField
-    :label="label"
+    :label="label!"
     :hint="hint"
     :input-id="inputId"
   >

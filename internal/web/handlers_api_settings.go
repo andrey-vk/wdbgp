@@ -121,10 +121,20 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 
 // apiSettingsPut handles PUT /api/admin/settings.
 func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
-	var body map[string]string
+	var body map[string]*string
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
+	}
+
+	// Delete nil-valued keys from DB (use default / clear override).
+	for key, valPtr := range body {
+		if valPtr == nil {
+			if err := s.store.DeleteSetting(r.Context(), key); err != nil {
+				writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to reset setting: " + key})
+				return
+			}
+		}
 	}
 
 	settings := make(map[string]string)
@@ -140,7 +150,12 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if val, ok := body[key]; ok {
+		if valPtr, ok := body[key]; ok {
+			if valPtr == nil {
+				// Use default — already deleted above, skip from settings map.
+				continue
+			}
+			val := *valPtr
 			// Basic validation
 			if f.Type == "number" {
 				if _, err := strconv.ParseInt(val, 10, 64); err != nil && val != "" {
@@ -168,8 +183,16 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	s.reloadRuntimeSettings(r.Context())
 
 	// Also save global route filters if provided
-	if allow, ok := body["filter_allow"]; ok {
-		if deny, ok2 := body["filter_deny"]; ok2 {
+	if allowPtr, ok := body["filter_allow"]; ok {
+		if denyPtr, ok2 := body["filter_deny"]; ok2 {
+			allow := ""
+			deny := ""
+			if allowPtr != nil {
+				allow = *allowPtr
+			}
+			if denyPtr != nil {
+				deny = *denyPtr
+			}
 			filters := store.RouteFilters{
 				Allow: splitCIDRs(allow),
 				Deny:  splitCIDRs(deny),

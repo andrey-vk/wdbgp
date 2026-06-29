@@ -12,7 +12,7 @@ import ToggleSwitch from 'primevue/toggleswitch'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import Tag from 'primevue/tag'
-import FormField from '@/components/FormField.vue'
+import SettingField from '@/components/SettingField.vue'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -22,6 +22,7 @@ interface SettingField {
   options?: Record<string, string>
   value: string; env_override: boolean; env_var: string
   restart: boolean; hint?: string
+  default_value?: string
 }
 interface SettingSection { name: string; fields: SettingField[] }
 
@@ -72,15 +73,24 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
 })
 
+function isFilterField(key: string): boolean {
+  return key === 'filter_allow' || key === 'filter_deny'
+}
+
 async function handleSave() {
   saved.value = false; saving.value = true
-  const body: Record<string, string> = {}
+  const body: Record<string, string | null> = {}
   for (const s of sections.value) {
     for (const f of s.fields) {
       if (f.env_override) continue
-      body[f.key] = f.type === 'bool'
-        ? (values.value[f.key] ? 'true' : 'false')
-        : String(values.value[f.key] ?? '')
+      const val = values.value[f.key]
+      if (val == null) {
+        body[f.key] = null
+      } else if (f.type === 'bool') {
+        body[f.key] = val ? 'true' : 'false'
+      } else {
+        body[f.key] = String(val)
+      }
     }
   }
   await apiClient.put('/admin/settings', body)
@@ -102,6 +112,10 @@ async function handlePurgeMetrics() {
 function selectOpts(f: SettingField) {
   if (!f.options) return []
   return Object.entries(f.options).map(([value, labelKey]) => ({ label: t(labelKey), value }))
+}
+
+function setFieldValue(key: string, val: unknown) {
+  values.value[key] = val as string | number | boolean | null
 }
 </script>
 
@@ -135,12 +149,15 @@ function selectOpts(f: SettingField) {
             <h2>{{ t(section.name) }}</h2>
           </div>
           <div class="section-rows">
-            <FormField
+            <SettingField
               v-for="field in section.fields"
               :key="field.key"
               :label="t(field.name)"
               :hint="field.hint || undefined"
               :input-id="field.key"
+              :default-value="field.default_value || undefined"
+              :model-value="values[field.key] ?? null"
+              @update:model-value="setFieldValue(field.key, $event)"
             >
               <template #tags>
                 <Tag
@@ -155,45 +172,52 @@ function selectOpts(f: SettingField) {
                   :value="t('settings.requires_restart')"
                 />
               </template>
-              <InputText
-                v-if="field.type === 'text' && field.key !== 'filter_allow' && field.key !== 'filter_deny'"
-                :id="field.key"
-                v-model="values[field.key] as string"
-                :disabled="field.env_override"
-                fluid
-              />
-              <Textarea
-                v-else-if="field.key === 'filter_allow' || field.key === 'filter_deny'"
-                :id="field.key"
-                v-model="values[field.key] as string"
-                :disabled="field.env_override"
-                rows="4"
-                fluid
-              />
-              <InputNumber
-                v-else-if="field.type === 'number'"
-                :id="field.key"
-                v-model="values[field.key] as number"
-                :disabled="field.env_override"
-                fluid
-              />
-              <Select
-                v-else-if="field.type === 'select'"
-                :id="field.key"
-                v-model="values[field.key] as string"
-                :options="selectOpts(field)"
-                option-label="label"
-                option-value="value"
-                :disabled="field.env_override"
-                fluid
-              />
-              <ToggleSwitch
-                v-else-if="field.type === 'bool'"
-                :id="field.key"
-                v-model="values[field.key] as boolean"
-                :disabled="field.env_override"
-              />
-            </FormField>
+              <template #default="{ value, disabled, inputId }">
+                <InputText
+                  v-if="field.type === 'text' && !isFilterField(field.key)"
+                  :id="inputId"
+                  :model-value="value as string"
+                  :disabled="disabled"
+                  fluid
+                  @update:model-value="setFieldValue(field.key, $event)"
+                />
+                <Textarea
+                  v-else-if="isFilterField(field.key)"
+                  :id="inputId"
+                  :model-value="value as string"
+                  :disabled="disabled"
+                  rows="4"
+                  fluid
+                  @update:model-value="setFieldValue(field.key, $event)"
+                />
+                <InputNumber
+                  v-else-if="field.type === 'number'"
+                  :id="inputId"
+                  :model-value="value as number"
+                  :disabled="disabled"
+                  fluid
+                  @update:model-value="setFieldValue(field.key, $event)"
+                />
+                <Select
+                  v-else-if="field.type === 'select'"
+                  :id="inputId"
+                  :model-value="value as string"
+                  :options="selectOpts(field)"
+                  option-label="label"
+                  option-value="value"
+                  :disabled="disabled"
+                  fluid
+                  @update:model-value="setFieldValue(field.key, $event)"
+                />
+                <ToggleSwitch
+                  v-else-if="field.type === 'bool'"
+                  :id="inputId"
+                  :model-value="value as boolean"
+                  :disabled="disabled"
+                  @update:model-value="setFieldValue(field.key, $event)"
+                />
+              </template>
+            </SettingField>
           </div>
         </div>
       </div>
