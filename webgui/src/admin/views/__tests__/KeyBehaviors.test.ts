@@ -7,7 +7,7 @@ import { nextTick } from 'vue'
 // Global mocks
 // ============================================================
 
-const tMock = vi.fn((key: string, params?: any) => {
+const tMock = vi.fn((key: string, params?: Record<string, unknown>) => {
   if (params && typeof params === 'object') {
     return key.replace(/\{(\w+)\}/g, (_, k) => params[k] ?? '?')
   }

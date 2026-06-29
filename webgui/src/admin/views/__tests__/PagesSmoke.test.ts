@@ -7,7 +7,7 @@ import { createPinia, setActivePinia } from 'pinia'
 // ============================================================
 
 // Mock vue-i18n
-const tMock = vi.fn((key: string, params?: any) => {
+const tMock = vi.fn((key: string, params?: Record<string, unknown>) => {
   if (params && typeof params === 'object') {
     return key.replace(/\{(\w+)\}/g, (_, k) => params[k] ?? '?')
   }
@@ -102,7 +102,7 @@ function stubPrimeVueComponents() {
 
 function defaultGetMock() {
   mockGet.mockImplementation((url: string) => {
-    const defaults: Record<string, any> = {
+    const defaults: Record<string, unknown> = {
       '/admin/dashboard': {
         data: {
           prefixes: 0, categories: 0, services: 0,

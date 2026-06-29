@@ -1,5 +1,18 @@
+interface Customer {
+  id: number
+  name: string
+  country: { name: string; code: string }
+  company: string
+  date: string
+  status: string
+  verified: boolean
+  activity: number
+  representative: { name: string; image: string }
+  balance: number
+}
+
 export const CustomerService = {
-    getData() {
+    getData(): Customer[] {
         return [
             {
                 id: 1000,
@@ -9020,7 +9033,7 @@ export const CustomerService = {
         return Promise.resolve(this.getData());
     },
 
-    getCustomers(params: Record<string, any>) {
+    getCustomers(params: Record<string, string>) {
         const queryParams = params
             ? Object.keys(params)
                   .map((k) => encodeURIComponent(k) + '=' + encodeURIComponent(params[k]))

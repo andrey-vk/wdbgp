@@ -48,7 +48,10 @@ function extractI18nKeys(vueFiles: string[]): Set<string> {
   return keys
 }
 
-function collectKeys(obj: Record<string, any>, prefix: string = ''): Set<string> {
+type LocaleNode = string | { [key: string]: LocaleNode }
+type LocaleNodeMap = { [key: string]: LocaleNode }
+
+function collectKeys(obj: LocaleNodeMap, prefix = ''): Set<string> {
   const keys = new Set<string>()
   for (const [k, v] of Object.entries(obj)) {
     const fullKey = prefix ? `${prefix}.${k}` : k
@@ -64,8 +67,8 @@ function collectKeys(obj: Record<string, any>, prefix: string = ''): Set<string>
 
 const vueFiles = walkVueFiles(resolve(__dirname, '..', '..'))
 const usedKeys = extractI18nKeys(vueFiles)
-const enKeys = collectKeys(enMessages as Record<string, any>)
-const ruKeys = collectKeys(ruMessages as Record<string, any>)
+const enKeys = collectKeys(enMessages as LocaleNodeMap)
+const ruKeys = collectKeys(ruMessages as LocaleNodeMap)
 
 describe('i18n locale consistency', () => {
   it('every key in en.json exists in ru.json', () => {
