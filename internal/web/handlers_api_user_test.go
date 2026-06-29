@@ -32,7 +32,7 @@ func TestUserAuthBothRequiresBothFactors(t *testing.T) {
 		t.Fatalf("create both user: %d", w.Code)
 	}
 	// Add credentials
-	credBody := `{"login":"both-login","password":"test"}`
+	credBody := `{"login":"both-login","password":"test"}` //nolint:gosec // test credentials, not real
 	req = httptest.NewRequest("PUT", "/api/admin/users/1/credentials", strings.NewReader(credBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", "1")
