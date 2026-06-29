@@ -260,13 +260,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	for appliedIdx < len(applied) && migIdx < len(migrations) {
 		aVer := applied[appliedIdx]
 		mVer := migrations[migIdx].Version
-		if aVer == mVer {
+		switch {
+		case aVer == mVer:
 			appliedIdx++
 			migIdx++
-		} else if aVer < mVer {
+		case aVer < mVer:
 			// Extra version from old binary — skip it.
 			appliedIdx++
-		} else {
+		default:
 			return fmt.Errorf("database migration history has version %d where %d was expected", aVer, mVer)
 		}
 	}
