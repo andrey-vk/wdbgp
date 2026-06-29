@@ -147,13 +147,6 @@ func (s *Server) apiUserMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Modes list (for catalog mode selector)
-	modes, err := s.store.CatalogModes(r.Context(), false)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": userPublic{
 			ID:              user.ID,
@@ -172,7 +165,6 @@ func (s *Server) apiUserMe(w http.ResponseWriter, r *http.Request) {
 		"communities":   communities,
 		"prefix_counts": map[string]any{"v4": v4Prefixes, "v6": v6Prefixes},
 		"filters":       filters,
-		"modes":         modes,
 	})
 }
 
