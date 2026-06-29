@@ -190,14 +190,12 @@ func (s *Server) apiFeedsSyncAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	errors := s.syncer.SyncAll(r.Context())
+	if s.bgp != nil {
+		s.bgp.Reconcile(r.Context()) //nolint:errcheck,gosec // best-effort; successful feeds need route updates
+	}
 	if len(errors) > 0 {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Some feeds failed to sync"})
 		return
-	}
-	if s.bgp != nil {
-		if err := s.bgp.Reconcile(r.Context()); err != nil {
-			logging.FromContext(r.Context()).Debug("bgp reconcile failed after feed sync all", "error", err)
-		}
 	}
 	s.recordUserSnapshot(r.Context())
 	s.recordFeedSnapshot(r.Context())
