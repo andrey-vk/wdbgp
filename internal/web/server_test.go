@@ -395,6 +395,7 @@ func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
 	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	cfg := testConfig()
+	cfg.AllowDynamicPeers = true
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
@@ -440,6 +441,7 @@ func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
 	}
 
 	cfg := testConfig()
+	cfg.AllowDynamicPeers = true
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 

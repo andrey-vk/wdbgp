@@ -257,6 +257,20 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Prefix counts (same as /api/user/me)
+	v4Prefixes, v6Prefixes, err := s.store.PrefixCounts(ctx, user.CatalogModeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	// Modes list (for catalog mode selector)
+	modes, err := s.store.CatalogModes(r.Context(), false)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": userPublic{
 			ID:              user.ID,
@@ -270,9 +284,11 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 			CatalogEditable: user.CatalogEditable,
 			Networks:        user.Networks,
 		},
-		"catalog":    loginCatalog,
-		"selections": map[string]any{"categories": loginCatList, "services": loginSvcList},
-		"filters":    loginFilters,
+		"catalog":       loginCatalog,
+		"selections":    map[string]any{"categories": loginCatList, "services": loginSvcList},
+		"filters":       loginFilters,
+		"prefix_counts": map[string]any{"v4": v4Prefixes, "v6": v6Prefixes},
+		"modes":         modes,
 	})
 }
 

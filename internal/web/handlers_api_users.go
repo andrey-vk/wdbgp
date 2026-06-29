@@ -237,6 +237,12 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		user.WebAuth = "network"
 	}
 
+	// Reject dynamic peers when feature flag is off
+	if !s.cfg.AllowDynamicPeers && (user.PeerIP == "0.0.0.0" || user.PeerIP == "::") {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Dynamic peers are disabled"})
+		return
+	}
+
 	// Dynamic peers cannot have active dial (can't dial a wildcard address)
 	if (user.PeerIP == "0.0.0.0" || user.PeerIP == "::") && user.ActiveDial {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Dynamic peers cannot use active dial (wildcard IP cannot be dialed)"})
@@ -426,6 +432,12 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if current.WebAuth == "" {
 		current.WebAuth = "network"
+	}
+
+	// Reject dynamic peers when feature flag is off
+	if !s.cfg.AllowDynamicPeers && (current.PeerIP == "0.0.0.0" || current.PeerIP == "::") {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Dynamic peers are disabled"})
+		return
 	}
 
 	// Dynamic peers cannot have active dial (can't dial a wildcard address)
