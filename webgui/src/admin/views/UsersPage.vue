@@ -6,6 +6,9 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
 import { useUIStore } from '@/admin/stores/ui'
+import type { AxiosResponse } from 'axios'
+import type { User, UserSavePayload, Credential, UsersListResponse, UserStatusesResponse } from '@/types/users'
+import type { Mode, ModesListResponse } from '@/types/modes'
 import InputText from 'primevue/inputtext'
 import Dialog from 'primevue/dialog'
 import InputNumber from 'primevue/inputnumber'
@@ -16,25 +19,6 @@ import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import FormField from '@/components/FormField.vue'
-
-interface User {
-  id: number; name: string; peer_ip: string; peer_asn: number
-  next_hop: string; has_password: boolean
-  selection_locked: boolean; enabled: boolean
-  filter_override: boolean; filter_mode: string; filter_editable: boolean
-  catalog_mode_id: number; catalog_mode_name: string; catalog_editable: boolean
-  active_dial: boolean; web_auth: string
-  networks: string[]; peer_state: string
-  filter_allow: string[]; filter_deny: string[]
-}
-
-interface Credential {
-  login: string
-}
-
-interface Mode {
-  id: number; key: string; name: string; enabled: boolean; feed_count: number
-}
 
 const { t } = useI18n()
 const router = useRouter()
@@ -123,8 +107,8 @@ const filterModeSelect = computed({
 
 onMounted(async () => {
   const [usersResp, modesResp, settingsResp] = await Promise.all([
-    apiClient.get('/admin/users'),
-    apiClient.get('/admin/modes'),
+    apiClient.get<UsersListResponse>('/admin/users'),
+    apiClient.get<ModesListResponse>('/admin/modes'),
     apiClient.get('/admin/settings'),
   ])
   users.value = usersResp.data.users
@@ -276,7 +260,7 @@ async function handleSave() {
   if (networksRequired.value && networks.length === 0) { toast.add({ severity: 'error', summary: t('users.error_networks'), life: 3000 }); return }
   saving.value = true
   try {
-    const payload: Record<string, any> = {
+    const payload: UserSavePayload = {
       name: form.value.name.trim(),
       peer_ip: form.value.peer_ip.trim(),
       peer_asn: form.value.peer_asn,
@@ -296,11 +280,11 @@ async function handleSave() {
       filter_allow: form.value.filter_allow_text.split('\n').map(s => s.trim()).filter(s => s !== ''),
       filter_deny: form.value.filter_deny_text.split('\n').map(s => s.trim()).filter(s => s !== ''),
     }
-    let resp: any
+    let resp: AxiosResponse<User>
     if (!selected.value) {
-      resp = await apiClient.post('/admin/users', payload)
+      resp = await apiClient.post<User>('/admin/users', payload)
     } else {
-      resp = await apiClient.put('/admin/users/' + selected.value.id, payload)
+      resp = await apiClient.put<User>('/admin/users/' + selected.value.id, payload)
     }
     await loadList()
     selected.value = resp.data
@@ -371,8 +355,8 @@ function stopStatusPolling() {
 
 async function fetchStatuses() {
   try {
-    const resp = await apiClient.get('/admin/users/statuses')
-    const states: Record<string, string> = resp.data.peer_states || {}
+    const resp = await apiClient.get<UserStatusesResponse>('/admin/users/statuses')
+    const states = resp.data.peer_states || {}
     for (const u of users.value) {
       const key = u.peer_ip + ':' + u.peer_asn
       u.peer_state = states[key] || ''

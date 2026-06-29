@@ -4,18 +4,14 @@ import { useI18n } from 'vue-i18n'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
+import type { AxiosResponse } from 'axios'
+import type { Adapter, AdaptersListResponse } from '@/types/adapters'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import FormField from '@/components/FormField.vue'
-
-interface Adapter {
-  id: number; name: string; source: string
-  revision: number; builtin: boolean
-  forked_from?: number; forked_version?: number; requires_review?: boolean
-}
 
 const { t } = useI18n()
 const confirmDialog = useConfirm()
@@ -28,7 +24,7 @@ const saving = ref(false)
 const editMode = ref(false)
 
 onMounted(async () => {
-  const resp = await apiClient.get('/admin/adapters')
+  const resp = await apiClient.get<AdaptersListResponse>('/admin/adapters')
   adapters.value = resp.data.adapters
   adapters.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
   loading.value = false
@@ -64,9 +60,9 @@ async function handleSave() {
   if (!form.value.source.trim()) { toast.add({ severity: 'error', summary: t('adapters.error_source'), life: 3000 }); return }
   saving.value = true
   try {
-    let resp: any
-    if (!selected.value) resp = await apiClient.post('/admin/adapters', form.value)
-    else resp = await apiClient.put('/admin/adapters/' + selected.value.id, form.value)
+    let resp: AxiosResponse<Adapter>
+    if (!selected.value) resp = await apiClient.post<Adapter>('/admin/adapters', form.value)
+    else resp = await apiClient.put<Adapter>('/admin/adapters/' + selected.value.id, form.value)
     await loadList()
     selected.value = resp.data
     form.value = { name: resp.data.name, source: resp.data.source }

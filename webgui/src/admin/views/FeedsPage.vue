@@ -5,6 +5,9 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
 import { formatDateTime } from '@/utils/format'
+import type { AxiosResponse } from 'axios'
+import type { Feed as ApiFeed } from '@/types/feeds'
+import type { AdaptersListResponse } from '@/types/adapters'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Textarea from 'primevue/textarea'
@@ -14,13 +17,7 @@ import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import FormField from '@/components/FormField.vue'
 
-interface Feed {
-  id: number; name: string; url: string; enabled: boolean
-  sync_interval: number;
-  adapter_id: number;
-  allowed_hosts: string; restrict_hosts: boolean
-  data?: string
-  last_success?: string; last_error?: string
+interface Feed extends ApiFeed {
   adapter_name?: string
 }
 
@@ -51,18 +48,18 @@ const editMode = ref(false)
 onMounted(async () => {
   const [feedsResp, adaptersResp] = await Promise.all([
     apiClient.get('/admin/feeds'),
-    apiClient.get('/admin/adapters'),
+    apiClient.get<AdaptersListResponse>('/admin/adapters'),
   ])
   feeds.value = feedsResp.data.feeds
   feeds.value.sort((a, b) => (a.name || a.url || '').localeCompare(b.name || b.url || ''))
-  adapters.value = adaptersResp.data.adapters.map((a: AdapterOption) => ({ id: a.id, name: a.name }))
+  adapters.value = adaptersResp.data.adapters.map((a) => ({ id: a.id, name: a.name }))
   loading.value = false
 })
 
 function selectFeed(feed: Feed) {
   selected.value = feed
   // Resolve adapter_name from already-loaded adapters list
-  const adapter = adapters.value.find((a: any) => a.id === feed.adapter_id)
+  const adapter = adapters.value.find((a) => a.id === feed.adapter_id)
   selected.value.adapter_name = adapter?.name
   form.value = {
     url: feed.url,
@@ -114,9 +111,9 @@ async function handleSave() {
   if (!form.value.adapter_id) { toast.add({ severity: 'error', summary: t('feeds.error_adapter'), life: 3000 }); return }
   saving.value = true
   try {
-    let resp: any
-    if (!selected.value) resp = await apiClient.post('/admin/feeds', form.value)
-    else resp = await apiClient.put('/admin/feeds/' + selected.value.id, form.value)
+    let resp: AxiosResponse<Feed>
+    if (!selected.value) resp = await apiClient.post<Feed>('/admin/feeds', form.value)
+    else resp = await apiClient.put<Feed>('/admin/feeds/' + selected.value.id, form.value)
     await loadList()
     selected.value = resp.data
     form.value = {

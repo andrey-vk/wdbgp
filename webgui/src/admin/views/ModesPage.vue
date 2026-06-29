@@ -5,6 +5,8 @@ import { useI18n } from 'vue-i18n'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
+import type { AxiosResponse } from 'axios'
+import type { Mode, ModesListResponse } from '@/types/modes'
 import InputText from 'primevue/inputtext'
 import ToggleSwitch from 'primevue/toggleswitch'
 import Button from 'primevue/button'
@@ -12,9 +14,6 @@ import Tag from 'primevue/tag'
 import Checkbox from 'primevue/checkbox'
 import FormField from '@/components/FormField.vue'
 
-interface Mode {
-  id: number; key: string; name: string; enabled: boolean; feed_count: number
-}
 interface FeedItem {
   id: number; name: string; url: string; enabled: boolean; adapter_name: string
 }
@@ -39,7 +38,7 @@ const loadingFeeds = ref(false)
 const savingFeeds = ref(false)
 
 onMounted(async () => {
-  const resp = await apiClient.get('/admin/modes')
+  const resp = await apiClient.get<ModesListResponse>('/admin/modes')
   modes.value = resp.data.modes
   modes.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
   loading.value = false
@@ -96,14 +95,14 @@ async function handleSave() {
   if (!form.value.name.trim()) { toast.add({ severity: 'error', summary: t('modes.error_name'), life: 3000 }); return }
   saving.value = true
   try {
-    let resp: any
+    let resp: AxiosResponse<Mode>
     if (!selected.value) {
-      resp = await apiClient.post('/admin/modes', {
+      resp = await apiClient.post<Mode>('/admin/modes', {
         name: form.value.name,
         enabled: form.value.enabled,
       })
     } else {
-      resp = await apiClient.put('/admin/modes/' + selected.value.id, {
+      resp = await apiClient.put<Mode>('/admin/modes/' + selected.value.id, {
         name: form.value.name,
         enabled: form.value.enabled,
       })
