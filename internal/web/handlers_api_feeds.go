@@ -82,7 +82,7 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, uErr := url.Parse(body.URL)
-	if uErr != nil || u.Scheme == "" || u.Host == "" {
+	if uErr != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed URL"})
 		return
 	}
@@ -121,7 +121,7 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, uErr := url.Parse(body.URL)
-	if uErr != nil || u.Scheme == "" || u.Host == "" {
+	if uErr != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed URL"})
 		return
 	}
