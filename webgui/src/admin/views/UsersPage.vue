@@ -80,6 +80,7 @@ const newCredLogin = ref('')
 const newCredPassword = ref('')
 const resetPassword = ref('')
 const dynamicPeer = ref(false)
+const defaultWebAuth = ref('network')
 
 const showNetworks = computed(() => {
   const auth = form.value.web_auth || selected.value?.web_auth
@@ -121,13 +122,24 @@ const filterModeSelect = computed({
 })
 
 onMounted(async () => {
-  const [usersResp, modesResp] = await Promise.all([
+  const [usersResp, modesResp, settingsResp] = await Promise.all([
     apiClient.get('/admin/users'),
     apiClient.get('/admin/modes'),
+    apiClient.get('/admin/settings'),
   ])
   users.value = usersResp.data.users
   users.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
   modes.value = modesResp.data.modes
+
+  // Read configured default_web_auth from settings
+  for (const section of settingsResp.data.sections) {
+    for (const field of section.fields) {
+      if (field.key === 'default_web_auth') {
+        defaultWebAuth.value = field.value || 'network'
+      }
+    }
+  }
+
   loading.value = false
 
   // Restore user selection from UI store (e.g., when returning from selections page)
@@ -183,7 +195,7 @@ function startNew() {
     peer_asn: 0,
     next_hop: '',
     bgp_password: '',
-    web_auth: 'network',
+    web_auth: defaultWebAuth.value,
     enabled: true,
     active_dial: false,
     catalog_mode_id: modes.value.length > 0 ? modes.value[0].id : 0,
