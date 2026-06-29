@@ -130,6 +130,11 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to read updated feed"})
 		return
 	}
+	if s.bgp != nil {
+		if err := s.bgp.Reconcile(r.Context()); err != nil {
+			logging.FromContext(r.Context()).Debug("bgp reconcile failed after feed update", "error", err)
+		}
+	}
 	writeJSON(w, http.StatusOK, feedToJSON(updated))
 }
 
