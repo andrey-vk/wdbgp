@@ -411,7 +411,7 @@ func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
 	}
 
 	// With password — should also succeed
-	body = `{"name":"dynamic-with-pw","peer_ip":"0.0.0.0","peer_asn":65101,"bgp_password":"secret123","networks":["10.0.0.0/8"],"enabled":true}`
+	body = `{"name":"dynamic-with-pw","peer_ip":"0.0.0.0","peer_asn":65101,"bgp_password":"secret123","password_enabled":true,"networks":["10.0.0.0/8"],"enabled":true}`
 	request = httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
@@ -443,7 +443,7 @@ func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
-	body := `{"name":"second-dynamic","peer_ip":"0.0.0.0","peer_asn":65100,"bgp_password":"secret2","networks":["0.0.0.0/0"],"enabled":true}`
+	body := `{"name":"second-dynamic","peer_ip":"0.0.0.0","peer_asn":65100,"bgp_password":"secret2","password_enabled":true,"networks":["0.0.0.0/0"],"enabled":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
@@ -515,7 +515,7 @@ func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
 	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
-	body := `{"name":"second-shared-pw","peer_ip":"10.0.4.1","peer_asn":65102,"bgp_password":"shared-secret","networks":["192.168.21.0/24"],"enabled":true}`
+	body := `{"name":"second-shared-pw","peer_ip":"10.0.4.1","peer_asn":65102,"bgp_password":"shared-secret","password_enabled":true,"networks":["192.168.21.0/24"],"enabled":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
@@ -550,7 +550,7 @@ func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	// Try to add second peer with different password "banana"
-	body := `{"name":"bob","peer_ip":"192.0.2.1","peer_asn":65002,"bgp_password":"banana","networks":["192.168.101.0/24"],"enabled":true}`
+	body := `{"name":"bob","peer_ip":"192.0.2.1","peer_asn":65002,"bgp_password":"banana","password_enabled":true,"networks":["192.168.101.0/24"],"enabled":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
@@ -589,7 +589,7 @@ func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
 
 	// Try to add second peer with different password "banana"
-	body := `{"name":"bob6","peer_ip":"fd00::1","peer_asn":65102,"bgp_password":"banana","networks":["fd00:babe::/48"],"enabled":true}`
+	body := `{"name":"bob6","peer_ip":"fd00::1","peer_asn":65102,"bgp_password":"banana","password_enabled":true,"networks":["fd00:babe::/48"],"enabled":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)

@@ -193,7 +193,7 @@ func TestUsersCRUD(t *testing.T) {
 func TestUsersCreateWithPassword(t *testing.T) {
 	srv, _, _ := setupUserTestServer(t)
 
-	createBody := strings.NewReader(`{"name":"pw-user","peer_ip":"10.0.0.1","peer_asn":65002,"bgp_password":"secret","networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
+	createBody := strings.NewReader(`{"name":"pw-user","peer_ip":"10.0.0.1","peer_asn":65002,"bgp_password":"secret","password_enabled":true,"networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
 	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -345,7 +345,7 @@ func TestUsersUpdatePasswordToggle(t *testing.T) {
 	srv, _, _ := setupUserTestServer(t)
 
 	// Create user with password
-	createBody := strings.NewReader(`{"name":"pw-toggle","peer_ip":"10.0.1.1","peer_asn":65100,"bgp_password":"secret123","networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
+	createBody := strings.NewReader(`{"name":"pw-toggle","peer_ip":"10.0.1.1","peer_asn":65100,"bgp_password":"secret123","password_enabled":true,"networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
 	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -800,7 +800,7 @@ func TestUsersPartialUpdatePasswordOnly(t *testing.T) {
 	srv, _, _ := setupUserTestServer(t)
 
 	// Create user with password
-	createBody := strings.NewReader(`{"name":"pw-partial","peer_ip":"192.168.6.1","peer_asn":65007,"bgp_password":"oldpass","networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
+	createBody := strings.NewReader(`{"name":"pw-partial","peer_ip":"192.168.6.1","peer_asn":65007,"bgp_password":"oldpass","password_enabled":true,"networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
 	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -926,7 +926,7 @@ func TestUsersPartialUpdateEnabledToggleWithPassword(t *testing.T) {
 	srv, _, _ := setupUserTestServer(t)
 
 	// Create user with BGP password
-	createBody := strings.NewReader(`{"name":"toggle-pw-user","peer_ip":"192.168.9.1","peer_asn":65010,"bgp_password":"secret123","networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
+	createBody := strings.NewReader(`{"name":"toggle-pw-user","peer_ip":"192.168.9.1","peer_asn":65010,"bgp_password":"secret123","password_enabled":true,"networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
 	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -966,7 +966,7 @@ func TestUsersPartialUpdateDoubleToggleWithPassword(t *testing.T) {
 	srv, _, _ := setupUserTestServer(t)
 
 	// Create user with BGP password and enabled=true
-	createBody := strings.NewReader(`{"name":"double-toggle-pw","peer_ip":"192.168.10.1","peer_asn":65011,"bgp_password":"secret123","networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
+	createBody := strings.NewReader(`{"name":"double-toggle-pw","peer_ip":"192.168.10.1","peer_asn":65011,"bgp_password":"secret123","password_enabled":true,"networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
 	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

@@ -196,21 +196,12 @@ func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 	return id, err
 }
 
-func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) error {
+func (s *Store) UpdateUser(ctx context.Context, user User) error {
 	filterMode := normalizeFilterMode(user.FilterMode, user.FilterOverride)
 	if user.CatalogModeID == 0 {
 		user.CatalogModeID = DefaultCatalogModeID
 	}
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
-		var password any = user.BGPPassword
-		if clearPassword {
-			password = nil
-		} else if user.BGPPassword == "" {
-			if err := tx.QueryRowContext(ctx, "SELECT bgp_password FROM users WHERE id = ?", user.ID).
-				Scan(&password); err != nil {
-				return err
-			}
-		}
 		if user.WebAuth == "" {
 			user.WebAuth = "network"
 		}
@@ -218,7 +209,7 @@ func (s *Store) UpdateUser(ctx context.Context, user User, clearPassword bool) e
 			next_hop=NULLIF(?, ''), bgp_password=?, selection_locked=?, enabled=?,
 			filter_override_enabled=?, filter_mode=?, filter_editable=?,
 			catalog_mode_id=?, catalog_mode_editable=?, active_dial=?, web_auth=? WHERE id=?`,
-			user.Name, user.PeerIP, user.PeerASN, user.NextHop, password,
+			user.Name, user.PeerIP, user.PeerASN, user.NextHop, user.BGPPassword,
 			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
 			user.FilterEditable, user.CatalogModeID, user.CatalogEditable,
 			user.ActiveDial, user.WebAuth, user.ID)

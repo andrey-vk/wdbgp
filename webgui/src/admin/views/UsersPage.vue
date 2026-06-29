@@ -269,7 +269,7 @@ async function handleSave() {
       peer_ip: form.value.peer_ip.trim(),
       peer_asn: form.value.peer_asn,
       next_hop: form.value.next_hop.trim(),
-      bgp_password: form.value.password_enabled ? form.value.bgp_password : '',
+      bgp_password: form.value.bgp_password,
       password_enabled: form.value.password_enabled,
       selection_locked: form.value.selection_locked,
       enabled: form.value.enabled,

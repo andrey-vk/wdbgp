@@ -154,6 +154,7 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		PeerASN         uint32   `json:"peer_asn"`
 		NextHop         string   `json:"next_hop"`
 		BGPPassword     string   `json:"bgp_password"`
+		PasswordEnabled bool     `json:"password_enabled"`
 		SelectionLocked bool     `json:"selection_locked"`
 		Enabled         bool     `json:"enabled"`
 		FilterOverride  bool     `json:"filter_override"`
@@ -194,6 +195,20 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 	if body.PeerASN == 0 {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Peer ASN is required"})
 		return
+	}
+
+	// Handle BGP password with explicit toggle logic.
+	if body.PasswordEnabled {
+		if body.BGPPassword == "" {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Password must be set to enable"})
+			return
+		}
+	} else {
+		if body.BGPPassword != "" {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Cannot set password while disabling"})
+			return
+		}
+		body.BGPPassword = ""
 	}
 
 	user := store.User{
@@ -385,13 +400,23 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle BGP password: if new password provided, set it. Otherwise keep existing.
-	clearPassword := body.PasswordEnabled != nil && !*body.PasswordEnabled
-	if body.BGPPassword != nil {
-		current.BGPPassword = *body.BGPPassword
-		// PasswordEnabled defaults to true when password is provided and not explicitly set
-		if body.PasswordEnabled == nil {
-			clearPassword = false
+	// Handle BGP password with explicit toggle logic.
+	if body.PasswordEnabled != nil {
+		if *body.PasswordEnabled {
+			// Enable: set new password or keep existing.
+			if body.BGPPassword != nil && *body.BGPPassword != "" {
+				current.BGPPassword = *body.BGPPassword
+			} else if current.BGPPassword == "" {
+				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Password must be set to enable"})
+				return
+			}
+		} else {
+			// Disable: clear password.
+			if body.BGPPassword != nil && *body.BGPPassword != "" {
+				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Cannot set password while disabling"})
+				return
+			}
+			current.BGPPassword = ""
 		}
 	}
 
@@ -415,7 +440,7 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.UpdateUser(r.Context(), current, clearPassword); err != nil {
+	if err := s.store.UpdateUser(r.Context(), current); err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
 			return

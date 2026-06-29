@@ -412,7 +412,7 @@ func TestUpdateUserWebAuthChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	user.WebAuth = "login"
-	err = s.UpdateUser(ctx, user, false)
+	err = s.UpdateUser(ctx, user)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestUpdateUserWebAuthChanges(t *testing.T) {
 
 	// Change to both
 	user.WebAuth = "both"
-	err = s.UpdateUser(ctx, user, false)
+	err = s.UpdateUser(ctx, user)
 	if err != nil {
 		t.Fatal(err)
 	}
