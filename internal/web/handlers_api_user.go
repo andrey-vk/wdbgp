@@ -212,6 +212,15 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// For "both" mode, verify client IP matches the authenticated user's networks.
+	if user.WebAuth == "both" {
+		ipUser, ipErr := s.store.UserByIP(ctx, clientIP)
+		if ipErr != nil || ipUser.ID != user.ID {
+			writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "Authentication required"})
+			return
+		}
+	}
+
 	// Set session cookie
 	secure := s.adminCookieSecure(r)
 	maxAge := s.cfg.SessionMaxAge
