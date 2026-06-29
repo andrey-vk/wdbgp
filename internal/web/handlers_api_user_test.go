@@ -174,7 +174,7 @@ func TestUserSaveSelectionsPreservesHidden(t *testing.T) {
 	req = httptest.NewRequest("POST", "/api/user/selections", strings.NewReader(selBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "10.0.0.1:12345"
-	req.AddCookie(&http.Cookie{Name: "wdbgp_user", Value: sessionToken})
+	req.AddCookie(&http.Cookie{Name: "wdbgp_user", Value: sessionToken}) //nolint:gosec // test cookie
 	w = httptest.NewRecorder()
 	srv.requireUser(srv.apiUserSaveSelections).ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -215,7 +215,7 @@ func TestUserSaveSelectionsPreservesHidden(t *testing.T) {
 	req = httptest.NewRequest("POST", "/api/user/selections", strings.NewReader(selBody2))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "10.0.0.1:12345"
-	req.AddCookie(&http.Cookie{Name: "wdbgp_user", Value: sessionToken})
+	req.AddCookie(&http.Cookie{Name: "wdbgp_user", Value: sessionToken}) //nolint:gosec // test cookie
 	w = httptest.NewRecorder()
 	srv.requireUser(srv.apiUserSaveSelections).ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
