@@ -17,7 +17,7 @@ type settingFieldJSON struct {
 	Name         string            `json:"name"`
 	Type         string            `json:"type"`
 	Options      map[string]string `json:"options,omitempty"`
-	Value        string            `json:"value"`
+	Value        *string           `json:"value"`
 	EnvOverride  bool              `json:"env_override"`
 	EnvVar       string            `json:"env_var"`
 	Restart      bool              `json:"restart"`
@@ -66,10 +66,10 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 
 		// Populate value
 		if v := os.Getenv(f.EnvVar); v != "" {
-			fj.Value = v
+			fj.Value = &v
 			fj.EnvOverride = true
 		} else if v, ok := dbSettings[f.Key]; ok {
-			fj.Value = v
+			fj.Value = &v
 		} else {
 			fj.DefaultValue = configDefaultValue(s.cfg, f.Key)
 		}
@@ -101,14 +101,14 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 				Name:  "settings.filter_allow",
 				Type:  "text",
 				Hint:  "settings.filter_allow_hint",
-				Value: allowVal,
+				Value: &allowVal,
 			},
 			{
 				Key:   "filter_deny",
 				Name:  "settings.filter_deny",
 				Type:  "text",
 				Hint:  "settings.filter_deny_hint",
-				Value: denyVal,
+				Value: &denyVal,
 			},
 		},
 	}
