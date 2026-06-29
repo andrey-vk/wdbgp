@@ -4,10 +4,11 @@ import { useI18n } from 'vue-i18n'
 import apiClient from '@/api/client'
 import Chart from 'primevue/chart'
 import Tag from 'primevue/tag'
+import type { DashboardData, UserHistoryPoint, FeedHistoryPoint, FeedItem, ChartTooltipItem } from '@/types/dashboard'
 
 const { t } = useI18n()
 const loading = ref(true)
-const data = ref<any>(null)
+const data = ref<DashboardData | null>(null)
 
 onMounted(async () => {
   const resp = await apiClient.get('/admin/dashboard')
@@ -34,13 +35,13 @@ const stats = computed(() => {
 // User history chart (stacked area)
 const userChartData = computed(() => {
   if (!data.value?.user_history?.length) return null
-  const labels = data.value.user_history.map((h: any) => h.time.substring(0, 16).replace('T', ' '))
+  const labels = data.value.user_history.map((h: UserHistoryPoint) => h.time.substring(0, 16).replace('T', ' '))
   return {
     labels,
     datasets: [
-      { label: t('dashboard.users_disabled'), data: data.value.user_history.map((h: any) => h.disabled), backgroundColor: '#f59e0b', borderColor: '#f59e0b', fill: true, tension: 0, pointRadius: 0 },
-      { label: t('dashboard.users_connected'), data: data.value.user_history.map((h: any) => h.connected), backgroundColor: '#10b981', borderColor: '#10b981', fill: true, tension: 0, pointRadius: 0 },
-      { label: t('dashboard.users_disconnected'), data: data.value.user_history.map((h: any) => h.total - h.disabled - h.connected), backgroundColor: '#6b7280', borderColor: '#6b7280', fill: true, tension: 0, pointRadius: 0 },
+      { label: t('dashboard.users_disabled'), data: data.value.user_history.map((h: UserHistoryPoint) => h.disabled), backgroundColor: '#f59e0b', borderColor: '#f59e0b', fill: true, tension: 0, pointRadius: 0 },
+      { label: t('dashboard.users_connected'), data: data.value.user_history.map((h: UserHistoryPoint) => h.connected), backgroundColor: '#10b981', borderColor: '#10b981', fill: true, tension: 0, pointRadius: 0 },
+      { label: t('dashboard.users_disconnected'), data: data.value.user_history.map((h: UserHistoryPoint) => h.total - h.disabled - h.connected), backgroundColor: '#6b7280', borderColor: '#6b7280', fill: true, tension: 0, pointRadius: 0 },
     ],
   }
 })
@@ -54,8 +55,8 @@ const userChartOptions = {
     legend: { position: 'bottom' },
     tooltip: {
       callbacks: {
-        footer: (items: any[]) => {
-          const sum = items.reduce((s: number, item: any) => s + (item.raw || 0), 0)
+        footer: (items: ChartTooltipItem[]) => {
+          const sum = items.reduce((s: number, item: ChartTooltipItem) => s + (item.raw || 0), 0)
           return 'Total: ' + sum
         },
       },
@@ -65,21 +66,22 @@ const userChartOptions = {
 
 // Feed history chart (stacked area)
 const feedChartData = computed(() => {
-  if (!data.value?.feed_history?.length) return null
+  const feedHistory = data.value?.feed_history
+  if (!feedHistory?.length) return null
   // Collect all feed IDs
   const feedIds = new Set<number>()
-  data.value.feed_history.forEach((h: any) => {
+  feedHistory.forEach((h: FeedHistoryPoint) => {
     if (h.prefixes) Object.keys(h.prefixes).forEach(id => feedIds.add(parseInt(id)))
   })
-  const labels = data.value.feed_history.map((h: any) => h.time.substring(0, 16).replace('T', ' '))
+  const labels = feedHistory.map((h: FeedHistoryPoint) => h.time.substring(0, 16).replace('T', ' '))
   const feedNames = new Map<number, string>()
-  if (data.value.feeds?.items) {
-    data.value.feeds.items.forEach((f: any, i: number) => feedNames.set(i + 1, f.name))
+  if (data.value?.feeds?.items) {
+    data.value.feeds.items.forEach((f: FeedItem, i: number) => feedNames.set(i + 1, f.name))
   }
   const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16']
   const datasets = Array.from(feedIds).map((id, i) => ({
     label: feedNames.get(id) || 'Feed #' + id,
-    data: data.value.feed_history.map((h: any) => h.prefixes?.[id] || 0),
+    data: feedHistory.map((h: FeedHistoryPoint) => h.prefixes?.[id] || 0),
     backgroundColor: colors[i % colors.length] + '80',
     borderColor: colors[i % colors.length],
     fill: true,
@@ -100,8 +102,8 @@ const feedChartOptions = {
       bodyMaxHeight: 200,
       bodyOverflow: 'auto',
       callbacks: {
-        footer: (items: any[]) => {
-          const sum = items.reduce((s: number, item: any) => s + (item.raw || 0), 0)
+        footer: (items: ChartTooltipItem[]) => {
+          const sum = items.reduce((s: number, item: ChartTooltipItem) => s + (item.raw || 0), 0)
           return 'Total: ' + sum
         },
       },
