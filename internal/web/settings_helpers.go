@@ -69,15 +69,6 @@ func allSettings() []settingField {
 	}
 }
 
-func allSettingKeys() []string {
-	settings := allSettings()
-	keys := make([]string, len(settings))
-	for i, s := range settings {
-		keys[i] = s.Key
-	}
-	return keys
-}
-
 func splitCIDRs(value string) []string {
 	return strings.FieldsFunc(value, func(r rune) bool {
 		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '

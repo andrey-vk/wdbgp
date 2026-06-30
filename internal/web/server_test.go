@@ -727,8 +727,19 @@ func TestSettingsNullValueDeletesOverride(t *testing.T) {
 		}
 	}()
 
-	s := testSettings()
-	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	s, err := settings.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.AdminPassword.Set(context.Background(), "admin")
+	s.SessionSecret.Set(context.Background(), "test-secret")
+	s.AdminCookieSecure.Set(context.Background(), "true")
+	s.RateLimitLogin.Set(context.Background(), 0)
+	s.RateLimitAdmin.Set(context.Background(), 0)
+	s.SessionMaxAge.Set(context.Background(), 28800)
+	s.StatusAllowed.Set(context.Background(), "0.0.0.0/0")
+
+	handler := New(s, db, feeds.NewSyncer(db, s), &fakeBGP{}).Handler()
 	cookie := adminCookie(s)
 
 	// 1. Save a setting with a non-null value.

@@ -14,12 +14,3 @@ func countEnabledFeeds(feeds []store.Feed) int {
 	return count
 }
 
-func fieldByKey(key string) *settingField {
-	for _, f := range allSettings() {
-		if f.Key == key {
-			return &f
-		}
-	}
-	return nil
-}
-

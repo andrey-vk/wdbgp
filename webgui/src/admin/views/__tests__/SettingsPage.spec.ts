@@ -4,6 +4,7 @@ import { createI18n } from 'vue-i18n'
 import PrimeVue from 'primevue/config'
 import { z } from 'zod'
 import { settingsSchema } from '@/types/settings'
+import apiClient from '@/api/client'
 
 // ---------------------------------------------------------------------------
 // Build a valid settings response for ALL 40+ fields in settingsSchema
@@ -147,5 +148,49 @@ describe('SettingsPage', () => {
     const parsed = partialResponseSchema.parse(response)
     expect(parsed.route_filters.filter_allow).toBe('')
     expect(parsed.settings.port?.default_value).toBe(8080)
+  })
+
+  it('sends typed values in PUT body', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    // Directly set values and trigger save
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    vm.values = {
+      port: 9090,
+      metrics_enabled: true,
+      default_language: 'en',
+      filter_allow: '',
+      filter_deny: '',
+    }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    await vm.handleSave()
+
+    // Verify typed values were sent
+    const body = putMock.mock.calls[0][1] as Record<string, unknown>
+    expect(body.port).toBe(9090)
+    expect(typeof body.port).toBe('number')
+    expect(body.metrics_enabled).toBe(true)
+    expect(typeof body.metrics_enabled).toBe('boolean')
+    expect(body.default_language).toBe('en')
+    expect(typeof body.default_language).toBe('string')
   })
 })

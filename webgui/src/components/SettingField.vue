@@ -47,8 +47,10 @@ function formatDisplayValue(val: boolean | number | string, type: SettingMeta['t
   }
 }
 
-function onChange(val: boolean | number | string) {
-  emit('update:value', val)
+function onChange(val: boolean | number | string | undefined) {
+  if (val !== undefined) {
+    emit('update:value', val)
+  }
 }
 
 function revert() {

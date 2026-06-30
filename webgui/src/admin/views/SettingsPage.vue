@@ -98,14 +98,9 @@ onBeforeUnmount(() => {
 async function handleSave() {
   saved.value = false
   saving.value = true
-  const body: Record<string, string | null> = {}
+  const body: Record<string, boolean | number | string | null> = {}
   for (const [key, val] of Object.entries(values.value)) {
-    if (envOverrides.value[key]) continue
-    if (val == null) {
-      body[key] = null
-    } else {
-      body[key] = String(val)
-    }
+    body[key] = val  // send as-is: null, boolean, number, or string
   }
   body.filter_allow = filterAllow.value
   body.filter_deny = filterDeny.value
