@@ -112,7 +112,7 @@ func (s *Server) apiDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// History
-	days := s.metricsHistoryDays
+	days := s.settings.MetricsHistoryDays.Get()
 	if days <= 0 {
 		days = 14
 	}
@@ -153,7 +153,7 @@ func (s *Server) apiDashboard(w http.ResponseWriter, r *http.Request) {
 		FeedHistory:    feedHistory,
 		Modes:          modeItems,
 		Uptime:         time.Since(s.startTime).Seconds(),
-		MetricsEnabled: s.metricsEnabled,
+		MetricsEnabled: s.settings.MetricsEnabled.Get(),
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -161,7 +161,7 @@ func (s *Server) apiDashboard(w http.ResponseWriter, r *http.Request) {
 
 // recordFeedSnapshot saves a feed prefix count snapshot, only when changed.
 func (s *Server) recordFeedSnapshot(ctx context.Context) {
-	if !s.metricsEnabled {
+	if !s.settings.MetricsEnabled.Get() {
 		return
 	}
 	feeds, err := s.store.Feeds(ctx, false)

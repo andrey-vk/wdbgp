@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 
 	_ "modernc.org/sqlite"
 )
@@ -21,15 +21,15 @@ func TestBackupConfigDefaults(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.sqlite3")
 	t.Setenv("WDBGP_DB", dbPath)
 
-	cfg, err := config.Load()
+	s, err := settings.New(settings.NewTestStore())
 	if err != nil {
-		t.Fatalf("Load() error: %v", err)
+		t.Fatalf("settings.New() error: %v", err)
 	}
-	if !cfg.BackupEnabled {
+	if !s.BackupEnabled.Get() {
 		t.Error("BackupEnabled default should be true")
 	}
-	if cfg.BackupDir != tmpDir {
-		t.Errorf("BackupDir = %q, want %q", cfg.BackupDir, tmpDir)
+	if s.BackupDir.Get() != tmpDir {
+		t.Errorf("BackupDir = %q, want %q", s.BackupDir.Get(), tmpDir)
 	}
 }
 
@@ -40,7 +40,7 @@ func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
 
 	// Step 1: Create a pre-existing DB with user data.
 	{
-		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		s, err := Open(dbPath, false, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -71,10 +71,7 @@ func TestBackupCreatedWhenMigrationsPending(t *testing.T) {
 	}
 
 	// Step 3: Reopen with backup enabled — migrations are pending → backup created.
-	s, err := Open(dbPath, config.Config{
-		BackupEnabled: true,
-		BackupDir:     backupDir,
-	})
+	s, err := Open(dbPath, true, backupDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +120,7 @@ func TestBackupNotCreatedWhenUpToDate(t *testing.T) {
 
 	// Step 1: Create a DB with migrations applied (disable backup so no backup now).
 	{
-		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		s, err := Open(dbPath, false, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -132,10 +129,7 @@ func TestBackupNotCreatedWhenUpToDate(t *testing.T) {
 
 	// Step 2: Reopen with backup enabled — all migrations already applied,
 	// so the "len(applied) < len(migrations)" check is false → no backup.
-	s, err := Open(dbPath, config.Config{
-		BackupEnabled: true,
-		BackupDir:     backupDir,
-	})
+	s, err := Open(dbPath, true, backupDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +155,7 @@ func TestBackupNotCreatedWhenDisabled(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.sqlite3")
 	backupDir := filepath.Join(tmpDir, "backups")
 
-	s, err := Open(dbPath, config.Config{
-		BackupEnabled: false,
-		BackupDir:     backupDir,
-	})
+	s, err := Open(dbPath, false, backupDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,10 +181,7 @@ func TestBackupNotCreatedOnFreshInstall(t *testing.T) {
 	backupDir := filepath.Join(tmpDir, "backups")
 
 	// Fresh install — no existing data, no backups needed.
-	s, err := Open(dbPath, config.Config{
-		BackupEnabled: true,
-		BackupDir:     backupDir,
-	})
+	s, err := Open(dbPath, true, backupDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +208,7 @@ func TestBackupDirAutoCreated(t *testing.T) {
 
 	// Step 1: Create a DB with all migrations applied.
 	{
-		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		s, err := Open(dbPath, false, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -243,10 +231,7 @@ func TestBackupDirAutoCreated(t *testing.T) {
 
 	// Step 3: Reopen with backup enabled + non-existent backup dir.
 	// Pending migrations trigger backup → dir must be auto-created.
-	s, err := Open(dbPath, config.Config{
-		BackupEnabled: true,
-		BackupDir:     backupDir,
-	})
+	s, err := Open(dbPath, true, backupDir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,11 +265,11 @@ func TestAutoRestoreEnvDefaultFalse(t *testing.T) {
 	t.Setenv("WDBGP_AUTO_RESTORE_ENABLED", "")
 	tmpDir := t.TempDir()
 	t.Setenv("WDBGP_DB", filepath.Join(tmpDir, "test.sqlite3"))
-	cfg, err := config.Load()
+	s, err := settings.New(settings.NewTestStore())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AutoRestoreEnabled {
+	if s.AutoRestoreEnabled.Get() {
 		t.Error("AutoRestoreEnabled should be false when env is unset")
 	}
 }
@@ -297,7 +282,7 @@ func TestRestoreFromBackup(t *testing.T) {
 
 	// Step 1: Create a DB, add a user, close.
 	{
-		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		s, err := Open(dbPath, false, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -353,10 +338,7 @@ func TestRestoreFromBackup(t *testing.T) {
 	}
 
 	// Step 4: Reopen with auto-restore enabled.
-	s, err := Open(dbPath, config.Config{
-		AutoRestoreEnabled: true,
-		BackupDir:          backupDir,
-	})
+	s, err := Open(dbPath, false, backupDir, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +378,7 @@ func TestDegradedWhenAutoRestoreDisabled(t *testing.T) {
 	ctx := context.Background()
 
 	{
-		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		s, err := Open(dbPath, false, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -425,7 +407,7 @@ func TestDegradedWhenAutoRestoreDisabled(t *testing.T) {
 		db.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
-	s, err := Open(dbPath, config.Config{})
+	s, err := Open(dbPath, false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +434,7 @@ func TestDegradedWhenNoBackupFound(t *testing.T) {
 	ctx := context.Background()
 
 	{
-		s, err := Open(dbPath, config.Config{BackupEnabled: false})
+		s, err := Open(dbPath, false, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -481,10 +463,7 @@ func TestDegradedWhenNoBackupFound(t *testing.T) {
 		db.Close() //nolint:errcheck,gosec // test cleanup
 	}
 
-	s, err := Open(dbPath, config.Config{
-		AutoRestoreEnabled: true,
-		BackupDir:          backupDir,
-	})
+	s, err := Open(dbPath, false, backupDir, true)
 	if err != nil {
 		t.Fatal(err)
 	}

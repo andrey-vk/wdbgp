@@ -5,14 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
-
 	_ "modernc.org/sqlite"
 )
 
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"), config.Config{})
+	s, err := Open(filepath.Join(t.TempDir(), "test.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

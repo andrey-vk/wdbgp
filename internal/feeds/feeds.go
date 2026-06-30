@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/retry"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -66,8 +66,8 @@ var errFeedChanged = errors.New("feed changed during synchronization")
 
 const ipRangesURL = "https://github.com/antonme/ipranges"
 
-func NewSyncer(s *store.Store, cfg config.Config) *Syncer {
-	timeout := cfg.JSTimeout
+func NewSyncer(s *store.Store, st *settings.Settings) *Syncer {
+	timeout := time.Duration(st.JSTimeout.Get()) * time.Second
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
@@ -76,12 +76,12 @@ func NewSyncer(s *store.Store, cfg config.Config) *Syncer {
 		Client:        newHTTPClient(timeout),
 		ScriptTimeout: timeout,
 		Limits: AdapterLimits{
-			MaxSourceBytes:   ifZero(cfg.JSMaxSourceBytes, 1<<20),
-			MaxResponseBytes: ifZero(cfg.JSMaxResponseBytes, 16<<20),
-			MaxTotalBytes:    ifZero(cfg.JSMaxTotalBytes, 64<<20),
-			MaxEntries:       ifZero(cfg.JSMaxEntries, 1_000_000),
-			MaxRequests:      ifZero(cfg.JSMaxRequests, 200),
-			MaxCallStack:     ifZero(cfg.JSMaxCallStack, 1_000),
+			MaxSourceBytes:   ifZero(st.JSMaxSourceBytes.Get(), 1<<20),
+			MaxResponseBytes: ifZero(st.JSMaxResponseBytes.Get(), 16<<20),
+			MaxTotalBytes:    ifZero(st.JSMaxTotalBytes.Get(), 64<<20),
+			MaxEntries:       ifZero(st.JSMaxEntries.Get(), 1_000_000),
+			MaxRequests:      ifZero(st.JSMaxRequests.Get(), 200),
+			MaxCallStack:     ifZero(st.JSMaxCallStack.Get(), 1_000),
 		},
 		feedLocks: make(map[int64]*sync.Mutex),
 	}

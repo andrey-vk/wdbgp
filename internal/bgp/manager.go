@@ -9,14 +9,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/logging"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
 // Manager manages BGP peers and route announcements using our custom Speaker.
 type Manager struct {
-	cfg         config.Config
+	cfg         *settings.Settings
 	store       *store.Store
 	mu          sync.Mutex
 	speaker     *Speaker
@@ -25,10 +25,10 @@ type Manager struct {
 	peerRoutes  map[string][]Route    // per-peer last announced routes (keyed by peer address string)
 }
 
-func NewManager(cfg config.Config, s *store.Store) *Manager {
+func NewManager(s *settings.Settings, db *store.Store) *Manager {
 	return &Manager{
-		cfg:         cfg,
-		store:       s,
+		cfg:         s,
+		store:       db,
 		installed:   map[string]instPrefix{},
 		peerConfigs: []store.User{},
 		peerRoutes:  map[string][]Route{},
@@ -38,9 +38,9 @@ func NewManager(cfg config.Config, s *store.Store) *Manager {
 func (m *Manager) Start(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
 	logger.Info("starting BGP manager",
-		"asn", m.cfg.LocalASN,
-		"router_id", m.cfg.RouterID,
-		"bgp_port", m.cfg.BGPListenPort,
+		"asn", m.cfg.LocalASN.Get(),
+		"router_id", m.cfg.RouterID.Get(),
+		"bgp_port", m.cfg.BGPPort.Get(),
 	)
 
 	m.mu.Lock()
@@ -92,26 +92,26 @@ func (m *Manager) ReloadPeers(ctx context.Context) error {
 func (m *Manager) startLocked(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
 
-	routerID, err := netip.ParseAddr(m.cfg.RouterID)
+	routerID, err := netip.ParseAddr(m.cfg.RouterID.Get())
 	if err != nil {
-		return fmt.Errorf("parse router ID %q: %w", m.cfg.RouterID, err)
+		return fmt.Errorf("parse router ID %q: %w", m.cfg.RouterID.Get(), err)
 	}
-	localAddr, err := netip.ParseAddr(m.cfg.LocalAddressV4)
+	localAddr, err := netip.ParseAddr(m.cfg.LocalAddressV4.Get())
 	if err != nil {
-		return fmt.Errorf("parse local address %q: %w", m.cfg.LocalAddressV4, err)
+		return fmt.Errorf("parse local address %q: %w", m.cfg.LocalAddressV4.Get(), err)
 	}
 	localAddrV6 := netip.Addr{}
-	if m.cfg.LocalAddressV6 != "" {
-		localAddrV6, err = netip.ParseAddr(m.cfg.LocalAddressV6)
+	if m.cfg.LocalAddressV6.Get() != "" {
+		localAddrV6, err = netip.ParseAddr(m.cfg.LocalAddressV6.Get())
 		if err != nil {
-			return fmt.Errorf("parse local IPv6 address %q: %w", m.cfg.LocalAddressV6, err)
+			return fmt.Errorf("parse local IPv6 address %q: %w", m.cfg.LocalAddressV6.Get(), err)
 		}
 	}
 
 	speaker := NewSpeaker(SpeakerConfig{
-		ASN:       m.cfg.LocalASN,
+		ASN:       uint32(m.cfg.LocalASN.Get()),
 		RouterID:  routerID,
-		Port:      m.cfg.BGPListenPort,
+		Port:      int32(m.cfg.BGPPort.Get()),
 		LocalAddr: localAddr,
 	}, logger.Logger)
 
@@ -154,7 +154,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		peerConfigs = append(peerConfigs, PeerConfig{
 			ID:        u.ID,
 			Address:   addr,
-			Port:      peerPort(u.PeerIP, m.cfg.ActiveDial && u.ActiveDial),
+			Port:      peerPort(u.PeerIP, m.cfg.ActiveDial.Get() && u.ActiveDial),
 			ASN:       u.PeerASN,
 			Password:  u.BGPPassword,
 			Name:      u.Name,
@@ -331,15 +331,15 @@ func (m *Manager) PeerStates(ctx context.Context) (map[string]string, error) {
 // Returns an error if any peer is invalid (e.g., IPv6 peer with no LocalAddressV6).
 func (m *Manager) buildPeerConfigs() ([]PeerConfig, error) {
 	var configs []PeerConfig
-	localAddr, err := netip.ParseAddr(m.cfg.LocalAddressV4)
+	localAddr, err := netip.ParseAddr(m.cfg.LocalAddressV4.Get())
 	if err != nil {
 		return configs, err
 	}
 	var localAddrV6 netip.Addr
-	if m.cfg.LocalAddressV6 != "" {
-		localAddrV6, err = netip.ParseAddr(m.cfg.LocalAddressV6)
+	if m.cfg.LocalAddressV6.Get() != "" {
+		localAddrV6, err = netip.ParseAddr(m.cfg.LocalAddressV6.Get())
 		if err != nil {
-			return configs, fmt.Errorf("parse local IPv6 address %q: %w", m.cfg.LocalAddressV6, err)
+			return configs, fmt.Errorf("parse local IPv6 address %q: %w", m.cfg.LocalAddressV6.Get(), err)
 		}
 	}
 	for _, u := range m.peerConfigs {
@@ -356,7 +356,7 @@ func (m *Manager) buildPeerConfigs() ([]PeerConfig, error) {
 		configs = append(configs, PeerConfig{
 			ID:        u.ID,
 			Address:   addr,
-			Port:      peerPort(u.PeerIP, m.cfg.ActiveDial && u.ActiveDial),
+			Port:      peerPort(u.PeerIP, m.cfg.ActiveDial.Get() && u.ActiveDial),
 			ASN:       u.PeerASN,
 			Password:  u.BGPPassword,
 			Name:      u.Name,
@@ -380,7 +380,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("parse desired prefix %q: %w", rawPrefix, err)
 		}
-		if prefix.Addr().Is6() && m.cfg.LocalAddressV6 == "" {
+		if prefix.Addr().Is6() && m.cfg.LocalAddressV6.Get() == "" {
 			delete(desired, rawPrefix)
 		}
 	}

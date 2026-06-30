@@ -10,13 +10,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
 func setupUserTestStore(t *testing.T) *store.Store {
 	t.Helper()
-	s, err := store.Open(":memory:", config.Config{})
+	s, err := store.Open(":memory:", false, "", false)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -33,7 +32,7 @@ func setupUserTestServer(t *testing.T) (*Server, *store.Store, *fakeBGP) {
 	st := setupUserTestStore(t)
 	bgp := &fakeBGP{}
 	srv := &Server{
-		cfg:   testConfig(),
+		settings: testSettings(),
 		store: st,
 		bgp:   bgp,
 	}
@@ -1145,14 +1144,14 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 		t.Fatalf("add user: %v", err)
 	}
 
-	cfg := testConfig()
+	s := testSettings()
 
 	// 6. Save selections for both via admin endpoint
 	body := fmt.Sprintf(`{"categories":[{"category":"Cat1","checked":true},{"category":"Cat2","checked":true}],"services":[{"category":"Cat1","service":"Svc1","checked":true},{"category":"Cat2","service":"Svc2","checked":true}],"mode_id":%d}`, modeID)
 	req := httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d/selections", userID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", fmt.Sprintf("%d", userID))
-	req.AddCookie(adminCookie(cfg))
+	req.AddCookie(adminCookie(s))
 	w := httptest.NewRecorder()
 	srv.apiAdminUserSaveSelections(w, req)
 	if w.Code != http.StatusOK {
@@ -1169,7 +1168,7 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d/selections", userID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", fmt.Sprintf("%d", userID))
-	req.AddCookie(adminCookie(cfg))
+	req.AddCookie(adminCookie(s))
 	w = httptest.NewRecorder()
 	srv.apiAdminUserSaveSelections(w, req)
 	if w.Code != http.StatusOK {

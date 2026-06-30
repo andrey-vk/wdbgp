@@ -19,7 +19,7 @@ type apiResponse struct {
 
 // adminCookieSecure determines whether admin cookies should have the Secure flag.
 func (s *Server) adminCookieSecure(r *http.Request) bool {
-	switch s.cfg.AdminCookieSecure {
+	switch s.settings.AdminCookieSecure.Get() {
 	case "true":
 		return true
 	case "false":
@@ -28,7 +28,7 @@ func (s *Server) adminCookieSecure(r *http.Request) bool {
 	if r.TLS != nil {
 		return true
 	}
-	if s.cfg.TrustProxyHeader && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+	if s.settings.TrustProxyHeaders.Get() && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 		return true
 	}
 	return false
@@ -61,7 +61,7 @@ func (s *Server) apiAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !hmac.Equal([]byte(body.Password), []byte(s.cfg.AdminPassword)) {
+	if !hmac.Equal([]byte(body.Password), []byte(s.settings.AdminPassword.Get())) {
 		s.logAdminAction(r, "API_LOGIN_FAILED", "Invalid password")
 		writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "Invalid password"})
 		return
@@ -69,8 +69,8 @@ func (s *Server) apiAdminLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Create session cookie (same token format as legacy)
 	maxAge := 0
-	if s.cfg.SessionMaxAge > 0 {
-		maxAge = s.cfg.SessionMaxAge
+	if s.settings.SessionMaxAge.Get() > 0 {
+		maxAge = s.settings.SessionMaxAge.Get()
 	}
 
 	var expires time.Time
@@ -80,7 +80,7 @@ func (s *Server) apiAdminLogin(w http.ResponseWriter, r *http.Request) {
 
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime
 		Name:     "wdbgp_admin",
-		Value:    sessionToken(s.cfg.SessionSecret),
+		Value:    sessionToken(s.settings.SessionSecret.Get()),
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   s.adminCookieSecure(r),
@@ -119,11 +119,11 @@ func (s *Server) apiAdminLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiRequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie("wdbgp_admin")
-		sessionMaxAge := time.Duration(s.cfg.SessionMaxAge) * time.Second
+		sessionMaxAge := time.Duration(s.settings.SessionMaxAge.Get()) * time.Second
 		if sessionMaxAge <= 0 {
 			sessionMaxAge = 8 * time.Hour
 		}
-		if err != nil || !validSession(s.cfg.SessionSecret, cookie.Value, sessionMaxAge) {
+		if err != nil || !validSession(s.settings.SessionSecret.Get(), cookie.Value, sessionMaxAge) {
 			writeJSON(w, http.StatusUnauthorized, apiResponse{OK: false, Error: "unauthorized"})
 			return
 		}
@@ -136,8 +136,8 @@ func (s *Server) apiRequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 				sessionTime := time.Unix(timestamp, 0)
 				if time.Since(sessionTime) > time.Hour && time.Since(sessionTime) < sessionMaxAge-time.Hour {
 					maxAge := 0
-					if s.cfg.SessionMaxAge > 0 {
-						maxAge = s.cfg.SessionMaxAge
+					if s.settings.SessionMaxAge.Get() > 0 {
+						maxAge = s.settings.SessionMaxAge.Get()
 					}
 
 					var expires time.Time
@@ -147,7 +147,7 @@ func (s *Server) apiRequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 
 					http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime
 						Name:     "wdbgp_admin",
-						Value:    sessionToken(s.cfg.SessionSecret),
+						Value:    sessionToken(s.settings.SessionSecret.Get()),
 						Path:     "/",
 						HttpOnly: true,
 						Secure:   s.adminCookieSecure(r),

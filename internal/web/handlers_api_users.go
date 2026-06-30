@@ -234,11 +234,11 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		user.CatalogModeID = store.DefaultCatalogModeID
 	}
 	if user.WebAuth == "" {
-		user.WebAuth = s.cfg.DefaultWebAuth
+		user.WebAuth = s.settings.DefaultWebAuth.Get()
 	}
 
 	// Reject dynamic peers when feature flag is off
-	if !s.cfg.AllowDynamicPeers && (user.PeerIP == "0.0.0.0" || user.PeerIP == "::") {
+	if !s.settings.AllowDynamicPeers.Get() && (user.PeerIP == "0.0.0.0" || user.PeerIP == "::") {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Dynamic peers are disabled"})
 		return
 	}
@@ -435,11 +435,11 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		current.CatalogModeID = store.DefaultCatalogModeID
 	}
 	if current.WebAuth == "" {
-		current.WebAuth = s.cfg.DefaultWebAuth
+		current.WebAuth = s.settings.DefaultWebAuth.Get()
 	}
 
 	// Reject dynamic peers when feature flag is off
-	if !s.cfg.AllowDynamicPeers && (current.PeerIP == "0.0.0.0" || current.PeerIP == "::") {
+	if !s.settings.AllowDynamicPeers.Get() && (current.PeerIP == "0.0.0.0" || current.PeerIP == "::") {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Dynamic peers are disabled"})
 		return
 	}
@@ -562,7 +562,7 @@ func (s *Server) apiUsersDelete(w http.ResponseWriter, r *http.Request) {
 
 // recordUserSnapshot saves user metric snapshot if anything changed.
 func (s *Server) recordUserSnapshot(ctx context.Context) {
-	if !s.metricsEnabled {
+	if !s.settings.MetricsEnabled.Get() {
 		return
 	}
 	users, err := s.store.Users(ctx, false)

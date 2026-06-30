@@ -2,12 +2,14 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -35,7 +37,6 @@ type settingSectionJSON struct {
 // apiSettingsGet handles GET /api/admin/settings.
 func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	dbSettings, _ := s.store.GetAllSettings(ctx) //nolint:errcheck // best-effort
 	all := allSettings()
 
 	sectionMap := make(map[string][]settingFieldJSON)
@@ -64,14 +65,20 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 			fj.Constraint = "settings.constraint_bool"
 		}
 
-		// Populate value
+		// Populate value from settings
 		if v := os.Getenv(f.EnvVar); v != "" {
 			fj.Value = &v
 			fj.EnvOverride = true
-		} else if v, ok := dbSettings[f.Key]; ok {
-			fj.Value = &v
 		} else {
-			fj.DefaultValue = configDefaultValue(s.cfg, f.Key)
+			// Use the settings package's JSON to get DB value or default
+			sj := s.settings.JSON()
+			fieldVal, fieldDef, fieldEnv := getSettingFieldValue(sj, f.Key)
+			if fieldVal != nil {
+				fj.Value = fieldVal
+			} else {
+				fj.DefaultValue = fieldDef
+			}
+			fj.EnvOverride = fieldEnv
 		}
 
 		if _, ok := sectionMap[f.Section]; !ok {
@@ -119,6 +126,103 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// getSettingFieldValue extracts value, default, and env override from SettingsJSON.
+func getSettingFieldValue(sj settings.SettingsJSON, key string) (*string, string, bool) {
+	// Use reflection-like approach via the JSON struct fields
+	switch key {
+	case "default_language":
+		return valToPtr(sj.DefaultLanguage)
+	case "session_max_age":
+		return intValToPtr(sj.SessionMaxAge)
+	case "admin_cookie_secure":
+		return valToPtr(sj.AdminCookieSecure)
+	case "trust_proxy_headers":
+		return boolValToPtr(sj.TrustProxyHeaders)
+	case "security_headers":
+		return boolValToPtr(sj.SecurityHeaders)
+	case "default_web_auth":
+		return valToPtr(sj.DefaultWebAuth)
+	case "rate_limit_login":
+		return intValToPtr(sj.RateLimitLogin)
+	case "rate_limit_admin":
+		return intValToPtr(sj.RateLimitAdmin)
+	case "log_level":
+		return valToPtr(sj.LogLevel)
+	case "log_format":
+		return valToPtr(sj.LogFormat)
+	case "sync_interval":
+		return intValToPtr(sj.SyncInterval)
+	case "js_timeout":
+		return intValToPtr(sj.JSTimeout)
+	case "js_max_source":
+		return intValToPtr(sj.JSMaxSourceBytes)
+	case "js_max_response":
+		return intValToPtr(sj.JSMaxResponseBytes)
+	case "js_max_total":
+		return intValToPtr(sj.JSMaxTotalBytes)
+	case "js_max_entries":
+		return intValToPtr(sj.JSMaxEntries)
+	case "js_max_requests":
+		return intValToPtr(sj.JSMaxRequests)
+	case "js_max_call_stack":
+		return intValToPtr(sj.JSMaxCallStack)
+	case "bgp_port":
+		return intValToPtr(sj.BGPPort)
+	case "local_asn":
+		return intValToPtr(sj.LocalASN)
+	case "router_id":
+		return valToPtr(sj.RouterID)
+	case "local_address_v4":
+		return valToPtr(sj.LocalAddressV4)
+	case "local_address_v6":
+		return valToPtr(sj.LocalAddressV6)
+	case "host":
+		return valToPtr(sj.Host)
+	case "port":
+		return intValToPtr(sj.Port)
+	case "adapter_backup_dir":
+		return valToPtr(sj.AdapterBackupDir)
+	case "adapter_backup_max":
+		return intValToPtr(sj.AdapterBackupMax)
+	case "status_allowed":
+		return valToPtr(sj.StatusAllowed)
+	case "status_token":
+		return valToPtr(sj.StatusToken)
+	case "metrics_enabled":
+		return boolValToPtr(sj.MetricsEnabled)
+	case "metrics_history_days":
+		return intValToPtr(sj.MetricsHistoryDays)
+	}
+	return nil, "", false
+}
+
+func valToPtr[T any](j settings.SettingJSON[T]) (*string, string, bool) {
+	defVal := fmt.Sprintf("%v", j.DefaultValue)
+	if j.Value != nil {
+		v := fmt.Sprintf("%v", *j.Value)
+		return &v, defVal, j.EnvOverride
+	}
+	return nil, defVal, j.EnvOverride
+}
+
+func intValToPtr(j settings.SettingJSON[int]) (*string, string, bool) {
+	defVal := strconv.Itoa(j.DefaultValue)
+	if j.Value != nil {
+		v := strconv.Itoa(*j.Value)
+		return &v, defVal, j.EnvOverride
+	}
+	return nil, defVal, j.EnvOverride
+}
+
+func boolValToPtr(j settings.SettingJSON[bool]) (*string, string, bool) {
+	defVal := boolStr(j.DefaultValue)
+	if j.Value != nil {
+		v := boolStr(*j.Value)
+		return &v, defVal, j.EnvOverride
+	}
+	return nil, defVal, j.EnvOverride
+}
+
 // apiSettingsPut handles PUT /api/admin/settings.
 func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	var body map[string]*string
@@ -146,7 +250,7 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// Skip env-overridden fields
-		if isEnvOverridden(f.EnvVar) {
+		if os.Getenv(f.EnvVar) != "" {
 			continue
 		}
 
@@ -179,8 +283,6 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save settings"})
 		return
 	}
-
-	s.reloadRuntimeSettings(r.Context())
 
 	// Also save global route filters if provided
 	if allowPtr, ok := body["filter_allow"]; ok {

@@ -94,7 +94,7 @@ func (s *Server) apiAdaptersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	if err := feeds.ValidateAdapterSource(adapter.Source, s.cfg.JSMaxSourceBytes); err != nil {
+	if err := feeds.ValidateAdapterSource(adapter.Source, s.settings.JSMaxSourceBytes.Get()); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
@@ -143,12 +143,12 @@ func (s *Server) apiAdaptersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	if err := feeds.ValidateAdapterSource(update.Source, s.cfg.JSMaxSourceBytes); err != nil {
+	if err := feeds.ValidateAdapterSource(update.Source, s.settings.JSMaxSourceBytes.Get()); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
 	if old, err := s.store.FeedAdapter(r.Context(), id); err == nil && !old.BuiltIn {
-		backupAdapterSource(old, s.cfg.AdapterBackupDir, s.cfg.AdapterBackupMax)
+		backupAdapterSource(old, s.settings.AdapterBackupDir.Get(), s.settings.AdapterBackupMax.Get())
 	}
 	if err := s.store.UpdateFeedAdapter(r.Context(), update); err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
@@ -177,7 +177,7 @@ func (s *Server) apiAdaptersDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Built-in adapters cannot be deleted."})
 		return
 	}
-	backupAdapterSource(adapter, s.cfg.AdapterBackupDir, s.cfg.AdapterBackupMax)
+	backupAdapterSource(adapter, s.settings.AdapterBackupDir.Get(), s.settings.AdapterBackupMax.Get())
 	if err := s.store.DeleteFeedAdapter(r.Context(), id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return

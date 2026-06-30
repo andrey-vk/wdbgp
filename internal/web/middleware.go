@@ -16,7 +16,7 @@ import (
 )
 
 func (s *Server) clientIP(r *http.Request) string {
-	if s.cfg.TrustProxyHeader {
+	if s.settings.TrustProxyHeaders.Get() {
 		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
 			return strings.TrimSpace(strings.SplitN(forwarded, ",", 2)[0])
 		}

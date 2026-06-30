@@ -1,19 +1,17 @@
 package web
 
 import (
-	"context"
 	"html/template"
 	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/feeds"
 	"github.com/andrey-vk/wdbgp/internal/logging"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -36,19 +34,17 @@ h1{color:#d32f2f}.lang-switch{margin-top:1rem;font-size:.875rem}</style>
 
 var degradedTemplate = template.Must(template.New("degraded").Parse(degradedTemplateHTML))
 
-func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Server {
-	defaultLang, ok := parseLocale(cfg.DefaultLanguage)
+func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Server {
+	defaultLang, ok := parseLocale(st.DefaultLanguage.Get())
 	if !ok {
 		defaultLang = localeEnglish
 	}
 	server := &Server{
-		cfg: cfg, store: s, syncer: syncer, bgp: bgp,
-		defaultLang:        defaultLang,
-		loginLimiter:       newRateLimiter(time.Minute, cfg.RateLimitLogin), // per minute
-		adminLimiter:       newRateLimiter(time.Minute, cfg.RateLimitAdmin), // per minute
-		startTime:          time.Now(),
-		metricsEnabled:     false,
-		metricsHistoryDays: 14,
+		settings: st, store: s, syncer: syncer, bgp: bgp,
+		defaultLang:  defaultLang,
+		loginLimiter: newRateLimiter(time.Minute, st.RateLimitLogin.Get()), // per minute
+		adminLimiter: newRateLimiter(time.Minute, st.RateLimitAdmin.Get()), // per minute
+		startTime:    time.Now(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
@@ -125,10 +121,10 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 	// Build middleware chain
 	handler := http.Handler(mux)
 	handler = panicRecovery(handler)
-	if cfg.SecurityHeaders {
+	if st.SecurityHeaders.Get() {
 		handler = securityHeaders(handler)
 	}
-	handler = csrfProtection(handler, cfg.SessionSecret)
+	handler = csrfProtection(handler, st.SessionSecret.Get())
 	// Apply admin rate limiting to admin endpoints
 	handler = server.adminRateLimitMiddleware(handler)
 	handler = logging.HTTPMiddleware(handler)
@@ -137,63 +133,17 @@ func New(cfg config.Config, s *store.Store, syncer *feeds.Syncer, bgp BGP) *Serv
 
 	server.handler = handler
 
-	// Load runtime-mutable settings from DB so they match persisted values
-	server.reloadRuntimeSettings(context.Background())
+	// Register OnChange callbacks for runtime-reloadable settings
+	st.RateLimitLogin.OnChange(func(v int) {
+		server.loginLimiter.SetMax(v)
+	})
+	st.RateLimitAdmin.OnChange(func(v int) {
+		server.adminLimiter.SetMax(v)
+	})
 
 	return server
 }
 
-// reloadRuntimeSettings reads runtime-mutable settings from DB and updates the
-// Server fields under mutex. Called once at startup and after every saveSettings.
-func (s *Server) reloadRuntimeSettings(ctx context.Context) {
-	settings, err := s.store.GetAllSettings(ctx)
-	if err != nil {
-		return // keep old values
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// StatusAllowed: comma-separated CIDRs, fall back to config if DB empty
-	if v, ok := settings["status_allowed"]; ok && v != "" {
-		s.statusCIDRs = parseCIDRs(v)
-	} else if len(s.cfg.StatusAllowed) > 0 {
-		s.statusCIDRs = parseCIDRs(strings.Join(s.cfg.StatusAllowed, ","))
-	}
-	// StatusToken: Bearer token for /status, fall back to config if DB empty
-	if v, ok := settings["status_token"]; ok && v != "" {
-		s.statusToken = v
-	} else {
-		s.statusToken = s.cfg.StatusToken
-	}
-	// Rate limits, fall back to config if DB empty
-	if v, ok := settings["rate_limit_login"]; ok && v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			s.loginLimiter.SetMax(n)
-		}
-	} else {
-		s.loginLimiter.SetMax(s.cfg.RateLimitLogin)
-	}
-	if v, ok := settings["rate_limit_admin"]; ok && v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			s.adminLimiter.SetMax(n)
-		}
-	} else {
-		s.adminLimiter.SetMax(s.cfg.RateLimitAdmin)
-	}
-
-	// Metrics collection toggle
-	if v, ok := settings["metrics_enabled"]; ok && v != "" {
-		s.metricsEnabled = v == "true"
-	} else {
-		s.metricsEnabled = false
-	}
-	// Metrics history depth
-	if v, ok := settings["metrics_history_days"]; ok && v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			s.metricsHistoryDays = n
-		}
-	}
-}
 
 // parseCIDRs parses comma-separated CIDR strings into []netip.Prefix.
 func parseCIDRs(s string) []netip.Prefix {

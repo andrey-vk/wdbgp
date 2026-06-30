@@ -10,14 +10,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
+
+func testSettings(t *testing.T, fields map[string]string) *settings.Settings {
+	t.Helper()
+	s, err := settings.New(settings.NewTestStoreWith(fields))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 func TestBuildRouteCarriesCommunities(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
-	}, nil)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
+	}), nil)
 	prefix := netip.MustParsePrefix("149.154.160.0/20")
 	comms := map[string]uint32{"testcat": 10000, "testcat|testsvc": 10001}
 	user := store.User{ID: 7}
@@ -61,9 +71,9 @@ func TestBuildRouteCarriesCommunities(t *testing.T) {
 }
 
 func TestBuildRouteHonorsUserNextHop(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
-	}, nil)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
+	}), nil)
 
 	// IPv4 prefix with user.NextHop override
 	user := store.User{ID: 7, NextHop: "10.0.0.1"}
@@ -99,15 +109,15 @@ func TestBuildRouteHonorsUserNextHop(t *testing.T) {
 }
 
 func TestManagerStartsWithoutPeers(t *testing.T) {
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.2",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_address_v4": "192.0.2.2",
+	}), s)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +128,7 @@ func TestManagerStartsWithoutPeers(t *testing.T) {
 
 func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,10 +152,10 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.1",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_address_v4": "192.0.2.1",
+	}), s)
 	if err := manager.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -167,9 +177,9 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 // =============================================================================
 
 func TestBuildRouteHasUserCommunityButNotOtherUser(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1",
-	}, nil)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1",
+	}), nil)
 	prefix := netip.MustParsePrefix("8.8.8.0/24")
 	comms := map[string]uint32{"cat": 10000, "cat|svc": 10001}
 
@@ -204,9 +214,9 @@ func TestBuildRouteHasUserCommunityButNotOtherUser(t *testing.T) {
 }
 
 func TestBuildRouteIncludesCategoryAndServiceCommunities(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1",
-	}, nil)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1",
+	}), nil)
 	prefix := netip.MustParsePrefix("149.154.160.0/20")
 	comms := map[string]uint32{"Messengers": 20000, "Messengers|Telegram": 20001}
 
@@ -237,9 +247,9 @@ func TestBuildRouteIncludesCategoryAndServiceCommunities(t *testing.T) {
 }
 
 func TestBuildRouteSkipsCommunityForUnknownCategory(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1",
-	}, nil)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1",
+	}), nil)
 	prefix := netip.MustParsePrefix("1.1.1.0/24")
 	// Category "Unknown" has no community in the map
 	comms := map[string]uint32{"Known": 10000}
@@ -260,9 +270,9 @@ func TestBuildRouteSkipsCommunityForUnknownCategory(t *testing.T) {
 }
 
 func TestBuildRouteIPv6NoPanic(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
-	}, nil)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
+	}), nil)
 	prefix := netip.MustParsePrefix("2001:db8::/32")
 	comms := map[string]uint32{"cat": 10000}
 	route, err := manager.buildRoute(prefix, store.User{ID: 1}, "cat", "svc", comms)
@@ -305,7 +315,7 @@ func TestBuildRouteIPv6NoPanic(t *testing.T) {
 
 func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,10 +351,10 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.1",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_address_v4": "192.0.2.1",
+	}), s)
 	if err := manager.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +388,7 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 
 func TestReconcileClearsRoutesOnModeChange(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,10 +412,10 @@ func TestReconcileClearsRoutesOnModeChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.1",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_address_v4": "192.0.2.1",
+	}), s)
 	if err := manager.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +480,7 @@ func TestReconcileClearsRoutesOnModeChange(t *testing.T) {
 
 func TestDeletePeerHandlesSameIPDifferentASN(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -491,10 +501,10 @@ func TestDeletePeerHandlesSameIPDifferentASN(t *testing.T) {
 	}
 	_ = userBID // used later in verification
 
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.1",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_address_v4": "192.0.2.1",
+	}), s)
 	if err := manager.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -568,7 +578,7 @@ func assertPrefixes(t *testing.T, got, want []string) {
 
 func TestDynamicPeerIsPassiveOnly(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,10 +596,10 @@ func TestDynamicPeerIsPassiveOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.1",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_address_v4": "192.0.2.1",
+	}), s)
 	if err := manager.Start(ctx); err != nil {
 		t.Fatal(err)
 	}

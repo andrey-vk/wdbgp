@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
-
 	_ "modernc.org/sqlite"
 )
 
@@ -107,7 +105,7 @@ func TestRejectNewerDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close() //nolint:errcheck,gosec // test cleanup
-	if _, err := Open(path, config.Config{}); err == nil {
+	if _, err := Open(path, false, "", false); err == nil {
 		t.Fatal("Open accepted a newer database schema")
 	}
 }

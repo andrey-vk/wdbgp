@@ -17,9 +17,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
+
+func testSettings() *settings.Settings {
+	s, _ := settings.New(settings.NewTestStore())
+	return s
+}
 
 func testLimits() AdapterLimits {
 	return AdapterLimits{
@@ -393,7 +398,7 @@ func TestSyncAllSkipsDisabledFeeds(t *testing.T) {
 		}, nil
 	})}
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +418,7 @@ func TestSyncAllSkipsDisabledFeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	syncer := NewSyncer(db, config.Config{})
+	syncer := NewSyncer(db, testSettings())
 	syncer.Client = client
 	if syncErrors := syncer.SyncAll(context.Background()); len(syncErrors) != 0 {
 		t.Fatalf("SyncAll errors = %v", syncErrors)
@@ -439,7 +444,7 @@ WHERE f.name = 'disabled'`).Scan(&disabledEntries); err != nil {
 
 func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +467,7 @@ func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	}
 	feed := feedList[0]
 
-	syncer := NewSyncer(db, config.Config{})
+	syncer := NewSyncer(db, testSettings())
 	syncer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != oldURL {
 			t.Fatalf("download URL = %q, want %q", request.URL, oldURL)
@@ -504,7 +509,7 @@ FROM feeds WHERE id = ?`, feed.ID).Scan(&url, &lastSuccess, &lastError); err != 
 
 func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,7 +534,7 @@ func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	syncer := NewSyncer(db, config.Config{})
+	syncer := NewSyncer(db, testSettings())
 	syncer.Client = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		adapter.Name = "changed during sync"
 		if err := db.UpdateFeedAdapter(ctx, adapter); err != nil {
@@ -559,7 +564,7 @@ func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 
 func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "ipranges.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "ipranges.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +589,7 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	if len(feedList) != 1 || feedList[0].URL != ipRangesURL {
 		t.Fatalf("enabled feeds = %#v", feedList)
 	}
-	syncer := NewSyncer(db, config.Config{})
+	syncer := NewSyncer(db, testSettings())
 	syncer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body := "203.0.113.0/24\n"
 		if strings.Contains(request.URL.Path, "ipv6_merged.txt") {

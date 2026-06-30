@@ -3,12 +3,11 @@ package web
 import (
 	"context"
 	"net/http"
-	"net/netip"
 	"sync"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/feeds"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -22,7 +21,7 @@ type BGP interface {
 }
 
 type Server struct {
-	cfg          config.Config
+	settings    *settings.Settings
 	store        *store.Store
 	syncer       *feeds.Syncer
 	bgp          BGP
@@ -34,13 +33,7 @@ type Server struct {
 	degraded     bool
 	degradedInfo DegradedInfo
 
-	// Runtime-mutable settings cache (reloaded from DB on save)
 	mu          sync.RWMutex
-	statusCIDRs []netip.Prefix
-	statusToken string
-
-	metricsEnabled     bool
-	metricsHistoryDays int
 }
 
 // DegradedInfo carries version mismatch details for the degraded-mode page.

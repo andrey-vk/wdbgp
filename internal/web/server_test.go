@@ -11,23 +11,26 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/feeds"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
-func testConfig() config.Config {
-	return config.Config{
-		AdminPassword:     "admin",
-		SessionSecret:     "test-secret",
-		AdminCookieSecure: "true",
-		DefaultLanguage:   "ru",
-		RateLimitLogin:    0,                     // Disable rate limiting in tests
-		RateLimitAdmin:    0,                     // Disable rate limiting in tests
-		SessionMaxAge:     28800,                 // 8 hours
-		SecurityHeaders:   false,                 // Disable security headers in tests to avoid CSP issues
-		StatusAllowed:     []string{"0.0.0.0/0"}, // Allow all IPs for tests
+func testSettings() *settings.Settings {
+	s, err := settings.New(settings.NewTestStore())
+	if err != nil {
+		panic(err)
 	}
+	// Set test-specific values (context not needed for tests since env isn't overriding)
+	s.AdminPassword.Set(context.Background(), "admin")
+	s.SessionSecret.Set(context.Background(), "test-secret")
+	s.AdminCookieSecure.Set(context.Background(), "true")
+	s.DefaultLanguage.Set(context.Background(), "ru")
+	s.RateLimitLogin.Set(context.Background(), 0)    // Disable rate limiting in tests
+	s.RateLimitAdmin.Set(context.Background(), 0)    // Disable rate limiting in tests
+	s.SessionMaxAge.Set(context.Background(), 28800) // 8 hours
+	s.StatusAllowed.Set(context.Background(), "0.0.0.0/0")
+	return s
 }
 
 type fakeBGP struct {
@@ -68,8 +71,8 @@ func (f *fakeBGP) DeletePeer(context.Context, string, int64) error {
 }
 
 // adminCookie returns a valid admin session cookie for API tests.
-func adminCookie(cfg config.Config) *http.Cookie {
-	return &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test helper, no security attrs needed
+func adminCookie(s *settings.Settings) *http.Cookie {
+	return &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test helper, no security attrs needed
 }
 
 // =============================================================================
@@ -77,7 +80,7 @@ func adminCookie(cfg config.Config) *http.Cookie {
 // =============================================================================
 
 func TestStatusEndpoint(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "status.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "status.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,10 +111,10 @@ func TestStatusEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := testConfig()
-	syncer := feeds.NewSyncer(db, config.Config{})
+	s := testSettings()
+	syncer := feeds.NewSyncer(db, testSettings())
 	bgp := &fakeBGP{}
-	server := New(cfg, db, syncer, bgp)
+	server := New(s, db, syncer, bgp)
 
 	req := httptest.NewRequest("GET", "/status", nil)
 	w := httptest.NewRecorder()
@@ -177,15 +180,15 @@ func TestStatusEndpoint(t *testing.T) {
 // =============================================================================
 
 func TestDegradedModeShowsErrorPage(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
-	cfg := testConfig()
-	cfg.DefaultLanguage = "en"
-	srv := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
+	s := testSettings()
+	s.DefaultLanguage.Set(context.Background(), "en")
+	srv := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{})
 	srv.SetDegraded(DegradedInfo{
 		CurrentVersion: 999,
 		ServerVersion:  20,
@@ -213,15 +216,15 @@ func TestDegradedModeShowsErrorPage(t *testing.T) {
 }
 
 func TestDegradedModeAllRoutesShowError(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
-	cfg := testConfig()
-	cfg.DefaultLanguage = "en"
-	srv := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
+	s := testSettings()
+	s.DefaultLanguage.Set(context.Background(), "en")
+	srv := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{})
 	srv.SetDegraded(DegradedInfo{
 		CurrentVersion: 999,
 		ServerVersion:  20,
@@ -243,13 +246,13 @@ func TestDegradedModeAllRoutesShowError(t *testing.T) {
 }
 
 func TestDegradedModeLanguageSwitch(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
-	srv := New(testConfig(), db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{})
+	srv := New(testSettings(), db, feeds.NewSyncer(db, testSettings()), &fakeBGP{})
 	srv.SetDegraded(DegradedInfo{
 		CurrentVersion: 999,
 		ServerVersion:  20,
@@ -331,7 +334,7 @@ func TestSelectionPluralTranslations(t *testing.T) {
 // =============================================================================
 
 func TestAddUserRejectsSameIPAndSameASN(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,9 +348,9 @@ func TestAddUserRejectsSameIPAndSameASN(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
+	s := testSettings()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
 	body := `{"name":"second","peer_ip":"10.0.1.1","peer_asn":65100,"networks":["192.168.2.0/24"],"enabled":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
@@ -365,15 +368,15 @@ func TestAddUserRejectsSameIPAndSameASN(t *testing.T) {
 }
 
 func TestAddUserAcceptsUniqueIPWithoutPassword(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
-	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
+	s := testSettings()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
 	body := `{"name":"unique-peer","peer_ip":"10.0.2.1","peer_asn":65100,"networks":["192.168.3.0/24"],"enabled":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
@@ -388,16 +391,16 @@ func TestAddUserAcceptsUniqueIPWithoutPassword(t *testing.T) {
 }
 
 func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
-	cfg := testConfig()
-	cfg.AllowDynamicPeers = true
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
+	s := testSettings()
+	s.AllowDynamicPeers.Set(context.Background(), true)
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
 	// Without password — should succeed (password is not required for dynamic peers)
 	body := `{"name":"dynamic-no-pw","peer_ip":"0.0.0.0","peer_asn":65100,"networks":["0.0.0.0/0"],"enabled":true}`
@@ -425,7 +428,7 @@ func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
 }
 
 func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,10 +443,10 @@ func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := testConfig()
-	cfg.AllowDynamicPeers = true
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
+	s := testSettings()
+	s.AllowDynamicPeers.Set(context.Background(), true)
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
 	body := `{"name":"second-dynamic","peer_ip":"0.0.0.0","peer_asn":65100,"bgp_password":"secret2","password_enabled":true,"networks":["0.0.0.0/0"],"enabled":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
@@ -463,7 +466,7 @@ func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
 }
 
 func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,10 +480,10 @@ func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := testConfig()
-	cfg.RequirePasswordForNonUniqueIP = true
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
+	s := testSettings()
+	s.RequirePasswordForNonUniqueIP.Set(context.Background(), true)
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
 	body := `{"name":"second-shared","peer_ip":"10.0.3.1","peer_asn":65102,"networks":["192.168.11.0/24"],"enabled":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
@@ -498,7 +501,7 @@ func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
 }
 
 func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "web.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,9 +516,9 @@ func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
+	s := testSettings()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
 	body := `{"name":"second-shared-pw","peer_ip":"10.0.4.1","peer_asn":65102,"bgp_password":"shared-secret","password_enabled":true,"networks":["192.168.21.0/24"],"enabled":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
@@ -530,7 +533,7 @@ func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
 }
 
 func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv4-pw.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv4-pw.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,9 +550,9 @@ func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
+	s := testSettings()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
 	// Try to add second peer with different password "banana"
 	body := `{"name":"bob","peer_ip":"192.0.2.1","peer_asn":65002,"bgp_password":"banana","password_enabled":true,"networks":["192.168.101.0/24"],"enabled":true}`
@@ -569,7 +572,7 @@ func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
 }
 
 func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv6-pw.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "same-ipv6-pw.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -586,9 +589,9 @@ func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(cfg.SessionSecret)} //nolint:gosec // test code
+	s := testSettings()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
 	// Try to add second peer with different password "banana"
 	body := `{"name":"bob6","peer_ip":"fd00::1","peer_asn":65102,"bgp_password":"banana","password_enabled":true,"networks":["fd00:babe::/48"],"enabled":true}`
@@ -613,7 +616,7 @@ func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
 
 // TestAdminLoginAPI tests POST /api/admin/login
 func TestAdminLoginAPI(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "api.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "api.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -623,8 +626,8 @@ func TestAdminLoginAPI(t *testing.T) {
 		}
 	}()
 
-	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	s := testSettings()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
 
 	// Wrong password
 	body := `{"password": "wrong"}`
@@ -663,7 +666,7 @@ func TestAdminLoginAPI(t *testing.T) {
 
 // TestAdminSettingsAPI tests GET/PUT /api/admin/settings
 func TestAdminSettingsAPI(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "api.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "api.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,9 +676,9 @@ func TestAdminSettingsAPI(t *testing.T) {
 		}
 	}()
 
-	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	cookie := adminCookie(cfg)
+	s := testSettings()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	cookie := adminCookie(s)
 
 	// GET settings
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
@@ -716,7 +719,7 @@ func TestAdminSettingsAPI(t *testing.T) {
 // TestSettingsNullValueDeletesOverride verifies that sending null for a setting
 // key removes it from the database (use default / clear override).
 func TestSettingsNullValueDeletesOverride(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "null-settings.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "null-settings.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -726,9 +729,9 @@ func TestSettingsNullValueDeletesOverride(t *testing.T) {
 		}
 	}()
 
-	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	cookie := adminCookie(cfg)
+	s := testSettings()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	cookie := adminCookie(s)
 
 	// 1. Save a setting with a non-null value.
 	put1 := `{"default_language":"en"}`
@@ -773,7 +776,7 @@ func TestSettingsNullValueDeletesOverride(t *testing.T) {
 
 // TestAdapterCRUDAPI tests adapter CRUD + fork + acknowledge
 func TestAdapterCRUDAPI(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "api.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "api.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -783,9 +786,9 @@ func TestAdapterCRUDAPI(t *testing.T) {
 		}
 	}()
 
-	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
-	cookie := adminCookie(cfg)
+	s := testSettings()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+	cookie := adminCookie(s)
 
 	// List adapters
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/adapters", nil)
@@ -886,7 +889,7 @@ func TestAdapterCRUDAPI(t *testing.T) {
 
 // TestAdminLogoutAPI tests POST /api/admin/logout
 func TestAdminLogoutAPI(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "api.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "api.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -896,8 +899,8 @@ func TestAdminLogoutAPI(t *testing.T) {
 		}
 	}()
 
-	cfg := testConfig()
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	s := testSettings()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
 
 	// Login to get real cookie
 	loginBody := `{"password": "admin"}`

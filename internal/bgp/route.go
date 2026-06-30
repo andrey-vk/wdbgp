@@ -22,7 +22,7 @@ func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, ser
 	comms := make([]LargeCommunity, 0, 3)
 	// User ID community
 	comms = append(comms, LargeCommunity{
-		GlobalAdmin: m.cfg.LocalASN,
+		GlobalAdmin: uint32(m.cfg.LocalASN.Get()),
 		LocalData1:  uint32(user.ID), //nolint:gosec // user IDs are within uint32 range in practice
 		LocalData2:  0,
 	})
@@ -30,22 +30,22 @@ func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, ser
 	if category != "" {
 		if c, ok := communities[category]; ok {
 			comms = append(comms, LargeCommunity{
-				GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
+				GlobalAdmin: uint32(m.cfg.LocalASN.Get()), LocalData1: 0, LocalData2: c,
 			})
 		}
 		if service != "" {
 			if c, ok := communities[category+"|"+service]; ok {
 				comms = append(comms, LargeCommunity{
-					GlobalAdmin: m.cfg.LocalASN, LocalData1: 0, LocalData2: c,
+					GlobalAdmin: uint32(m.cfg.LocalASN.Get()), LocalData1: 0, LocalData2: c,
 				})
 			}
 		}
 	}
 
 	// Determine next hop
-	nextHop := m.cfg.LocalAddressV4
+	nextHop := m.cfg.LocalAddressV4.Get()
 	if prefix.Addr().Is6() {
-		nextHop = m.cfg.LocalAddressV6
+		nextHop = m.cfg.LocalAddressV6.Get()
 		if nextHop == "" {
 			return Route{}, fmt.Errorf("cannot build IPv6 route %s without local IPv6 address", prefix)
 		}

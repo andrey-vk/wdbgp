@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
-
 	_ "modernc.org/sqlite"
 )
 
@@ -15,7 +13,7 @@ import (
 // database preserves all data.
 func TestMigrationReopenPreservesData(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "reopen.sqlite3")
-	s, err := Open(dbPath, config.Config{})
+	s, err := Open(dbPath, false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +34,7 @@ func TestMigrationReopenPreservesData(t *testing.T) {
 	s.Close() //nolint:gosec // test cleanup
 
 	// Reopen the same database
-	s2, err := Open(dbPath, config.Config{})
+	s2, err := Open(dbPath, false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

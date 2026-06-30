@@ -50,7 +50,7 @@ func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, sk
 		return fmt.Errorf("failed to check shared IP peers: %w", err)
 	}
 	if sharedCount > 0 {
-		if s.cfg.RequirePasswordForNonUniqueIP && user.BGPPassword == "" {
+		if s.settings.RequirePasswordForNonUniqueIP.Get() && user.BGPPassword == "" {
 			return fmt.Errorf("BGP password required when sharing IP %s with another ASN", user.PeerIP)
 		}
 		// If new peer has password, existing same-IP peers must also have passwords

@@ -55,3 +55,11 @@ func (s *Store) DeleteSetting(ctx context.Context, key string) error {
 	_, err := s.DB.ExecContext(ctx, "DELETE FROM app_settings WHERE key = ?", key)
 	return err
 }
+
+// SaveSetting upserts a single setting key-value pair.
+func (s *Store) SaveSetting(ctx context.Context, key, value string) error {
+	_, err := s.DB.ExecContext(ctx,
+		"INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES (?, ?, datetime('now'))",
+		key, value)
+	return err
+}

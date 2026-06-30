@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/bgp"
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/feeds"
 	"github.com/andrey-vk/wdbgp/internal/logging"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 	"github.com/andrey-vk/wdbgp/internal/web"
 )
@@ -25,31 +25,44 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load()
+	// Determine DBPath from env so we can open the store.
+	dbPath := os.Getenv("WDBGP_DB")
+	if dbPath == "" {
+		dbPath = "/data/wdbgp.sqlite3"
+	}
+
+	// Read backup/env-only settings from env for store.Open.
+	backupEnabled := envBool("WDBGP_BACKUP_ENABLED", true)
+	backupDir := os.Getenv("WDBGP_BACKUP_DIR")
+	if backupDir == "" {
+		backupDir = dbPath[:max(lastSlash(dbPath), 0)]
+		if backupDir == "" {
+			backupDir = "."
+		}
+	}
+	autoRestore := envBool("WDBGP_AUTO_RESTORE_ENABLED", false)
+
+	db, err := store.Open(dbPath, backupEnabled, backupDir, autoRestore)
+	if err != nil {
+		return err
+	}
+	defer db.Close() //nolint:errcheck // process is about to exit, Close is best-effort
+
+	// Create settings with the store (loads DB values and merges with env).
+	s, err := settings.New(db)
 	if err != nil {
 		return err
 	}
 
-	// Configure logging based on config
-	logging.Configure(cfg.LogLevel, cfg.LogFormat)
+	// Configure logging based on settings
+	logging.Configure(s.LogLevel.Get(), s.LogFormat.Get())
 
 	command := "serve"
 	if len(os.Args) > 1 {
 		command = os.Args[1]
 	}
 	if command == "healthcheck" {
-		return healthcheck(cfg)
-	}
-
-	db, err := store.Open(cfg.DBPath, cfg)
-	if err != nil {
-		return err
-	}
-	defer db.Close() //nolint:errcheck // process is about to exit, Close is best-effort
-
-	// Apply DB-stored settings (ENV overrides are preserved)
-	if dbSettings, err := db.GetAllSettings(context.Background()); err == nil {
-		cfg.ApplyDBOverrides(dbSettings)
+		return healthcheck(s)
 	}
 
 	switch command {
@@ -59,7 +72,7 @@ func run() error {
 	case "stats":
 		return printStats(context.Background(), db)
 	case "sync":
-		syncer := feeds.NewSyncer(db, cfg)
+		syncer := feeds.NewSyncer(db, s)
 		if syncErrors := syncer.SyncAll(context.Background()); len(syncErrors) > 0 {
 			for _, syncErr := range syncErrors {
 				logging.Error("feed sync error", "error", syncErr)
@@ -68,32 +81,28 @@ func run() error {
 		}
 		return printStats(context.Background(), db)
 	case "serve":
-		return serve(cfg, db)
+		return serve(s, db)
 	default:
 		return fmt.Errorf("unknown command %q; use serve, migrate, sync, stats, or healthcheck", command)
 	}
 }
 
-func serve(cfg config.Config, db *store.Store) error {
+func serve(s *settings.Settings, db *store.Store) error {
 	if db.Degraded {
-		return serveDegraded(cfg, db)
-	}
-
-	if err := cfg.ValidateServe(); err != nil {
-		return err
+		return serveDegraded(s, db)
 	}
 
 	logging.Info("starting application",
-		"bgp_asn", cfg.LocalASN,
-		"bgp_port", cfg.BGPListenPort,
-		"http_address", cfg.ListenAddress(),
-		"sync_interval", cfg.SyncInterval,
+		"bgp_asn", s.LocalASN.Get(),
+		"bgp_port", s.BGPPort.Get(),
+		"http_address", fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
+		"sync_interval", s.SyncInterval.Get(),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	bgpManager := bgp.NewManager(cfg, db)
+	bgpManager := bgp.NewManager(s, db)
 	if err := bgpManager.Start(ctx); err != nil {
 		return fmt.Errorf("start BGP: %w", err)
 	}
@@ -105,21 +114,21 @@ func serve(cfg config.Config, db *store.Store) error {
 		}
 	}()
 
-	syncer := feeds.NewSyncer(db, cfg)
-	go syncLoop(ctx, cfg.SyncInterval, syncer, bgpManager)
+	syncer := feeds.NewSyncer(db, s)
+	go syncLoop(ctx, time.Duration(s.SyncInterval.Get())*time.Second, syncer, bgpManager)
 
 	httpServer := &http.Server{
-		Addr:              cfg.ListenAddress(),
-		Handler:           web.New(cfg, db, syncer, bgpManager).Handler(),
+		Addr:              fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
+		Handler:           web.New(s, db, syncer, bgpManager).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 	serverErrors := make(chan error, 1)
 	go func() {
 		logging.Info("HTTP server starting",
-			"address", cfg.ListenAddress(),
-			"bgp_asn", cfg.LocalASN,
-			"bgp_port", cfg.BGPListenPort,
+			"address", fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
+			"bgp_asn", s.LocalASN.Get(),
+			"bgp_port", s.BGPPort.Get(),
 		)
 		serverErrors <- httpServer.ListenAndServe()
 	}()
@@ -140,14 +149,14 @@ func serve(cfg config.Config, db *store.Store) error {
 }
 
 // serveDegraded starts an HTTP server that only shows the DB version mismatch page.
-func serveDegraded(cfg config.Config, db *store.Store) error {
+func serveDegraded(s *settings.Settings, db *store.Store) error {
 	logging.Warn("starting in degraded mode",
 		"db_version", db.DBVersion, "server_version", db.ServerVersion)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	srv := web.New(cfg, db, nil, nil)
+	srv := web.New(s, db, nil, nil)
 	srv.SetDegraded(web.DegradedInfo{
 		CurrentVersion: db.DBVersion,
 		ServerVersion:  db.ServerVersion,
@@ -155,7 +164,7 @@ func serveDegraded(cfg config.Config, db *store.Store) error {
 	})
 
 	httpServer := &http.Server{
-		Addr:              cfg.ListenAddress(),
+		Addr:              fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -163,7 +172,7 @@ func serveDegraded(cfg config.Config, db *store.Store) error {
 	serverErrors := make(chan error, 1)
 	go func() {
 		logging.Info("HTTP server starting in degraded mode",
-			"address", cfg.ListenAddress(),
+			"address", fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
 		)
 		serverErrors <- httpServer.ListenAndServe()
 	}()
@@ -253,9 +262,9 @@ func printStats(ctx context.Context, db *store.Store) error {
 	return nil
 }
 
-func healthcheck(cfg config.Config) error {
+func healthcheck(s *settings.Settings) error {
 	client := &http.Client{Timeout: 3 * time.Second}
-	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port))
+	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", s.Port.Get()))
 	if err != nil {
 		return err
 	}
@@ -264,4 +273,28 @@ func healthcheck(cfg config.Config) error {
 		return fmt.Errorf("health endpoint returned %s", response.Status)
 	}
 	return nil
+}
+
+func envBool(name string, fallback bool) bool {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func lastSlash(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '/' {
+			return i
+		}
+	}
+	return -1
 }

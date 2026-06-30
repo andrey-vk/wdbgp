@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/retry"
 
 	_ "modernc.org/sqlite" // SQLite driver
@@ -65,7 +64,7 @@ type RouteFilters struct {
 	Deny  []string
 }
 
-func Open(path string, cfg config.Config) (*Store, error) {
+func Open(path string, backupEnabled bool, backupDir string, autoRestoreEnabled bool) (*Store, error) {
 	if parent := filepath.Dir(path); parent != "." {
 		if err := os.MkdirAll(parent, 0o755); err != nil { //nolint:gosec // container filesystem, single user
 			return nil, err
@@ -89,7 +88,7 @@ func Open(path string, cfg config.Config) (*Store, error) {
 		}
 		return nil, err
 	}
-	s := &Store{DB: db, dbPath: path, backupEnabled: cfg.BackupEnabled, backupDir: cfg.BackupDir, autoRestore: cfg.AutoRestoreEnabled}
+	s := &Store{DB: db, dbPath: path, backupEnabled: backupEnabled, backupDir: backupDir, autoRestore: autoRestoreEnabled}
 	if err := s.Migrate(context.Background()); err != nil {
 		if err := db.Close(); err != nil {
 			log.Printf("WARNING: close: %v", err)

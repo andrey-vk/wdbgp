@@ -114,7 +114,7 @@ func TestDashboardWithData(t *testing.T) {
 
 func TestDashboardMetricsEnabled(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
-	srv.metricsEnabled = true
+	srv.settings.MetricsEnabled.Set(context.Background(), true)
 	ctx := context.Background()
 
 	if err := st.SaveUserSnapshot(ctx, 1, 2, 10); err != nil {

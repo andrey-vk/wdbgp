@@ -26,7 +26,7 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 		ipMatch := ipErr == nil && ipUser.Enabled
 
 		// Try session cookie
-		sessionID := getUserSessionID(r, s.cfg.SessionSecret, time.Duration(s.cfg.SessionMaxAge)*time.Second)
+		sessionID := getUserSessionID(r, s.settings.SessionSecret.Get(), time.Duration(s.settings.SessionMaxAge.Get())*time.Second)
 		var cookieMatch bool
 		var cookieUser store.User
 		if sessionID > 0 {
@@ -223,11 +223,11 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Set session cookie
 	secure := s.adminCookieSecure(r)
-	maxAge := s.cfg.SessionMaxAge
+	maxAge := s.settings.SessionMaxAge.Get()
 	if maxAge <= 0 {
 		maxAge = 28800 // 8 hours default
 	}
-	setUserSessionCookie(w, user.ID, s.cfg.SessionSecret, maxAge, secure)
+	setUserSessionCookie(w, user.ID, s.settings.SessionSecret.Get(), maxAge, secure)
 
 	// Load catalog and filtered selections for the response
 	loginCatalog, err := s.store.CatalogForMode(ctx, user.CatalogModeID, false)

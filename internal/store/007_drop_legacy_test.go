@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
-
 	_ "modernc.org/sqlite"
 )
 
@@ -61,7 +59,7 @@ INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
 		t.Fatal(err)
 	}
 
-	s, err := Open(path, config.Config{})
+	s, err := Open(path, false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -132,10 +132,8 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 // statusAuthorized checks whether the request is authorized to access /status.
 // Authorization is granted by IP whitelist or Bearer token.
 func (s *Server) statusAuthorized(r *http.Request) bool {
-	s.mu.RLock()
-	cidrs := s.statusCIDRs
-	token := s.statusToken
-	s.mu.RUnlock()
+	cidrs := parseCIDRs(s.settings.StatusAllowed.Get())
+	token := s.settings.StatusToken.Get()
 
 	if len(cidrs) > 0 {
 		clientIP := s.clientIP(r)

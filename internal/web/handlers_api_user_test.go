@@ -22,7 +22,7 @@ func TestUserAuthBothRequiresBothFactors(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a "both" user
-	srv.cfg.AllowDynamicPeers = false
+	srv.settings.AllowDynamicPeers.Set(context.Background(), false)
 	userBody := `{"name":"both-user","peer_ip":"10.0.0.1","peer_asn":65001,"networks":["10.1.1.0/24"],"web_auth":"both","enabled":true}`
 	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -169,7 +169,7 @@ func TestUserSaveSelectionsPreservesHidden(t *testing.T) {
 
 	// --- Step 6: save selections for both Cat1::Svc1 and Cat2::Svc2 ---
 	// Build a session cookie so requireUser middleware can authenticate.
-	sessionToken := userSessionToken(srv.cfg.SessionSecret, userID)
+	sessionToken := userSessionToken(srv.settings.SessionSecret.Get(), userID)
 	selBody := `{"categories":[{"category":"Cat1","checked":true}],"services":[{"category":"Cat1","service":"Svc1","checked":true},{"category":"Cat2","service":"Svc2","checked":true}]}`
 	req = httptest.NewRequest("POST", "/api/user/selections", strings.NewReader(selBody))
 	req.Header.Set("Content-Type", "application/json")

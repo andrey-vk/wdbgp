@@ -1,13 +1,13 @@
 package web
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/feeds"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
@@ -19,7 +19,7 @@ import (
 // =============================================================================
 
 func TestLoginCookieExpiresWithZeroMaxAge(t *testing.T) {
-	db, err := store.Open(":memory:", config.Config{})
+	db, err := store.Open(":memory:", false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,10 +29,10 @@ func TestLoginCookieExpiresWithZeroMaxAge(t *testing.T) {
 		}
 	}()
 
-	cfg := testConfig()
-	cfg.SessionMaxAge = 0 // unconfigured — should produce a session cookie
+	s := testSettings()
+	s.SessionMaxAge.Set(context.Background(), 0) // unconfigured — should produce a session cookie
 
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
 
 	body := `{"password": "admin"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/login", strings.NewReader(body))
@@ -71,7 +71,7 @@ func TestLoginCookieExpiresWithZeroMaxAge(t *testing.T) {
 // =============================================================================
 
 func TestLoginCookieExpiresWithMaxAge(t *testing.T) {
-	db, err := store.Open(":memory:", config.Config{})
+	db, err := store.Open(":memory:", false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +81,10 @@ func TestLoginCookieExpiresWithMaxAge(t *testing.T) {
 		}
 	}()
 
-	cfg := testConfig()
-	cfg.SessionMaxAge = 3600 // 1 hour
+	s := testSettings()
+	s.SessionMaxAge.Set(context.Background(), 3600) // 1 hour
 
-	handler := New(cfg, db, feeds.NewSyncer(db, config.Config{}), &fakeBGP{}).Handler()
+	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
 
 	body := `{"password": "admin"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/login", strings.NewReader(body))

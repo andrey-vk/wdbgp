@@ -5,11 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 )
 
 func TestMigration24AdapterForkColumns(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "fork.sqlite3"), config.Config{})
+	db, err := Open(filepath.Join(t.TempDir(), "fork.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +36,7 @@ func TestMigration24AdapterForkColumns(t *testing.T) {
 }
 
 func TestAdapterForkAutoNaming(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "forkname.sqlite3"), config.Config{})
+	db, err := Open(filepath.Join(t.TempDir(), "forkname.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +97,7 @@ func TestAdapterForkAutoNaming(t *testing.T) {
 }
 
 func TestAdapterResetPreservesKey(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "resetkey.sqlite3"), config.Config{})
+	db, err := Open(filepath.Join(t.TempDir(), "resetkey.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +131,7 @@ func TestAdapterResetPreservesKey(t *testing.T) {
 }
 
 func TestNonBuiltinCannotReset(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "noreset.sqlite3"), config.Config{})
+	db, err := Open(filepath.Join(t.TempDir(), "noreset.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +158,7 @@ func TestNonBuiltinCannotReset(t *testing.T) {
 }
 
 func TestMigrationForkedFromToInteger(t *testing.T) {
-	db, err := Open(filepath.Join(t.TempDir(), "forkint.sqlite3"), config.Config{})
+	db, err := Open(filepath.Join(t.TempDir(), "forkint.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +219,7 @@ func TestMigrationForkedFromToInteger(t *testing.T) {
 func TestMaxForkedAdapterSuffix(t *testing.T) {
 	// non-existent ID
 	t.Run("nonExistentID", func(t *testing.T) {
-		db, err := Open(filepath.Join(t.TempDir(), "suffix1.sqlite3"), config.Config{})
+		db, err := Open(filepath.Join(t.TempDir(), "suffix1.sqlite3"), false, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,7 +236,7 @@ func TestMaxForkedAdapterSuffix(t *testing.T) {
 
 	// exists but not built-in
 	t.Run("notBuiltIn", func(t *testing.T) {
-		db, err := Open(filepath.Join(t.TempDir(), "suffix2.sqlite3"), config.Config{})
+		db, err := Open(filepath.Join(t.TempDir(), "suffix2.sqlite3"), false, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -260,7 +259,7 @@ func TestMaxForkedAdapterSuffix(t *testing.T) {
 
 	// find a built-in and run remaining tests
 	t.Run("builtIn", func(t *testing.T) {
-		db, err := Open(filepath.Join(t.TempDir(), "suffix3.sqlite3"), config.Config{})
+		db, err := Open(filepath.Join(t.TempDir(), "suffix3.sqlite3"), false, "", false)
 		if err != nil {
 			t.Fatal(err)
 		}
