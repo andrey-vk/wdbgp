@@ -23,17 +23,22 @@ type SettingJSON[T any] struct {
 	EnvOverride  bool `json:"env_override"`
 }
 
+// OnChangeFunc is called after a setting value changes via Set or Reset.
+type OnChangeFunc[T any] func(newValue T)
+
 // Setting holds a typed configuration value with env/db/default precedence.
 type Setting[T any] struct {
-	mu         sync.RWMutex
-	value      T
-	defaultVal T
-	envVal     *T
-	dbVal      *T
-	dbKey      string
-	envVar     string
-	store      Store
-	parse      func(string) (T, error)
+	mu          sync.RWMutex
+	value       T
+	defaultVal  T
+	envVal      *T
+	dbVal       *T
+	dbKey       string
+	envVar      string
+	store       Store
+	parse       func(string) (T, error)
+	callbacks   []OnChangeFunc[T]
+	callbacksMu sync.Mutex
 }
 
 // newSetting creates a new Setting.
@@ -104,7 +109,13 @@ func (s *Setting[T]) Set(ctx context.Context, v T) error {
 	val := v
 	s.dbVal = &val
 
-	return s.store.SaveSetting(ctx, s.dbKey, fmt.Sprintf("%v", v))
+	if err := s.store.SaveSetting(ctx, s.dbKey, fmt.Sprintf("%v", v)); err != nil {
+		return err
+	}
+
+	// Fire callbacks after successful persistence.
+	s.fireCallbacks(v)
+	return nil
 }
 
 // Reset deletes the stored database value and reverts to the default.
@@ -120,7 +131,13 @@ func (s *Setting[T]) Reset(ctx context.Context) error {
 	s.dbVal = nil
 	s.value = s.defaultVal
 
-	return s.store.DeleteSetting(ctx, s.dbKey)
+	if err := s.store.DeleteSetting(ctx, s.dbKey); err != nil {
+		return err
+	}
+
+	// Fire callbacks after successful reset.
+	s.fireCallbacks(s.defaultVal)
+	return nil
 }
 
 // IsEnvSet returns true if the setting value comes from an environment variable.
@@ -157,6 +174,35 @@ func (s *Setting[T]) JSON() SettingJSON[T] {
 	// If neither, Value remains nil (the zero value for *T).
 
 	return j
+}
+
+// OnChange registers a callback that fires after a successful Set or Reset.
+// Returns an unregister function. Callbacks are called with the new value
+// while the setting's write lock is held.
+func (s *Setting[T]) OnChange(fn OnChangeFunc[T]) (unregister func()) {
+	s.callbacksMu.Lock()
+	defer s.callbacksMu.Unlock()
+
+	s.callbacks = append(s.callbacks, fn)
+	idx := len(s.callbacks) - 1
+
+	return func() {
+		s.callbacksMu.Lock()
+		defer s.callbacksMu.Unlock()
+		s.callbacks[idx] = nil
+	}
+}
+
+// fireCallbacks invokes all registered callbacks with the given value.
+// Must be called while s.mu (write lock) is held.
+func (s *Setting[T]) fireCallbacks(v T) {
+	s.callbacksMu.Lock()
+	defer s.callbacksMu.Unlock()
+	for _, fn := range s.callbacks {
+		if fn != nil {
+			fn(v)
+		}
+	}
 }
 
 // parseBool parses a boolean string, accepting strconv.ParseBool's input set
