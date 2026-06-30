@@ -251,6 +251,14 @@ func (s *Server) userSpaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Root path: serve user.html directly (FileServer would show directory listing)
+	if r.URL.Path == "/" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFile(w, r, filepath.Join(spaDistDir, "user.html"))
+		return
+	}
+
 	catcher := &notFoundCatcher{ResponseWriter: w}
 	http.FileServer(http.Dir(spaDistDir)).ServeHTTP(catcher, r)
 	if catcher.notFound {
