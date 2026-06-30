@@ -340,11 +340,8 @@ func (a *adapterRunner) doHTTPRequest(parsed *url.URL) ([]byte, error) {
 }
 
 func (a *adapterRunner) validateURL(parsed *url.URL) error {
-	if a.allowedHosts == nil {
-		return nil
-	}
 	host := strings.ToLower(parsed.Hostname())
-	if !a.allowedHosts[host] {
+	if a.allowedHosts != nil && !a.allowedHosts[host] {
 		return fmt.Errorf("adapter HTTP host %q is not allowed", host)
 	}
 	if address, err := netip.ParseAddr(host); err == nil {
