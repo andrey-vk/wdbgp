@@ -45,15 +45,15 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <div class="login-page">
-    <div class="login-card">
-      <div class="login-header">
-        <h1>{{ t('app.title') }}</h1>
-        <p>{{ t('app.subtitle') }}</p>
+  <div class="flex items-center justify-center min-h-screen bg-[var(--p-surface-ground)] p-4">
+    <div class="bg-[var(--p-surface-card)] rounded-[var(--p-border-radius-lg)] shadow-[var(--p-shadow-md)] p-8 w-full max-w-[400px]">
+      <div class="text-center mb-8">
+        <h1 class="text-[2rem] font-bold text-[var(--p-primary-color)] m-0 mb-1">{{ t('app.title') }}</h1>
+        <p class="text-[var(--p-text-muted-color)] m-0">{{ t('app.subtitle') }}</p>
       </div>
 
       <form
-        class="login-form"
+        class="flex flex-col gap-4"
         @submit.prevent="handleSubmit"
       >
         <Message
@@ -89,7 +89,7 @@ async function handleSubmit() {
         />
       </form>
 
-      <div class="login-footer">
+      <div class="flex justify-center gap-3 mt-6">
         <ThemeSwitcher v-model="themeMode" />
         <LanguageSwitcher v-model="locale" />
       </div>
@@ -97,46 +97,3 @@ async function handleSubmit() {
   </div>
 </template>
 
-<style scoped>
-.login-page {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  background: var(--p-surface-ground);
-  padding: 1rem;
-}
-.login-card {
-  background: var(--p-surface-card);
-  border-radius: var(--p-border-radius-lg);
-  box-shadow: var(--p-shadow-md);
-  padding: 2rem;
-  width: 100%;
-  max-width: 400px;
-}
-.login-header {
-  text-align: center;
-  margin-bottom: 2rem;
-}
-.login-header h1 {
-  font-size: 2rem;
-  font-weight: 700;
-  color: var(--p-primary-color);
-  margin: 0 0 0.25rem;
-}
-.login-header p {
-  color: var(--p-text-muted-color);
-  margin: 0;
-}
-.login-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-.login-footer {
-  display: flex;
-  justify-content: center;
-  gap: 0.75rem;
-  margin-top: 1.5rem;
-}
-</style>

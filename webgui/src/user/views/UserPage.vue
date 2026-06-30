@@ -393,7 +393,7 @@ onMounted(() => {
   <!-- Login view -->
   <div v-else-if="!authenticated" class="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950 px-4">
     <div class="w-full max-w-sm">
-      <div class="card bg-white dark:bg-gray-900">
+      <div class="p-6 rounded-[var(--p-content-border-radius,0.75rem)] shadow-[var(--p-shadow-sm,0_1px_3px_rgba(0,0,0,0.1))] bg-white dark:bg-gray-900">
         <div class="text-center mb-6">
           <h1 class="text-2xl font-bold text-gray-900 dark:text-white">{{ t('user.title') }}</h1>
           <p class="text-gray-500 dark:text-gray-400 mt-1">{{ t('user.login_subtitle') }}</p>
@@ -487,7 +487,7 @@ onMounted(() => {
 
       <template v-else-if="data">
         <!-- Catalog section -->
-        <div class="card mb-6 bg-white dark:bg-gray-900">
+        <div class="p-6 rounded-[var(--p-content-border-radius,0.75rem)] shadow-[var(--p-shadow-sm,0_1px_3px_rgba(0,0,0,0.1))] mb-6 bg-white dark:bg-gray-900">
           <div v-if="!Object.keys(catalog).length" class="text-gray-400 dark:text-gray-500 text-center py-8">
             No catalog data available.
           </div>
@@ -573,7 +573,7 @@ onMounted(() => {
         </div>
 
         <!-- Summary section -->
-        <div class="card mb-6 bg-white dark:bg-gray-900">
+        <div class="p-6 rounded-[var(--p-content-border-radius,0.75rem)] shadow-[var(--p-shadow-sm,0_1px_3px_rgba(0,0,0,0.1))] mb-6 bg-white dark:bg-gray-900">
           <div class="flex items-center justify-between mb-3">
             <div class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400">
               <span v-if="countLoading"><i class="pi pi-spin pi-spinner mr-1" /></span>
@@ -605,7 +605,7 @@ onMounted(() => {
         </div>
 
         <!-- Route Filters section -->
-        <div v-if="data.user.filter_editable" class="card mb-6 bg-white dark:bg-gray-900">
+        <div v-if="data.user.filter_editable" class="p-6 rounded-[var(--p-content-border-radius,0.75rem)] shadow-[var(--p-shadow-sm,0_1px_3px_rgba(0,0,0,0.1))] mb-6 bg-white dark:bg-gray-900">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <FormField :label="t('user.filters_allow')" :hint="'user.filters_hint_allow'" input-id="ufallow">
               <Textarea id="ufallow" v-model="filterAllow" rows="3" fluid />
@@ -630,10 +630,3 @@ onMounted(() => {
   </div>
 </template>
 
-<style scoped>
-.card {
-  padding: 1.5rem;
-  border-radius: var(--p-content-border-radius, 0.75rem);
-  box-shadow: var(--p-shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.1));
-}
-</style>

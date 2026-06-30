@@ -41,11 +41,8 @@ import FloatingConfigurator from '@/admin/components/FloatingConfigurator.vue';
           />
         </g>
       </svg>
-      <div style="border-radius: 56px; padding: 0.3rem; background: linear-gradient(180deg, color-mix(in srgb, var(--primary-color), transparent 60%) 10%, var(--surface-ground) 30%)">
-        <div
-          class="w-full bg-surface-0 dark:bg-surface-900 py-20 px-8 sm:px-20 flex flex-col items-center"
-          style="border-radius: 53px"
-        >
+      <div class="rounded-[56px] p-[0.3rem] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--primary-color),transparent_60%)_10%,var(--surface-ground)_30%)]">
+        <div class="w-full bg-surface-0 dark:bg-surface-900 py-20 px-8 sm:px-20 flex flex-col items-center rounded-[53px]">
           <span class="text-primary font-bold text-3xl">404</span>
           <h1 class="text-surface-900 dark:text-surface-0 font-bold text-3xl lg:text-5xl mb-2">
             Not Found
@@ -58,8 +55,7 @@ import FloatingConfigurator from '@/admin/components/FloatingConfigurator.vue';
             class="w-full flex items-center py-8 border-surface-300 dark:border-surface-500 border-b"
           >
             <span
-              class="flex justify-center items-center border-2 border-primary text-primary rounded-border"
-              style="height: 3.5rem; width: 3.5rem"
+              class="flex justify-center items-center border-2 border-primary text-primary rounded-border w-14 h-14"
             >
               <i class="pi pi-fw pi-table text-2xl!" />
             </span>
@@ -73,8 +69,7 @@ import FloatingConfigurator from '@/admin/components/FloatingConfigurator.vue';
             class="w-full flex items-center py-8 border-surface-300 dark:border-surface-500 border-b"
           >
             <span
-              class="flex justify-center items-center border-2 border-primary text-primary rounded-border"
-              style="height: 3.5rem; width: 3.5rem"
+              class="flex justify-center items-center border-2 border-primary text-primary rounded-border w-14 h-14"
             >
               <i class="pi pi-fw pi-question-circle text-2xl!" />
             </span>
@@ -88,8 +83,7 @@ import FloatingConfigurator from '@/admin/components/FloatingConfigurator.vue';
             class="w-full flex items-center mb-8 py-8 border-surface-300 dark:border-surface-500 border-b"
           >
             <span
-              class="flex justify-center items-center border-2 border-primary text-primary rounded-border"
-              style="height: 3.5rem; width: 3.5rem"
+              class="flex justify-center items-center border-2 border-primary text-primary rounded-border w-14 h-14"
             >
               <i class="pi pi-fw pi-unlock text-2xl!" />
             </span>

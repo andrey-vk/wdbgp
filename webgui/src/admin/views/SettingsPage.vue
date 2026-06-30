@@ -131,8 +131,8 @@ async function handlePurgeMetrics() {
 </script>
 
 <template>
-  <div class="settings-page">
-    <h1 class="page-title">
+  <div class="max-w-[800px]">
+    <h1 class="mb-6">
       {{ t('menu.settings') }}
     </h1>
     <Message
@@ -150,16 +150,16 @@ async function handlePurgeMetrics() {
       <i class="pi pi-spin pi-spinner text-2xl" />
     </div>
     <div v-else>
-      <div class="sections">
+      <div class="flex flex-col gap-6">
         <div
           v-for="section in sections"
           :key="section.name"
-          class="card section-card"
+          class="card p-6"
         >
-          <div class="section-header">
-            <h2>{{ t(section.name) }}</h2>
+          <div class="mb-4 pb-2 border-b border-[var(--p-surface-border)]">
+            <h2 class="m-0 text-lg">{{ t(section.name) }}</h2>
           </div>
-          <div class="section-rows">
+          <div class="flex flex-col gap-3">
             <SettingField
               v-for="(meta, key) in section.fields"
               :key="key"
@@ -175,12 +175,12 @@ async function handlePurgeMetrics() {
       </div>
 
       <!-- Route filters section -->
-      <div class="card section-card">
-        <div class="section-header">
-          <h2>{{ t('settings.section_filters') }}</h2>
+      <div class="card p-6">
+        <div class="mb-4 pb-2 border-b border-[var(--p-surface-border)]">
+          <h2 class="m-0 text-lg">{{ t('settings.section_filters') }}</h2>
         </div>
-        <div class="section-rows">
-          <div class="form-field">
+        <div class="flex flex-col gap-3">
+          <div class="flex flex-col gap-1">
             <label
               class="text-sm font-medium"
               for="filter_allow"
@@ -192,7 +192,7 @@ async function handlePurgeMetrics() {
               fluid
             />
           </div>
-          <div class="form-field">
+          <div class="flex flex-col gap-1">
             <label
               class="text-sm font-medium"
               for="filter_deny"
@@ -219,7 +219,7 @@ async function handlePurgeMetrics() {
         />
       </div>
 
-      <div class="save-bar">
+      <div class="sticky bottom-0 flex justify-end py-3 mt-4 border-t border-[var(--p-surface-border)] bg-[var(--p-surface-ground)]">
         <Button
           :label="t('settings.save')"
           icon="pi pi-check"
@@ -232,24 +232,3 @@ async function handlePurgeMetrics() {
   </div>
 </template>
 
-<style scoped>
-.settings-page { max-width: 800px; }
-.page-title { margin-bottom: 1.5rem; }
-.sections { display: flex; flex-direction: column; gap: 1.5rem; }
-.section-card { padding: 1.5rem; }
-.section-header { margin-bottom: 1rem; padding-bottom: .5rem; border-bottom: 1px solid var(--p-surface-border); }
-.section-header h2 { margin: 0; font-size: 1.1rem; }
-.section-rows { display: flex; flex-direction: column; gap: 0.75rem; }
-.form-field { display: flex; flex-direction: column; gap: 0.25rem; }
-
-.save-bar {
-  position: sticky;
-  bottom: 0;
-  background: var(--p-surface-ground);
-  display: flex;
-  justify-content: flex-end;
-  padding: 0.75rem 0;
-  margin-top: 1rem;
-  border-top: 1px solid var(--p-surface-border);
-}
-</style>

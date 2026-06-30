@@ -30,7 +30,7 @@ function show() {
 <template>
   <button
     type="button"
-    class="hint-btn"
+    class="inline-flex items-center justify-center w-4 h-4 border border-[var(--p-surface-300)] rounded-full bg-transparent text-[var(--p-text-muted-color)] text-[0.6rem] font-bold cursor-pointer p-0 shrink-0 hover:bg-[var(--p-surface-100)] hover:text-[var(--p-text-color)] hover:border-[var(--p-surface-400)]"
     @click.stop="show"
   >
     ?
@@ -38,20 +38,9 @@ function show() {
   <Popover
     ref="popoverRef"
   >
-    <div class="hint-popover">
-      <p>{{ t(hint) }}</p>
+    <div class="max-w-[320px] p-1">
+      <p class="m-0 text-sm leading-relaxed">{{ t(hint) }}</p>
     </div>
   </Popover>
 </template>
 
-<style scoped>
-.hint-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 16px; height: 16px; border: 1px solid var(--p-surface-300);
-  border-radius: 50%; background: transparent; color: var(--p-text-muted-color);
-  font-size: 0.6rem; font-weight: 700; cursor: pointer; padding: 0; flex-shrink: 0;
-}
-.hint-btn:hover { background: var(--p-surface-100); color: var(--p-text-color); border-color: var(--p-surface-400); }
-.hint-popover { max-width: 320px; padding: 0.25rem; }
-.hint-popover p { margin: 0; font-size: 0.875rem; line-height: 1.4; }
-</style>

@@ -32,8 +32,8 @@ describe('FieldHint', () => {
     const activeId = ref<string | null>(null)
     const hideFn = ref<(() => void) | null>(null)
     const wrapper = mountHint('input-1', activeId, hideFn)
-    expect(wrapper.find('button.hint-btn').exists()).toBe(true)
-    expect(wrapper.find('button.hint-btn').text()).toBe('?')
+    expect(wrapper.find('button[type="button"]').exists()).toBe(true)
+    expect(wrapper.find('button[type="button"]').text()).toBe('?')
   })
 
   it('shows popover on click', async () => {
@@ -48,7 +48,7 @@ describe('FieldHint', () => {
     // The Popover itself is a PrimeVue component that's hard to test in unit tests
     // We test the behavior: clicking the button should trigger the show function
     
-    await wrapper.find('button.hint-btn').trigger('click')
+    await wrapper.find('button[type="button"]').trigger('click')
     
     // After setTimeout(0), activePopoverId should be set and hideActivePopover should be assigned
     await new Promise(resolve => setTimeout(resolve, 10))
@@ -64,7 +64,7 @@ describe('FieldHint', () => {
     
     // Mount first FieldHint
     const wrapper1 = mountHint('input-1', activeId, hideFn)
-    await wrapper1.find('button.hint-btn').trigger('click')
+    await wrapper1.find('button[type="button"]').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 10))
     expect(activeId.value).toBe('input-1')
     const firstHideFn = hideFn.value
@@ -72,7 +72,7 @@ describe('FieldHint', () => {
     
     // Mount second FieldHint with same refs
     const wrapper2 = mountHint('input-2', activeId, hideFn)
-    await wrapper2.find('button.hint-btn').trigger('click')
+    await wrapper2.find('button[type="button"]').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 10))
     
     // Now activePopoverId should be 'input-2'

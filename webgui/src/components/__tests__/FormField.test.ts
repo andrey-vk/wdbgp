@@ -32,15 +32,15 @@ describe('FormField', () => {
         },
       },
     })
-    // FieldHint component renders a button with class hint-btn
-    expect(wrapper.find('button.hint-btn').exists()).toBe(true)
+    // FieldHint component renders a button with type="button"
+    expect(wrapper.find('button[type="button"]').exists()).toBe(true)
   })
 
   it('does NOT render hint button when hint is not set', () => {
     const wrapper = mount(FormField, {
       props: { label: 'Test', inputId: 'test' },
     })
-    expect(wrapper.find('button.hint-btn').exists()).toBe(false)
+    expect(wrapper.find('button[type="button"]').exists()).toBe(false)
   })
 
   it('renders default slot content', () => {

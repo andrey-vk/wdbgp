@@ -1,8 +1,7 @@
 <template>
   <div
     id="hero"
-    class="flex flex-col pt-6 px-6 lg:px-20 overflow-hidden"
-    style="background: linear-gradient(0deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.2)), radial-gradient(77.36% 256.97% at 77.36% 57.52%, rgb(238, 239, 175) 0%, rgb(195, 227, 250) 100%); clip-path: ellipse(150% 87% at 93% 13%)"
+    class="flex flex-col pt-6 px-6 lg:px-20 overflow-hidden bg-[linear-gradient(0deg,rgba(255,255,255,0.2),rgba(255,255,255,0.2)),radial-gradient(77.36%_256.97%_at_77.36%_57.52%,rgb(238,239,175)_0%,rgb(195,227,250)_100%)] [clip-path:ellipse(150%_87%_at_93%_13%)]"
   >
     <div class="mx-6 md:mx-20 mt-0 md:mt-6">
       <h1 class="text-6xl font-bold text-gray-900 leading-tight">

@@ -5,9 +5,9 @@ defineProps<{ label: string; hint?: string; inputId: string }>()
 </script>
 
 <template>
-  <div class="form-field">
-    <div class="label-row">
-      <label :for="inputId">{{ label }}</label>
+  <div class="flex flex-col gap-1">
+    <div class="flex items-center gap-1.5 flex-wrap">
+      <label :for="inputId" class="font-medium text-sm">{{ label }}</label>
       <slot name="tags" />
       <FieldHint
         v-if="hint"
@@ -19,8 +19,3 @@ defineProps<{ label: string; hint?: string; inputId: string }>()
   </div>
 </template>
 
-<style scoped>
-.form-field { display: flex; flex-direction: column; gap: 0.25rem; }
-.label-row { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
-.label-row label { font-weight: 500; font-size: 0.875rem; }
-</style>

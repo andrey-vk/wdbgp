@@ -997,7 +997,7 @@ async function toggleEnabled() {
     v-model:visible="showAddDialog"
     modal
     :header="t('users.credential_add')"
-    :style="{ width: '24rem' }"
+    class="w-96"
   >
     <div class="flex flex-col gap-4">
       <FormField
@@ -1037,7 +1037,7 @@ async function toggleEnabled() {
     v-model:visible="showResetPwDialog"
     modal
     :header="t('users.credential_reset_pw')"
-    :style="{ width: '24rem' }"
+    class="w-96"
   >
     <p class="m-0 mb-4 text-surface-500 dark:text-surface-400">{{ resetTarget }}</p>
     <FormField

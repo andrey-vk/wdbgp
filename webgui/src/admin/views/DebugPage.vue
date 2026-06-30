@@ -71,14 +71,14 @@ function pct(v: number | undefined | null): string {
 </script>
 
 <template>
-  <div class="debug-page">
-    <h1 class="page-title">
+  <div class="max-w-[900px]">
+    <h1 class="mb-6">
       {{ t('debug.title') }}
     </h1>
     <div class="card">
-      <div class="debug-form">
-        <div class="form-row">
-          <div class="cidr-field">
+      <div class="py-2">
+        <div class="flex items-end gap-4">
+          <div class="flex-1">
             <FormField :label="t('debug.cidr')" input-id="cidr-input" :hint="'debug.cidr_hint'">
               <InputText
                 id="cidr-input"
@@ -88,7 +88,7 @@ function pct(v: number | undefined | null): string {
               />
             </FormField>
           </div>
-          <div class="mode-field">
+          <div class="w-[220px]">
             <FormField :label="t('debug.mode')" input-id="mode-select">
               <Select
                 id="mode-select"
@@ -100,7 +100,7 @@ function pct(v: number | undefined | null): string {
               />
             </FormField>
           </div>
-          <div class="analyze-btn">
+          <div class="pb-px">
             <Button
               :label="t('debug.analyze')"
               icon="pi pi-search"
@@ -132,7 +132,7 @@ function pct(v: number | undefined | null): string {
       v-else-if="!result"
       class="card mt-3"
     >
-      <p class="no-results">{{ t('debug.no_results') }}</p>
+      <p class="text-[var(--p-text-muted-color)] text-center py-4 m-0">{{ t('debug.no_results') }}</p>
     </div>
 
     <template v-else>
@@ -140,77 +140,77 @@ function pct(v: number | undefined | null): string {
         v-if="result.full_services.length === 0 && result.partial_services.length === 0"
         class="card mt-3"
       >
-        <p class="no-results">{{ t('debug.empty') }}</p>
+        <p class="text-[var(--p-text-muted-color)] text-center py-4 m-0">{{ t('debug.empty') }}</p>
       </div>
 
       <div
         v-if="result.full_services.length > 0"
-        class="card result-card mt-3"
+        class="card mt-3 px-6 py-5"
       >
-        <div class="result-header">
-          <h2>{{ t('debug.full_coverage') }}</h2>
+        <div class="mb-3 pb-2 border-b border-[var(--p-surface-border)]">
+          <h2 class="m-0 text-base font-semibold">{{ t('debug.full_coverage') }}</h2>
         </div>
-        <div class="result-rows">
+        <div class="flex flex-col gap-1">
           <div
             v-for="item in result.full_services"
             :key="`full-${item.category}-${item.service}`"
-            class="result-row"
+            class="flex justify-between items-center py-1.5"
           >
-            <span class="item-name">{{ item.category }} / {{ item.service }}</span>
-            <span class="item-pct full-pct">{{ pct(item.percentage) }}</span>
+            <span class="text-[var(--p-text-color)]">{{ item.category }} / {{ item.service }}</span>
+            <span class="font-semibold text-sm min-w-[3.5rem] text-right text-[var(--p-green-500)]">{{ pct(item.percentage) }}</span>
           </div>
         </div>
       </div>
 
       <div
         v-if="result.partial_services.length > 0"
-        class="card result-card mt-3"
+        class="card mt-3 px-6 py-5"
       >
-        <div class="result-header">
-          <h2>{{ t('debug.partial_coverage') }}</h2>
+        <div class="mb-3 pb-2 border-b border-[var(--p-surface-border)]">
+          <h2 class="m-0 text-base font-semibold">{{ t('debug.partial_coverage') }}</h2>
         </div>
-        <div class="result-rows">
+        <div class="flex flex-col gap-1">
           <div
             v-for="item in result.partial_services"
             :key="`partial-${item.category}-${item.service}`"
-            class="result-row"
+            class="flex justify-between items-center py-1.5"
           >
-            <span class="item-name">{{ item.category }} / {{ item.service }}</span>
-            <span class="item-pct partial-pct">{{ pct(item.percentage) }}</span>
+            <span class="text-[var(--p-text-color)]">{{ item.category }} / {{ item.service }}</span>
+            <span class="font-semibold text-sm min-w-[3.5rem] text-right text-[var(--p-orange-500)]">{{ pct(item.percentage) }}</span>
           </div>
         </div>
       </div>
 
       <div
         v-if="result.combined_services.length > 0"
-        class="card result-card mt-3"
+        class="card mt-3 px-6 py-5"
       >
-        <div class="result-header">
-          <h2>{{ t('debug.combined_coverage') }}</h2>
+        <div class="mb-3 pb-2 border-b border-[var(--p-surface-border)]">
+          <h2 class="m-0 text-base font-semibold">{{ t('debug.combined_coverage') }}</h2>
         </div>
-        <div class="result-rows">
-          <div class="result-row combined-row">
-            <span class="item-name">{{ t('debug.combined_coverage') }}</span>
-            <span class="item-pct combined-pct">{{ pct(result.combined_percentage) }}</span>
+        <div class="flex flex-col gap-1">
+          <div class="flex justify-between items-center py-2 border-t border-[var(--p-surface-border)] mt-1">
+            <span class="text-[var(--p-text-color)]">{{ t('debug.combined_coverage') }}</span>
+            <span class="font-semibold text-sm min-w-[3.5rem] text-right text-[var(--p-primary-color)]">{{ pct(result.combined_percentage) }}</span>
           </div>
         </div>
       </div>
 
       <div
         v-if="result.users.length > 0"
-        class="card result-card mt-3"
+        class="card mt-3 px-6 py-5"
       >
-        <div class="result-header">
-          <h2>{{ t('debug.user_impact') }}</h2>
+        <div class="mb-3 pb-2 border-b border-[var(--p-surface-border)]">
+          <h2 class="m-0 text-base font-semibold">{{ t('debug.user_impact') }}</h2>
         </div>
-        <div class="user-table-wrapper">
-          <table class="user-table">
+        <div class="overflow-x-auto">
+          <table class="w-full border-collapse text-sm">
             <thead>
               <tr>
-                <th>{{ t('debug.user_name') }}</th>
-                <th>{{ t('debug.before') }}</th>
-                <th>{{ t('debug.after') }}</th>
-                <th>{{ t('debug.matching_services') }}</th>
+                <th class="text-left px-3 py-2 border-b border-[var(--p-surface-border)] text-[var(--p-text-muted-color)] font-semibold whitespace-nowrap">{{ t('debug.user_name') }}</th>
+                <th class="text-left px-3 py-2 border-b border-[var(--p-surface-border)] text-[var(--p-text-muted-color)] font-semibold whitespace-nowrap">{{ t('debug.before') }}</th>
+                <th class="text-left px-3 py-2 border-b border-[var(--p-surface-border)] text-[var(--p-text-muted-color)] font-semibold whitespace-nowrap">{{ t('debug.after') }}</th>
+                <th class="text-left px-3 py-2 border-b border-[var(--p-surface-border)] text-[var(--p-text-muted-color)] font-semibold whitespace-nowrap">{{ t('debug.matching_services') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -218,10 +218,10 @@ function pct(v: number | undefined | null): string {
                 v-for="user in result.users"
                 :key="`user-${user.name}`"
               >
-                <td>{{ user.name }}</td>
-                <td>{{ pct(user.before_percentage) }}</td>
-                <td>{{ pct(user.after_percentage) }}</td>
-                <td class="matches-cell">{{ user.matches?.join(', ') }}</td>
+                <td class="px-3 py-2 border-b border-[var(--p-surface-border)]">{{ user.name }}</td>
+                <td class="px-3 py-2 border-b border-[var(--p-surface-border)]">{{ pct(user.before_percentage) }}</td>
+                <td class="px-3 py-2 border-b border-[var(--p-surface-border)]">{{ pct(user.after_percentage) }}</td>
+                <td class="px-3 py-2 border-b border-[var(--p-surface-border)] text-xs text-[var(--p-text-muted-color)]">{{ user.matches?.join(', ') }}</td>
               </tr>
             </tbody>
           </table>
@@ -231,105 +231,3 @@ function pct(v: number | undefined | null): string {
   </div>
 </template>
 
-<style scoped>
-.debug-page { max-width: 900px; }
-.page-title { margin-bottom: 1.5rem; }
-
-.debug-form {
-  padding: 0.5rem 0;
-}
-
-.form-row {
-  display: flex;
-  align-items: flex-end;
-  gap: 1rem;
-}
-
-.cidr-field { flex: 1; }
-.mode-field { width: 220px; }
-.analyze-btn { padding-bottom: 1px; }
-
-.result-card { padding: 1.25rem 1.5rem; }
-
-.result-header {
-  margin-bottom: 0.75rem;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px solid var(--p-surface-border);
-}
-
-.result-header h2 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-}
-
-.result-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.result-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.35rem 0;
-}
-
-.item-name {
-  color: var(--p-text-color);
-}
-
-.item-pct {
-  font-weight: 600;
-  font-size: 0.9rem;
-  min-width: 3.5rem;
-  text-align: right;
-}
-
-.full-pct { color: var(--p-green-500); }
-.partial-pct { color: var(--p-orange-500); }
-.combined-pct { color: var(--p-primary-color); }
-
-.combined-row {
-  padding: 0.5rem 0;
-  border-top: 1px solid var(--p-surface-border);
-  margin-top: 0.25rem;
-}
-
-.user-table-wrapper {
-  overflow-x: auto;
-}
-
-.user-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.875rem;
-}
-
-.user-table th {
-  text-align: left;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--p-surface-border);
-  color: var(--p-text-muted-color);
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.user-table td {
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--p-surface-border);
-}
-
-.matches-cell {
-  font-size: 0.8rem;
-  color: var(--p-text-muted-color);
-}
-
-.no-results {
-  color: var(--p-text-muted-color);
-  text-align: center;
-  padding: 1rem 0;
-  margin: 0;
-}
-</style>
