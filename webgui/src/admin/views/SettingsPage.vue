@@ -63,18 +63,27 @@ onMounted(async () => {
     loading.value = false
   }
 
-  window.addEventListener('beforeunload', handleBeforeUnload)
 })
 
-let initialLoad = true
+let valuesInitialLoad = true
+let filtersInitialLoad = true
+
 watch(values, () => {
-  if (initialLoad) { initialLoad = false; return }
+  if (valuesInitialLoad) { valuesInitialLoad = false; return }
   dirty.value = true
 }, { deep: true })
 
 watch([filterAllow, filterDeny], () => {
-  if (initialLoad) { initialLoad = false; return }
+  if (filtersInitialLoad) { filtersInitialLoad = false; return }
   dirty.value = true
+})
+
+watch(dirty, (val) => {
+  if (val) {
+    window.addEventListener('beforeunload', handleBeforeUnload)
+  } else {
+    window.removeEventListener('beforeunload', handleBeforeUnload)
+  }
 })
 
 onBeforeRouteLeave((_to, _from, next) => {
@@ -219,7 +228,7 @@ async function handlePurgeMetrics() {
         />
       </div>
 
-      <div class="sticky bottom-0 flex justify-end py-3 mt-4 border-t border-[var(--p-surface-border)] bg-[var(--p-surface-ground)]">
+      <div class="sticky bottom-0 flex justify-end py-3 mt-4 bg-[var(--p-surface-card)]">
         <Button
           :label="t('settings.save')"
           icon="pi pi-check"
