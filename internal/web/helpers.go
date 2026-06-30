@@ -23,9 +23,3 @@ func fieldByKey(key string) *settingField {
 	return nil
 }
 
-func boolStr(v bool) string {
-	if v {
-		return "true"
-	}
-	return "false"
-}

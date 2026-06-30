@@ -689,19 +689,17 @@ func TestAdminSettingsAPI(t *testing.T) {
 		t.Fatalf("GET settings: status=%d", rec.Code)
 	}
 	var resp struct {
-		Sections []struct {
-			Name   string `json:"name"`
-			Fields []struct {
-				Key  string `json:"key"`
-				Type string `json:"type"`
-			} `json:"fields"`
-		} `json:"sections"`
+		Settings     settings.SettingsJSON `json:"settings"`
+		RouteFilters struct {
+			FilterAllow string `json:"filter_allow"`
+			FilterDeny  string `json:"filter_deny"`
+		} `json:"route_filters"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Sections) == 0 {
-		t.Fatal("no settings sections returned")
+	if resp.Settings.Port.DefaultValue != 8080 {
+		t.Fatal("port default should be 8080 in typed SettingsJSON")
 	}
 
 	// PUT settings
