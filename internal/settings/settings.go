@@ -6,48 +6,48 @@ import (
 	"path/filepath"
 )
 
-// Settings holds all configuration fields as typed Setting[T] pointers.
+// Settings holds all configuration fields as typed Setting interfaces.
 type Settings struct {
-	ActiveDial                    *Setting[bool]
-	AdapterBackupDir              *Setting[string]
-	AdapterBackupMax              *Setting[int]
-	AdminCookieSecure             *Setting[string]
-	AdminPassword                 *Setting[string]
-	AllowDynamicPeers             *Setting[bool]
-	AutoRestoreEnabled            *Setting[bool]
-	BGPPort                       *Setting[int]
-	BackupDir                     *Setting[string]
-	BackupEnabled                 *Setting[bool]
-	DBPath                        *Setting[string]
-	DefaultLanguage               *Setting[string]
-	DefaultWebAuth                *Setting[string]
-	Host                          *Setting[string]
-	JSMaxCallStack                *Setting[int]
-	JSMaxEntries                  *Setting[int]
-	JSMaxRequests                 *Setting[int]
-	JSMaxResponseBytes            *Setting[int]
-	JSMaxSourceBytes              *Setting[int]
-	JSMaxTotalBytes               *Setting[int]
-	JSTimeout                     *Setting[int]
-	LocalASN                      *Setting[int]
-	LocalAddressV4                *Setting[string]
-	LocalAddressV6                *Setting[string]
-	LogFormat                     *Setting[string]
-	LogLevel                      *Setting[string]
-	MetricsEnabled                *Setting[bool]
-	MetricsHistoryDays            *Setting[int]
-	Port                          *Setting[int]
-	RateLimitAdmin                *Setting[int]
-	RateLimitLogin                *Setting[int]
-	RequirePasswordForNonUniqueIP *Setting[bool]
-	RouterID                      *Setting[string]
-	SecurityHeaders               *Setting[bool]
-	SessionMaxAge                 *Setting[int]
-	SessionSecret                 *Setting[string]
-	StatusAllowed                 *Setting[string]
-	StatusToken                   *Setting[string]
-	SyncInterval                  *Setting[int]
-	TrustProxyHeaders             *Setting[bool]
+	ActiveDial                    Setting[bool, bool]
+	AdapterBackupDir              Setting[string, string]
+	AdapterBackupMax              Setting[int, int]
+	AdminCookieSecure             Setting[string, string]
+	AdminPassword                 Setting[string, string]
+	AllowDynamicPeers             Setting[bool, bool]
+	AutoRestoreEnabled            Setting[bool, bool]
+	BGPPort                       Setting[int, int]
+	BackupDir                     Setting[string, string]
+	BackupEnabled                 Setting[bool, bool]
+	DBPath                        Setting[string, string]
+	DefaultLanguage               Setting[string, string]
+	DefaultWebAuth                Setting[string, string]
+	Host                          Setting[string, string]
+	JSMaxCallStack                Setting[int, int]
+	JSMaxEntries                  Setting[int, int]
+	JSMaxRequests                 Setting[int, int]
+	JSMaxResponseBytes            Setting[int, int]
+	JSMaxSourceBytes              Setting[int, int]
+	JSMaxTotalBytes               Setting[int, int]
+	JSTimeout                     Setting[int, int]
+	LocalASN                      Setting[int, int]
+	LocalAddressV4                Setting[string, string]
+	LocalAddressV6                Setting[string, string]
+	LogFormat                     Setting[string, string]
+	LogLevel                      Setting[string, string]
+	MetricsEnabled                Setting[bool, bool]
+	MetricsHistoryDays            Setting[int, int]
+	Port                          Setting[int, int]
+	RateLimitAdmin                Setting[int, int]
+	RateLimitLogin                Setting[int, int]
+	RequirePasswordForNonUniqueIP Setting[bool, bool]
+	RouterID                      Setting[string, string]
+	SecurityHeaders               Setting[bool, bool]
+	SessionMaxAge                 Setting[int, int]
+	SessionSecret                 Setting[string, string]
+	StatusAllowed                 Setting[string, string]
+	StatusToken                   Setting[string, string]
+	SyncInterval                  Setting[int, int]
+	TrustProxyHeaders             Setting[bool, bool]
 }
 
 // SettingsJSON is the JSON-serializable representation of all settings.
@@ -94,7 +94,7 @@ type SettingsJSON struct {
 	TrustProxyHeaders             SettingJSON[bool]   `json:"trust_proxy_headers"`
 }
 
-// New creates a Settings instance with all 40 fields initialized from env vars,
+// New creates a Settings instance with all fields initialized from env vars,
 // DB values, and computed defaults.
 func New(store Store) (*Settings, error) {
 	// Load all DB settings once to avoid one DB query per field.
@@ -113,241 +113,241 @@ func New(store Store) (*Settings, error) {
 	s := &Settings{}
 
 	// DBPath: env-only, no dbKey.
-	s.DBPath, err = newSetting("/data/wdbgp.sqlite3", "", "WDBGP_DB", parseString, store, dbSettings)
+	s.DBPath, err = newSimple("/data/wdbgp.sqlite3", "", "WDBGP_DB", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// Host.
-	s.Host, err = newSetting("0.0.0.0", "host", "WDBGP_HOST", parseString, store, dbSettings)
+	s.Host, err = newSimple("0.0.0.0", "host", "WDBGP_HOST", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// Port.
-	s.Port, err = newSetting(8080, "port", "WDBGP_PORT", parseInt, store, dbSettings)
+	s.Port, err = newSimple(8080, "port", "WDBGP_PORT", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// BGPPort.
-	s.BGPPort, err = newSetting(179, "bgp_port", "WDBGP_BGP_PORT", parseInt, store, dbSettings)
+	s.BGPPort, err = newSimple(179, "bgp_port", "WDBGP_BGP_PORT", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LocalASN.
-	s.LocalASN, err = newSetting(64512, "local_asn", "WDBGP_LOCAL_ASN", parseInt, store, dbSettings)
+	s.LocalASN, err = newSimple(64512, "local_asn", "WDBGP_LOCAL_ASN", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// RouterID.
-	s.RouterID, err = newSetting("192.0.2.1", "router_id", "WDBGP_ROUTER_ID", parseString, store, dbSettings)
+	s.RouterID, err = newSimple("192.0.2.1", "router_id", "WDBGP_ROUTER_ID", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LocalAddressV4.
-	s.LocalAddressV4, err = newSetting("192.0.2.2", "local_address_v4", "WDBGP_BGP_LOCAL_ADDRESS", parseString, store, dbSettings)
+	s.LocalAddressV4, err = newSimple("192.0.2.2", "local_address_v4", "WDBGP_BGP_LOCAL_ADDRESS", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LocalAddressV6.
-	s.LocalAddressV6, err = newSetting("", "local_address_v6", "WDBGP_BGP_LOCAL_ADDRESS_V6", parseString, store, dbSettings)
+	s.LocalAddressV6, err = newSimple("", "local_address_v6", "WDBGP_BGP_LOCAL_ADDRESS_V6", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AdminPassword: env-only.
-	s.AdminPassword, err = newSetting("", "", "WDBGP_ADMIN_PASSWORD", parseString, store, dbSettings)
+	s.AdminPassword, err = newSimple("", "", "WDBGP_ADMIN_PASSWORD", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// SessionSecret: env-only.
-	s.SessionSecret, err = newSetting("", "", "WDBGP_SESSION_SECRET", parseString, store, dbSettings)
+	s.SessionSecret, err = newSimple("", "", "WDBGP_SESSION_SECRET", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AdminCookieSecure.
-	s.AdminCookieSecure, err = newSetting("auto", "admin_cookie_secure", "WDBGP_ADMIN_COOKIE_SECURE", parseString, store, dbSettings)
+	s.AdminCookieSecure, err = newSimple("auto", "admin_cookie_secure", "WDBGP_ADMIN_COOKIE_SECURE", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// DefaultLanguage.
-	s.DefaultLanguage, err = newSetting("en", "default_language", "WDBGP_DEFAULT_LANGUAGE", parseString, store, dbSettings)
+	s.DefaultLanguage, err = newSimple("en", "default_language", "WDBGP_DEFAULT_LANGUAGE", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// TrustProxyHeaders.
-	s.TrustProxyHeaders, err = newSetting(false, "trust_proxy_headers", "WDBGP_TRUST_PROXY_HEADERS", parseBool, store, dbSettings)
+	s.TrustProxyHeaders, err = newSimple(false, "trust_proxy_headers", "WDBGP_TRUST_PROXY_HEADERS", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// SyncInterval.
-	s.SyncInterval, err = newSetting(3600, "sync_interval", "WDBGP_SYNC_INTERVAL", parseInt, store, dbSettings)
+	s.SyncInterval, err = newSimple(3600, "sync_interval", "WDBGP_SYNC_INTERVAL", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// SecurityHeaders.
-	s.SecurityHeaders, err = newSetting(false, "security_headers", "WDBGP_SECURITY_HEADERS", parseBool, store, dbSettings)
+	s.SecurityHeaders, err = newSimple(false, "security_headers", "WDBGP_SECURITY_HEADERS", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// RateLimitLogin.
-	s.RateLimitLogin, err = newSetting(5, "rate_limit_login", "WDBGP_RATE_LIMIT_LOGIN", parseInt, store, dbSettings)
+	s.RateLimitLogin, err = newSimple(5, "rate_limit_login", "WDBGP_RATE_LIMIT_LOGIN", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// RateLimitAdmin.
-	s.RateLimitAdmin, err = newSetting(30, "rate_limit_admin", "WDBGP_RATE_LIMIT_ADMIN", parseInt, store, dbSettings)
+	s.RateLimitAdmin, err = newSimple(30, "rate_limit_admin", "WDBGP_RATE_LIMIT_ADMIN", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// SessionMaxAge.
-	s.SessionMaxAge, err = newSetting(28800, "session_max_age", "WDBGP_SESSION_MAX_AGE", parseInt, store, dbSettings)
+	s.SessionMaxAge, err = newSimple(28800, "session_max_age", "WDBGP_SESSION_MAX_AGE", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LogLevel.
-	s.LogLevel, err = newSetting("INFO", "log_level", "WDBGP_LOG_LEVEL", parseString, store, dbSettings)
+	s.LogLevel, err = newSimple("INFO", "log_level", "WDBGP_LOG_LEVEL", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LogFormat.
-	s.LogFormat, err = newSetting("text", "log_format", "WDBGP_LOG_FORMAT", parseString, store, dbSettings)
+	s.LogFormat, err = newSimple("text", "log_format", "WDBGP_LOG_FORMAT", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSTimeout.
-	s.JSTimeout, err = newSetting(120, "js_timeout", "WDBGP_JS_TIMEOUT", parseInt, store, dbSettings)
+	s.JSTimeout, err = newSimple(120, "js_timeout", "WDBGP_JS_TIMEOUT", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxSourceBytes.
-	s.JSMaxSourceBytes, err = newSetting(1048576, "js_max_source", "WDBGP_JS_MAX_SOURCE", parseInt, store, dbSettings)
+	s.JSMaxSourceBytes, err = newSimple(1048576, "js_max_source", "WDBGP_JS_MAX_SOURCE", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxResponseBytes.
-	s.JSMaxResponseBytes, err = newSetting(16777216, "js_max_response", "WDBGP_JS_MAX_RESPONSE", parseInt, store, dbSettings)
+	s.JSMaxResponseBytes, err = newSimple(16777216, "js_max_response", "WDBGP_JS_MAX_RESPONSE", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxTotalBytes.
-	s.JSMaxTotalBytes, err = newSetting(67108864, "js_max_total", "WDBGP_JS_MAX_TOTAL", parseInt, store, dbSettings)
+	s.JSMaxTotalBytes, err = newSimple(67108864, "js_max_total", "WDBGP_JS_MAX_TOTAL", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxEntries.
-	s.JSMaxEntries, err = newSetting(1000000, "js_max_entries", "WDBGP_JS_MAX_ENTRIES", parseInt, store, dbSettings)
+	s.JSMaxEntries, err = newSimple(1000000, "js_max_entries", "WDBGP_JS_MAX_ENTRIES", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxRequests.
-	s.JSMaxRequests, err = newSetting(200, "js_max_requests", "WDBGP_JS_MAX_REQUESTS", parseInt, store, dbSettings)
+	s.JSMaxRequests, err = newSimple(200, "js_max_requests", "WDBGP_JS_MAX_REQUESTS", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxCallStack.
-	s.JSMaxCallStack, err = newSetting(1000, "js_max_call_stack", "WDBGP_JS_MAX_CALL_STACK", parseInt, store, dbSettings)
+	s.JSMaxCallStack, err = newSimple(1000, "js_max_call_stack", "WDBGP_JS_MAX_CALL_STACK", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// DefaultWebAuth.
-	s.DefaultWebAuth, err = newSetting("network", "default_web_auth", "WDBGP_DEFAULT_WEB_AUTH", parseString, store, dbSettings)
+	s.DefaultWebAuth, err = newSimple("network", "default_web_auth", "WDBGP_DEFAULT_WEB_AUTH", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// StatusAllowed.
-	s.StatusAllowed, err = newSetting("", "status_allowed", "WDBGP_STATUS_ALLOWED", parseString, store, dbSettings)
+	s.StatusAllowed, err = newSimple("", "status_allowed", "WDBGP_STATUS_ALLOWED", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// StatusToken.
-	s.StatusToken, err = newSetting("", "status_token", "WDBGP_STATUS_TOKEN", parseString, store, dbSettings)
+	s.StatusToken, err = newSimple("", "status_token", "WDBGP_STATUS_TOKEN", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AdapterBackupDir: computed default depends on DBPath.
-	s.AdapterBackupDir, err = newSetting(dbDir+"/backup/adapters", "adapter_backup_dir", "WDBGP_ADAPTER_BACKUP_DIR", parseString, store, dbSettings)
+	s.AdapterBackupDir, err = newSimple(dbDir+"/backup/adapters", "adapter_backup_dir", "WDBGP_ADAPTER_BACKUP_DIR", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AdapterBackupMax.
-	s.AdapterBackupMax, err = newSetting(10, "adapter_backup_max", "WDBGP_ADAPTER_BACKUP_MAX", parseInt, store, dbSettings)
+	s.AdapterBackupMax, err = newSimple(10, "adapter_backup_max", "WDBGP_ADAPTER_BACKUP_MAX", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// RequirePasswordForNonUniqueIP: env-only.
-	s.RequirePasswordForNonUniqueIP, err = newSetting(true, "", "WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP", parseBool, store, dbSettings)
+	s.RequirePasswordForNonUniqueIP, err = newSimple(true, "", "WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AllowDynamicPeers: env-only.
-	s.AllowDynamicPeers, err = newSetting(false, "", "WDBGP_ALLOW_DYNAMIC_PEERS", parseBool, store, dbSettings)
+	s.AllowDynamicPeers, err = newSimple(false, "", "WDBGP_ALLOW_DYNAMIC_PEERS", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// ActiveDial: env-only.
-	s.ActiveDial, err = newSetting(true, "", "WDBGP_ACTIVE_DIAL", parseBool, store, dbSettings)
+	s.ActiveDial, err = newSimple(true, "", "WDBGP_ACTIVE_DIAL", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// BackupEnabled: env-only.
-	s.BackupEnabled, err = newSetting(true, "", "WDBGP_BACKUP_ENABLED", parseBool, store, dbSettings)
+	s.BackupEnabled, err = newSimple(true, "", "WDBGP_BACKUP_ENABLED", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// BackupDir: env-only, computed default depends on DBPath.
-	s.BackupDir, err = newSetting(dbDir, "", "WDBGP_BACKUP_DIR", parseString, store, dbSettings)
+	s.BackupDir, err = newSimple(dbDir, "", "WDBGP_BACKUP_DIR", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AutoRestoreEnabled: env-only.
-	s.AutoRestoreEnabled, err = newSetting(false, "", "WDBGP_AUTO_RESTORE_ENABLED", parseBool, store, dbSettings)
+	s.AutoRestoreEnabled, err = newSimple(false, "", "WDBGP_AUTO_RESTORE_ENABLED", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// MetricsEnabled: DB-only (no env var).
-	s.MetricsEnabled, err = newSetting(false, "metrics_enabled", "", parseBool, store, dbSettings)
+	s.MetricsEnabled, err = newSimple(false, "metrics_enabled", "", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// MetricsHistoryDays: DB-only (no env var).
-	s.MetricsHistoryDays, err = newSetting(14, "metrics_history_days", "", parseInt, store, dbSettings)
+	s.MetricsHistoryDays, err = newSimple(14, "metrics_history_days", "", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -356,47 +356,66 @@ func New(store Store) (*Settings, error) {
 }
 
 // JSON returns a serializable representation of all settings.
-func (s *Settings) JSON() SettingsJSON {
-	return SettingsJSON{
-		ActiveDial:                    s.ActiveDial.JSON(),
-		AdapterBackupDir:              s.AdapterBackupDir.JSON(),
-		AdapterBackupMax:              s.AdapterBackupMax.JSON(),
-		AdminCookieSecure:             s.AdminCookieSecure.JSON(),
-		AdminPassword:                 s.AdminPassword.JSON(),
-		AllowDynamicPeers:             s.AllowDynamicPeers.JSON(),
-		AutoRestoreEnabled:            s.AutoRestoreEnabled.JSON(),
-		BGPPort:                       s.BGPPort.JSON(),
-		BackupDir:                     s.BackupDir.JSON(),
-		BackupEnabled:                 s.BackupEnabled.JSON(),
-		DBPath:                        s.DBPath.JSON(),
-		DefaultLanguage:               s.DefaultLanguage.JSON(),
-		DefaultWebAuth:                s.DefaultWebAuth.JSON(),
-		Host:                          s.Host.JSON(),
-		JSMaxCallStack:                s.JSMaxCallStack.JSON(),
-		JSMaxEntries:                  s.JSMaxEntries.JSON(),
-		JSMaxRequests:                 s.JSMaxRequests.JSON(),
-		JSMaxResponseBytes:            s.JSMaxResponseBytes.JSON(),
-		JSMaxSourceBytes:              s.JSMaxSourceBytes.JSON(),
-		JSMaxTotalBytes:               s.JSMaxTotalBytes.JSON(),
-		JSTimeout:                     s.JSTimeout.JSON(),
-		LocalASN:                      s.LocalASN.JSON(),
-		LocalAddressV4:                s.LocalAddressV4.JSON(),
-		LocalAddressV6:                s.LocalAddressV6.JSON(),
-		LogFormat:                     s.LogFormat.JSON(),
-		LogLevel:                      s.LogLevel.JSON(),
-		MetricsEnabled:                s.MetricsEnabled.JSON(),
-		MetricsHistoryDays:            s.MetricsHistoryDays.JSON(),
-		Port:                          s.Port.JSON(),
-		RateLimitAdmin:                s.RateLimitAdmin.JSON(),
-		RateLimitLogin:                s.RateLimitLogin.JSON(),
-		RequirePasswordForNonUniqueIP: s.RequirePasswordForNonUniqueIP.JSON(),
-		RouterID:                      s.RouterID.JSON(),
-		SecurityHeaders:               s.SecurityHeaders.JSON(),
-		SessionMaxAge:                 s.SessionMaxAge.JSON(),
-		SessionSecret:                 s.SessionSecret.JSON(),
-		StatusAllowed:                 s.StatusAllowed.JSON(),
-		StatusToken:                   s.StatusToken.JSON(),
-		SyncInterval:                  s.SyncInterval.JSON(),
-		TrustProxyHeaders:             s.TrustProxyHeaders.JSON(),
+func (s *Settings) JSON(ctx context.Context) SettingsJSON {
+	dbSettings, _ := s.store().GetAllSettings(ctx)
+	if dbSettings == nil {
+		dbSettings = make(map[string]string)
 	}
+	return SettingsJSON{
+		ActiveDial:                    s.ActiveDial.JSON(dbSettings),
+		AdapterBackupDir:              s.AdapterBackupDir.JSON(dbSettings),
+		AdapterBackupMax:              s.AdapterBackupMax.JSON(dbSettings),
+		AdminCookieSecure:             s.AdminCookieSecure.JSON(dbSettings),
+		AdminPassword:                 s.AdminPassword.JSON(dbSettings),
+		AllowDynamicPeers:             s.AllowDynamicPeers.JSON(dbSettings),
+		AutoRestoreEnabled:            s.AutoRestoreEnabled.JSON(dbSettings),
+		BGPPort:                       s.BGPPort.JSON(dbSettings),
+		BackupDir:                     s.BackupDir.JSON(dbSettings),
+		BackupEnabled:                 s.BackupEnabled.JSON(dbSettings),
+		DBPath:                        s.DBPath.JSON(dbSettings),
+		DefaultLanguage:               s.DefaultLanguage.JSON(dbSettings),
+		DefaultWebAuth:                s.DefaultWebAuth.JSON(dbSettings),
+		Host:                          s.Host.JSON(dbSettings),
+		JSMaxCallStack:                s.JSMaxCallStack.JSON(dbSettings),
+		JSMaxEntries:                  s.JSMaxEntries.JSON(dbSettings),
+		JSMaxRequests:                 s.JSMaxRequests.JSON(dbSettings),
+		JSMaxResponseBytes:            s.JSMaxResponseBytes.JSON(dbSettings),
+		JSMaxSourceBytes:              s.JSMaxSourceBytes.JSON(dbSettings),
+		JSMaxTotalBytes:               s.JSMaxTotalBytes.JSON(dbSettings),
+		JSTimeout:                     s.JSTimeout.JSON(dbSettings),
+		LocalASN:                      s.LocalASN.JSON(dbSettings),
+		LocalAddressV4:                s.LocalAddressV4.JSON(dbSettings),
+		LocalAddressV6:                s.LocalAddressV6.JSON(dbSettings),
+		LogFormat:                     s.LogFormat.JSON(dbSettings),
+		LogLevel:                      s.LogLevel.JSON(dbSettings),
+		MetricsEnabled:                s.MetricsEnabled.JSON(dbSettings),
+		MetricsHistoryDays:            s.MetricsHistoryDays.JSON(dbSettings),
+		Port:                          s.Port.JSON(dbSettings),
+		RateLimitAdmin:                s.RateLimitAdmin.JSON(dbSettings),
+		RateLimitLogin:                s.RateLimitLogin.JSON(dbSettings),
+		RequirePasswordForNonUniqueIP: s.RequirePasswordForNonUniqueIP.JSON(dbSettings),
+		RouterID:                      s.RouterID.JSON(dbSettings),
+		SecurityHeaders:               s.SecurityHeaders.JSON(dbSettings),
+		SessionMaxAge:                 s.SessionMaxAge.JSON(dbSettings),
+		SessionSecret:                 s.SessionSecret.JSON(dbSettings),
+		StatusAllowed:                 s.StatusAllowed.JSON(dbSettings),
+		StatusToken:                   s.StatusToken.JSON(dbSettings),
+		SyncInterval:                  s.SyncInterval.JSON(dbSettings),
+		TrustProxyHeaders:             s.TrustProxyHeaders.JSON(dbSettings),
+	}
+}
+
+// store returns the Store from the first non-nil setting field.
+// All fields share the same store, so we just pick the first one.
+func (s *Settings) store() Store {
+	// Any field will do — they all share the same store.
+	// Use a field that always has a dbKey (not env-only with empty dbKey).
+	if ss, ok := s.Port.(*simpleSetting[int]); ok {
+		return ss.store
+	}
+	// Fallback: shouldn't happen, but use Host.
+	if ss, ok := s.Host.(*simpleSetting[string]); ok {
+		return ss.store
+	}
+	return nil
 }

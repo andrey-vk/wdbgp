@@ -16,7 +16,7 @@ import (
 // apiSettingsGet handles GET /api/admin/settings.
 func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	sj := s.settings.JSON()
+	sj := s.settings.JSON(ctx)
 
 	// Add global route filters (not in SettingsJSON, stored separately)
 	globalFilters, _ := s.store.GlobalRouteFilters(ctx) //nolint:errcheck // best-effort
