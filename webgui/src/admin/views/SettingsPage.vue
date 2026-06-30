@@ -233,6 +233,7 @@ async function handlePurgeMetrics() {
           :label="t('settings.save')"
           icon="pi pi-check"
           severity="primary"
+          class="shadow-lg shadow-primary/40"
           :loading="saving"
           @click="handleSave"
         />
