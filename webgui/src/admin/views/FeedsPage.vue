@@ -229,7 +229,7 @@ async function loadList() {
             v-for="f in feeds"
             :key="f.id"
             class="px-3 py-2.5 cursor-pointer border-b border-gray-100 dark:border-gray-800 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
-            :class="{ 'border-l-[3px] border-l-[var(--p-primary-color)] bg-gray-100 dark:bg-gray-800': selected?.id === f.id }"
+            :class="{ 'border-l-[3px] border-l-primary bg-gray-100 dark:bg-gray-800': selected?.id === f.id }"
             @click="selectFeed(f)"
           >
             <div class="font-medium truncate">

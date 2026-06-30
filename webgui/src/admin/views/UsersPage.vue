@@ -481,7 +481,7 @@ async function toggleEnabled() {
             v-for="u in users"
             :key="u.id"
             class="px-3 py-2.5 cursor-pointer border-b border-gray-100 dark:border-gray-800 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
-            :class="{ 'bg-gray-100 dark:bg-gray-800 border-l-[3px] border-l-[var(--p-primary-color)]': selected?.id === u.id }"
+            :class="{ 'bg-gray-100 dark:bg-gray-800 border-l-[3px] border-l-primary': selected?.id === u.id }"
             @click="selectUser(u)"
           >
             <div class="font-medium truncate">

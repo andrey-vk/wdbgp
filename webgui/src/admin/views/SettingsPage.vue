@@ -165,7 +165,7 @@ async function handlePurgeMetrics() {
           :key="section.name"
           class="card p-6"
         >
-          <div class="mb-4 pb-2 border-b border-[var(--p-surface-border)]">
+          <div class="mb-4 pb-2 border-b border-surface">
             <h2 class="m-0 text-lg">{{ t(section.name) }}</h2>
           </div>
           <div class="flex flex-col gap-3">
@@ -185,7 +185,7 @@ async function handlePurgeMetrics() {
 
       <!-- Route filters section -->
       <div class="card p-6">
-        <div class="mb-4 pb-2 border-b border-[var(--p-surface-border)]">
+        <div class="mb-4 pb-2 border-b border-surface">
           <h2 class="m-0 text-lg">{{ t('settings.section_filters') }}</h2>
         </div>
         <div class="flex flex-col gap-3">
@@ -228,7 +228,7 @@ async function handlePurgeMetrics() {
         />
       </div>
 
-      <div class="sticky bottom-0 flex justify-end py-3 mt-4 bg-[var(--p-surface-card)]">
+      <div class="sticky bottom-0 flex justify-end py-3 mt-4">
         <Button
           :label="t('settings.save')"
           icon="pi pi-check"

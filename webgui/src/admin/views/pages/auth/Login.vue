@@ -45,11 +45,11 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <div class="flex items-center justify-center min-h-screen bg-[var(--p-surface-ground)] p-4">
-    <div class="bg-[var(--p-surface-card)] rounded-[var(--p-border-radius-lg)] shadow-[var(--p-shadow-md)] p-8 w-full max-w-[400px]">
+  <div class="flex items-center justify-center min-h-screen bg-surface-50 dark:bg-surface-950 p-4">
+    <div class="bg-surface-0 dark:bg-surface-900 rounded-xl shadow-md p-8 w-full max-w-[400px]">
       <div class="text-center mb-8">
-        <h1 class="text-[2rem] font-bold text-[var(--p-primary-color)] m-0 mb-1">{{ t('app.title') }}</h1>
-        <p class="text-[var(--p-text-muted-color)] m-0">{{ t('app.subtitle') }}</p>
+        <h1 class="text-[2rem] font-bold text-primary m-0 mb-1">{{ t('app.title') }}</h1>
+        <p class="text-muted-color m-0">{{ t('app.subtitle') }}</p>
       </div>
 
       <form

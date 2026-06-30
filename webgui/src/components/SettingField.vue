@@ -98,7 +98,7 @@ const selectOptions = computed(() => {
     <!-- Case 1: default — clickable text -->
     <div
       v-else-if="!editing && value == null"
-      class="setting-default border-b border-dashed border-[var(--p-text-color)] cursor-pointer opacity-70 hover:opacity-100"
+      class="setting-default border-b border-dashed border-color cursor-pointer opacity-70 hover:opacity-100"
       :title="t('settings.click_to_override')"
       @click="editing = true"
     >

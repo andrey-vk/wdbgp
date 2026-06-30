@@ -30,7 +30,7 @@ function show() {
 <template>
   <button
     type="button"
-    class="inline-flex items-center justify-center w-4 h-4 border border-[var(--p-surface-300)] rounded-full bg-transparent text-[var(--p-text-muted-color)] text-[0.6rem] font-bold cursor-pointer p-0 shrink-0 hover:bg-[var(--p-surface-100)] hover:text-[var(--p-text-color)] hover:border-[var(--p-surface-400)]"
+    class="inline-flex items-center justify-center w-4 h-4 border border-surface-300 rounded-full bg-transparent text-muted-color text-[0.6rem] font-bold cursor-pointer p-0 shrink-0 hover:bg-surface-100 hover:text-color hover:border-surface-400"
     @click.stop="show"
   >
     ?

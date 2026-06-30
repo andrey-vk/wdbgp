@@ -132,7 +132,7 @@ function pct(v: number | undefined | null): string {
       v-else-if="!result"
       class="card mt-3"
     >
-      <p class="text-[var(--p-text-muted-color)] text-center py-4 m-0">{{ t('debug.no_results') }}</p>
+      <p class="text-muted-color text-center py-4 m-0">{{ t('debug.no_results') }}</p>
     </div>
 
     <template v-else>
@@ -140,14 +140,14 @@ function pct(v: number | undefined | null): string {
         v-if="result.full_services.length === 0 && result.partial_services.length === 0"
         class="card mt-3"
       >
-        <p class="text-[var(--p-text-muted-color)] text-center py-4 m-0">{{ t('debug.empty') }}</p>
+        <p class="text-muted-color text-center py-4 m-0">{{ t('debug.empty') }}</p>
       </div>
 
       <div
         v-if="result.full_services.length > 0"
         class="card mt-3 px-6 py-5"
       >
-        <div class="mb-3 pb-2 border-b border-[var(--p-surface-border)]">
+        <div class="mb-3 pb-2 border-b border-surface">
           <h2 class="m-0 text-base font-semibold">{{ t('debug.full_coverage') }}</h2>
         </div>
         <div class="flex flex-col gap-1">
@@ -156,8 +156,8 @@ function pct(v: number | undefined | null): string {
             :key="`full-${item.category}-${item.service}`"
             class="flex justify-between items-center py-1.5"
           >
-            <span class="text-[var(--p-text-color)]">{{ item.category }} / {{ item.service }}</span>
-            <span class="font-semibold text-sm min-w-[3.5rem] text-right text-[var(--p-green-500)]">{{ pct(item.percentage) }}</span>
+            <span class="text-color">{{ item.category }} / {{ item.service }}</span>
+            <span class="font-semibold text-sm min-w-[3.5rem] text-right text-green-500">{{ pct(item.percentage) }}</span>
           </div>
         </div>
       </div>
@@ -166,7 +166,7 @@ function pct(v: number | undefined | null): string {
         v-if="result.partial_services.length > 0"
         class="card mt-3 px-6 py-5"
       >
-        <div class="mb-3 pb-2 border-b border-[var(--p-surface-border)]">
+        <div class="mb-3 pb-2 border-b border-surface">
           <h2 class="m-0 text-base font-semibold">{{ t('debug.partial_coverage') }}</h2>
         </div>
         <div class="flex flex-col gap-1">
@@ -175,8 +175,8 @@ function pct(v: number | undefined | null): string {
             :key="`partial-${item.category}-${item.service}`"
             class="flex justify-between items-center py-1.5"
           >
-            <span class="text-[var(--p-text-color)]">{{ item.category }} / {{ item.service }}</span>
-            <span class="font-semibold text-sm min-w-[3.5rem] text-right text-[var(--p-orange-500)]">{{ pct(item.percentage) }}</span>
+            <span class="text-color">{{ item.category }} / {{ item.service }}</span>
+            <span class="font-semibold text-sm min-w-[3.5rem] text-right text-orange-500">{{ pct(item.percentage) }}</span>
           </div>
         </div>
       </div>
@@ -185,13 +185,13 @@ function pct(v: number | undefined | null): string {
         v-if="result.combined_services.length > 0"
         class="card mt-3 px-6 py-5"
       >
-        <div class="mb-3 pb-2 border-b border-[var(--p-surface-border)]">
+        <div class="mb-3 pb-2 border-b border-surface">
           <h2 class="m-0 text-base font-semibold">{{ t('debug.combined_coverage') }}</h2>
         </div>
         <div class="flex flex-col gap-1">
-          <div class="flex justify-between items-center py-2 border-t border-[var(--p-surface-border)] mt-1">
-            <span class="text-[var(--p-text-color)]">{{ t('debug.combined_coverage') }}</span>
-            <span class="font-semibold text-sm min-w-[3.5rem] text-right text-[var(--p-primary-color)]">{{ pct(result.combined_percentage) }}</span>
+          <div class="flex justify-between items-center py-2 border-t border-surface mt-1">
+            <span class="text-color">{{ t('debug.combined_coverage') }}</span>
+            <span class="font-semibold text-sm min-w-[3.5rem] text-right text-primary">{{ pct(result.combined_percentage) }}</span>
           </div>
         </div>
       </div>
@@ -200,17 +200,17 @@ function pct(v: number | undefined | null): string {
         v-if="result.users.length > 0"
         class="card mt-3 px-6 py-5"
       >
-        <div class="mb-3 pb-2 border-b border-[var(--p-surface-border)]">
+        <div class="mb-3 pb-2 border-b border-surface">
           <h2 class="m-0 text-base font-semibold">{{ t('debug.user_impact') }}</h2>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full border-collapse text-sm">
             <thead>
               <tr>
-                <th class="text-left px-3 py-2 border-b border-[var(--p-surface-border)] text-[var(--p-text-muted-color)] font-semibold whitespace-nowrap">{{ t('debug.user_name') }}</th>
-                <th class="text-left px-3 py-2 border-b border-[var(--p-surface-border)] text-[var(--p-text-muted-color)] font-semibold whitespace-nowrap">{{ t('debug.before') }}</th>
-                <th class="text-left px-3 py-2 border-b border-[var(--p-surface-border)] text-[var(--p-text-muted-color)] font-semibold whitespace-nowrap">{{ t('debug.after') }}</th>
-                <th class="text-left px-3 py-2 border-b border-[var(--p-surface-border)] text-[var(--p-text-muted-color)] font-semibold whitespace-nowrap">{{ t('debug.matching_services') }}</th>
+                <th class="text-left px-3 py-2 border-b border-surface text-muted-color font-semibold whitespace-nowrap">{{ t('debug.user_name') }}</th>
+                <th class="text-left px-3 py-2 border-b border-surface text-muted-color font-semibold whitespace-nowrap">{{ t('debug.before') }}</th>
+                <th class="text-left px-3 py-2 border-b border-surface text-muted-color font-semibold whitespace-nowrap">{{ t('debug.after') }}</th>
+                <th class="text-left px-3 py-2 border-b border-surface text-muted-color font-semibold whitespace-nowrap">{{ t('debug.matching_services') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -218,10 +218,10 @@ function pct(v: number | undefined | null): string {
                 v-for="user in result.users"
                 :key="`user-${user.name}`"
               >
-                <td class="px-3 py-2 border-b border-[var(--p-surface-border)]">{{ user.name }}</td>
-                <td class="px-3 py-2 border-b border-[var(--p-surface-border)]">{{ pct(user.before_percentage) }}</td>
-                <td class="px-3 py-2 border-b border-[var(--p-surface-border)]">{{ pct(user.after_percentage) }}</td>
-                <td class="px-3 py-2 border-b border-[var(--p-surface-border)] text-xs text-[var(--p-text-muted-color)]">{{ user.matches?.join(', ') }}</td>
+                <td class="px-3 py-2 border-b border-surface">{{ user.name }}</td>
+                <td class="px-3 py-2 border-b border-surface">{{ pct(user.before_percentage) }}</td>
+                <td class="px-3 py-2 border-b border-surface">{{ pct(user.after_percentage) }}</td>
+                <td class="px-3 py-2 border-b border-surface text-xs text-muted-color">{{ user.matches?.join(', ') }}</td>
               </tr>
             </tbody>
           </table>

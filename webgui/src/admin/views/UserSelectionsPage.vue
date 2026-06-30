@@ -315,7 +315,7 @@ onMounted(() => {
       <template v-else>
         <!-- Catalog mode switcher -->
         <div v-if="data?.modes?.length" class="flex items-center gap-3 mb-4">
-          <span class="text-sm font-medium text-[var(--p-text-muted-color)]">{{ t('user.catalog_mode') }}:</span>
+          <span class="text-sm font-medium text-muted-color">{{ t('user.catalog_mode') }}:</span>
           <Select
             :modelValue="selectedModeId"
             :options="data.modes"
@@ -327,7 +327,7 @@ onMounted(() => {
         </div>
 
         <!-- Catalog section -->
-        <div class="p-6 rounded-[var(--p-content-border-radius,0.75rem)] shadow-[var(--p-shadow-sm,0_1px_3px_rgba(0,0,0,0.1))] mb-4 bg-white dark:bg-gray-900">
+        <div class="p-6 rounded-border shadow-sm mb-4 bg-white dark:bg-gray-900">
           <div v-if="!Object.keys(catalog).length" class="text-gray-400 dark:text-gray-500 text-center py-8">
             No catalog data available.
           </div>
@@ -411,7 +411,7 @@ onMounted(() => {
         </div>
 
         <!-- Summary section -->
-        <div class="p-6 rounded-[var(--p-content-border-radius,0.75rem)] shadow-[var(--p-shadow-sm,0_1px_3px_rgba(0,0,0,0.1))] mt-4 bg-white dark:bg-gray-900">
+        <div class="p-6 rounded-border shadow-sm mt-4 bg-white dark:bg-gray-900">
           <div class="flex items-center justify-between mb-3">
             <div class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400">
               <span v-if="countLoading"><i class="pi pi-spin pi-spinner mr-1" /></span>
