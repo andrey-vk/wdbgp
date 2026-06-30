@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 )
@@ -96,6 +97,12 @@ type SettingsJSON struct {
 // New creates a Settings instance with all 40 fields initialized from env vars,
 // DB values, and computed defaults.
 func New(store Store) (*Settings, error) {
+	// Load all DB settings once to avoid one DB query per field.
+	dbSettings, err := store.GetAllSettings(context.Background())
+	if err != nil {
+		dbSettings = make(map[string]string) // fallback to empty
+	}
+
 	// Compute the effective DB path for derived defaults.
 	dbPath := "/data/wdbgp.sqlite3"
 	if envDB := os.Getenv("WDBGP_DB"); envDB != "" {
@@ -104,244 +111,243 @@ func New(store Store) (*Settings, error) {
 	dbDir := filepath.Dir(dbPath)
 
 	s := &Settings{}
-	var err error
 
 	// DBPath: env-only, no dbKey.
-	s.DBPath, err = newSetting("/data/wdbgp.sqlite3", "", "WDBGP_DB", parseString, store)
+	s.DBPath, err = newSetting("/data/wdbgp.sqlite3", "", "WDBGP_DB", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// Host.
-	s.Host, err = newSetting("0.0.0.0", "host", "WDBGP_HOST", parseString, store)
+	s.Host, err = newSetting("0.0.0.0", "host", "WDBGP_HOST", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// Port.
-	s.Port, err = newSetting(8080, "port", "WDBGP_PORT", parseInt, store)
+	s.Port, err = newSetting(8080, "port", "WDBGP_PORT", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// BGPPort.
-	s.BGPPort, err = newSetting(179, "bgp_port", "WDBGP_BGP_PORT", parseInt, store)
+	s.BGPPort, err = newSetting(179, "bgp_port", "WDBGP_BGP_PORT", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LocalASN.
-	s.LocalASN, err = newSetting(64512, "local_asn", "WDBGP_LOCAL_ASN", parseInt, store)
+	s.LocalASN, err = newSetting(64512, "local_asn", "WDBGP_LOCAL_ASN", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// RouterID.
-	s.RouterID, err = newSetting("192.0.2.1", "router_id", "WDBGP_ROUTER_ID", parseString, store)
+	s.RouterID, err = newSetting("192.0.2.1", "router_id", "WDBGP_ROUTER_ID", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LocalAddressV4.
-	s.LocalAddressV4, err = newSetting("192.0.2.2", "local_address_v4", "WDBGP_BGP_LOCAL_ADDRESS", parseString, store)
+	s.LocalAddressV4, err = newSetting("192.0.2.2", "local_address_v4", "WDBGP_BGP_LOCAL_ADDRESS", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LocalAddressV6.
-	s.LocalAddressV6, err = newSetting("", "local_address_v6", "WDBGP_BGP_LOCAL_ADDRESS_V6", parseString, store)
+	s.LocalAddressV6, err = newSetting("", "local_address_v6", "WDBGP_BGP_LOCAL_ADDRESS_V6", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AdminPassword: env-only.
-	s.AdminPassword, err = newSetting("", "", "WDBGP_ADMIN_PASSWORD", parseString, store)
+	s.AdminPassword, err = newSetting("", "", "WDBGP_ADMIN_PASSWORD", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// SessionSecret: env-only.
-	s.SessionSecret, err = newSetting("", "", "WDBGP_SESSION_SECRET", parseString, store)
+	s.SessionSecret, err = newSetting("", "", "WDBGP_SESSION_SECRET", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AdminCookieSecure.
-	s.AdminCookieSecure, err = newSetting("auto", "admin_cookie_secure", "WDBGP_ADMIN_COOKIE_SECURE", parseString, store)
+	s.AdminCookieSecure, err = newSetting("auto", "admin_cookie_secure", "WDBGP_ADMIN_COOKIE_SECURE", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// DefaultLanguage.
-	s.DefaultLanguage, err = newSetting("en", "default_language", "WDBGP_DEFAULT_LANGUAGE", parseString, store)
+	s.DefaultLanguage, err = newSetting("en", "default_language", "WDBGP_DEFAULT_LANGUAGE", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// TrustProxyHeaders.
-	s.TrustProxyHeaders, err = newSetting(false, "trust_proxy_headers", "WDBGP_TRUST_PROXY_HEADERS", parseBool, store)
+	s.TrustProxyHeaders, err = newSetting(false, "trust_proxy_headers", "WDBGP_TRUST_PROXY_HEADERS", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// SyncInterval.
-	s.SyncInterval, err = newSetting(3600, "sync_interval", "WDBGP_SYNC_INTERVAL", parseInt, store)
+	s.SyncInterval, err = newSetting(3600, "sync_interval", "WDBGP_SYNC_INTERVAL", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// SecurityHeaders.
-	s.SecurityHeaders, err = newSetting(false, "security_headers", "WDBGP_SECURITY_HEADERS", parseBool, store)
+	s.SecurityHeaders, err = newSetting(false, "security_headers", "WDBGP_SECURITY_HEADERS", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// RateLimitLogin.
-	s.RateLimitLogin, err = newSetting(5, "rate_limit_login", "WDBGP_RATE_LIMIT_LOGIN", parseInt, store)
+	s.RateLimitLogin, err = newSetting(5, "rate_limit_login", "WDBGP_RATE_LIMIT_LOGIN", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// RateLimitAdmin.
-	s.RateLimitAdmin, err = newSetting(30, "rate_limit_admin", "WDBGP_RATE_LIMIT_ADMIN", parseInt, store)
+	s.RateLimitAdmin, err = newSetting(30, "rate_limit_admin", "WDBGP_RATE_LIMIT_ADMIN", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// SessionMaxAge.
-	s.SessionMaxAge, err = newSetting(28800, "session_max_age", "WDBGP_SESSION_MAX_AGE", parseInt, store)
+	s.SessionMaxAge, err = newSetting(28800, "session_max_age", "WDBGP_SESSION_MAX_AGE", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LogLevel.
-	s.LogLevel, err = newSetting("INFO", "log_level", "WDBGP_LOG_LEVEL", parseString, store)
+	s.LogLevel, err = newSetting("INFO", "log_level", "WDBGP_LOG_LEVEL", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LogFormat.
-	s.LogFormat, err = newSetting("text", "log_format", "WDBGP_LOG_FORMAT", parseString, store)
+	s.LogFormat, err = newSetting("text", "log_format", "WDBGP_LOG_FORMAT", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSTimeout.
-	s.JSTimeout, err = newSetting(120, "js_timeout", "WDBGP_JS_TIMEOUT", parseInt, store)
+	s.JSTimeout, err = newSetting(120, "js_timeout", "WDBGP_JS_TIMEOUT", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxSourceBytes.
-	s.JSMaxSourceBytes, err = newSetting(1048576, "js_max_source", "WDBGP_JS_MAX_SOURCE", parseInt, store)
+	s.JSMaxSourceBytes, err = newSetting(1048576, "js_max_source", "WDBGP_JS_MAX_SOURCE", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxResponseBytes.
-	s.JSMaxResponseBytes, err = newSetting(16777216, "js_max_response", "WDBGP_JS_MAX_RESPONSE", parseInt, store)
+	s.JSMaxResponseBytes, err = newSetting(16777216, "js_max_response", "WDBGP_JS_MAX_RESPONSE", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxTotalBytes.
-	s.JSMaxTotalBytes, err = newSetting(67108864, "js_max_total", "WDBGP_JS_MAX_TOTAL", parseInt, store)
+	s.JSMaxTotalBytes, err = newSetting(67108864, "js_max_total", "WDBGP_JS_MAX_TOTAL", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxEntries.
-	s.JSMaxEntries, err = newSetting(1000000, "js_max_entries", "WDBGP_JS_MAX_ENTRIES", parseInt, store)
+	s.JSMaxEntries, err = newSetting(1000000, "js_max_entries", "WDBGP_JS_MAX_ENTRIES", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxRequests.
-	s.JSMaxRequests, err = newSetting(200, "js_max_requests", "WDBGP_JS_MAX_REQUESTS", parseInt, store)
+	s.JSMaxRequests, err = newSetting(200, "js_max_requests", "WDBGP_JS_MAX_REQUESTS", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// JSMaxCallStack.
-	s.JSMaxCallStack, err = newSetting(1000, "js_max_call_stack", "WDBGP_JS_MAX_CALL_STACK", parseInt, store)
+	s.JSMaxCallStack, err = newSetting(1000, "js_max_call_stack", "WDBGP_JS_MAX_CALL_STACK", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// DefaultWebAuth.
-	s.DefaultWebAuth, err = newSetting("network", "default_web_auth", "WDBGP_DEFAULT_WEB_AUTH", parseString, store)
+	s.DefaultWebAuth, err = newSetting("network", "default_web_auth", "WDBGP_DEFAULT_WEB_AUTH", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// StatusAllowed.
-	s.StatusAllowed, err = newSetting("", "status_allowed", "WDBGP_STATUS_ALLOWED", parseString, store)
+	s.StatusAllowed, err = newSetting("", "status_allowed", "WDBGP_STATUS_ALLOWED", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// StatusToken.
-	s.StatusToken, err = newSetting("", "status_token", "WDBGP_STATUS_TOKEN", parseString, store)
+	s.StatusToken, err = newSetting("", "status_token", "WDBGP_STATUS_TOKEN", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AdapterBackupDir: computed default depends on DBPath.
-	s.AdapterBackupDir, err = newSetting(dbDir+"/backup/adapters", "adapter_backup_dir", "WDBGP_ADAPTER_BACKUP_DIR", parseString, store)
+	s.AdapterBackupDir, err = newSetting(dbDir+"/backup/adapters", "adapter_backup_dir", "WDBGP_ADAPTER_BACKUP_DIR", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AdapterBackupMax.
-	s.AdapterBackupMax, err = newSetting(10, "adapter_backup_max", "WDBGP_ADAPTER_BACKUP_MAX", parseInt, store)
+	s.AdapterBackupMax, err = newSetting(10, "adapter_backup_max", "WDBGP_ADAPTER_BACKUP_MAX", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// RequirePasswordForNonUniqueIP: env-only.
-	s.RequirePasswordForNonUniqueIP, err = newSetting(true, "", "WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP", parseBool, store)
+	s.RequirePasswordForNonUniqueIP, err = newSetting(true, "", "WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AllowDynamicPeers: env-only.
-	s.AllowDynamicPeers, err = newSetting(false, "", "WDBGP_ALLOW_DYNAMIC_PEERS", parseBool, store)
+	s.AllowDynamicPeers, err = newSetting(false, "", "WDBGP_ALLOW_DYNAMIC_PEERS", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// ActiveDial: env-only.
-	s.ActiveDial, err = newSetting(true, "", "WDBGP_ACTIVE_DIAL", parseBool, store)
+	s.ActiveDial, err = newSetting(true, "", "WDBGP_ACTIVE_DIAL", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// BackupEnabled: env-only.
-	s.BackupEnabled, err = newSetting(true, "", "WDBGP_BACKUP_ENABLED", parseBool, store)
+	s.BackupEnabled, err = newSetting(true, "", "WDBGP_BACKUP_ENABLED", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// BackupDir: env-only, computed default depends on DBPath.
-	s.BackupDir, err = newSetting(dbDir, "", "WDBGP_BACKUP_DIR", parseString, store)
+	s.BackupDir, err = newSetting(dbDir, "", "WDBGP_BACKUP_DIR", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AutoRestoreEnabled: env-only.
-	s.AutoRestoreEnabled, err = newSetting(false, "", "WDBGP_AUTO_RESTORE_ENABLED", parseBool, store)
+	s.AutoRestoreEnabled, err = newSetting(false, "", "WDBGP_AUTO_RESTORE_ENABLED", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// MetricsEnabled: DB-only (no env var).
-	s.MetricsEnabled, err = newSetting(false, "metrics_enabled", "", parseBool, store)
+	s.MetricsEnabled, err = newSetting(false, "metrics_enabled", "", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// MetricsHistoryDays: DB-only (no env var).
-	s.MetricsHistoryDays, err = newSetting(14, "metrics_history_days", "", parseInt, store)
+	s.MetricsHistoryDays, err = newSetting(14, "metrics_history_days", "", parseInt, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}

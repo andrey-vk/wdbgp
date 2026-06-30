@@ -46,7 +46,7 @@ type Setting[T any] struct {
 // Precedence: env var → DB value → default.
 // If the env var is set but fails to parse, an error is returned.
 // If the DB value exists but fails to parse, it is silently ignored and the default is used.
-func newSetting[T any](defaultVal T, dbKey, envVar string, parse func(string) (T, error), store Store) (*Setting[T], error) {
+func newSetting[T any](defaultVal T, dbKey, envVar string, parse func(string) (T, error), store Store, dbSettings map[string]string) (*Setting[T], error) {
 	s := &Setting[T]{
 		value:      defaultVal,
 		defaultVal: defaultVal,
@@ -70,14 +70,8 @@ func newSetting[T any](defaultVal T, dbKey, envVar string, parse func(string) (T
 		}
 	}
 
-	// Fall back to DB value.
-	settings, err := store.GetAllSettings(context.Background())
-	if err != nil {
-		// If we can't load settings, use defaults.
-		return s, nil
-	}
-
-	if dbStr, ok := settings[dbKey]; ok {
+	// Fall back to DB value (pre-loaded by caller to avoid N per-field queries).
+	if dbStr, ok := dbSettings[dbKey]; ok {
 		if val, parseErr := parse(dbStr); parseErr == nil {
 			s.dbVal = &val
 			s.value = val

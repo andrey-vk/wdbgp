@@ -41,7 +41,7 @@ func (m *mockStore) DeleteSetting(_ context.Context, key string) error {
 
 func TestNewSetting_Bool_NoEnvNoDB(t *testing.T) {
 	store := newMockStore()
-	s, err := newSetting(false, "test_key", "", parseBool, store)
+	s, err := newSetting(false, "test_key", "", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestNewSetting_Bool_NoEnvNoDB(t *testing.T) {
 func TestNewSetting_Bool_EnvTrue(t *testing.T) {
 	t.Setenv("TEST_BOOL", "true")
 	store := newMockStore()
-	s, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store)
+	s, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestNewSetting_Bool_EnvTrue(t *testing.T) {
 func TestNewSetting_Bool_EnvFalse(t *testing.T) {
 	t.Setenv("TEST_BOOL", "false")
 	store := newMockStore()
-	s, err := newSetting(true, "test_key", "TEST_BOOL", parseBool, store)
+	s, err := newSetting(true, "test_key", "TEST_BOOL", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestNewSetting_Bool_EnvFalse(t *testing.T) {
 func TestNewSetting_Bool_InvalidEnv(t *testing.T) {
 	t.Setenv("TEST_BOOL", "yesplease")
 	store := newMockStore()
-	_, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store)
+	_, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store, map[string]string{})
 	if err == nil {
 		t.Fatal("expected error for invalid env")
 	}
@@ -94,8 +94,7 @@ func TestNewSetting_Bool_InvalidEnv(t *testing.T) {
 
 func TestNewSetting_Bool_DBValue(t *testing.T) {
 	store := newMockStore()
-	store.settings["test_key"] = "true"
-	s, err := newSetting(false, "test_key", "", parseBool, store)
+	s, err := newSetting(false, "test_key", "", parseBool, store, map[string]string{"test_key": "true"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +110,7 @@ func TestNewSetting_Bool_EnvWinsOverDB(t *testing.T) {
 	t.Setenv("TEST_BOOL", "false")
 	store := newMockStore()
 	store.settings["test_key"] = "true"
-	s, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store)
+	s, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,8 +127,7 @@ func TestNewSetting_Bool_EnvWinsOverDB(t *testing.T) {
 
 func TestNewSetting_Bool_InvalidDBIgnored(t *testing.T) {
 	store := newMockStore()
-	store.settings["test_key"] = "notabool"
-	s, err := newSetting(false, "test_key", "", parseBool, store)
+	s, err := newSetting(false, "test_key", "", parseBool, store, map[string]string{"test_key": "notabool"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +141,7 @@ func TestNewSetting_Bool_InvalidDBIgnored(t *testing.T) {
 
 func TestSetting_Bool_Set(t *testing.T) {
 	store := newMockStore()
-	s, err := newSetting(false, "test_key", "", parseBool, store)
+	s, err := newSetting(false, "test_key", "", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +162,7 @@ func TestSetting_Bool_Set(t *testing.T) {
 func TestSetting_Bool_SetOnEnv(t *testing.T) {
 	t.Setenv("TEST_BOOL", "false")
 	store := newMockStore()
-	s, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store)
+	s, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +173,7 @@ func TestSetting_Bool_SetOnEnv(t *testing.T) {
 
 func TestSetting_Bool_Reset(t *testing.T) {
 	store := newMockStore()
-	s, err := newSetting(false, "test_key", "", parseBool, store)
+	s, err := newSetting(false, "test_key", "", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +197,7 @@ func TestSetting_Bool_Reset(t *testing.T) {
 func TestSetting_Bool_ResetOnEnv(t *testing.T) {
 	t.Setenv("TEST_BOOL", "true")
 	store := newMockStore()
-	s, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store)
+	s, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +208,7 @@ func TestSetting_Bool_ResetOnEnv(t *testing.T) {
 
 func TestSetting_Bool_JSON_Default(t *testing.T) {
 	store := newMockStore()
-	s, err := newSetting(false, "test_key", "", parseBool, store)
+	s, err := newSetting(false, "test_key", "", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +226,7 @@ func TestSetting_Bool_JSON_Default(t *testing.T) {
 
 func TestSetting_Bool_JSON_DBSet(t *testing.T) {
 	store := newMockStore()
-	s, err := newSetting(false, "test_key", "", parseBool, store)
+	s, err := newSetting(false, "test_key", "", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +243,7 @@ func TestSetting_Bool_JSON_DBSet(t *testing.T) {
 func TestSetting_Bool_JSON_EnvSet(t *testing.T) {
 	t.Setenv("TEST_BOOL", "true")
 	store := newMockStore()
-	s, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store)
+	s, err := newSetting(false, "test_key", "TEST_BOOL", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +258,7 @@ func TestSetting_Bool_JSON_EnvSet(t *testing.T) {
 
 func TestSetting_Int_Basic(t *testing.T) {
 	store := newMockStore()
-	s, err := newSetting(42, "test_key", "", parseInt, store)
+	s, err := newSetting(42, "test_key", "", parseInt, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +279,7 @@ func TestSetting_Int_Basic(t *testing.T) {
 func TestSetting_Int_Env(t *testing.T) {
 	t.Setenv("TEST_INT", "100")
 	store := newMockStore()
-	s, err := newSetting(42, "test_key", "TEST_INT", parseInt, store)
+	s, err := newSetting(42, "test_key", "TEST_INT", parseInt, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +291,7 @@ func TestSetting_Int_Env(t *testing.T) {
 func TestSetting_Int_InvalidEnv(t *testing.T) {
 	t.Setenv("TEST_INT", "notanumber")
 	store := newMockStore()
-	_, err := newSetting(42, "test_key", "TEST_INT", parseInt, store)
+	_, err := newSetting(42, "test_key", "TEST_INT", parseInt, store, map[string]string{})
 	if err == nil {
 		t.Fatal("expected error for invalid int env")
 	}
@@ -301,7 +299,7 @@ func TestSetting_Int_InvalidEnv(t *testing.T) {
 
 func TestSetting_String_Basic(t *testing.T) {
 	store := newMockStore()
-	s, err := newSetting("default", "test_key", "", parseString, store)
+	s, err := newSetting("default", "test_key", "", parseString, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +319,7 @@ func TestSetting_String_Basic(t *testing.T) {
 
 func TestSetting_ConcurrentGet(t *testing.T) {
 	store := newMockStore()
-	s, err := newSetting(42, "test_key", "", parseInt, store)
+	s, err := newSetting(42, "test_key", "", parseInt, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +336,7 @@ func TestSetting_ConcurrentGet(t *testing.T) {
 
 func TestNewSetting_EmptyEnvVar(t *testing.T) {
 	store := newMockStore()
-	s, err := newSetting(false, "test_key", "", parseBool, store)
+	s, err := newSetting(false, "test_key", "", parseBool, store, map[string]string{})
 	if err != nil {
 		t.Fatal(err)
 	}
