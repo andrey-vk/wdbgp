@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"strings"
 )
 
 // Feed represents a data feed source.
@@ -90,6 +91,11 @@ func (s *Store) AddFeed(
 	allowedHosts string,
 	restrictHosts bool,
 ) (int64, error) {
+	// Merge adapter's declared additional hosts with user-provided hosts.
+	if extraHosts := s.BuiltinAdapterAllowedHosts(ctx, adapterID); extraHosts != "" {
+		allowedHosts = mergeHosts(allowedHosts, extraHosts)
+	}
+
 	var feedID int64
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx,
@@ -102,6 +108,20 @@ func (s *Store) AddFeed(
 		return err
 	})
 	return feedID, err
+}
+
+// mergeHosts adds host to a comma-separated hosts string if not already present.
+func mergeHosts(hosts, host string) string {
+	host = strings.TrimSpace(host)
+	for _, h := range strings.Split(hosts, ",") {
+		if strings.TrimSpace(h) == host {
+			return hosts
+		}
+	}
+	if hosts == "" {
+		return host
+	}
+	return hosts + "," + host
 }
 
 func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {

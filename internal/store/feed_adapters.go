@@ -146,6 +146,7 @@ type builtInAdapter struct {
 	name           string
 	source         string
 	builtinVersion int
+	allowedHosts   string
 }
 
 var builtInAdapters = map[string]builtInAdapter{
@@ -160,6 +161,7 @@ var builtInAdapters = map[string]builtInAdapter{
 	"ipranges": {
 		name: "IPRanges", source: ipRangesAdapter,
 		builtinVersion: 1,
+		allowedHosts: "raw.githubusercontent.com",
 	},
 	"singbox-srs": {
 		name: "sing-box SRS", source: singboxSRSAdapter,
@@ -290,6 +292,19 @@ WHERE id = ?`,
 
 func normalizedBuiltInSource(source string) string {
 	return strings.TrimSpace(source) + "\n"
+}
+
+// BuiltinAdapterAllowedHosts returns the additional allowed hosts declared by
+// a built-in adapter, or empty string if the adapter is not built-in or has none.
+func (s *Store) BuiltinAdapterAllowedHosts(ctx context.Context, adapterID int64) string {
+	for _, key := range []string{"canonical-json", "opencck", "ipranges", "singbox-srs"} {
+		ba := builtInAdapters[key]
+		var id int64
+		if err := s.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE key = ?", key).Scan(&id); err == nil && id == adapterID {
+			return ba.allowedHosts
+		}
+	}
+	return ""
 }
 
 func (s *Store) AddFeedAdapter(ctx context.Context, adapter FeedAdapter) (FeedAdapter, error) {
