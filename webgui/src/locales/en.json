@@ -91,6 +91,7 @@
   "settings.help": "Help",
   "settings.requires_restart": "requires restart",
   "settings.save": "Save settings",
+  "settings.save_error": "Failed to save settings.",
   "settings.unsaved_confirm": "You have unsaved changes. Discard them?",
   "settings.default_language_hint": "Default language for the admin panel interface.",
   "settings.session_max_age_hint": "Maximum session duration in seconds.",

@@ -98,16 +98,23 @@ onBeforeUnmount(() => {
 async function handleSave() {
   saved.value = false
   saving.value = true
-  const body: Record<string, boolean | number | string | null> = {}
-  for (const [key, val] of Object.entries(values.value)) {
-    body[key] = val  // send as-is: null, boolean, number, or string
+  try {
+    const body: Record<string, boolean | number | string | null> = {}
+    for (const [key, val] of Object.entries(values.value)) {
+      // Skip env-overridden fields — they're read-only
+      if (envOverrides.value[key]) continue
+      body[key] = val
+    }
+    body.filter_allow = filterAllow.value
+    body.filter_deny = filterDeny.value
+    await apiClient.put('/admin/settings', body)
+    dirty.value = false
+    saved.value = true
+  } catch {
+    toast.add({ severity: 'error', summary: t('settings.save_error'), life: 5000 })
+  } finally {
+    saving.value = false
   }
-  body.filter_allow = filterAllow.value
-  body.filter_deny = filterDeny.value
-  await apiClient.put('/admin/settings', body)
-  dirty.value = false
-  saved.value = true
-  saving.value = false
 }
 
 async function handlePurgeMetrics() {

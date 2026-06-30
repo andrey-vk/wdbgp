@@ -90,6 +90,7 @@
   "settings.help": "Справка",
   "settings.requires_restart": "требуется перезапуск",
   "settings.save": "Сохранить настройки",
+  "settings.save_error": "Не удалось сохранить настройки.",
   "settings.unsaved_confirm": "У вас есть несохранённые изменения. Отменить их?",
   "settings.default_language_hint": "Язык интерфейса по умолчанию для новых посетителей. Переменная окружения: WDBGP_DEFAULT_LANGUAGE.",
   "settings.session_max_age_hint": "Максимальное время жизни сессии в секундах (по умолчанию 28800 = 8 часов). Переменная окружения: WDBGP_SESSION_MAX_AGE.",

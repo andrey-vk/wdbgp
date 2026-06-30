@@ -193,4 +193,78 @@ describe('SettingsPage', () => {
     expect(body.default_language).toBe('en')
     expect(typeof body.default_language).toBe('string')
   })
+
+  it('skips env-overridden fields in PUT body', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    vm.values = {
+      port: 9090,
+      bgp_port: 179,
+    }
+    vm.envOverrides = {
+      port: true,
+      bgp_port: false,
+    }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    await vm.handleSave()
+
+    const body = putMock.mock.calls[0][1] as Record<string, unknown>
+    // port is env-overridden and should be skipped
+    expect(body).not.toHaveProperty('port')
+    // bgp_port is not overridden and should be present
+    expect(body.bgp_port).toBe(179)
+  })
+
+  it('stops saving spinner on error', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    vm.values = { port: 9090 }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    putMock.mockRejectedValueOnce(new Error('network error'))
+    await vm.handleSave()
+
+    // Saving must be false even after error
+    expect(vm.saving).toBe(false)
+    // Dirty should still be true (save failed)
+    expect(vm.dirty).toBe(true)
+  })
 })
