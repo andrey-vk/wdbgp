@@ -182,6 +182,10 @@ func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Feed not found"})
 		return
 	}
+	if !f.Enabled {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Feed is disabled"})
+		return
+	}
 	if _, err := s.syncer.SyncOne(r.Context(), f); err != nil {
 		if _, execErr := s.store.DB.ExecContext(r.Context(),
 			"UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1",
