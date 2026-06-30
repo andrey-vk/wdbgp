@@ -114,24 +114,11 @@ beforeEach(() => {
     if (url === '/admin/settings') {
       return Promise.resolve({
         data: {
-          sections: [
-            {
-              name: 'settings.section_general',
-              fields: [
-                {
-                  key: 'default_language',
-                  name: 'settings.default_language',
-                  type: 'select',
-                  options: { en: 'language.english', ru: 'language.russian' },
-                  value: 'en',
-                  env_override: false,
-                  env_var: 'WDBGP_DEFAULT_LANGUAGE',
-                  restart: false,
-                  hint: 'settings.default_language_hint',
-                },
-              ],
-            },
-          ],
+          settings: {
+            default_language: { value: 'en', default_value: 'en', env_override: false },
+            default_web_auth: { value: 'network', default_value: 'network', env_override: false },
+          },
+          route_filters: { filter_allow: '', filter_deny: '' },
         },
       })
     }

@@ -3,49 +3,66 @@ import { ref, onMounted, watch, onBeforeUnmount } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
+import { z } from 'zod'
 import apiClient from '@/api/client'
-import InputText from 'primevue/inputtext'
-import Textarea from 'primevue/textarea'
-import InputNumber from 'primevue/inputnumber'
-import Select from 'primevue/select'
-import ToggleSwitch from 'primevue/toggleswitch'
-import Button from 'primevue/button'
-import Message from 'primevue/message'
-import Tag from 'primevue/tag'
+import { settingsSchema } from '@/types/settings'
+import { sections } from '@/admin/settingsMeta'
 import SettingField from '@/components/SettingField.vue'
+import Button from 'primevue/button'
+import Textarea from 'primevue/textarea'
+import Message from 'primevue/message'
+
+const settingsResponsePartial = z.object({
+  settings: settingsSchema.partial(),
+  route_filters: z.object({
+    filter_allow: z.string(),
+    filter_deny: z.string(),
+  }),
+})
 
 const { t } = useI18n()
 const toast = useToast()
 
-interface SettingField {
-  key: string; name: string; type: string
-  options?: Record<string, string>
-  value: string | null; env_override: boolean; env_var: string
-  restart: boolean; hint?: string
-  default_value?: string
-}
-interface SettingSection { name: string; fields: SettingField[] }
-
-const sections = ref<SettingSection[]>([])
-const values = ref<Record<string, string | boolean | number | null>>({})
 const loading = ref(true)
 const saving = ref(false)
 const saved = ref(false)
 const dirty = ref(false)
+const purging = ref(false)
+
+// Current values: null = use default, non-null = override
+const values = ref<Record<string, boolean | number | string | null>>({})
+// Effective defaults from backend
+const effectiveDefaults = ref<Record<string, boolean | number | string>>({})
+// Env override flags from backend
+const envOverrides = ref<Record<string, boolean>>({})
+// Route filter values
+const filterAllow = ref('')
+const filterDeny = ref('')
 
 onMounted(async () => {
-  const resp = await apiClient.get('/admin/settings')
-  sections.value = resp.data.sections
-  const v: Record<string, string | boolean | number | null> = {}
-  for (const s of sections.value) {
-    for (const f of s.fields) {
-      if (f.type === 'bool') v[f.key] = f.value === 'true'
-      else if (f.type === 'number') v[f.key] = f.value ? parseInt(f.value, 10) : null
-      else v[f.key] = f.value ?? null
+  try {
+    const resp = await apiClient.get('/admin/settings')
+    const parsed = settingsResponsePartial.parse(resp.data)
+
+    const v: Record<string, boolean | number | string | null> = {}
+    const d: Record<string, boolean | number | string> = {}
+    const e: Record<string, boolean> = {}
+
+    for (const [key, setting] of Object.entries(parsed.settings)) {
+      v[key] = setting.value
+      d[key] = setting.default_value
+      e[key] = setting.env_override
     }
+
+    values.value = v
+    effectiveDefaults.value = d
+    envOverrides.value = e
+    filterAllow.value = parsed.route_filters.filter_allow
+    filterDeny.value = parsed.route_filters.filter_deny
+  } finally {
+    loading.value = false
   }
-  values.value = v
-  loading.value = false
+
   window.addEventListener('beforeunload', handleBeforeUnload)
 })
 
@@ -54,6 +71,11 @@ watch(values, () => {
   if (initialLoad) { initialLoad = false; return }
   dirty.value = true
 }, { deep: true })
+
+watch([filterAllow, filterDeny], () => {
+  if (initialLoad) { initialLoad = false; return }
+  dirty.value = true
+})
 
 onBeforeRouteLeave((_to, _from, next) => {
   if (dirty.value) {
@@ -73,32 +95,26 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
 })
 
-function isFilterField(key: string): boolean {
-  return key === 'filter_allow' || key === 'filter_deny'
-}
-
 async function handleSave() {
-  saved.value = false; saving.value = true
+  saved.value = false
+  saving.value = true
   const body: Record<string, string | null> = {}
-  for (const s of sections.value) {
-    for (const f of s.fields) {
-      if (f.env_override) continue
-      const val = values.value[f.key]
-      if (val == null) {
-        body[f.key] = null
-      } else if (f.type === 'bool') {
-        body[f.key] = val ? 'true' : 'false'
-      } else {
-        body[f.key] = String(val)
-      }
+  for (const [key, val] of Object.entries(values.value)) {
+    if (envOverrides.value[key]) continue
+    if (val == null) {
+      body[key] = null
+    } else {
+      body[key] = String(val)
     }
   }
+  body.filter_allow = filterAllow.value
+  body.filter_deny = filterDeny.value
   await apiClient.put('/admin/settings', body)
   dirty.value = false
-  saved.value = true; saving.value = false
+  saved.value = true
+  saving.value = false
 }
 
-const purging = ref(false)
 async function handlePurgeMetrics() {
   purging.value = true
   try {
@@ -109,14 +125,7 @@ async function handlePurgeMetrics() {
   } finally { purging.value = false }
 }
 
-function selectOpts(f: SettingField) {
-  if (!f.options) return []
-  return Object.entries(f.options).map(([value, labelKey]) => ({ label: t(labelKey), value }))
-}
 
-function setFieldValue(key: string, val: unknown) {
-  values.value[key] = val as string | number | boolean | null
-}
 </script>
 
 <template>
@@ -150,82 +159,64 @@ function setFieldValue(key: string, val: unknown) {
           </div>
           <div class="section-rows">
             <SettingField
-              v-for="field in section.fields"
-              :key="field.key"
-              :label="t(field.name)"
-              :hint="field.hint || undefined"
-              :input-id="field.key"
-              :default-value="field.default_value || undefined"
-              :model-value="values[field.key] ?? null"
-              @update:model-value="setFieldValue(field.key, $event)"
-            >
-              <template #tags>
-                <Tag
-                  v-if="field.env_override"
-                  severity="warn"
-                  value="ENV"
-                  :title="t('settings.env_override_hint')"
-                />
-                <Tag
-                  v-if="field.restart"
-                  severity="info"
-                  :value="t('settings.requires_restart')"
-                />
-              </template>
-              <template #default="{ value, disabled, inputId }">
-                <InputText
-                  v-if="field.type === 'text' && !isFilterField(field.key)"
-                  :id="inputId"
-                  :model-value="value as string"
-                  :disabled="disabled"
-                  fluid
-                  @update:model-value="setFieldValue(field.key, $event)"
-                />
-                <Textarea
-                  v-else-if="isFilterField(field.key)"
-                  :id="inputId"
-                  :model-value="value as string"
-                  :disabled="disabled"
-                  rows="4"
-                  fluid
-                  @update:model-value="setFieldValue(field.key, $event)"
-                />
-                <InputNumber
-                  v-else-if="field.type === 'number'"
-                  :id="inputId"
-                  :model-value="value as number"
-                  :disabled="disabled"
-                  fluid
-                  @update:model-value="setFieldValue(field.key, $event)"
-                />
-                <Select
-                  v-else-if="field.type === 'select'"
-                  :id="inputId"
-                  :model-value="value as string"
-                  :options="selectOpts(field)"
-                  option-label="label"
-                  option-value="value"
-                  :disabled="disabled"
-                  fluid
-                  @update:model-value="setFieldValue(field.key, $event)"
-                />
-                <ToggleSwitch
-                  v-else-if="field.type === 'bool'"
-                  :id="inputId"
-                  :model-value="value as boolean"
-                  :disabled="disabled"
-                  @update:model-value="setFieldValue(field.key, $event)"
-                />
-              </template>
-            </SettingField>
+              v-for="(meta, key) in section.fields"
+              :key="key"
+              :field-key="key"
+              :meta="meta"
+              :value="values[key] ?? null"
+              :default-value="effectiveDefaults[key] ?? ''"
+              :env-override="envOverrides[key] ?? false"
+              @update:value="(v: boolean | number | string | null) => { values[key] = v }"
+            />
           </div>
         </div>
       </div>
+
+      <!-- Route filters section -->
+      <div class="card section-card">
+        <div class="section-header">
+          <h2>{{ t('settings.section_filters') }}</h2>
+        </div>
+        <div class="section-rows">
+          <div class="form-field">
+            <label
+              class="text-sm font-medium"
+              for="filter_allow"
+            >{{ t('settings.filter_allow') }}</label>
+            <Textarea
+              id="filter_allow"
+              v-model="filterAllow"
+              rows="4"
+              fluid
+            />
+          </div>
+          <div class="form-field">
+            <label
+              class="text-sm font-medium"
+              for="filter_deny"
+            >{{ t('settings.filter_deny') }}</label>
+            <Textarea
+              id="filter_deny"
+              v-model="filterDeny"
+              rows="4"
+              fluid
+            />
+          </div>
+        </div>
+      </div>
+
       <div class="card p-4 mt-4">
         <h2 class="font-semibold mb-2">{{ t('settings.purge_metrics') }}</h2>
         <p class="text-sm text-gray-500 dark:text-gray-400 mb-3">{{ t('settings.purge_metrics_hint') }}</p>
-        <Button :label="t('settings.purge_metrics_button')" icon="pi pi-trash" severity="danger" @click="handlePurgeMetrics" :loading="purging" />
+        <Button
+          :label="t('settings.purge_metrics_button')"
+          icon="pi pi-trash"
+          severity="danger"
+          :loading="purging"
+          @click="handlePurgeMetrics"
+        />
       </div>
+
       <div class="save-bar">
         <Button
           :label="t('settings.save')"
@@ -247,6 +238,7 @@ function setFieldValue(key: string, val: unknown) {
 .section-header { margin-bottom: 1rem; padding-bottom: .5rem; border-bottom: 1px solid var(--p-surface-border); }
 .section-header h2 { margin: 0; font-size: 1.1rem; }
 .section-rows { display: flex; flex-direction: column; gap: 0.75rem; }
+.form-field { display: flex; flex-direction: column; gap: 0.25rem; }
 
 .save-bar {
   position: sticky;
