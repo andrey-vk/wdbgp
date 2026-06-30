@@ -242,15 +242,20 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		var currentAdapterRevision int64
 		var currentData string
 		var currentName string
+		var currentAllowedHosts string
+		var currentRestrictHosts bool
 		var enabled bool
 		if err := tx.QueryRowContext(ctx,
-			`SELECT f.url, f.adapter_id, f.enabled, f.data, f.name, a.revision
+			`SELECT f.url, f.adapter_id, f.enabled, f.data, f.name,
+			        f.allowed_hosts, f.restrict_hosts,
+			        a.revision
 			 FROM feeds f
 			 JOIN feed_adapters a ON a.id = f.adapter_id
 			 WHERE f.id = ?`, feed.ID).
 			Scan(
 				&currentURL, &currentAdapterID, &enabled,
 				&currentData, &currentName,
+				&currentAllowedHosts, &currentRestrictHosts,
 				&currentAdapterRevision,
 			); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -263,6 +268,8 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 			currentAdapterRevision != adapter.Revision ||
 			currentData != feed.Data ||
 			currentName != feed.Name ||
+			currentAllowedHosts != feed.AllowedHosts ||
+			currentRestrictHosts != feed.RestrictHosts ||
 			!enabled {
 			return errFeedChanged
 		}
