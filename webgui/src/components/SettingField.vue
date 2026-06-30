@@ -15,26 +15,29 @@ const { t } = useI18n()
 const props = defineProps<{
   fieldKey: string
   meta: SettingMeta
-  value: boolean | number | string | null
-  defaultValue: boolean | number | string
+  value: string | number | boolean | null
+  defaultValue: string | number | boolean
   envOverride: boolean
   restart?: boolean
   envVar?: string
 }>()
 
 const emit = defineEmits<{
-  'update:value': [value: boolean | number | string | null]
+  'update:value': [value: string | number | boolean | null]
 }>()
 
 // editing tracks whether the default was clicked into editing mode (case 1 → editing)
 const editing = ref(false)
 
-function formatDisplayValue(val: boolean | number | string, type: SettingMeta['type']): string {
+function formatDisplayValue(val: string | number | boolean, type: SettingMeta['type']): string {
   switch (type) {
     case 'bool':
       return val ? t('settings.on') : t('settings.off')
     case 'number':
       return String(val)
+    case 'string':
+      if (val) return String(val)
+      return '\u2039' + t('settings.empty') + '\u203a'
     case 'select': {
       const opt = props.meta.options
       if (opt && typeof val === 'string' && opt[val]) {
@@ -47,7 +50,7 @@ function formatDisplayValue(val: boolean | number | string, type: SettingMeta['t
   }
 }
 
-function onChange(val: boolean | number | string | undefined) {
+function onChange(val: string | number | boolean | undefined) {
   if (val !== undefined) {
     emit('update:value', val)
   }
@@ -90,6 +93,7 @@ const selectOptions = computed(() => {
     <!-- Case 2: env override — readonly text -->
     <div
       v-if="envOverride"
+      :id="fieldKey"
       class="text-sm"
     >
       {{ formatDisplayValue(value ?? defaultValue, meta.type) }}
@@ -98,11 +102,13 @@ const selectOptions = computed(() => {
     <!-- Case 1: default — clickable text -->
     <div
       v-else-if="!editing && value == null"
-      class="setting-default border-b border-dashed border-color cursor-pointer opacity-70 hover:opacity-100"
-      :title="t('settings.click_to_override')"
-      @click="editing = true"
+      :id="fieldKey"
     >
-      {{ formatDisplayValue(defaultValue, meta.type) }}
+      <span
+        class="underline decoration-dotted underline-offset-4 cursor-pointer opacity-70 hover:opacity-100"
+        :title="t('settings.click_to_override')"
+        @click="editing = true"
+      >{{ formatDisplayValue(defaultValue, meta.type) }}</span>
     </div>
 
     <!-- Case 1 (editing) or Case 3: input with revert -->

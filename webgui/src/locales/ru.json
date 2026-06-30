@@ -126,6 +126,7 @@
   "settings.revert_default": "Вернуть по умолчанию",
   "settings.on": "Вкл",
   "settings.off": "Выкл",
+  "settings.empty": "пусто",
   "settings.constraint_text": "Произвольный текст.",
   "settings.constraint_select": "Выберите из списка.",
   "settings.constraint_bool": "Включить или выключить.",

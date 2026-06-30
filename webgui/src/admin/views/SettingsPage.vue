@@ -168,7 +168,7 @@ async function handlePurgeMetrics() {
           <div class="mb-4 pb-2 border-b border-surface">
             <h2 class="m-0 text-lg">{{ t(section.name) }}</h2>
           </div>
-          <div class="flex flex-col gap-3">
+          <div class="flex flex-col gap-6">
             <SettingField
               v-for="(meta, key) in section.fields"
               :key="key"

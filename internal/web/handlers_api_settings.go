@@ -150,6 +150,14 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 		return callIntSetting(s.settings.SyncInterval, ctx, raw)
 	case "trust_proxy_headers":
 		return callBoolSetting(s.settings.TrustProxyHeaders, ctx, raw)
+	case "require_password_for_non_unique_ip":
+		return callBoolSetting(s.settings.RequirePasswordForNonUniqueIP, ctx, raw)
+	case "db_path":
+		return callStringSetting(s.settings.DBPath, ctx, raw)
+	case "admin_password":
+		return callStringSetting(s.settings.AdminPassword, ctx, raw)
+	case "session_secret":
+		return callStringSetting(s.settings.SessionSecret, ctx, raw)
 	}
 	return fmt.Errorf("unknown setting: %s", key)
 }
@@ -229,6 +237,14 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 		return s.settings.SyncInterval.Reset(ctx)
 	case "trust_proxy_headers":
 		return s.settings.TrustProxyHeaders.Reset(ctx)
+	case "require_password_for_non_unique_ip":
+		return s.settings.RequirePasswordForNonUniqueIP.Reset(ctx)
+	case "db_path":
+		return s.settings.DBPath.Reset(ctx)
+	case "admin_password":
+		return s.settings.AdminPassword.Reset(ctx)
+	case "session_secret":
+		return s.settings.SessionSecret.Reset(ctx)
 	}
 	return fmt.Errorf("unknown setting: %s", key)
 }
