@@ -370,7 +370,7 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 			Category:      category,
 			Service:       "",
 			Community:     grpComm,
-			AutoCommunity: store.AutoCommunity(groupIndex, 0),
+			AutoCommunity: store.AutoGroupCommunity(groupIndex),
 		})
 		// Service-level communities
 		for svcIndex, service := range services {

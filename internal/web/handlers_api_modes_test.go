@@ -486,6 +486,101 @@ func TestModeCommunities(t *testing.T) {
 // =============================================================================
 
 // =============================================================================
+// TestModeCommunitiesGroupAutoValueMatchesGeneration — guards against a bug
+// where the category (group) row's auto_community preview called
+// AutoCommunity(groupIndex, 0), which applies the "+1 for first service"
+// offset meant for actual services — showing 10001 for the first category
+// instead of the group's own base value, 10000, which is what
+// GenerateCommunities actually assigns. Admins clearing a category-level
+// override would see the wrong value as "what auto-generate would produce."
+// =============================================================================
+
+func TestModeCommunitiesGroupAutoValueMatchesGeneration(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	createBody := strings.NewReader(`{"name":"Auto Comm Mode","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/modes", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiModesCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create mode: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created modeJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	modeID := created.ID
+
+	feedID, err := st.AddFeed(ctx, "Auto Comm Feed", "http://example.com/auto.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
+	}
+	// Two categories, alphabetically ordered, so groupIndex 0 and 1 both get checked.
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
+		feedID, "a-category", "svc", "10.0.0.0/8"); err != nil {
+		t.Fatalf("insert catalog entry: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
+		feedID, "b-category", "svc", "10.1.0.0/16"); err != nil {
+		t.Fatalf("insert catalog entry: %v", err)
+	}
+
+	genReq := httptest.NewRequest("POST", "/api/admin/modes/1/communities/generate", nil)
+	genReq.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	genW := httptest.NewRecorder()
+	srv.apiModeCommunitiesGenerate(genW, genReq)
+	if genW.Code != http.StatusOK {
+		t.Fatalf("generate communities: status = %d, want 200, body=%s", genW.Code, genW.Body.String())
+	}
+
+	getReq := httptest.NewRequest("GET", "/api/admin/modes/1/communities", nil)
+	getReq.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	getW := httptest.NewRecorder()
+	srv.apiModeCommunitiesGet(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("get communities: status = %d, want 200, body=%s", getW.Code, getW.Body.String())
+	}
+	var resp struct {
+		Communities []communityItemJSON `json:"communities"`
+	}
+	if err := json.NewDecoder(getW.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+
+	groupAuto := map[string]uint32{}
+	groupReal := map[string]uint32{}
+	for _, c := range resp.Communities {
+		if c.Service != "" {
+			continue
+		}
+		groupAuto[c.Category] = c.AutoCommunity
+		groupReal[c.Category] = c.Community
+	}
+
+	if groupAuto["a-category"] != 10000 {
+		t.Errorf("a-category auto_community = %d, want 10000 (the group base, not +1)", groupAuto["a-category"])
+	}
+	if groupAuto["b-category"] != 20000 {
+		t.Errorf("b-category auto_community = %d, want 20000", groupAuto["b-category"])
+	}
+	// The preview must match what GenerateCommunities actually assigned —
+	// that's the whole point of showing it to the admin.
+	if groupAuto["a-category"] != groupReal["a-category"] {
+		t.Errorf("a-category auto_community (%d) != actual generated community (%d)", groupAuto["a-category"], groupReal["a-category"])
+	}
+	if groupAuto["b-category"] != groupReal["b-category"] {
+		t.Errorf("b-category auto_community (%d) != actual generated community (%d)", groupAuto["b-category"], groupReal["b-category"])
+	}
+}
+
+// =============================================================================
 // TestModesPartialUpdateEnabledOnly — partial update only sets enabled, name unchanged
 // =============================================================================
 

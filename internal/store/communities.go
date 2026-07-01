@@ -23,8 +23,11 @@ func findFirstFree(start uint32, used map[uint32]bool) uint32 {
 	return start
 }
 
-// AutoCommunity returns the auto-generated community number for a given position.
-// This is a positional estimate used for UI display; actual assignment uses findFirstFree.
+// AutoCommunity returns the auto-generated community number for a given
+// service position within a group. This is a positional estimate used for
+// UI display; actual assignment uses findFirstFree. Not valid for a group's
+// own (category-level) entry — use AutoGroupCommunity for that, since a
+// group's base value has no "+1 for the first service" offset applied to it.
 func AutoCommunity(groupIndex int, serviceIndex int) uint32 {
 	for serviceIndex >= 9999 {
 		groupIndex++
@@ -32,6 +35,13 @@ func AutoCommunity(groupIndex int, serviceIndex int) uint32 {
 	}
 	groupCommunity := (groupIndex + 1) * 10000
 	return uint32(groupCommunity + serviceIndex + 1) //nolint:gosec // community values fit in uint32
+}
+
+// AutoGroupCommunity returns the auto-generated community number for a
+// category's own group-level entry — the group base itself (e.g. 10000 for
+// the first category), same positional-estimate caveat as AutoCommunity.
+func AutoGroupCommunity(groupIndex int) uint32 {
+	return uint32((groupIndex + 1) * 10000) //nolint:gosec // community values fit in uint32
 }
 
 // GetCommunities returns all communities for a mode.
