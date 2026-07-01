@@ -4,7 +4,6 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/feeds"
@@ -34,8 +33,6 @@ type Server struct {
 	startTime    time.Time
 	degraded     bool
 	degradedInfo DegradedInfo
-
-	mu sync.RWMutex
 }
 
 // DegradedInfo carries version mismatch details for the degraded-mode page.
