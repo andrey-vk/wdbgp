@@ -98,12 +98,14 @@ describe('SettingField', () => {
 
   it('revert from editing returns to default (case editing → default)', async () => {
     const wrapper = mountField(boolMeta, null, false)
-    // Click to enter editing mode
+    // Click to enter editing mode (startEditing emits the default value)
     await wrapper.find('[data-testid="setting-default"] span').trigger('click')
     expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(false)
+    // startEditing emitted defaultValue first
+    expect(wrapper.emitted('update:value')?.[0]).toEqual([false])
     // Click revert
     await wrapper.find('[data-testid="setting-revert"]').trigger('click')
-    expect(wrapper.emitted('update:value')?.[0]).toEqual([null])
+    expect(wrapper.emitted('update:value')?.[1]).toEqual([null])
   })
 
   it('emits new value on toggle', async () => {

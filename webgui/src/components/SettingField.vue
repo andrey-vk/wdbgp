@@ -29,6 +29,13 @@ const emit = defineEmits<{
 // editing tracks whether the default was clicked into editing mode (case 1 → editing)
 const editing = ref(false)
 
+function startEditing() {
+  editing.value = true
+  if (props.value == null) {
+    emit('update:value', props.defaultValue)
+  }
+}
+
 function formatDisplayValue(val: string | number | boolean, type: SettingMeta['type']): string {
   switch (type) {
     case 'bool':
@@ -109,7 +116,7 @@ const selectOptions = computed(() => {
       <span
         class="underline decoration-dotted underline-offset-4 cursor-pointer opacity-70 hover:opacity-100"
         :title="t('settings.click_to_override')"
-        @click="editing = true"
+        @click="startEditing"
       >{{ formatDisplayValue(defaultValue, meta.type) }}</span>
     </div>
 
@@ -122,20 +129,20 @@ const selectOptions = computed(() => {
       <div class="flex-1">
         <ToggleSwitch
           v-if="meta.type === 'bool'"
-          :model-value="value as boolean"
+          :model-value="(value ?? defaultValue) as boolean"
           :input-id="fieldKey"
           @update:model-value="onChange"
         />
         <InputNumber
           v-else-if="meta.type === 'number'"
-          :model-value="value as number"
+          :model-value="(value ?? defaultValue) as number"
           :input-id="fieldKey"
           fluid
           @update:model-value="onChange"
         />
         <Select
           v-else-if="meta.type === 'select'"
-          :model-value="value as string"
+          :model-value="(value ?? defaultValue) as string"
           :options="selectOptions"
           option-label="label"
           option-value="value"
@@ -145,7 +152,7 @@ const selectOptions = computed(() => {
         />
         <InputText
           v-else
-          :model-value="value as string"
+          :model-value="(value ?? defaultValue) as string"
           :input-id="fieldKey"
           fluid
           @update:model-value="onChange"
