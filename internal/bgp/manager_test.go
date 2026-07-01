@@ -14,7 +14,6 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
-
 func testSettings(t *testing.T, fields map[string]string) *settings.Settings {
 	t.Helper()
 	s, err := settings.New(settings.NewTestStoreWith(fields))

@@ -4,7 +4,6 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
-
 )
 
 func TestMigration24AdapterForkColumns(t *testing.T) {

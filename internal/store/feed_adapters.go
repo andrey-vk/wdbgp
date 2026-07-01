@@ -161,7 +161,7 @@ var builtInAdapters = map[string]builtInAdapter{
 	"ipranges": {
 		name: "IPRanges", source: ipRangesAdapter,
 		builtinVersion: 1,
-		allowedHosts: "raw.githubusercontent.com",
+		allowedHosts:   "raw.githubusercontent.com",
 	},
 	"singbox-srs": {
 		name: "sing-box SRS", source: singboxSRSAdapter,
