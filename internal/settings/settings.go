@@ -376,7 +376,7 @@ func (s *Settings) JSON(ctx context.Context) SettingsJSON {
 	if dbSettings == nil {
 		dbSettings = make(map[string]string)
 	}
-	return SettingsJSON{
+	j := SettingsJSON{
 		ActiveDial:                    s.ActiveDial.JSON(dbSettings),
 		AdapterBackupDir:              s.AdapterBackupDir.JSON(dbSettings),
 		AdapterBackupMax:              s.AdapterBackupMax.JSON(dbSettings),
@@ -420,6 +420,18 @@ func (s *Settings) JSON(ctx context.Context) SettingsJSON {
 		SyncInterval:                  s.SyncInterval.JSON(dbSettings),
 		TrustProxyHeaders:             s.TrustProxyHeaders.JSON(dbSettings),
 	}
+
+	// Mask secrets in API responses
+	if j.AdminPassword.Value != nil {
+		masked := "••••"
+		j.AdminPassword.Value = &masked
+	}
+	if j.SessionSecret.Value != nil {
+		masked := "••••"
+		j.SessionSecret.Value = &masked
+	}
+
+	return j
 }
 
 // store returns the Store from the first non-nil setting field.
