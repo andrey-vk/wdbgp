@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"io/fs"
 	"net/http"
 	"sync"
 	"time"
@@ -27,7 +28,7 @@ type Server struct {
 	bgp          BGP
 	defaultLang  locale
 	handler      http.Handler
-	spaFS        http.FileSystem
+	spaFS        fs.FS
 	loginLimiter *rateLimiter
 	adminLimiter *rateLimiter
 	startTime    time.Time

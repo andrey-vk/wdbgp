@@ -18,3 +18,8 @@ func HTTPFS() http.FileSystem {
 	}
 	return http.FS(sub)
 }
+
+// DistFS returns an fs.FS rooted at webgui/dist for use with http.FileServerFS.
+func DistFS() (fs.FS, error) {
+	return fs.Sub(distFS, "webgui/dist")
+}

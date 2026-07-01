@@ -2,6 +2,7 @@ package web
 
 import (
 	"html/template"
+	"io"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -34,10 +35,11 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	if !ok {
 		defaultLang = localeEnglish
 	}
+	spaFS, _ := spa.DistFS()
 	server := &Server{
 		settings: st, store: s, syncer: syncer, bgp: bgp,
 		defaultLang:  defaultLang,
-		spaFS:        spa.HTTPFS(),
+		spaFS:        spaFS,
 		loginLimiter: newRateLimiter(time.Minute, st.RateLimitLogin.Get()), // per minute
 		adminLimiter: newRateLimiter(time.Minute, st.RateLimitAdmin.Get()), // per minute
 		startTime:    time.Now(),
@@ -48,7 +50,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 
 	// === SPA static file serving ===
 	if server.spaFS != nil {
-		mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(server.spaFS)))
+		mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(server.spaFS)))
 	}
 	// Admin SPA at /admin (must be before user catch-all)
 	mux.HandleFunc("GET /admin", server.adminSpaHandler)
@@ -243,7 +245,7 @@ func (s *Server) userSpaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	catcher := &notFoundCatcher{ResponseWriter: w}
-	http.FileServer(s.spaFS).ServeHTTP(catcher, r)
+	http.FileServerFS(s.spaFS).ServeHTTP(catcher, r)
 	if catcher.notFound {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -268,7 +270,12 @@ func (s *Server) serveSpaFile(w http.ResponseWriter, r *http.Request, name strin
 		http.Error(w, "SPA build not found", http.StatusServiceUnavailable)
 		return
 	}
-	http.ServeContent(w, r, name, stat.ModTime(), f)
+	rs, ok := f.(io.ReadSeeker)
+	if !ok {
+		http.Error(w, "SPA build not supported", http.StatusInternalServerError)
+		return
+	}
+	http.ServeContent(w, r, name, stat.ModTime(), rs)
 }
 
 // notFoundCatcher intercepts 404 responses for SPA fallback.
