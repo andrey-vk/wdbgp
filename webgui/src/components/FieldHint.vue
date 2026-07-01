@@ -6,8 +6,8 @@ import Popover from 'primevue/popover'
 const props = defineProps<{ hint: string; targetId: string }>()
 const { t } = useI18n()
 const popoverRef = ref<InstanceType<typeof Popover> | null>(null)
-const activePopoverId = inject<Ref<string | null>>('activePopoverId')!
-const hideActivePopover = inject<Ref<(() => void) | null>>('hideActivePopover')!
+const activePopoverId = inject<Ref<string | null>>('activePopoverId', ref(null))
+const hideActivePopover = inject<Ref<(() => void) | null>>('hideActivePopover', ref(null))
 
 function show() {
   // Close previous popover by calling its hide function
