@@ -50,7 +50,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 
 	// === SPA static file serving ===
 	if server.spaFS != nil {
-		mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(server.spaFS)))
+		mux.Handle("GET /assets/", http.FileServerFS(server.spaFS))
 	}
 	// Admin SPA at /admin (must be before user catch-all)
 	mux.HandleFunc("GET /admin", server.adminSpaHandler)
