@@ -68,7 +68,9 @@ func TestClientIP(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testSettings()
-			s.TrustProxyHeaders.Set(context.Background(), tc.trustProxy) //nolint:errcheck
+			if err := s.TrustProxyHeaders.Set(context.Background(), tc.trustProxy); err != nil {
+				t.Fatalf("failed to set TrustProxyHeaders: %v", err)
+			}
 
 			req := httptest.NewRequest("GET", "/", nil)
 			req.RemoteAddr = tc.remoteAddr

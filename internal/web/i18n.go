@@ -38,22 +38,6 @@ func translate(lang locale, key string) string {
 	return key
 }
 
-func pluralTranslation(lang locale, count int, oneKey, fewKey, manyKey string) string {
-	key := manyKey
-	if lang == localeRussian {
-		mod10 := count % 10
-		mod100 := count % 100
-		if mod10 == 1 && mod100 != 11 {
-			key = oneKey
-		} else if mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) {
-			key = fewKey
-		}
-	} else if count == 1 {
-		key = oneKey
-	}
-	return translate(lang, key)
-}
-
 func requestLocale(r *http.Request, fallback locale) (locale, bool) {
 	if value := r.URL.Query().Get("lang"); value != "" {
 		if lang, ok := parseLocale(value); ok {

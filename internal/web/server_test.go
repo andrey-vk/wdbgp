@@ -305,30 +305,6 @@ func TestTranslationCatalogsHaveMatchingKeys(t *testing.T) {
 	}
 }
 
-func TestSelectionPluralTranslations(t *testing.T) {
-	tests := []struct {
-		lang  locale
-		count int
-		want  string
-	}{
-		{localeEnglish, 1, "category"},
-		{localeEnglish, 2, "categories"},
-		{localeRussian, 1, "категория"},
-		{localeRussian, 2, "категории"},
-		{localeRussian, 5, "категорий"},
-		{localeRussian, 11, "категорий"},
-		{localeRussian, 22, "категории"},
-	}
-	for _, test := range tests {
-		got := pluralTranslation(test.lang, test.count,
-			"selection.category_one", "selection.category_few", "selection.category_many")
-		if got != test.want {
-			t.Errorf("pluralTranslation(%q, %d) = %q, want %q",
-				test.lang, test.count, got, test.want)
-		}
-	}
-}
-
 // =============================================================================
 // Peer uniqueness tests
 // =============================================================================
