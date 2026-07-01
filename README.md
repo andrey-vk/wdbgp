@@ -282,11 +282,15 @@ docker run --rm -v wdbgp-data:/data wh1ted/wdbgp:latest sync
 
 ## Development
 
+The Go build embeds the built frontend (`webgui/dist`) via `go:embed`, so the
+frontend must be built first — `go build`/`go vet`/`go test ./...` fail on a
+fresh checkout otherwise, since `webgui/dist` doesn't exist until it has.
+
 ```sh
+cd webgui && npm install && npm run build && cd ..
 go test ./...
 go vet ./...
 go build ./cmd/wdbgp
-cd webgui && npm install && npm run build
 docker build -t wdbgp:latest .
 ```
 

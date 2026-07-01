@@ -281,11 +281,16 @@ docker run --rm -v wdbgp-data:/data wh1ted/wdbgp:latest sync
 
 ## Разработка
 
+Go-сборка встраивает собранный фронтенд (`webgui/dist`) через `go:embed`,
+поэтому сначала нужно собрать фронтенд — иначе `go build`/`go vet`/
+`go test ./...` не пройдут на свежем чекауте, так как `webgui/dist` появится
+только после сборки.
+
 ```sh
+cd webgui && npm install && npm run build && cd ..
 go test ./...
 go vet ./...
 go build ./cmd/wdbgp
-cd webgui && npm install && npm run build
 docker build -t wdbgp:latest .
 ```
 
