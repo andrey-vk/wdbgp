@@ -16,6 +16,7 @@ const i18n = createI18n({
       'settings.requires_restart': 'Requires restart',
       'settings.on': 'On',
       'settings.off': 'Off',
+      'settings.empty': 'empty',
       'test.bool': 'Test Bool',
       'test.bool_hint': 'Test bool hint',
       'test.int': 'Test Int',

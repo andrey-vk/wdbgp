@@ -95,7 +95,40 @@ vi.mock('primevue/usetoast', () => ({
 const i18n = createI18n({
   legacy: false,
   locale: 'en',
-  messages: { en: {} },
+  messages: {
+    en: {
+      'menu.settings': 'Settings',
+      'settings.section_admin_access': 'Admin Access',
+      'settings.section_network': 'Network',
+      'settings.section_localization': 'Localization',
+      'settings.section_security': 'Security',
+      'settings.section_bgp': 'BGP',
+      'settings.section_filters': 'Route Filters',
+      'settings.section_sync': 'Data Sync',
+      'settings.section_js': 'JavaScript Limits',
+      'settings.section_rate_limit': 'Rate Limiting',
+      'settings.section_metrics': 'Metrics',
+      'settings.section_database': 'Database',
+      'settings.section_status_api': 'Status API',
+      'settings.section_logging': 'Logging',
+      'settings.section_backup': 'Backup',
+      'settings.purge_metrics': 'Purge Metrics',
+      'settings.purge_metrics_hint': 'Delete all metrics history',
+      'settings.purge_metrics_button': 'Purge',
+      'settings.save': 'Save',
+      'settings.saved': 'Saved',
+      'settings.click_to_override': 'Click to override',
+      'settings.revert_default': 'Revert to default',
+      'settings.env_override_hint': 'Set via environment variable',
+      'settings.requires_restart': 'Requires restart',
+      'settings.empty': 'empty',
+      'settings.on': 'On',
+      'settings.off': 'Off',
+      'settings.unsaved_confirm': 'Unsaved changes will be lost.',
+      'settings.use_default': 'Use default',
+      'settings.save_error': 'Failed to save settings.',
+    },
+  },
 })
 
 // ---------------------------------------------------------------------------
@@ -125,7 +158,7 @@ describe('SettingsPage', () => {
     // Should have sections rendered (at least one .card)
     expect(wrapper.findAll('.card').length).toBeGreaterThan(0)
     // The save button should be present
-    expect(wrapper.text()).toContain('settings.save')
+    expect(wrapper.text()).toContain('Save')
   })
 
   it('validates the settings response schema', () => {
