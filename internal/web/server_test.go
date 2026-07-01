@@ -62,6 +62,9 @@ func (f *fakeBGP) Reconcile(context.Context) error {
 
 func (f *fakeBGP) ReloadPeers(context.Context) error {
 	f.reloads++
+	if f.down {
+		return f.downErr
+	}
 	return nil
 }
 
@@ -922,5 +925,139 @@ func TestAdminLogoutAPI(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("/me after logout: status=%d, want 401", rec.Code)
+	}
+}
+
+// =============================================================================
+// BGP status/reload API
+// =============================================================================
+
+func TestBGPStatusReflectsSpeakerHealth(t *testing.T) {
+	s := testSettings()
+	fake := &fakeBGP{}
+	server := New(s, nil, nil, fake)
+	handler := server.Handler()
+	cookie := adminCookie(s)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/bgp/status", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var resp bgpStatusJSON
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Running || resp.RestartPending || resp.LastError != "" {
+		t.Fatalf("healthy fakeBGP: got %+v, want running=true, restart_pending=false, last_error=\"\"", resp)
+	}
+
+	// Simulate a failed speaker.
+	fake.down = true
+	fake.downErr = fmt.Errorf("bind: address already in use")
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/bgp/status", nil)
+	req.AddCookie(cookie)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Running || resp.LastError != "bind: address already in use" {
+		t.Fatalf("down fakeBGP: got %+v, want running=false, last_error set", resp)
+	}
+}
+
+func TestBGPStatusReflectsRestartPendingAfterSettingChange(t *testing.T) {
+	s := testSettings()
+	server := New(s, nil, nil, &fakeBGP{})
+	handler := server.Handler()
+	cookie := adminCookie(s)
+
+	assertPending := func(want bool) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/admin/bgp/status", nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		var resp bgpStatusJSON
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.RestartPending != want {
+			t.Fatalf("restart_pending = %v, want %v", resp.RestartPending, want)
+		}
+	}
+
+	assertPending(false)
+
+	if err := s.LocalASN.Set(context.Background(), 65001); err != nil {
+		t.Fatal(err)
+	}
+	assertPending(true)
+}
+
+func TestBGPReloadClearsRestartPendingOnSuccess(t *testing.T) {
+	s := testSettings()
+	fake := &fakeBGP{}
+	server := New(s, nil, nil, fake)
+	handler := server.Handler()
+	cookie := adminCookie(s)
+
+	if err := s.RouterID.Set(context.Background(), "192.0.2.9"); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/bgp/reload", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reload status = %d, want 200", rec.Code)
+	}
+	if fake.reloads != 1 {
+		t.Fatalf("ReloadPeers called %d times, want 1", fake.reloads)
+	}
+	var resp bgpStatusJSON
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.RestartPending {
+		t.Fatal("restart_pending should be cleared after a successful reload")
+	}
+}
+
+func TestBGPReloadReportsFailureAndKeepsRestartPending(t *testing.T) {
+	s := testSettings()
+	fake := &fakeBGP{down: true, downErr: fmt.Errorf("bind: address already in use")}
+	server := New(s, nil, nil, fake)
+	handler := server.Handler()
+	cookie := adminCookie(s)
+
+	if err := s.LocalASN.Set(context.Background(), 65001); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/bgp/reload", nil)
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("reload status = %d, want 500", rec.Code)
+	}
+	var resp bgpStatusJSON
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Running {
+		t.Fatal("running should be false after a failed reload")
+	}
+	if resp.LastError != "bind: address already in use" {
+		t.Fatalf("last_error = %q, want the reload failure", resp.LastError)
+	}
+	if !resp.RestartPending {
+		t.Fatal("restart_pending should stay true — the failed reload never applied the pending change")
 	}
 }

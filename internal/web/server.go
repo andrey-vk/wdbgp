@@ -108,6 +108,8 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	mux.HandleFunc("PUT /api/admin/users/{id}/selections", server.apiRequireAdmin(server.apiAdminUserSaveSelections))
 	mux.HandleFunc("POST /api/admin/users/{id}/count-selections", server.apiRequireAdmin(server.apiAdminUserCountPrefixes))
 	mux.HandleFunc("GET /api/admin/dashboard", server.apiRequireAdmin(server.apiDashboard))
+	mux.HandleFunc("GET /api/admin/bgp/status", server.apiRequireAdmin(server.apiBGPStatus))
+	mux.HandleFunc("POST /api/admin/bgp/reload", server.apiRequireAdmin(server.apiBGPReload))
 	mux.HandleFunc("GET /api/admin/debug", server.apiRequireAdmin(server.apiDebugCIDR))
 	mux.HandleFunc("POST /api/admin/settings/purge-metrics", server.apiRequireAdmin(server.apiSettingsPurgeMetrics))
 
@@ -141,6 +143,17 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	st.RateLimitAdmin.OnChange(func(v int) {
 		server.adminLimiter.SetMax(v)
 	})
+
+	// These 5 settings only take effect once the BGP speaker actually
+	// restarts (see the Manager snapshot). Flag it so the admin UI can
+	// show "BGP settings changed — apply now" instead of the change
+	// silently doing nothing until the next process restart.
+	markBGPRestartPending := func() { server.restartPending.Store(true) }
+	st.LocalASN.OnChange(func(int) { markBGPRestartPending() })
+	st.RouterID.OnChange(func(string) { markBGPRestartPending() })
+	st.BGPPort.OnChange(func(int) { markBGPRestartPending() })
+	st.LocalAddressV4.OnChange(func(string) { markBGPRestartPending() })
+	st.LocalAddressV6.OnChange(func(string) { markBGPRestartPending() })
 
 	return server
 }

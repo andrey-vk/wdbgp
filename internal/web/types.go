@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/feeds"
@@ -37,6 +38,12 @@ type Server struct {
 	startTime    time.Time
 	degraded     bool
 	degradedInfo DegradedInfo
+
+	// restartPending is set by OnChange callbacks on the BGP restart-only
+	// settings, and cleared once a reload succeeds. atomic since it's
+	// written from settings-change callbacks and read from HTTP handlers
+	// concurrently.
+	restartPending atomic.Bool
 }
 
 // DegradedInfo carries version mismatch details for the degraded-mode page.
