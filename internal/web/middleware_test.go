@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // =============================================================================
@@ -83,5 +84,68 @@ func TestClientIP(t *testing.T) {
 				t.Fatalf("clientIP() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// =============================================================================
+// TestRateLimiterSweepsStaleIPs — limits only ever grew before this fix:
+// every distinct IP got a permanent map entry, even long after its requests
+// aged out of the window. A long-running server accumulates one entry per
+// unique visitor forever. allow() must reclaim IPs with no requests left in
+// the window, not just decide allow/deny correctly.
+// =============================================================================
+
+func TestRateLimiterSweepsStaleIPs(t *testing.T) {
+	window := 50 * time.Millisecond
+	rl := newRateLimiter(window, 10)
+
+	if !rl.allow("1.2.3.4") {
+		t.Fatal("first request from 1.2.3.4 should be allowed")
+	}
+	if got := len(rl.limits); got != 1 {
+		t.Fatalf("after one IP: len(limits) = %d, want 1", got)
+	}
+
+	time.Sleep(window * 2)
+
+	// This request is what should trigger the sweep — for any IP, not just
+	// the stale one — and reclaim 1.2.3.4's now-stale entry.
+	if !rl.allow("5.6.7.8") {
+		t.Fatal("first request from 5.6.7.8 should be allowed")
+	}
+
+	rl.mu.RLock()
+	_, stale := rl.limits["1.2.3.4"]
+	_, fresh := rl.limits["5.6.7.8"]
+	total := len(rl.limits)
+	rl.mu.RUnlock()
+
+	if stale {
+		t.Error("1.2.3.4 should have been swept after its entries aged out of the window")
+	}
+	if !fresh {
+		t.Error("5.6.7.8 should still be present — it was just added")
+	}
+	if total != 1 {
+		t.Errorf("len(limits) = %d, want 1 (only the fresh IP)", total)
+	}
+}
+
+// TestRateLimiterStillEnforcesLimit is a basic regression check that the
+// sweep doesn't change actual allow/deny behavior within a window.
+func TestRateLimiterStillEnforcesLimit(t *testing.T) {
+	rl := newRateLimiter(time.Minute, 2)
+
+	if !rl.allow("9.9.9.9") {
+		t.Fatal("request 1 should be allowed")
+	}
+	if !rl.allow("9.9.9.9") {
+		t.Fatal("request 2 should be allowed")
+	}
+	if rl.allow("9.9.9.9") {
+		t.Fatal("request 3 should be denied (limit is 2)")
+	}
+	if rl.allow("9.9.9.9") {
+		t.Fatal("request 4 should still be denied")
 	}
 }

@@ -41,12 +41,19 @@ func (s *Server) clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// rateLimiter implements per-IP rate limiting
+// rateLimiter implements per-IP rate limiting.
+//
+// limits only ever grows on its own — entries for IPs that stop making
+// requests must be reclaimed explicitly or the map leaks for the life of the
+// process. allow() amortizes that cleanup: at most once per window, it walks
+// the whole map and drops any IP with no timestamps left inside the window,
+// piggybacking on regular traffic instead of needing a background goroutine.
 type rateLimiter struct {
 	mu          sync.RWMutex
 	limits      map[string][]time.Time
 	window      time.Duration
 	maxRequests int
+	lastSweep   time.Time
 }
 
 func newRateLimiter(window time.Duration, maxRequests int) *rateLimiter {
@@ -63,6 +70,30 @@ func (rl *rateLimiter) SetMax(n int) {
 	rl.maxRequests = n
 }
 
+// sweepLocked removes IPs with no timestamps left inside the window. Callers
+// must hold rl.mu. No-op if less than a full window has passed since the
+// last sweep, so the cost is amortized rather than paid on every request.
+func (rl *rateLimiter) sweepLocked(now time.Time) {
+	if now.Sub(rl.lastSweep) < rl.window {
+		return
+	}
+	rl.lastSweep = now
+
+	cutoff := now.Add(-rl.window)
+	for ip, requests := range rl.limits {
+		stale := true
+		for _, t := range requests {
+			if t.After(cutoff) {
+				stale = false
+				break
+			}
+		}
+		if stale {
+			delete(rl.limits, ip)
+		}
+	}
+}
+
 func (rl *rateLimiter) allow(ip string) bool {
 	// Disable rate limiting if maxRequests <= 0
 	if rl.maxRequests <= 0 {
@@ -72,6 +103,8 @@ func (rl *rateLimiter) allow(ip string) bool {
 	now := time.Now()
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+
+	rl.sweepLocked(now)
 
 	// Clean old entries
 	cutoff := now.Add(-rl.window)
@@ -85,6 +118,7 @@ func (rl *rateLimiter) allow(ip string) bool {
 
 	// Check if allowed
 	if len(valid) >= rl.maxRequests {
+		rl.limits[ip] = valid
 		return false
 	}
 
