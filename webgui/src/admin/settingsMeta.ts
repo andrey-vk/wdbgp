@@ -3,6 +3,7 @@ export interface SettingMeta {
   hint: string
   type: 'bool' | 'number' | 'string' | 'select' | 'textarea' | 'password'
   restart?: boolean
+  readonly?: boolean                  // always read-only — set via envVar only, no UI/API edit path at all
   options?: Record<string, string>  // value → i18n label key (for select only)
   envVar?: string                     // for display only (env tag)
 }
@@ -71,8 +72,8 @@ export const sections: SettingsSection[] = [
   {
     name: 'settings.section_network',
     fields: {
-      host: { label: 'settings.host', hint: 'settings.host_hint', type: 'string', restart: true, envVar: 'WDBGP_HOST' },
-      port: { label: 'settings.port', hint: 'settings.port_hint', type: 'number', restart: true, envVar: 'WDBGP_PORT' },
+      host: { label: 'settings.host', hint: 'settings.host_hint', type: 'string', readonly: true, envVar: 'WDBGP_HOST' },
+      port: { label: 'settings.port', hint: 'settings.port_hint', type: 'number', readonly: true, envVar: 'WDBGP_PORT' },
     },
   },
   {
@@ -146,7 +147,7 @@ export const sections: SettingsSection[] = [
   {
     name: 'settings.section_database',
     fields: {
-      db_path: { label: 'settings.db_path', hint: 'settings.db_path_hint', type: 'string', envVar: 'WDBGP_DB' },
+      db_path: { label: 'settings.db_path', hint: 'settings.db_path_hint', type: 'string', readonly: true, envVar: 'WDBGP_DB' },
     },
   },
   {

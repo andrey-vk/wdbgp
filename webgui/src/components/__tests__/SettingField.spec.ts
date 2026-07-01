@@ -14,6 +14,8 @@ const i18n = createI18n({
       'settings.revert_default': 'Revert to default',
       'settings.env_override_hint': 'Set via environment variable',
       'settings.requires_restart': 'Requires restart',
+      'settings.env_only': 'Env only',
+      'settings.env_only_hint': 'Can only be set via environment variable, cannot be changed here',
       'settings.on': 'On',
       'settings.off': 'Off',
       'settings.empty': 'empty',
@@ -44,6 +46,7 @@ const selectMeta: SettingMeta = {
   options: { a: 'opt.a', b: 'opt.b' },
 }
 const passwordMeta: SettingMeta = { label: 'test.pwd', hint: 'test.pwd_hint', type: 'password' }
+const readonlyMeta: SettingMeta = { label: 'test.str', hint: 'test.str_hint', type: 'string', readonly: true }
 
 function mountField(meta: SettingMeta, value: boolean | number | string | null, defaultValue: boolean | number | string, envOverride = false) {
   return mount(SettingField, {
@@ -150,6 +153,34 @@ describe('SettingField', () => {
   it('does not show restart tag when restart prop is false', () => {
     const wrapper = mountField(boolMeta, true, false)
     expect(wrapper.text()).not.toContain('Requires restart')
+  })
+
+  // --- readonly (env-only, no UI edit path at all) tests ---
+
+  it('renders a readonly field as non-editable text even with no value (default state)', () => {
+    const wrapper = mountField(readonlyMeta, null, 'default-value')
+    expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="setting-editing"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="setting-env"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('default-value')
+  })
+
+  it('clicking a readonly field does not enter editing mode', async () => {
+    const wrapper = mountField(readonlyMeta, null, 'default-value')
+    const target = wrapper.find('[data-testid="setting-env"]')
+    await target.trigger('click')
+    expect(wrapper.find('[data-testid="setting-editing"]').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'InputText' }).exists()).toBe(false)
+  })
+
+  it('shows "env only" tag when meta.readonly is true', () => {
+    const wrapper = mountField(readonlyMeta, null, 'default-value')
+    expect(wrapper.text()).toContain('Env only')
+  })
+
+  it('does not show "env only" tag for a regular editable field', () => {
+    const wrapper = mountField(stringMeta, null, 'default-value')
+    expect(wrapper.text()).not.toContain('Env only')
   })
 
   // --- password type tests ---

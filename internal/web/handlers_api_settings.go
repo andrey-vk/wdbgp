@@ -72,7 +72,7 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 	case "filter_deny":
 		return callStringSetting(ctx, s.settings.FilterDeny, raw)
 	case "host":
-		return callStringSetting(ctx, s.settings.Host, raw)
+		return fmt.Errorf("host is set via WDBGP_HOST and cannot be changed here")
 	case "js_max_call_stack":
 		return callIntSetting(ctx, s.settings.JSMaxCallStack, raw)
 	case "js_max_entries":
@@ -102,7 +102,7 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 	case "metrics_history_days":
 		return callIntSetting(ctx, s.settings.MetricsHistoryDays, raw)
 	case "port":
-		return callIntSetting(ctx, s.settings.Port, raw)
+		return fmt.Errorf("port is set via WDBGP_PORT and cannot be changed here")
 	case "rate_limit_admin":
 		return callIntSetting(ctx, s.settings.RateLimitAdmin, raw)
 	case "rate_limit_login":
@@ -124,7 +124,7 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 	case "require_password_for_non_unique_ip":
 		return callBoolSetting(ctx, s.settings.RequirePasswordForNonUniqueIP, raw)
 	case "db_path":
-		return callStringSetting(ctx, s.settings.DBPath, raw)
+		return fmt.Errorf("db_path is set via WDBGP_DB and cannot be changed here")
 	case "admin_password":
 		return callStringSetting(ctx, s.settings.AdminPassword, raw)
 	case "session_secret":
@@ -163,7 +163,7 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 	case "filter_deny":
 		return s.settings.FilterDeny.Reset(ctx)
 	case "host":
-		return s.settings.Host.Reset(ctx)
+		return fmt.Errorf("host is set via WDBGP_HOST and cannot be changed here")
 	case "js_max_call_stack":
 		return s.settings.JSMaxCallStack.Reset(ctx)
 	case "js_max_entries":
@@ -193,7 +193,7 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 	case "metrics_history_days":
 		return s.settings.MetricsHistoryDays.Reset(ctx)
 	case "port":
-		return s.settings.Port.Reset(ctx)
+		return fmt.Errorf("port is set via WDBGP_PORT and cannot be changed here")
 	case "rate_limit_admin":
 		return s.settings.RateLimitAdmin.Reset(ctx)
 	case "rate_limit_login":
@@ -215,7 +215,7 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 	case "require_password_for_non_unique_ip":
 		return s.settings.RequirePasswordForNonUniqueIP.Reset(ctx)
 	case "db_path":
-		return s.settings.DBPath.Reset(ctx)
+		return fmt.Errorf("db_path is set via WDBGP_DB and cannot be changed here")
 	case "admin_password":
 		return s.settings.AdminPassword.Reset(ctx)
 	case "session_secret":

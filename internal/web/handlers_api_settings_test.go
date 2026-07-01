@@ -116,7 +116,7 @@ func TestAPISettingsPut_TypedInt(t *testing.T) {
 	mustSetSetting(t, st.SessionSecret, "test-secret")
 	server := New(st, nil, nil, nil)
 
-	body := `{"port": 9090}`
+	body := `{"rate_limit_login": 42}`
 	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	cookie := adminCookie(st)
@@ -127,8 +127,59 @@ func TestAPISettingsPut_TypedInt(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	if st.Port.Get() != 9090 {
-		t.Errorf("port = %d, want 9090", st.Port.Get())
+	if st.RateLimitLogin.Get() != 42 {
+		t.Errorf("rate_limit_login = %d, want 42", st.RateLimitLogin.Get())
+	}
+}
+
+// TestAPISettingsPut_HostPortDBPathAreReadOnly verifies host/port/db_path
+// can no longer be changed via the API — they're env-only (WDBGP_HOST,
+// WDBGP_PORT, WDBGP_DB), same as they always required a restart to take
+// effect, but now genuinely can't be edited from a running instance
+// instead of silently accepting a value that could lock an admin out of
+// the UI or point at an unbindable port with no local recovery path.
+func TestAPISettingsPut_HostPortDBPathAreReadOnly(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	server := New(st, nil, nil, nil)
+	cookie := adminCookie(st)
+
+	for key, body := range map[string]string{
+		"host":    `{"host": "127.0.0.1"}`,
+		"port":    `{"port": 9090}`,
+		"db_path": `{"db_path": "/other.sqlite3"}`,
+	} {
+		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		server.handler.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s: status = %d, want 400", key, w.Code)
+		}
+
+		resetReq := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"`+key+`": null}`))
+		resetReq.Header.Set("Content-Type", "application/json")
+		resetReq.AddCookie(cookie)
+		resetW := httptest.NewRecorder()
+		server.handler.ServeHTTP(resetW, resetReq)
+		if resetW.Code != http.StatusBadRequest {
+			t.Errorf("RESET %s: status = %d, want 400", key, resetW.Code)
+		}
+	}
+
+	if st.Host.Get() != "0.0.0.0" {
+		t.Errorf("host = %q, want unchanged default 0.0.0.0", st.Host.Get())
+	}
+	if st.Port.Get() != 8080 {
+		t.Errorf("port = %d, want unchanged default 8080", st.Port.Get())
+	}
+	if st.DBPath.Get() != "/data/wdbgp.sqlite3" {
+		t.Errorf("db_path = %q, want unchanged default", st.DBPath.Get())
 	}
 }
 
@@ -140,13 +191,13 @@ func TestAPISettingsPut_Reset(t *testing.T) {
 	}
 	mustSetSetting(t, st.SessionSecret, "test-secret")
 	// Set first
-	mustSetSetting(t, st.Port, 9090)
-	if st.Port.Get() != 9090 {
+	mustSetSetting(t, st.RateLimitLogin, 42)
+	if st.RateLimitLogin.Get() != 42 {
 		t.Fatal("precondition failed")
 	}
 
 	server := New(st, nil, nil, nil)
-	body := `{"port": null}`
+	body := `{"rate_limit_login": null}`
 	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	cookie := adminCookie(st)
@@ -157,8 +208,8 @@ func TestAPISettingsPut_Reset(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	if st.Port.Get() != 8080 {
-		t.Errorf("port = %d, want 8080 (default after reset)", st.Port.Get())
+	if st.RateLimitLogin.Get() != 5 {
+		t.Errorf("rate_limit_login = %d, want 5 (default after reset)", st.RateLimitLogin.Get())
 	}
 }
 

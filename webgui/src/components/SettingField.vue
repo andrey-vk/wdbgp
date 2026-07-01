@@ -32,6 +32,7 @@ const emit = defineEmits<{
 const editing = ref(false)
 
 function startEditing() {
+  if (props.meta.readonly) return
   editing.value = true
   if (props.value == null && props.meta.type !== 'password') {
     emit('update:value', props.defaultValue)
@@ -101,11 +102,17 @@ const selectOptions = computed(() => {
         severity="info"
         :value="t('settings.requires_restart')"
       />
+      <Tag
+        v-if="meta.readonly"
+        severity="secondary"
+        :value="t('settings.env_only')"
+        :title="t('settings.env_only_hint')"
+      />
     </template>
 
-    <!-- Case 2: env override — readonly text -->
+    <!-- Case 2: env override, or a field that's always read-only (env-only, no UI edit path at all) -->
     <div
-      v-if="envOverride"
+      v-if="envOverride || meta.readonly"
       :id="fieldKey"
       class="text-sm"
       data-testid="setting-env"

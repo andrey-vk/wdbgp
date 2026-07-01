@@ -97,6 +97,8 @@
   "settings.false": "false",
   "settings.help": "Help",
   "settings.requires_restart": "requires restart",
+  "settings.env_only": "env only",
+  "settings.env_only_hint": "This setting can only be set via its environment variable and requires a restart to take effect — it cannot be changed from the UI.",
   "settings.save": "Save settings",
   "settings.save_error": "Failed to save settings.",
   "settings.unsaved_confirm": "You have unsaved changes. Discard them?",

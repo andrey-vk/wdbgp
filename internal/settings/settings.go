@@ -124,14 +124,18 @@ func New(store Store) (*Settings, error) {
 		return nil, err
 	}
 
-	// Host.
-	s.Host, err = newSimple("0.0.0.0", "host", "WDBGP_HOST", parseString, nil, store, dbSettings)
+	// Host: env-only, no dbKey — the HTTP listen address is infrastructure
+	// identity (like DBPath), not something safe to edit from a form in
+	// the app that's already listening on it. A bad value here can lock
+	// an admin out of the UI with no way to fix it short of shell/redeploy
+	// access, and it already required a restart to take effect anyway.
+	s.Host, err = newSimple("0.0.0.0", "", "WDBGP_HOST", parseString, nil, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
-	// Port.
-	s.Port, err = newSimple(8080, "port", "WDBGP_PORT", parseInt, validatePort, store, dbSettings)
+	// Port: env-only, no dbKey — same reasoning as Host above.
+	s.Port, err = newSimple(8080, "", "WDBGP_PORT", parseInt, validatePort, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}

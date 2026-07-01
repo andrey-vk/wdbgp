@@ -96,6 +96,8 @@
   "settings.false": "нет",
   "settings.help": "Справка",
   "settings.requires_restart": "требуется перезапуск",
+  "settings.env_only": "только ENV",
+  "settings.env_only_hint": "Эта настройка задаётся только через переменную окружения и требует перезапуска — изменить её через интерфейс нельзя.",
   "settings.save": "Сохранить настройки",
   "settings.save_error": "Не удалось сохранить настройки.",
   "settings.unsaved_confirm": "У вас есть несохранённые изменения. Отменить их?",
