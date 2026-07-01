@@ -485,10 +485,20 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save route filters
+	// Save route filters. SetUserRouteFilters replaces both sides
+	// unconditionally, so a partial update touching only one of
+	// filter_allow/filter_deny must start from the currently saved value
+	// for the untouched side, not an empty slice — otherwise omitting one
+	// field from the request silently wipes the other.
 	if body.FilterAllow != nil || body.FilterDeny != nil {
-		allow := []string{}
-		deny := []string{}
+		existing, err := s.store.UserRouteFilters(r.Context(), id)
+		if err != nil {
+			logging.FromContext(r.Context()).Debug("route filters lookup before update failed", "error", err, "user_id", id)
+			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load existing route filters"})
+			return
+		}
+		allow := existing.Allow
+		deny := existing.Deny
 		if body.FilterAllow != nil {
 			allow = *body.FilterAllow
 		}

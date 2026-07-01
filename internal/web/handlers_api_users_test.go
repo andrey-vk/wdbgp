@@ -792,6 +792,72 @@ func TestUsersPartialUpdateFiltersOnly(t *testing.T) {
 	}
 }
 
+// TestUsersPartialUpdateFilterOneSidePreservesTheOther guards against a bug
+// where PUT with only filter_allow (or only filter_deny) silently wiped the
+// omitted side, since SetUserRouteFilters replaces both unconditionally —
+// the handler must load the existing filters first and only override the
+// side actually present in the request body.
+func TestUsersPartialUpdateFilterOneSidePreservesTheOther(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+
+	createBody := strings.NewReader(`{"name":"filter-user-2","peer_ip":"192.168.5.2","peer_asn":65007,"networks":["10.0.0.0/8"],"web_auth":"network","enabled":true,"filter_allow":["8.8.8.0/24"],"filter_deny":["1.1.1.1/32"]}`)
+	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created userJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	// PUT only filter_deny — filter_allow must survive untouched.
+	updateBody := strings.NewReader(`{"filter_deny":["2.2.2.2/32"]}`)
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d", created.ID), updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	filters, err := st.UserRouteFilters(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filters.Allow) != 1 || filters.Allow[0] != "8.8.8.0/24" {
+		t.Fatalf("filter_allow = %v, want unchanged [8.8.8.0/24] — PUT with only filter_deny must not wipe it", filters.Allow)
+	}
+	if len(filters.Deny) != 1 || filters.Deny[0] != "2.2.2.2/32" {
+		t.Fatalf("filter_deny = %v, want [2.2.2.2/32]", filters.Deny)
+	}
+
+	// PUT only filter_allow — filter_deny (just set above) must survive too.
+	updateBody2 := strings.NewReader(`{"filter_allow":["9.9.9.0/24"]}`)
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d", created.ID), updateBody2)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update 2: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	filters2, err := st.UserRouteFilters(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filters2.Allow) != 1 || filters2.Allow[0] != "9.9.9.0/24" {
+		t.Fatalf("filter_allow = %v, want [9.9.9.0/24]", filters2.Allow)
+	}
+	if len(filters2.Deny) != 1 || filters2.Deny[0] != "2.2.2.2/32" {
+		t.Fatalf("filter_deny = %v, want unchanged [2.2.2.2/32] — PUT with only filter_allow must not wipe it", filters2.Deny)
+	}
+}
+
 // =============================================================================
 // TestUsersPartialUpdatePasswordOnly — PUT with only password fields
 // =============================================================================
