@@ -123,6 +123,7 @@ func serve(s *settings.Settings, db *store.Store) error {
 
 	syncer := feeds.NewSyncer(db, s)
 	go syncLoop(ctx, time.Duration(s.SyncInterval.Get())*time.Second, syncer, bgpManager, db, s)
+	go purgeLoop(ctx, time.Hour, db, s)
 
 	httpServer := &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
@@ -158,6 +159,32 @@ func serve(s *settings.Settings, db *store.Store) error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	return httpServer.Shutdown(shutdownCtx)
+}
+
+// purgeLoop periodically removes old metric snapshots based on metrics_history_days.
+func purgeLoop(ctx context.Context, interval time.Duration, db *store.Store, s *settings.Settings) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !s.MetricsEnabled.Get() {
+				continue
+			}
+			days := s.MetricsHistoryDays.Get()
+			if days <= 0 {
+				days = 14
+			}
+			if err := db.PurgeUserSnapshots(ctx, days); err != nil {
+				logging.Error("metrics purge failed for user snapshots", "error", err)
+			}
+			if err := db.PurgeFeedSnapshots(ctx, days); err != nil {
+				logging.Error("metrics purge failed for feed snapshots", "error", err)
+			}
+		}
+	}
 }
 
 // serveDegraded starts an HTTP server that only shows the DB version mismatch page.
