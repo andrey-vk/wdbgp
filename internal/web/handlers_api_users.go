@@ -187,10 +187,6 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid peer IP address"})
 		return
 	}
-	if body.WebAuth != "login" && len(body.Networks) == 0 {
-		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "At least one network is required"})
-		return
-	}
 	for _, raw := range body.Networks {
 		if _, err := netip.ParsePrefix(strings.TrimSpace(raw)); err != nil {
 			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid network CIDR: " + raw})
@@ -247,6 +243,16 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	if user.WebAuth == "" {
 		user.WebAuth = s.settings.DefaultWebAuth.Get()
+	}
+
+	// Only network/both actually authenticate by IP match — login and any
+	// (credentials, optionally combined with IP for "both") don't need one.
+	// Checked against the effective (post-default) mode, not the raw
+	// request field, so an omitted web_auth defaulting to "login"/"any"
+	// doesn't get wrongly rejected here.
+	if (user.WebAuth == "network" || user.WebAuth == "both") && len(user.Networks) == 0 {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "At least one network is required"})
+		return
 	}
 
 	// Reject dynamic peers when feature flag is off
@@ -456,6 +462,13 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if current.WebAuth == "" {
 		current.WebAuth = s.settings.DefaultWebAuth.Get()
+	}
+
+	// Only network/both actually authenticate by IP match — see the
+	// matching check in apiUsersCreate for why login/any are exempt.
+	if (current.WebAuth == "network" || current.WebAuth == "both") && len(current.Networks) == 0 {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "At least one network is required"})
+		return
 	}
 
 	// Reject dynamic peers when feature flag is off

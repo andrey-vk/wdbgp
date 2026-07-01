@@ -338,6 +338,100 @@ func TestUsersCreateValidation(t *testing.T) {
 }
 
 // =============================================================================
+// TestUsersCreateAnyModeAllowsEmptyNetworks — web_auth="any" authenticates
+// by IP match OR credentials, so unlike "network"/"both" it must not require
+// a network — matches the exemption "login" already gets.
+// =============================================================================
+
+func TestUsersCreateAnyModeAllowsEmptyNetworks(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	body := strings.NewReader(`{"name":"any-user","peer_ip":"192.168.9.1","peer_asn":65009,"networks":[],"web_auth":"any","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/users", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("any mode, no networks: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestUsersCreateBothModeRequiresNetworks confirms "both" is not
+// accidentally exempted alongside "any" — it genuinely needs IP match.
+func TestUsersCreateBothModeRequiresNetworks(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	body := strings.NewReader(`{"name":"both-user","peer_ip":"192.168.9.2","peer_asn":65010,"networks":[],"web_auth":"both","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/users", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("both mode, no networks: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestUsersUpdateNetworkModeRequiresNetworks guards a gap where
+// apiUsersUpdate never enforced this at all — a user could be switched to
+// web_auth="network" with zero networks via PUT, permanently unable to
+// authenticate, with no server-side pushback.
+func TestUsersUpdateNetworkModeRequiresNetworks(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	createBody := strings.NewReader(`{"name":"update-user","peer_ip":"192.168.9.3","peer_asn":65011,"networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created userJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	updateBody := strings.NewReader(`{"networks":[]}`)
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d", created.ID), updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("update to empty networks on network mode: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestUsersUpdateAnyModeAllowsEmptyNetworks confirms the update path
+// doesn't wrongly demand a network for "any" either.
+func TestUsersUpdateAnyModeAllowsEmptyNetworks(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	createBody := strings.NewReader(`{"name":"update-any-user","peer_ip":"192.168.9.4","peer_asn":65012,"networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created userJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	updateBody := strings.NewReader(`{"web_auth":"any","networks":[]}`)
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d", created.ID), updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update to any mode, empty networks: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
 // TestUsersUpdatePasswordToggle — password_enabled
 // =============================================================================
 
