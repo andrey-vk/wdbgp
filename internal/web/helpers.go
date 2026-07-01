@@ -13,4 +13,3 @@ func countEnabledFeeds(feeds []store.Feed) int {
 	}
 	return count
 }
-

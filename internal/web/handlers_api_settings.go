@@ -9,8 +9,6 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/settings"
 )
 
-
-
 // apiSettingsGet handles GET /api/admin/settings.
 func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.settings.JSON(r.Context()))
@@ -48,89 +46,89 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage) error {
 	switch key {
 	case "active_dial":
-		return callBoolSetting(s.settings.ActiveDial, ctx, raw)
+		return callBoolSetting(ctx, s.settings.ActiveDial, raw)
 	case "adapter_backup_dir":
-		return callStringSetting(s.settings.AdapterBackupDir, ctx, raw)
+		return callStringSetting(ctx, s.settings.AdapterBackupDir, raw)
 	case "adapter_backup_max":
-		return callIntSetting(s.settings.AdapterBackupMax, ctx, raw)
+		return callIntSetting(ctx, s.settings.AdapterBackupMax, raw)
 	case "admin_cookie_secure":
-		return callStringSetting(s.settings.AdminCookieSecure, ctx, raw)
+		return callStringSetting(ctx, s.settings.AdminCookieSecure, raw)
 	case "allow_dynamic_peers":
-		return callBoolSetting(s.settings.AllowDynamicPeers, ctx, raw)
+		return callBoolSetting(ctx, s.settings.AllowDynamicPeers, raw)
 	case "auto_restore_enabled":
-		return callBoolSetting(s.settings.AutoRestoreEnabled, ctx, raw)
+		return callBoolSetting(ctx, s.settings.AutoRestoreEnabled, raw)
 	case "bgp_port":
-		return callIntSetting(s.settings.BGPPort, ctx, raw)
+		return callIntSetting(ctx, s.settings.BGPPort, raw)
 	case "backup_dir":
-		return callStringSetting(s.settings.BackupDir, ctx, raw)
+		return callStringSetting(ctx, s.settings.BackupDir, raw)
 	case "backup_enabled":
-		return callBoolSetting(s.settings.BackupEnabled, ctx, raw)
+		return callBoolSetting(ctx, s.settings.BackupEnabled, raw)
 	case "default_language":
-		return callStringSetting(s.settings.DefaultLanguage, ctx, raw)
+		return callStringSetting(ctx, s.settings.DefaultLanguage, raw)
 	case "default_web_auth":
-		return callStringSetting(s.settings.DefaultWebAuth, ctx, raw)
+		return callStringSetting(ctx, s.settings.DefaultWebAuth, raw)
 	case "filter_allow":
-		return callStringSetting(s.settings.FilterAllow, ctx, raw)
+		return callStringSetting(ctx, s.settings.FilterAllow, raw)
 	case "filter_deny":
-		return callStringSetting(s.settings.FilterDeny, ctx, raw)
+		return callStringSetting(ctx, s.settings.FilterDeny, raw)
 	case "host":
-		return callStringSetting(s.settings.Host, ctx, raw)
+		return callStringSetting(ctx, s.settings.Host, raw)
 	case "js_max_call_stack":
-		return callIntSetting(s.settings.JSMaxCallStack, ctx, raw)
+		return callIntSetting(ctx, s.settings.JSMaxCallStack, raw)
 	case "js_max_entries":
-		return callIntSetting(s.settings.JSMaxEntries, ctx, raw)
+		return callIntSetting(ctx, s.settings.JSMaxEntries, raw)
 	case "js_max_requests":
-		return callIntSetting(s.settings.JSMaxRequests, ctx, raw)
+		return callIntSetting(ctx, s.settings.JSMaxRequests, raw)
 	case "js_max_response":
-		return callIntSetting(s.settings.JSMaxResponseBytes, ctx, raw)
+		return callIntSetting(ctx, s.settings.JSMaxResponseBytes, raw)
 	case "js_max_source":
-		return callIntSetting(s.settings.JSMaxSourceBytes, ctx, raw)
+		return callIntSetting(ctx, s.settings.JSMaxSourceBytes, raw)
 	case "js_max_total":
-		return callIntSetting(s.settings.JSMaxTotalBytes, ctx, raw)
+		return callIntSetting(ctx, s.settings.JSMaxTotalBytes, raw)
 	case "js_timeout":
-		return callIntSetting(s.settings.JSTimeout, ctx, raw)
+		return callIntSetting(ctx, s.settings.JSTimeout, raw)
 	case "local_asn":
-		return callIntSetting(s.settings.LocalASN, ctx, raw)
+		return callIntSetting(ctx, s.settings.LocalASN, raw)
 	case "local_address_v4":
-		return callStringSetting(s.settings.LocalAddressV4, ctx, raw)
+		return callStringSetting(ctx, s.settings.LocalAddressV4, raw)
 	case "local_address_v6":
-		return callStringSetting(s.settings.LocalAddressV6, ctx, raw)
+		return callStringSetting(ctx, s.settings.LocalAddressV6, raw)
 	case "log_format":
-		return callStringSetting(s.settings.LogFormat, ctx, raw)
+		return callStringSetting(ctx, s.settings.LogFormat, raw)
 	case "log_level":
-		return callStringSetting(s.settings.LogLevel, ctx, raw)
+		return callStringSetting(ctx, s.settings.LogLevel, raw)
 	case "metrics_enabled":
-		return callBoolSetting(s.settings.MetricsEnabled, ctx, raw)
+		return callBoolSetting(ctx, s.settings.MetricsEnabled, raw)
 	case "metrics_history_days":
-		return callIntSetting(s.settings.MetricsHistoryDays, ctx, raw)
+		return callIntSetting(ctx, s.settings.MetricsHistoryDays, raw)
 	case "port":
-		return callIntSetting(s.settings.Port, ctx, raw)
+		return callIntSetting(ctx, s.settings.Port, raw)
 	case "rate_limit_admin":
-		return callIntSetting(s.settings.RateLimitAdmin, ctx, raw)
+		return callIntSetting(ctx, s.settings.RateLimitAdmin, raw)
 	case "rate_limit_login":
-		return callIntSetting(s.settings.RateLimitLogin, ctx, raw)
+		return callIntSetting(ctx, s.settings.RateLimitLogin, raw)
 	case "router_id":
-		return callStringSetting(s.settings.RouterID, ctx, raw)
+		return callStringSetting(ctx, s.settings.RouterID, raw)
 	case "security_headers":
-		return callBoolSetting(s.settings.SecurityHeaders, ctx, raw)
+		return callBoolSetting(ctx, s.settings.SecurityHeaders, raw)
 	case "session_max_age":
-		return callIntSetting(s.settings.SessionMaxAge, ctx, raw)
+		return callIntSetting(ctx, s.settings.SessionMaxAge, raw)
 	case "status_allowed":
-		return callStringSetting(s.settings.StatusAllowed, ctx, raw)
+		return callStringSetting(ctx, s.settings.StatusAllowed, raw)
 	case "status_token":
-		return callStringSetting(s.settings.StatusToken, ctx, raw)
+		return callStringSetting(ctx, s.settings.StatusToken, raw)
 	case "sync_interval":
-		return callIntSetting(s.settings.SyncInterval, ctx, raw)
+		return callIntSetting(ctx, s.settings.SyncInterval, raw)
 	case "trust_proxy_headers":
-		return callBoolSetting(s.settings.TrustProxyHeaders, ctx, raw)
+		return callBoolSetting(ctx, s.settings.TrustProxyHeaders, raw)
 	case "require_password_for_non_unique_ip":
-		return callBoolSetting(s.settings.RequirePasswordForNonUniqueIP, ctx, raw)
+		return callBoolSetting(ctx, s.settings.RequirePasswordForNonUniqueIP, raw)
 	case "db_path":
-		return callStringSetting(s.settings.DBPath, ctx, raw)
+		return callStringSetting(ctx, s.settings.DBPath, raw)
 	case "admin_password":
-		return callStringSetting(s.settings.AdminPassword, ctx, raw)
+		return callStringSetting(ctx, s.settings.AdminPassword, raw)
 	case "session_secret":
-		return callStringSetting(s.settings.SessionSecret, ctx, raw)
+		return callStringSetting(ctx, s.settings.SessionSecret, raw)
 	}
 	return fmt.Errorf("unknown setting: %s", key)
 }
@@ -226,7 +224,7 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 	return fmt.Errorf("unknown setting: %s", key)
 }
 
-func callBoolSetting(st settings.Setting[bool, bool], ctx context.Context, raw json.RawMessage) error {
+func callBoolSetting(ctx context.Context, st settings.Setting[bool, bool], raw json.RawMessage) error {
 	var v bool
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return fmt.Errorf("invalid bool: %w", err)
@@ -234,7 +232,7 @@ func callBoolSetting(st settings.Setting[bool, bool], ctx context.Context, raw j
 	return st.Set(ctx, v)
 }
 
-func callIntSetting(st settings.Setting[int, int], ctx context.Context, raw json.RawMessage) error {
+func callIntSetting(ctx context.Context, st settings.Setting[int, int], raw json.RawMessage) error {
 	var v int
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return fmt.Errorf("invalid int: %w", err)
@@ -242,7 +240,7 @@ func callIntSetting(st settings.Setting[int, int], ctx context.Context, raw json
 	return st.Set(ctx, v)
 }
 
-func callStringSetting(st settings.Setting[string, string], ctx context.Context, raw json.RawMessage) error {
+func callStringSetting(ctx context.Context, st settings.Setting[string, string], raw json.RawMessage) error {
 	var v string
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return fmt.Errorf("invalid string: %w", err)

@@ -22,7 +22,7 @@ type BGP interface {
 }
 
 type Server struct {
-	settings    *settings.Settings
+	settings     *settings.Settings
 	store        *store.Store
 	syncer       *feeds.Syncer
 	bgp          BGP
@@ -35,7 +35,7 @@ type Server struct {
 	degraded     bool
 	degradedInfo DegradedInfo
 
-	mu          sync.RWMutex
+	mu sync.RWMutex
 }
 
 // DegradedInfo carries version mismatch details for the degraded-mode page.

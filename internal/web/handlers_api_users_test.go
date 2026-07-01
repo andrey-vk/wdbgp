@@ -33,8 +33,8 @@ func setupUserTestServer(t *testing.T) (*Server, *store.Store, *fakeBGP) {
 	bgp := &fakeBGP{}
 	srv := &Server{
 		settings: testSettings(),
-		store: st,
-		bgp:   bgp,
+		store:    st,
+		bgp:      bgp,
 	}
 	return srv, st, bgp
 }

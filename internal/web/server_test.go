@@ -906,4 +906,3 @@ func TestAdminLogoutAPI(t *testing.T) {
 		t.Fatalf("/me after logout: status=%d, want 401", rec.Code)
 	}
 }
-
