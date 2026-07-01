@@ -98,6 +98,12 @@ func TestNewSettings_AllFieldsExist(t *testing.T) {
 	if s.DefaultWebAuth == nil {
 		t.Error("DefaultWebAuth is nil")
 	}
+	if s.FilterAllow == nil {
+		t.Error("FilterAllow is nil")
+	}
+	if s.FilterDeny == nil {
+		t.Error("FilterDeny is nil")
+	}
 	if s.StatusAllowed == nil {
 		t.Error("StatusAllowed is nil")
 	}

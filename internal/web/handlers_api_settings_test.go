@@ -42,39 +42,33 @@ func TestAPISettingsGet_TypedResponse(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
-	var resp struct {
-		Settings     settings.SettingsJSON `json:"settings"`
-		RouteFilters struct {
-			FilterAllow string `json:"filter_allow"`
-			FilterDeny  string `json:"filter_deny"`
-		} `json:"route_filters"`
-	}
+	var resp settings.SettingsJSON
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
 
 	// Verify typed fields are correct
-	if resp.Settings.Port.DefaultValue != 8080 {
-		t.Errorf("port default = %d, want 8080", resp.Settings.Port.DefaultValue)
+	if resp.Port.DefaultValue != 8080 {
+		t.Errorf("port default = %d, want 8080", resp.Port.DefaultValue)
 	}
-	if resp.Settings.Port.Value != nil {
-		t.Errorf("port value = %v, want nil (not overridden)", resp.Settings.Port.Value)
+	if resp.Port.Value != nil {
+		t.Errorf("port value = %v, want nil (not overridden)", resp.Port.Value)
 	}
-	if resp.Settings.Port.EnvOverride {
+	if resp.Port.EnvOverride {
 		t.Error("port env_override should be false")
 	}
 
-	if resp.Settings.MetricsEnabled.DefaultValue != false {
+	if resp.MetricsEnabled.DefaultValue != false {
 		t.Error("metrics_enabled default should be false")
 	}
 
-	if resp.Settings.DefaultWebAuth.DefaultValue != "network" {
-		t.Errorf("default_web_auth default = %q, want network", resp.Settings.DefaultWebAuth.DefaultValue)
+	if resp.DefaultWebAuth.DefaultValue != "network" {
+		t.Errorf("default_web_auth default = %q, want network", resp.DefaultWebAuth.DefaultValue)
 	}
 
-	// Verify route filters are present
-	if resp.RouteFilters.FilterAllow != "" {
-		t.Errorf("filter_allow = %q, want empty", resp.RouteFilters.FilterAllow)
+	// Verify filter fields exist in settings
+	if resp.FilterAllow.DefaultValue != "" {
+		t.Errorf("filter_allow default = %q, want empty", resp.FilterAllow.DefaultValue)
 	}
 }
 
@@ -214,11 +208,13 @@ func TestAPISettingsPut_RouteFilters(t *testing.T) {
 		}
 	}()
 
-	st, err := settings.New(settings.NewTestStore())
+	st, err := settings.New(db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	st.SessionSecret.Set(context.Background(), "test-secret")
+	st.AdminPassword.Set(context.Background(), "admin")
+	st.AdminCookieSecure.Set(context.Background(), "true")
 	server := New(st, db, nil, nil)
 
 	body := `{"filter_allow": "10.0.0.0/8\n192.168.0.0/16", "filter_deny": "10.1.0.0/16"}`
@@ -232,12 +228,15 @@ func TestAPISettingsPut_RouteFilters(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
-	// Verify filters were saved
+	// Verify filters were saved in app_settings via the DB-backed settings
 	filters, err := db.GlobalRouteFilters(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(filters.Allow) != 2 {
 		t.Errorf("expected 2 allow filters, got %d", len(filters.Allow))
+	}
+	if len(filters.Deny) != 1 {
+		t.Errorf("expected 1 deny filter, got %d: %v", len(filters.Deny), filters.Deny)
 	}
 }

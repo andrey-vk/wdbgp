@@ -254,7 +254,21 @@ func (s *Store) applyUserRouteFilters(
 }
 
 func (s *Store) GlobalRouteFilters(ctx context.Context) (RouteFilters, error) {
-	return readRouteFilters(ctx, s.DB, "SELECT action, cidr FROM global_route_filters ORDER BY action, cidr")
+	settings, err := s.GetAllSettings(ctx)
+	if err != nil {
+		return RouteFilters{}, err
+	}
+	return RouteFilters{
+		Allow: splitNewlines(settings["filter_allow"]),
+		Deny:  splitNewlines(settings["filter_deny"]),
+	}, nil
+}
+
+func splitNewlines(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return strings.Split(value, "\n")
 }
 
 func (s *Store) UserRouteFilters(ctx context.Context, userID int64) (RouteFilters, error) {
@@ -303,15 +317,6 @@ func applyRouteFiltersToPrefixes(prefixes []netip.Prefix, filters RouteFilters) 
 		return nil, err
 	}
 	return prefixfilter.Apply(prefixes, lists, prefixfilter.DefaultMaxPrefixes)
-}
-
-func (s *Store) SetGlobalRouteFilters(ctx context.Context, filters RouteFilters) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM global_route_filters"); err != nil {
-			return err
-		}
-		return insertRouteFilters(ctx, tx, 0, filters)
-	})
 }
 
 func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters RouteFilters) error {
@@ -447,13 +452,9 @@ func insertRouteFilters(ctx context.Context, tx *sql.Tx, userID int64, filters R
 		{"deny", normalized.Deny},
 	} {
 		for _, cidr := range item.cidrs {
-			query := "INSERT INTO global_route_filters(action, cidr) VALUES (?, ?)"
-			args := []any{item.action, cidr}
-			if userID != 0 {
-				query = "INSERT INTO user_route_filters(user_id, action, cidr) VALUES (?, ?, ?)"
-				args = []any{userID, item.action, cidr}
-			}
-			if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			if _, err := tx.ExecContext(ctx,
+				"INSERT INTO user_route_filters(user_id, action, cidr) VALUES (?, ?, ?)",
+				userID, item.action, cidr); err != nil {
 				return err
 			}
 		}

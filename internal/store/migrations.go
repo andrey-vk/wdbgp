@@ -41,4 +41,5 @@ var migrations = []Migration{
 	{26, "add metric snapshots", m.V026, nil},
 	{27, "add is_builtin to feed_adapters", m.V027, nil},
 	{28, "drop allowed_hosts from feed_adapters", m.V028, nil},
+	{29, "move route filters to app_settings", m.V029, nil},
 }

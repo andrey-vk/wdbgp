@@ -21,6 +21,8 @@ type Settings struct {
 	DBPath                        Setting[string, string]
 	DefaultLanguage               Setting[string, string]
 	DefaultWebAuth                Setting[string, string]
+	FilterAllow                   Setting[string, string]  // global route allow filters
+	FilterDeny                    Setting[string, string]  // global route deny filters
 	Host                          Setting[string, string]
 	JSMaxCallStack                Setting[int, int]
 	JSMaxEntries                  Setting[int, int]
@@ -65,6 +67,8 @@ type SettingsJSON struct {
 	DBPath                        SettingJSON[string] `json:"db_path"`
 	DefaultLanguage               SettingJSON[string] `json:"default_language"`
 	DefaultWebAuth                SettingJSON[string] `json:"default_web_auth"`
+	FilterAllow                   SettingJSON[string] `json:"filter_allow"`
+	FilterDeny                    SettingJSON[string] `json:"filter_deny"`
 	Host                          SettingJSON[string] `json:"host"`
 	JSMaxCallStack                SettingJSON[int]    `json:"js_max_call_stack"`
 	JSMaxEntries                  SettingJSON[int]    `json:"js_max_entries"`
@@ -280,6 +284,17 @@ func New(store Store) (*Settings, error) {
 		return nil, err
 	}
 
+	// FilterAllow.
+	s.FilterAllow, err = newSimple("", "filter_allow", "", parseString, store, dbSettings)
+	if err != nil {
+		return nil, err
+	}
+	// FilterDeny.
+	s.FilterDeny, err = newSimple("", "filter_deny", "", parseString, store, dbSettings)
+	if err != nil {
+		return nil, err
+	}
+
 	// StatusAllowed.
 	s.StatusAllowed, err = newSimple("", "status_allowed", "WDBGP_STATUS_ALLOWED", parseString, store, dbSettings)
 	if err != nil {
@@ -375,6 +390,8 @@ func (s *Settings) JSON(ctx context.Context) SettingsJSON {
 		DBPath:                        s.DBPath.JSON(dbSettings),
 		DefaultLanguage:               s.DefaultLanguage.JSON(dbSettings),
 		DefaultWebAuth:                s.DefaultWebAuth.JSON(dbSettings),
+		FilterAllow:                   s.FilterAllow.JSON(dbSettings),
+		FilterDeny:                    s.FilterDeny.JSON(dbSettings),
 		Host:                          s.Host.JSON(dbSettings),
 		JSMaxCallStack:                s.JSMaxCallStack.JSON(dbSettings),
 		JSMaxEntries:                  s.JSMaxEntries.JSON(dbSettings),

@@ -453,8 +453,12 @@ func TestGetAllSettingsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(settings) != 0 {
-		t.Fatalf("settings = %d entries, want 0", len(settings))
+	// After migration 029, filter_allow and filter_deny are always present (empty).
+	// Other keys should not exist in a fresh DB.
+	for k := range settings {
+		if k != "filter_allow" && k != "filter_deny" {
+			t.Fatalf("unexpected setting key %q in fresh DB", k)
+		}
 	}
 }
 
@@ -474,8 +478,9 @@ func TestGetAllSettingsPopulated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(settings) != 2 {
-		t.Fatalf("settings = %d entries, want 2", len(settings))
+	// filter_allow and filter_deny from migration 029 + our 2 new entries
+	if len(settings) != 4 {
+		t.Fatalf("settings = %d entries, want 4", len(settings))
 	}
 	if settings["theme"] != "dark" {
 		t.Fatalf("theme = %q, want dark", settings["theme"])
@@ -517,8 +522,9 @@ func TestSaveSettingsInsertAndUpdate(t *testing.T) {
 	if settings["key2"] != "value3" {
 		t.Fatalf("key2 = %q, want value3", settings["key2"])
 	}
-	if len(settings) != 2 {
-		t.Fatalf("settings count = %d, want 2", len(settings))
+	// filter_allow and filter_deny from migration 029 + our 2 entries
+	if len(settings) != 4 {
+		t.Fatalf("settings count = %d, want 4", len(settings))
 	}
 }
 
@@ -706,9 +712,9 @@ func TestCountPrefixesWithExplicitCategoriesAndServices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Clear default filters that deny 2001:db8::/32
-	err = s.SetGlobalRouteFilters(ctx, RouteFilters{})
-	if err != nil {
+	// Clear default route filters — global filters are now in app_settings, empty by default.
+	if _, err := s.DB.ExecContext(ctx,
+		`DELETE FROM app_settings WHERE key = 'filter_allow' OR key = 'filter_deny'`); err != nil {
 		t.Fatal(err)
 	}
 

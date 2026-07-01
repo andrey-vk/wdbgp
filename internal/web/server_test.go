@@ -688,17 +688,11 @@ func TestAdminSettingsAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET settings: status=%d", rec.Code)
 	}
-	var resp struct {
-		Settings     settings.SettingsJSON `json:"settings"`
-		RouteFilters struct {
-			FilterAllow string `json:"filter_allow"`
-			FilterDeny  string `json:"filter_deny"`
-		} `json:"route_filters"`
-	}
+	var resp settings.SettingsJSON
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Settings.Port.DefaultValue != 8080 {
+	if resp.Port.DefaultValue != 8080 {
 		t.Fatal("port default should be 8080 in typed SettingsJSON")
 	}
 

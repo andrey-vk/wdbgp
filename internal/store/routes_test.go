@@ -75,7 +75,8 @@ func TestDesiredPrefixesSubtractsGlobalDeny(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	userID := addFilteredTestUser(t, s, false)
-	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{Deny: []string{"1.1.1.1/32"}}); err != nil {
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES ('filter_deny', '1.1.1.1/32', datetime('now'))`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,7 +102,8 @@ func TestDesiredPrefixesUsesUserOverride(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	userID := addFilteredTestUser(t, s, true)
-	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{Deny: []string{"1.1.1.1/32"}}); err != nil {
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES ('filter_deny', '1.1.1.1/32', datetime('now'))`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"1.1.0.0/16"}}); err != nil {
@@ -131,7 +133,8 @@ func TestDesiredPrefixesExtendsGlobalFilters(t *testing.T) {
 		RouteFilters{Allow: []string{"1.1.0.0/16"}, Deny: []string{"1.1.1.1/32"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{Deny: []string{"1.1.2.0/24"}}); err != nil {
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES ('filter_deny', '1.1.2.0/24', datetime('now'))`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,9 +174,7 @@ func TestDesiredPrefixesDropsFeedDefaultRoute(t *testing.T) {
 		(1, 'test', 'public', '8.8.8.0/24')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{}); err != nil {
-		t.Fatal(err)
-	}
+	// Global route filters are empty by default (migration 029 moved them to app_settings).
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return SetUserSelection(ctx, tx, userID, []string{"test"}, nil)
 	}); err != nil {

@@ -5,33 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 
-	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/settings"
-	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
 
 
 // apiSettingsGet handles GET /api/admin/settings.
 func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	sj := s.settings.JSON(ctx)
-
-	// Add global route filters (not in SettingsJSON, stored separately)
-	globalFilters, _ := s.store.GlobalRouteFilters(ctx) //nolint:errcheck // best-effort
-	filterAllow := strings.Join(globalFilters.Allow, "\n")
-	filterDeny := strings.Join(globalFilters.Deny, "\n")
-
-	resp := map[string]any{
-		"settings": sj,
-		"route_filters": map[string]any{
-			"filter_allow": filterAllow,
-			"filter_deny":  filterDeny,
-		},
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, s.settings.JSON(r.Context()))
 }
 
 // apiSettingsPut handles PUT /api/admin/settings.
@@ -44,31 +26,18 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	for key, raw := range body {
-		switch {
-		case key == "filter_allow" || key == "filter_deny":
-			// handle route filters separately
-			continue
-		case string(raw) == "null":
+		if string(raw) == "null" {
 			// Reset to default
 			if err := s.resetSetting(ctx, key); err != nil {
-				logging.FromContext(ctx).Debug("settings reset failed", "key", key, "error", err)
 				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 				return
 			}
-		default:
+		} else {
 			// Set new value
 			if err := s.setSetting(ctx, key, raw); err != nil {
-				logging.FromContext(ctx).Debug("settings set failed", "key", key, "error", err)
 				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 				return
 			}
-		}
-	}
-
-	// Handle global route filters
-	if allowRaw, ok := body["filter_allow"]; ok {
-		if denyRaw, ok2 := body["filter_deny"]; ok2 {
-			s.saveRouteFilters(ctx, w, allowRaw, denyRaw)
 		}
 	}
 
@@ -100,6 +69,10 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 		return callStringSetting(s.settings.DefaultLanguage, ctx, raw)
 	case "default_web_auth":
 		return callStringSetting(s.settings.DefaultWebAuth, ctx, raw)
+	case "filter_allow":
+		return callStringSetting(s.settings.FilterAllow, ctx, raw)
+	case "filter_deny":
+		return callStringSetting(s.settings.FilterDeny, ctx, raw)
 	case "host":
 		return callStringSetting(s.settings.Host, ctx, raw)
 	case "js_max_call_stack":
@@ -187,6 +160,10 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 		return s.settings.DefaultLanguage.Reset(ctx)
 	case "default_web_auth":
 		return s.settings.DefaultWebAuth.Reset(ctx)
+	case "filter_allow":
+		return s.settings.FilterAllow.Reset(ctx)
+	case "filter_deny":
+		return s.settings.FilterDeny.Reset(ctx)
 	case "host":
 		return s.settings.Host.Reset(ctx)
 	case "js_max_call_stack":
@@ -247,30 +224,6 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 		return s.settings.SessionSecret.Reset(ctx)
 	}
 	return fmt.Errorf("unknown setting: %s", key)
-}
-
-// saveRouteFilters saves global route filters and triggers BGP reconciliation.
-func (s *Server) saveRouteFilters(ctx context.Context, w http.ResponseWriter, allowRaw, denyRaw json.RawMessage) {
-	var allow, deny string
-	if string(allowRaw) != "null" {
-		json.Unmarshal(allowRaw, &allow) //nolint:errcheck // best-effort decode
-	}
-	if string(denyRaw) != "null" {
-		json.Unmarshal(denyRaw, &deny) //nolint:errcheck // best-effort decode
-	}
-	filters := store.RouteFilters{
-		Allow: splitCIDRs(allow),
-		Deny:  splitCIDRs(deny),
-	}
-	normalized, err := store.NormalizeRouteFilters(filters)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid route filter: " + err.Error()})
-		return
-	}
-	_ = s.store.SetGlobalRouteFilters(ctx, normalized) //nolint:errcheck
-	if s.bgp != nil {
-		_ = s.bgp.Reconcile(ctx) //nolint:errcheck
-	}
 }
 
 func callBoolSetting(st settings.Setting[bool, bool], ctx context.Context, raw json.RawMessage) error {
