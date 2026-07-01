@@ -7,6 +7,7 @@ import Tag from 'primevue/tag'
 import ToggleSwitch from 'primevue/toggleswitch'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
+import Textarea from 'primevue/textarea'
 import Select from 'primevue/select'
 import type { SettingMeta } from '@/admin/settingsMeta'
 
@@ -43,6 +44,7 @@ function formatDisplayValue(val: string | number | boolean, type: SettingMeta['t
     case 'number':
       return String(val)
     case 'string':
+    case 'textarea':
       if (val) return String(val)
       return '\u2039' + t('settings.empty') + '\u203a'
     case 'select': {
@@ -147,6 +149,14 @@ const selectOptions = computed(() => {
           option-label="label"
           option-value="value"
           :input-id="fieldKey"
+          fluid
+          @update:model-value="onChange"
+        />
+        <Textarea
+          v-else-if="meta.type === 'textarea'"
+          :model-value="(value ?? defaultValue) as string"
+          :input-id="fieldKey"
+          rows="5"
           fluid
           @update:model-value="onChange"
         />

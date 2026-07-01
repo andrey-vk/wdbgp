@@ -1,7 +1,7 @@
 export interface SettingMeta {
   label: string
   hint: string
-  type: 'bool' | 'number' | 'string' | 'select'
+  type: 'bool' | 'number' | 'string' | 'select' | 'textarea'
   restart?: boolean
   options?: Record<string, string>  // value → i18n label key (for select only)
   envVar?: string                     // for display only (env tag)
@@ -107,8 +107,8 @@ export const sections: SettingsSection[] = [
   {
     name: 'settings.section_filters',
     fields: {
-      filter_allow: { label: 'settings.filter_allow', hint: 'settings.filter_allow_hint', type: 'string' },
-      filter_deny:  { label: 'settings.filter_deny',  hint: 'settings.filter_deny_hint',  type: 'string' },
+      filter_allow: { label: 'settings.filter_allow', hint: 'settings.filter_allow_hint', type: 'textarea' },
+      filter_deny:  { label: 'settings.filter_deny',  hint: 'settings.filter_deny_hint',  type: 'textarea' },
     },
   },
   {
