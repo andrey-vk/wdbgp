@@ -136,6 +136,7 @@
   "settings.off": "Off",
   "settings.password_set": "Set",
   "settings.password_not_set": "Not set",
+  "settings.password_input_hint": "Enter new value to change. Leave empty to keep current.",
   "settings.empty": "empty",
   "settings.constraint_text": "Free-form text.",
   "settings.constraint_select": "Choose from the list.",

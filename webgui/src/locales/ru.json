@@ -135,6 +135,7 @@
   "settings.off": "Выкл",
   "settings.password_set": "Задан",
   "settings.password_not_set": "Не задан",
+  "settings.password_input_hint": "Введите новое значение для изменения. Оставьте пустым, чтобы сохранить текущее.",
   "settings.empty": "пусто",
   "settings.constraint_text": "Произвольный текст.",
   "settings.constraint_select": "Выберите из списка.",

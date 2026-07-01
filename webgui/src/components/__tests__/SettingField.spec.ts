@@ -29,6 +29,7 @@ const i18n = createI18n({
       'opt.b': 'Option B',
       'settings.password_set': 'Set',
       'settings.password_not_set': 'Not set',
+      'settings.password_input_hint': 'Enter new value to change. Leave empty to keep current.',
       'test.pwd': 'Test Password',
       'test.pwd_hint': 'Test password hint',
     },
@@ -188,5 +189,20 @@ describe('SettingField', () => {
     const wrapper = mountField(passwordMeta, 'old', '')
     await wrapper.findComponent({ name: 'Password' }).vm.$emit('update:modelValue', 'new-secret')
     expect(wrapper.emitted('update:value')?.[0]).toEqual(['new-secret'])
+  })
+
+  it('password type has no revert button (case 3)', () => {
+    const wrapper = mountField(passwordMeta, 'current', '')
+    expect(wrapper.find('[data-testid="setting-revert"]').exists()).toBe(false)
+  })
+
+  it('password type shows hint text when value is empty in editing mode', () => {
+    const wrapper = mountField(passwordMeta, '', '')
+    expect(wrapper.text()).toContain('Enter new value to change')
+  })
+
+  it('password type hides hint text when value is set in editing mode', () => {
+    const wrapper = mountField(passwordMeta, 'current', '')
+    expect(wrapper.text()).not.toContain('Enter new value to change')
   })
 })

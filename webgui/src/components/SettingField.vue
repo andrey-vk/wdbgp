@@ -163,14 +163,16 @@ const selectOptions = computed(() => {
           fluid
           @update:model-value="onChange"
         />
-        <Password
-          v-else-if="meta.type === 'password'"
-          :model-value="(value ?? '') as string"
-          :input-id="fieldKey"
-          fluid
-          :feedback="false"
-          @update:model-value="onChange"
-        />
+        <template v-else-if="meta.type === 'password'">
+          <Password
+            :model-value="(value ?? '') as string"
+            :input-id="fieldKey"
+            fluid
+            :feedback="false"
+            @update:model-value="onChange"
+          />
+          <p v-if="!value" class="text-xs text-muted-color mt-1">{{ t('settings.password_input_hint') }}</p>
+        </template>
         <InputText
           v-else
           :model-value="(value ?? defaultValue) as string"
@@ -180,6 +182,7 @@ const selectOptions = computed(() => {
         />
       </div>
       <Button
+        v-if="meta.type !== 'password'"
         icon="pi pi-undo"
         severity="secondary"
         text
