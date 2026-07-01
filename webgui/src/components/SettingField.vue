@@ -109,7 +109,7 @@ const selectOptions = computed(() => {
       class="text-sm"
       data-testid="setting-env"
     >
-      {{ formatDisplayValue(value ?? defaultValue, meta.type) }}
+      {{ meta.type === 'password' ? t('settings.password_set') : formatDisplayValue(value ?? defaultValue, meta.type) }}
     </div>
 
     <!-- Case 1: default — clickable text -->
