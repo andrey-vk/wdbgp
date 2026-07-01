@@ -201,7 +201,7 @@ function handleReset() {
       <div v-else class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
         <template v-for="group in groupedCommunities" :key="group.category">
           <!-- Category row -->
-          <div class="comm-row flex items-center gap-4 px-4 py-2 border-b-2 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
+          <div class="flex items-center gap-4 px-4 py-2 border-b-2 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors max-md:flex-col max-md:items-start max-md:gap-1 max-md:px-3">
             <span class="flex-1 truncate font-semibold">{{ group.category }}</span>
             <div class="flex items-center gap-2 shrink-0" :class="{ 'has-duplicate': duplicateValues.has(group.groupItem?.community ?? 0) && group.groupItem?.community !== 0 }">
               <InputNumber v-if="group.groupItem" :input-id="'comm-grp-' + group.category" v-model="group.groupItem.community" :min="0" class="w-28" @update:model-value="markDirty" />
@@ -209,7 +209,7 @@ function handleReset() {
             </div>
           </div>
           <!-- Service rows -->
-          <div v-for="item in group.serviceItems" :key="communityKey(item)" class="comm-row flex items-center gap-4 px-4 py-2 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors last:border-b-0">
+          <div v-for="item in group.serviceItems" :key="communityKey(item)" class="flex items-center gap-4 px-4 py-2 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors last:border-b-0 max-md:flex-col max-md:items-start max-md:gap-1 max-md:px-3">
             <span class="flex-1 truncate text-gray-500 dark:text-gray-400 pl-6">{{ item.service }}</span>
             <div class="flex items-center gap-2 shrink-0" :class="{ 'has-duplicate': duplicateValues.has(item.community) && item.community !== 0 }">
               <InputNumber :input-id="'comm-svc-' + item.category + '-' + item.service" v-model="item.community" :min="0" class="w-28" @update:model-value="markDirty" />
@@ -226,15 +226,5 @@ function handleReset() {
 .has-duplicate :deep(input) {
   border-color: #f87171;
   box-shadow: 0 0 0 1px #f87171;
-}
-
-@media (max-width: 768px) {
-  .comm-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.25rem;
-    padding-left: 0.75rem;
-    padding-right: 0.75rem;
-  }
 }
 </style>
