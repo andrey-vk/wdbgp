@@ -3,7 +3,7 @@ import { ref, inject, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Popover from 'primevue/popover'
 
-const props = defineProps<{ hint: string; targetId: string }>()
+const props = defineProps<{ hint: string; targetId: string; envVar?: string }>()
 const { t } = useI18n()
 const popoverRef = ref<InstanceType<typeof Popover> | null>(null)
 const activePopoverId = inject<Ref<string | null>>('activePopoverId', ref(null))
@@ -40,6 +40,7 @@ function show() {
   >
     <div class="max-w-[320px] p-1">
       <p class="m-0 text-sm leading-relaxed">{{ t(hint) }}</p>
+      <p v-if="envVar" class="m-0 text-xs text-muted-color mt-1">{{ envVar }}</p>
     </div>
   </Popover>
 </template>

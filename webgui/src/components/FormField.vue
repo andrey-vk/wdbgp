@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import FieldHint from './FieldHint.vue'
 
-defineProps<{ label: string; hint?: string; inputId: string }>()
+defineProps<{ label: string; hint?: string; inputId: string; envVar?: string }>()
 </script>
 
 <template>
@@ -13,6 +13,7 @@ defineProps<{ label: string; hint?: string; inputId: string }>()
         v-if="hint"
         :hint="hint"
         :target-id="inputId"
+        :env-var="envVar"
       />
     </div>
     <slot />

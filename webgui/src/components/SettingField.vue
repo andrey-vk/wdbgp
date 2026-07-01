@@ -87,6 +87,7 @@ const selectOptions = computed(() => {
     :label="t(meta.label)"
     :hint="meta.hint"
     :input-id="fieldKey"
+    :env-var="meta.envVar"
   >
     <template #tags>
       <Tag
