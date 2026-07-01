@@ -6,7 +6,15 @@ import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
 import { settingsSchema } from '@/types/settings'
 import { sections } from '@/admin/settingsMeta'
+import type { SettingMeta } from '@/admin/settingsMeta'
 import SettingField from '@/components/SettingField.vue'
+
+const metaMap: Record<string, SettingMeta> = {}
+for (const s of sections) {
+    for (const [k, m] of Object.entries(s.fields)) {
+        metaMap[k] = m
+    }
+}
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 
@@ -89,6 +97,10 @@ async function handleSave() {
     for (const [key, val] of Object.entries(values.value)) {
       // Skip env-overridden fields — they're read-only
       if (envOverrides.value[key]) continue
+      // Skip password fields with empty value (no change)
+      if (val === '' || val == null) {
+        if (metaMap[key]?.type === 'password') continue
+      }
       body[key] = val
     }
     await apiClient.put('/admin/settings', body)

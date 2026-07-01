@@ -27,6 +27,10 @@ const i18n = createI18n({
       'test.sel_hint': 'Test select hint',
       'opt.a': 'Option A',
       'opt.b': 'Option B',
+      'settings.password_set': 'Set',
+      'settings.password_not_set': 'Not set',
+      'test.pwd': 'Test Password',
+      'test.pwd_hint': 'Test password hint',
     },
   },
 })
@@ -38,6 +42,7 @@ const selectMeta: SettingMeta = {
   label: 'test.sel', hint: 'test.sel_hint', type: 'select',
   options: { a: 'opt.a', b: 'opt.b' },
 }
+const passwordMeta: SettingMeta = { label: 'test.pwd', hint: 'test.pwd_hint', type: 'password' }
 
 function mountField(meta: SettingMeta, value: boolean | number | string | null, defaultValue: boolean | number | string, envOverride = false) {
   return mount(SettingField, {
@@ -144,5 +149,44 @@ describe('SettingField', () => {
   it('does not show restart tag when restart prop is false', () => {
     const wrapper = mountField(boolMeta, true, false)
     expect(wrapper.text()).not.toContain('Requires restart')
+  })
+
+  // --- password type tests ---
+
+  it('password type shows "Not set" when value is null (case 1 default)', () => {
+    const wrapper = mountField(passwordMeta, null, '')
+    expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Not set')
+  })
+
+  it('password type shows "Set" when value exists (case 3)', () => {
+    const wrapper = mountField(passwordMeta, 'some-password', '')
+    expect(wrapper.findComponent({ name: 'Password' }).exists()).toBe(true)
+    // The field is in editing mode, so we should see the revert button and Password input
+    expect(wrapper.find('[data-testid="setting-editing"]').exists()).toBe(true)
+  })
+
+  it('password type does not auto-commit default on edit', async () => {
+    const wrapper = mountField(passwordMeta, null, '')
+    await wrapper.find('[data-testid="setting-default"] span').trigger('click')
+    // startEditing should NOT emit for password type — no auto-commit of default value
+    expect(wrapper.emitted('update:value')).toBeFalsy()
+    // Should now be in editing mode with Password component
+    expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'Password' }).exists()).toBe(true)
+  })
+
+  it('password type renders Password component in editing mode', () => {
+    const wrapper = mountField(passwordMeta, 'current', '')
+    const pwd = wrapper.findComponent({ name: 'Password' })
+    expect(pwd.exists()).toBe(true)
+    // feedback should be disabled (not showing strength meter for admin settings)
+    expect(pwd.props('feedback')).toBe(false)
+  })
+
+  it('password emits updated value on Password change', async () => {
+    const wrapper = mountField(passwordMeta, 'old', '')
+    await wrapper.findComponent({ name: 'Password' }).vm.$emit('update:modelValue', 'new-secret')
+    expect(wrapper.emitted('update:value')?.[0]).toEqual(['new-secret'])
   })
 })

@@ -1,7 +1,7 @@
 export interface SettingMeta {
   label: string
   hint: string
-  type: 'bool' | 'number' | 'string' | 'select' | 'textarea'
+  type: 'bool' | 'number' | 'string' | 'select' | 'textarea' | 'password'
   restart?: boolean
   options?: Record<string, string>  // value → i18n label key (for select only)
   envVar?: string                     // for display only (env tag)
@@ -61,10 +61,10 @@ export const sections: SettingsSection[] = [
   {
     name: 'settings.section_admin_access',
     fields: {
-      admin_password:     { label: 'settings.admin_password',      hint: 'settings.admin_password_hint',      type: 'string', envVar: 'WDBGP_ADMIN_PASSWORD' },
+      admin_password:     { label: 'settings.admin_password',      hint: 'settings.admin_password_hint',      type: 'password', envVar: 'WDBGP_ADMIN_PASSWORD' },
       admin_cookie_secure: { label: 'settings.admin_cookie_secure', hint: 'settings.admin_cookie_secure_hint', type: 'select',
         options: { auto: 'settings.auto', true: 'settings.true', false: 'settings.false' }, envVar: 'WDBGP_ADMIN_COOKIE_SECURE' },
-      session_secret:     { label: 'settings.session_secret',      hint: 'settings.session_secret_hint',      type: 'string', envVar: 'WDBGP_SESSION_SECRET' },
+      session_secret:     { label: 'settings.session_secret',      hint: 'settings.session_secret_hint',      type: 'password', envVar: 'WDBGP_SESSION_SECRET' },
       session_max_age:    { label: 'settings.session_max_age',     hint: 'settings.session_max_age_hint',     type: 'number', envVar: 'WDBGP_SESSION_MAX_AGE' },
     },
   },

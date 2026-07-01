@@ -443,3 +443,112 @@ func TestSettings_ComputedDefaults(t *testing.T) {
 		t.Errorf("BackupDir = %q, want /custom/path", s.BackupDir.Get())
 	}
 }
+
+func TestSecretSettingsDBKeys(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Type-assert to access the unexported dbKey field (same package).
+	adminPW, ok := s.AdminPassword.(*simpleSetting[string])
+	if !ok {
+		t.Fatal("AdminPassword is not *simpleSetting[string]")
+	}
+	sessionSec, ok := s.SessionSecret.(*simpleSetting[string])
+	if !ok {
+		t.Fatal("SessionSecret is not *simpleSetting[string]")
+	}
+
+	// Both must have non-empty dbKeys.
+	if adminPW.dbKey == "" {
+		t.Error("AdminPassword dbKey is empty")
+	}
+	if sessionSec.dbKey == "" {
+		t.Error("SessionSecret dbKey is empty")
+	}
+
+	// The dbKeys must be distinct (no collision).
+	if adminPW.dbKey == sessionSec.dbKey {
+		t.Errorf("AdminPassword and SessionSecret share the same dbKey %q", adminPW.dbKey)
+	}
+
+	// Verify exact expected keys.
+	if adminPW.dbKey != "admin_password" {
+		t.Errorf("AdminPassword dbKey = %q, want admin_password", adminPW.dbKey)
+	}
+	if sessionSec.dbKey != "session_secret" {
+		t.Errorf("SessionSecret dbKey = %q, want session_secret", sessionSec.dbKey)
+	}
+}
+
+func TestSecretSettingsJSONReturnsNil(t *testing.T) {
+	// Set env vars so the settings have live values.
+	t.Setenv("WDBGP_ADMIN_PASSWORD", "secret123")
+	t.Setenv("WDBGP_SESSION_SECRET", "s3cr3t")
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the settings actually have values from env.
+	if s.AdminPassword.Get() != "secret123" {
+		t.Errorf("AdminPassword = %q, want secret123", s.AdminPassword.Get())
+	}
+	if s.SessionSecret.Get() != "s3cr3t" {
+		t.Errorf("SessionSecret = %q, want s3cr3t", s.SessionSecret.Get())
+	}
+
+	j := s.JSON(context.Background())
+
+	// JSON must NEVER expose secret values — Value must be nil.
+	if j.AdminPassword.Value != nil {
+		t.Errorf("AdminPassword.Value = %v, want nil (secret must not leak)", j.AdminPassword.Value)
+	}
+	if j.SessionSecret.Value != nil {
+		t.Errorf("SessionSecret.Value = %v, want nil (secret must not leak)", j.SessionSecret.Value)
+	}
+
+	// DefaultValue is the empty string (the "default" in New).
+	if j.AdminPassword.DefaultValue != "" {
+		t.Errorf("AdminPassword.DefaultValue = %q, want \"\"", j.AdminPassword.DefaultValue)
+	}
+	if j.SessionSecret.DefaultValue != "" {
+		t.Errorf("SessionSecret.DefaultValue = %q, want \"\"", j.SessionSecret.DefaultValue)
+	}
+
+	// Env override must still be reported (frontend uses this for tags).
+	if !j.AdminPassword.EnvOverride {
+		t.Error("AdminPassword.EnvOverride should be true")
+	}
+	if !j.SessionSecret.EnvOverride {
+		t.Error("SessionSecret.EnvOverride should be true")
+	}
+}
+
+// Test that even DB-stored secrets don't leak via JSON.
+func TestSecretSettingsJSONReturnsNil_DB(t *testing.T) {
+	store := newMockStore()
+	store.settings["admin_password"] = "db-secret"
+	store.settings["session_secret"] = "db-s3cr3t"
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the settings have DB values.
+	if s.AdminPassword.Get() != "db-secret" {
+		t.Errorf("AdminPassword = %q, want db-secret", s.AdminPassword.Get())
+	}
+
+	j := s.JSON(context.Background())
+
+	if j.AdminPassword.Value != nil {
+		t.Errorf("AdminPassword.Value = %v, want nil (secret must not leak)", j.AdminPassword.Value)
+	}
+	if j.SessionSecret.Value != nil {
+		t.Errorf("SessionSecret.Value = %v, want nil (secret must not leak)", j.SessionSecret.Value)
+	}
+}

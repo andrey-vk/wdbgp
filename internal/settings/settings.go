@@ -165,13 +165,13 @@ func New(store Store) (*Settings, error) {
 	}
 
 	// AdminPassword: env-only.
-	s.AdminPassword, err = newSimple("", "", "WDBGP_ADMIN_PASSWORD", parseString, store, dbSettings)
+	s.AdminPassword, err = newSimple("", "admin_password", "WDBGP_ADMIN_PASSWORD", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// SessionSecret: env-only.
-	s.SessionSecret, err = newSimple("", "", "WDBGP_SESSION_SECRET", parseString, store, dbSettings)
+	s.SessionSecret, err = newSimple("", "session_secret", "WDBGP_SESSION_SECRET", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -421,15 +421,9 @@ func (s *Settings) JSON(ctx context.Context) SettingsJSON {
 		TrustProxyHeaders:             s.TrustProxyHeaders.JSON(dbSettings),
 	}
 
-	// Mask secrets in API responses
-	if j.AdminPassword.Value != nil {
-		masked := "••••"
-		j.AdminPassword.Value = &masked
-	}
-	if j.SessionSecret.Value != nil {
-		masked := "••••"
-		j.SessionSecret.Value = &masked
-	}
+	// Never expose secret values — always nil
+	j.AdminPassword.Value = nil
+	j.SessionSecret.Value = nil
 
 	return j
 }

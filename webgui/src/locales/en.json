@@ -134,6 +134,8 @@
   "settings.revert_default": "Revert to default",
   "settings.on": "On",
   "settings.off": "Off",
+  "settings.password_set": "Set",
+  "settings.password_not_set": "Not set",
   "settings.empty": "empty",
   "settings.constraint_text": "Free-form text.",
   "settings.constraint_select": "Choose from the list.",

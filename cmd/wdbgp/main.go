@@ -92,6 +92,11 @@ func serve(s *settings.Settings, db *store.Store) error {
 		return serveDegraded(s, db)
 	}
 
+	// Require admin secrets before serving
+	if s.AdminPassword.Get() == "" || s.SessionSecret.Get() == "" {
+		return fmt.Errorf("WDBGP_ADMIN_PASSWORD and WDBGP_SESSION_SECRET are required")
+	}
+
 	logging.Info("starting application",
 		"bgp_asn", s.LocalASN.Get(),
 		"bgp_port", s.BGPPort.Get(),

@@ -289,4 +289,83 @@ describe('SettingsPage', () => {
     // Dirty should still be true (save failed)
     expect(vm.dirty).toBe(true)
   })
+
+  it('skips password fields with empty value on save', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    // Set non-password field + empty password + filled password
+    vm.values = {
+      port: 9090,
+      admin_password: '',        // empty → should be skipped
+      session_secret: 'new-secret', // non-empty → should be sent
+    }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    await vm.handleSave()
+
+    const body = putMock.mock.calls[0][1] as Record<string, unknown>
+    // port should be present
+    expect(body.port).toBe(9090)
+    // admin_password (empty) should be skipped
+    expect(body).not.toHaveProperty('admin_password')
+    // session_secret (non-empty) should be included
+    expect(body.session_secret).toBe('new-secret')
+  })
+
+  it('skips password fields with null value on save', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    // null password fields (default state from backend) should be skipped
+    vm.values = {
+      port: 8080,
+      admin_password: null,
+    }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    await vm.handleSave()
+
+    const body = putMock.mock.calls[0][1] as Record<string, unknown>
+    // port should be present
+    expect(body.port).toBe(8080)
+    // admin_password (null) should be skipped
+    expect(body).not.toHaveProperty('admin_password')
+  })
 })

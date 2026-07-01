@@ -7,6 +7,7 @@ import Tag from 'primevue/tag'
 import ToggleSwitch from 'primevue/toggleswitch'
 import InputNumber from 'primevue/inputnumber'
 import InputText from 'primevue/inputtext'
+import Password from 'primevue/password'
 import Textarea from 'primevue/textarea'
 import Select from 'primevue/select'
 import type { SettingMeta } from '@/admin/settingsMeta'
@@ -32,7 +33,7 @@ const editing = ref(false)
 
 function startEditing() {
   editing.value = true
-  if (props.value == null) {
+  if (props.value == null && props.meta.type !== 'password') {
     emit('update:value', props.defaultValue)
   }
 }
@@ -47,6 +48,8 @@ function formatDisplayValue(val: string | number | boolean, type: SettingMeta['t
     case 'textarea':
       if (val) return String(val)
       return '\u2039' + t('settings.empty') + '\u203a'
+    case 'password':
+      return val ? t('settings.password_set') : t('settings.password_not_set')
     case 'select': {
       const opt = props.meta.options
       if (opt && typeof val === 'string' && opt[val]) {
@@ -158,6 +161,14 @@ const selectOptions = computed(() => {
           :input-id="fieldKey"
           rows="5"
           fluid
+          @update:model-value="onChange"
+        />
+        <Password
+          v-else-if="meta.type === 'password'"
+          :model-value="(value ?? '') as string"
+          :input-id="fieldKey"
+          fluid
+          :feedback="false"
           @update:model-value="onChange"
         />
         <InputText
