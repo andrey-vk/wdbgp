@@ -11,12 +11,12 @@ function detectLocale(): Locale {
   const stored = localStorage.getItem(LANGUAGE_KEY)
   if (stored === 'en' || stored === 'ru') return stored
 
-  // 2. Cookie (set by server with default_language)
+  // 2. Browser auto-detect
+  if (navigator.language?.split('-')[0] === 'ru') return 'ru'
+
+  // 3. Cookie (set by server with default_language)
   const match = document.cookie.match(/(?:^|;\s*)wdbgp_language=([^;]*)/)
   if (match && (match[1] === 'en' || match[1] === 'ru')) return match[1] as Locale
-
-  // 3. Browser auto-detect
-  if (navigator.language?.split('-')[0] === 'ru') return 'ru'
   return 'en'
 }
 
