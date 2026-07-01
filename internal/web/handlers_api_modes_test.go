@@ -1,9 +1,11 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -611,5 +613,60 @@ func TestModeFeedReplaceAtomic(t *testing.T) {
 	}
 	if len(feedsResp.Feeds) != 2 {
 		t.Errorf("after failed replace: got %d feeds, want 2 (rollback should preserve both)", len(feedsResp.Feeds))
+	}
+}
+
+// =============================================================================
+// TestModeFeedsSetNoRollbackWarning — verifies no rollback warning is logged
+// after a successful commit (the defer should skip rollback when committed).
+// =============================================================================
+
+func TestModeFeedsSetNoRollbackWarning(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+
+	// Create a mode
+	createBody := strings.NewReader(`{"name":"NoWarn Mode","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/modes", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiModesCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create mode: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created modeJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	modeID := created.ID
+
+	// Create a feed
+	ctx := context.Background()
+	feedID, err := st.AddFeed(ctx, "NoWarn Feed", "http://example.com/feed.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+
+	// Capture log output during the handler call
+	var logBuf bytes.Buffer
+	origOutput := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(origOutput)
+
+	// Assign feed to mode (success path — commit should succeed)
+	assignBody := strings.NewReader(`{"feed_ids":[` + strconv.FormatInt(feedID, 10) + `]}`)
+	req = httptest.NewRequest("PUT", "/api/admin/modes/1/feeds", assignBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeFeedsSet(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("assign feeds: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	// Check that no rollback warning was logged (the bug: defer rollback runs after successful commit)
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "mode feeds transaction rollback") {
+		t.Errorf("rollback warning logged after successful commit:\n%s", logOutput)
 	}
 }

@@ -261,9 +261,12 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to begin transaction"})
 		return
 	}
+	committed := false
 	defer func() {
-		if err := tx.Rollback(); err != nil {
-			log.Printf("WARNING: mode feeds transaction rollback: %v", err)
+		if !committed {
+			if err := tx.Rollback(); err != nil {
+				log.Printf("WARNING: mode feeds transaction rollback: %v", err)
+			}
 		}
 	}()
 
@@ -287,6 +290,7 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save feed assignments"})
 		return
 	}
+	committed = true
 	// Generate communities and reconcile (best-effort side effects, after commit)
 	s.store.GenerateCommunities(r.Context(), modeID) //nolint:errcheck,gosec // best-effort community generation
 	if s.bgp != nil {
