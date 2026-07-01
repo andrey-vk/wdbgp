@@ -123,7 +123,6 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	if st.SecurityHeaders.Get() {
 		handler = securityHeaders(handler)
 	}
-	handler = csrfProtection(handler, st.SessionSecret.Get())
 	// Apply admin rate limiting to admin endpoints
 	handler = server.adminRateLimitMiddleware(handler)
 	handler = logging.HTTPMiddleware(handler)

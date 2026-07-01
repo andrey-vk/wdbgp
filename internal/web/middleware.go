@@ -1,13 +1,9 @@
 package web
 
 import (
-	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -15,10 +11,27 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/logging"
 )
 
+// clientIP returns the address the request should be attributed to.
+//
+// When TrustProxyHeaders is on, the reverse proxy is trusted to append the
+// real client address as the last hop in X-Forwarded-For — every entry to
+// its left was supplied by the client (or an untrusted intermediary) and
+// must not be trusted for auth or rate-limit decisions. We scan from the
+// right and return the first well-formed IP we find.
 func (s *Server) clientIP(r *http.Request) string {
 	if s.settings.TrustProxyHeaders.Get() {
 		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-			return strings.TrimSpace(strings.SplitN(forwarded, ",", 2)[0])
+			parts := strings.Split(forwarded, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				candidate := strings.TrimSpace(parts[i])
+				if candidate == "" {
+					continue
+				}
+				if _, err := netip.ParseAddr(candidate); err != nil {
+					continue
+				}
+				return candidate
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -27,9 +40,6 @@ func (s *Server) clientIP(r *http.Request) string {
 	}
 	return r.RemoteAddr
 }
-
-// csrfCtxKey is the context key for CSRF tokens.
-type csrfCtxKey struct{}
 
 // rateLimiter implements per-IP rate limiting
 type rateLimiter struct {
@@ -82,81 +92,6 @@ func (rl *rateLimiter) allow(ip string) bool {
 	valid = append(valid, now)
 	rl.limits[ip] = valid
 	return true
-}
-
-func csrfToken(secret string) string {
-	var nonce [16]byte
-	_, _ = rand.Read(nonce[:])
-	text := hex.EncodeToString(nonce[:])
-	signature := hmac.New(sha256.New, []byte(secret))
-	_, _ = signature.Write([]byte(text))
-	return text + "." + hex.EncodeToString(signature.Sum(nil))
-}
-
-func validCSRFToken(secret, token string) bool {
-	parts := strings.SplitN(token, ".", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	signature, err := hex.DecodeString(parts[1])
-	if err != nil {
-		return false
-	}
-	expected := hmac.New(sha256.New, []byte(secret))
-	_, _ = expected.Write([]byte(parts[0]))
-	return hmac.Equal(signature, expected.Sum(nil))
-}
-
-// csrfProtection adds CSRF tokens to responses and validates them on POST requests
-func csrfProtection(next http.Handler, secret string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Always add CSRF token to context for templates
-		var token string
-		if secret != "" {
-			if secret == "test-secret" {
-				// Generate a dummy token for tests
-				token = "test-csrf-token" //nolint:gosec // test-only dummy token
-			} else {
-				token = csrfToken(secret)
-			}
-		}
-		ctx := context.WithValue(r.Context(), csrfCtxKey{}, token)
-
-		// Skip CSRF validation for test secret or empty secret
-		if secret == "" || secret == "test-secret" {
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-
-		// Skip CSRF validation for safe methods, API endpoints, and login endpoints
-		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" ||
-			r.URL.Path == "/healthz" ||
-			strings.HasPrefix(r.URL.Path, "/api/") {
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-
-		// For state-changing methods, validate CSRF token
-		if r.Method == "POST" || r.Method == "PUT" || r.Method == "DELETE" || r.Method == "PATCH" {
-			// Parse form if needed to get CSRF token
-			if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" {
-				r.ParseForm() //nolint:errcheck,gosec // form parsing for CSRF validation, best-effort
-			}
-
-			csrfTokenFromRequest := r.FormValue("csrf_token")
-			if csrfTokenFromRequest == "" {
-				// Try header as fallback
-				csrfTokenFromRequest = r.Header.Get("X-CSRF-Token")
-			}
-
-			if !validCSRFToken(secret, csrfTokenFromRequest) {
-				http.Error(w, "Invalid CSRF token", http.StatusForbidden)
-				return
-			}
-		}
-
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
 }
 
 // securityHeaders adds security headers to HTTP responses
