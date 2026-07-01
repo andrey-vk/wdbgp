@@ -262,3 +262,79 @@ func addFilteredTestUser(t *testing.T, s *Store, override bool) int64 {
 func prefixContains(parent, child netip.Prefix) bool {
 	return parent.Contains(child.Addr()) && child.Bits() >= parent.Bits()
 }
+
+func TestSplitNewlines(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "empty string",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "whitespace only",
+			input: "  \n  \t  ",
+			want:  nil,
+		},
+		{
+			name:  "single line",
+			input: "1.1.1.1/32",
+			want:  []string{"1.1.1.1/32"},
+		},
+		{
+			name:  "multiple lines",
+			input: "1.1.1.1/32\n8.8.8.0/24",
+			want:  []string{"1.1.1.1/32", "8.8.8.0/24"},
+		},
+		{
+			name:  "trims whitespace",
+			input: "  1.1.1.1/32  \n  8.8.8.0/24  ",
+			want:  []string{"1.1.1.1/32", "8.8.8.0/24"},
+		},
+		{
+			name:  "skips empty lines",
+			input: "1.1.1.1/32\n\n8.8.8.0/24\n\n",
+			want:  []string{"1.1.1.1/32", "8.8.8.0/24"},
+		},
+		{
+			name:  "skips comment lines",
+			input: "# this is a comment\n1.1.1.1/32\n# another comment\n8.8.8.0/24\n# trailing",
+			want:  []string{"1.1.1.1/32", "8.8.8.0/24"},
+		},
+		{
+			name:  "skips inline comments and trims",
+			input: "  1.1.1.1/32  # inline comment\n  # just a comment  \n  8.8.8.0/24  ",
+			want:  []string{"1.1.1.1/32  # inline comment", "8.8.8.0/24"},
+		},
+		{
+			name:  "only comments",
+			input: "# line 1\n# line 2",
+			want:  nil,
+		},
+		{
+			name:  "mixed blank and comments",
+			input: "\n# comment\n\n1.1.1.1/32\n\n# another\n\n8.8.8.0/24\n\n",
+			want:  []string{"1.1.1.1/32", "8.8.8.0/24"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitNewlines(tc.input)
+			if tc.want == nil && got != nil {
+				t.Fatalf("got %#v, want nil", got)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d: got %#v, want %#v", len(got), len(tc.want), got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}

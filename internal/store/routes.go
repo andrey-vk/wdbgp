@@ -268,7 +268,15 @@ func splitNewlines(value string) []string {
 	if strings.TrimSpace(value) == "" {
 		return nil
 	}
-	return strings.Split(value, "\n")
+	var result []string
+	for _, line := range strings.Split(value, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		result = append(result, line)
+	}
+	return result
 }
 
 func (s *Store) UserRouteFilters(ctx context.Context, userID int64) (RouteFilters, error) {
