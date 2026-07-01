@@ -97,9 +97,13 @@ func (rl *rateLimiter) allow(ip string) bool {
 // securityHeaders adds security headers to HTTP responses
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Content Security Policy - restrict resource loading
-		// Allow inline styles/scripts for simplicity, plus unpkg CDN for htmx/alpine
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
+		// Content Security Policy - restrict resource loading.
+		// script-src is locked to same-origin build assets only — the SPA has no
+		// inline scripts, no runtime eval, and no CDN dependency.
+		// style-src needs 'unsafe-inline' because PrimeVue's theming
+		// (@primeuix/styled) injects <style> elements at runtime; there's no
+		// static build step that can precompute this away.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
 
 		// Prevent clickjacking
 		w.Header().Set("X-Frame-Options", "DENY")
