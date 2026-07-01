@@ -4,6 +4,7 @@ import { computed } from 'vue';
 import AppFooter from './AppFooter.vue';
 import AppSidebar from './AppSidebar.vue';
 import AppTopbar from './AppTopbar.vue';
+import BGPStatusBanner from './BGPStatusBanner.vue';
 
 const { layoutConfig, layoutState, hideMobileMenu } = useLayout();
 
@@ -27,6 +28,7 @@ const containerClass = computed(() => {
     <AppSidebar />
     <div class="layout-main-container">
       <div class="layout-main">
+        <BGPStatusBanner class="mb-4" />
         <router-view />
       </div>
       <AppFooter />

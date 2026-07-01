@@ -1,4 +1,11 @@
 {
+  "bgp_status.failed_title": "Failed to start BGP speaker — check settings",
+  "bgp_status.pending_title": "BGP settings changed",
+  "bgp_status.pending_body": "Local ASN, Router ID, BGP port, or local address was changed. The running BGP session won't use the new value until you apply it.",
+  "bgp_status.retry": "Retry",
+  "bgp_status.apply_now": "Apply now",
+  "bgp_status.reload_success": "BGP reloaded successfully.",
+  "bgp_status.reload_error": "BGP reload failed.",
   "language.label": "Language",
   "language.english": "English",
   "language.russian": "Russian",

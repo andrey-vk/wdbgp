@@ -1,4 +1,11 @@
 {
+  "bgp_status.failed_title": "Не удалось запустить BGP — проверьте настройки",
+  "bgp_status.pending_title": "Настройки BGP изменены",
+  "bgp_status.pending_body": "Local ASN, Router ID, порт BGP или локальный адрес были изменены. Текущая сессия BGP не будет использовать новое значение, пока изменения не будут применены.",
+  "bgp_status.retry": "Повторить",
+  "bgp_status.apply_now": "Применить сейчас",
+  "bgp_status.reload_success": "BGP успешно перезапущен.",
+  "bgp_status.reload_error": "Не удалось перезапустить BGP.",
   "language.label": "Язык",
   "language.english": "Английский",
   "language.russian": "Русский",
