@@ -14,6 +14,12 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
+var validWebAuthModes = map[string]bool{"network": true, "login": true, "both": true, "any": true}
+
+func isValidWebAuth(mode string) bool {
+	return validWebAuthModes[mode]
+}
+
 type userJSON struct {
 	ID              int64    `json:"id"`
 	Name            string   `json:"name"`
@@ -211,6 +217,12 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		body.BGPPassword = ""
 	}
 
+	// Validate web_auth mode
+	if body.WebAuth != "" && !isValidWebAuth(body.WebAuth) {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid web_auth mode"})
+		return
+	}
+
 	user := store.User{
 		Name:            body.Name,
 		PeerIP:          body.PeerIP,
@@ -391,6 +403,10 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		current.ActiveDial = *body.ActiveDial
 	}
 	if body.WebAuth != nil {
+		if !isValidWebAuth(*body.WebAuth) {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid web_auth mode"})
+			return
+		}
 		current.WebAuth = *body.WebAuth
 	}
 	if body.Networks != nil {

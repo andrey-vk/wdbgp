@@ -1347,3 +1347,55 @@ func TestUserBGPPasswordToggle(t *testing.T) {
 		}
 	})
 }
+
+// =============================================================================
+// TestCreateUserInvalidWebAuth — POST with invalid web_auth returns 400
+// =============================================================================
+
+func TestCreateUserInvalidWebAuth(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	body := `{"name":"bad-auth","peer_ip":"10.0.99.1","peer_asn":65099,"networks":["10.0.0.0/8"],"web_auth":"logn","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid web_auth create: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
+// TestUpdateUserInvalidWebAuth — PUT with invalid web_auth returns 400
+// =============================================================================
+
+func TestUpdateUserInvalidWebAuth(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	// Create a user first
+	createBody := strings.NewReader(`{"name":"auth-update","peer_ip":"10.0.98.1","peer_asn":65098,"networks":["10.0.0.0/8"],"web_auth":"network","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created userJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	// Try to update with invalid web_auth
+	updateBody := strings.NewReader(`{"web_auth":"bogus"}`)
+	req = httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(created.ID, 10), updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid web_auth update: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
