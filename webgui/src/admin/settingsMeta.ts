@@ -77,6 +77,12 @@ export const sections: SettingsSection[] = [
       adapter_backup_max:  { label: 'settings.adapter_backup_max',  hint: 'settings.adapter_backup_max_hint',  type: 'number', envVar: 'WDBGP_ADAPTER_BACKUP_MAX' },
       metrics_enabled:     { label: 'settings.metrics_enabled',     hint: 'settings.metrics_enabled_hint',     type: 'bool' },
       metrics_history_days:{ label: 'settings.metrics_history_days', hint: 'settings.metrics_history_days_hint', type: 'number' },
+      db_path:            { label: 'settings.db_path',             hint: 'settings.db_path_hint',             type: 'string', envVar: 'WDBGP_DB' },
+      admin_password:     { label: 'settings.admin_password',      hint: 'settings.admin_password_hint',      type: 'string', envVar: 'WDBGP_ADMIN_PASSWORD' },
+      session_secret:     { label: 'settings.session_secret',      hint: 'settings.session_secret_hint',      type: 'string', envVar: 'WDBGP_SESSION_SECRET' },
+      auto_restore_enabled: { label: 'settings.auto_restore_enabled', hint: 'settings.auto_restore_enabled_hint', type: 'bool', envVar: 'WDBGP_AUTO_RESTORE_ENABLED' },
+      backup_enabled:     { label: 'settings.backup_enabled',      hint: 'settings.backup_enabled_hint',      type: 'bool', envVar: 'WDBGP_BACKUP_ENABLED' },
+      backup_dir:         { label: 'settings.backup_dir',          hint: 'settings.backup_dir_hint',          type: 'string', envVar: 'WDBGP_BACKUP_DIR' },
     },
   },
   {
@@ -121,6 +127,9 @@ export const sections: SettingsSection[] = [
       router_id:        { label: 'settings.router_id',        hint: 'settings.router_id_hint',        type: 'string', restart: true, envVar: 'WDBGP_ROUTER_ID' },
       local_address_v4: { label: 'settings.local_address_v4', hint: 'settings.local_address_v4_hint', type: 'string', restart: true, envVar: 'WDBGP_BGP_LOCAL_ADDRESS' },
       local_address_v6: { label: 'settings.local_address_v6', hint: 'settings.local_address_v6_hint', type: 'string', restart: true, envVar: 'WDBGP_BGP_LOCAL_ADDRESS_V6' },
+      active_dial:                { label: 'settings.active_dial',                 hint: 'settings.active_dial_hint',                 type: 'bool', envVar: 'WDBGP_ACTIVE_DIAL' },
+      allow_dynamic_peers:        { label: 'settings.allow_dynamic_peers',         hint: 'settings.allow_dynamic_peers_hint',         type: 'bool', envVar: 'WDBGP_ALLOW_DYNAMIC_PEERS' },
+      require_password_for_non_unique_ip: { label: 'settings.require_password_for_non_unique_ip', hint: 'settings.require_password_for_non_unique_ip_hint', type: 'bool', envVar: 'WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP' },
     },
   },
   {
