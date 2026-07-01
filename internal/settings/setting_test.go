@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -294,6 +295,33 @@ func TestSimpleSetting_Int_InvalidEnv(t *testing.T) {
 	}
 }
 
+// TestSimpleSetting_Env_RunsValidator guards against a regression where
+// newSimple returned as soon as the env var parsed, before ever reaching the
+// validate() call below — so a validator wired up for the DB/default path
+// silently never ran for the env var path, which is how operators actually
+// configure this in production.
+func TestSimpleSetting_Env_RunsValidator(t *testing.T) {
+	positive := func(v int) error {
+		if v <= 0 {
+			return fmt.Errorf("must be positive, got %d", v)
+		}
+		return nil
+	}
+
+	t.Setenv("TEST_INT", "-5")
+	store := newMockStore()
+	if _, err := newSimple(42, "test_key", "TEST_INT", parseInt, positive, store, map[string]string{}); err == nil {
+		t.Fatal("expected validation error for env value -5, got nil")
+	}
+
+	t.Setenv("TEST_INT", "5")
+	if s, err := newSimple(42, "test_key", "TEST_INT", parseInt, positive, store, map[string]string{}); err != nil {
+		t.Fatalf("unexpected error for valid env value: %v", err)
+	} else if s.Get() != 5 {
+		t.Errorf("Get() = %d, want 5", s.Get())
+	}
+}
+
 func TestSimpleSetting_String_Basic(t *testing.T) {
 	store := newMockStore()
 	s, err := newSimple("default", "test_key", "", parseString, nil, store, map[string]string{})
@@ -462,6 +490,24 @@ func TestComplexSetting_New_InvalidEnv(t *testing.T) {
 	_, err := newComplex("42", "test_key", "TEST_INT", parseInt, nil, store, map[string]string{})
 	if err == nil {
 		t.Fatal("expected error for invalid env")
+	}
+}
+
+// TestComplexSetting_Env_RunsValidator mirrors
+// TestSimpleSetting_Env_RunsValidator for newComplex: a validator must run
+// against the env var's value too, not just the DB/default fallback path.
+func TestComplexSetting_Env_RunsValidator(t *testing.T) {
+	positive := func(v int) error {
+		if v <= 0 {
+			return fmt.Errorf("must be positive, got %d", v)
+		}
+		return nil
+	}
+
+	t.Setenv("TEST_INT", "-5")
+	store := newMockStore()
+	if _, err := newComplex("42", "test_key", "TEST_INT", parseInt, positive, store, map[string]string{}); err == nil {
+		t.Fatal("expected validation error for env value -5, got nil")
 	}
 }
 

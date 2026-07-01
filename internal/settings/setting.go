@@ -67,7 +67,9 @@ type complexSetting[T any] struct {
 
 // newSimple creates a new simpleSetting[T].
 //
-// Precedence: env var -> DB value -> default.
+// Precedence: env var -> DB value -> default. The effective value is
+// validated regardless of where it came from — an out-of-range env var must
+// fail startup just as surely as an out-of-range value set through the API.
 // If the env var is set but fails to parse, an error is returned.
 // If the DB value exists but fails to parse, the default is used silently.
 func newSimple[T any](defaultVal T, dbKey, envVar string, parse func(string) (T, error), validate func(T) error, store Store, dbSettings map[string]string) (*simpleSetting[T], error) {
@@ -82,30 +84,37 @@ func newSimple[T any](defaultVal T, dbKey, envVar string, parse func(string) (T,
 	}
 
 	// Env var takes highest precedence.
+	envSource := ""
 	if envVar != "" {
-		envStr := os.Getenv(envVar)
-		if envStr != "" {
+		if envStr := os.Getenv(envVar); envStr != "" {
 			val, err := parse(envStr)
 			if err != nil {
 				return nil, fmt.Errorf("settings: invalid value for %s=%q: %w", envVar, envStr, err)
 			}
 			s.value = val
-			return s, nil
+			envSource = fmt.Sprintf("%s=%q", envVar, envStr)
 		}
 	}
 
-	// Fall back to DB value (pre-loaded by caller to avoid N per-field queries).
-	if dbStr, ok := dbSettings[dbKey]; ok {
-		if val, parseErr := parse(dbStr); parseErr == nil {
-			s.value = val
+	// Fall back to DB value (pre-loaded by caller to avoid N per-field queries),
+	// only if the env var didn't already win.
+	if envSource == "" {
+		if dbStr, ok := dbSettings[dbKey]; ok {
+			if val, parseErr := parse(dbStr); parseErr == nil {
+				s.value = val
+			}
+			// Invalid DB value is silently ignored — value stays at default.
 		}
-		// Invalid DB value is silently ignored — value stays at default.
 	}
 
-	// Validate the initial value.
+	// Validate the effective value, whichever source it came from.
 	if s.validate != nil {
 		if err := s.validate(s.value); err != nil {
-			return nil, fmt.Errorf("settings: invalid default for %s: %w", dbKey, err)
+			source := envSource
+			if source == "" {
+				source = "default"
+			}
+			return nil, fmt.Errorf("settings: invalid value for %s (%s): %w", dbKey, source, err)
 		}
 	}
 
@@ -115,7 +124,9 @@ func newSimple[T any](defaultVal T, dbKey, envVar string, parse func(string) (T,
 // newComplex creates a new complexSetting[T].
 //
 // defaultJSON is the default in DB/JSON format (a string).
-// Precedence: env var -> DB value -> defaultJSON (parsed).
+// Precedence: env var -> DB value -> defaultJSON (parsed). The effective
+// value is validated regardless of where it came from — an invalid env var
+// must fail startup just as surely as an invalid value set through the API.
 // If env is set but fails to parse, an error is returned.
 // If DB value exists but fails to parse, parse(defaultJSON) is used silently.
 func newComplex[T any](defaultJSON string, dbKey, envVar string, parse func(string) (T, error), validate func(T) error, store Store, dbSettings map[string]string) (*complexSetting[T], error) {
@@ -129,35 +140,41 @@ func newComplex[T any](defaultJSON string, dbKey, envVar string, parse func(stri
 	}
 
 	// Env var takes highest precedence.
+	envSource := ""
 	if envVar != "" {
-		envStr := os.Getenv(envVar)
-		if envStr != "" {
+		if envStr := os.Getenv(envVar); envStr != "" {
 			val, err := parse(envStr)
 			if err != nil {
 				return nil, fmt.Errorf("settings: invalid value for %s=%q: %w", envVar, envStr, err)
 			}
 			s.value = val
-			return s, nil
+			envSource = fmt.Sprintf("%s=%q", envVar, envStr)
 		}
 	}
 
-	// Fall back to DB value (pre-loaded by caller).
-	if dbStr, ok := dbSettings[dbKey]; ok {
-		if val, parseErr := parse(dbStr); parseErr == nil {
-			s.value = val
+	if envSource == "" {
+		// Fall back to DB value (pre-loaded by caller).
+		if dbStr, ok := dbSettings[dbKey]; ok {
+			if val, parseErr := parse(dbStr); parseErr == nil {
+				s.value = val
+			} else {
+				// Invalid DB value -> fall back to parsed default.
+				s.value, _ = parse(defaultJSON)
+			}
 		} else {
-			// Invalid DB value -> fall back to parsed default.
+			// No DB value -> use parsed default.
 			s.value, _ = parse(defaultJSON)
 		}
-	} else {
-		// No DB value -> use parsed default.
-		s.value, _ = parse(defaultJSON)
 	}
 
-	// Validate the initial value.
+	// Validate the effective value, whichever source it came from.
 	if validate != nil {
 		if err := validate(s.value); err != nil {
-			return nil, fmt.Errorf("settings: invalid default for %s: %w", dbKey, err)
+			source := envSource
+			if source == "" {
+				source = "default"
+			}
+			return nil, fmt.Errorf("settings: invalid value for %s (%s): %w", dbKey, source, err)
 		}
 	}
 

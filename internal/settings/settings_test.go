@@ -351,51 +351,51 @@ func TestSettingsPersistAfterSet(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		set      func(context.Context) error
-		get      func() string
-		wantKey  string
-		wantVal  string
+		name    string
+		set     func(context.Context) error
+		get     func() string
+		wantKey string
+		wantVal string
 	}{
 		{
-			name: "active_dial",
-			set: func(ctx context.Context) error { return s.ActiveDial.Set(ctx, false) },
-			get: func() string { return formatBool(s.ActiveDial.Get()) },
+			name:    "active_dial",
+			set:     func(ctx context.Context) error { return s.ActiveDial.Set(ctx, false) },
+			get:     func() string { return formatBool(s.ActiveDial.Get()) },
 			wantKey: "active_dial",
 			wantVal: "false",
 		},
 		{
-			name: "allow_dynamic_peers",
-			set: func(ctx context.Context) error { return s.AllowDynamicPeers.Set(ctx, true) },
-			get: func() string { return formatBool(s.AllowDynamicPeers.Get()) },
+			name:    "allow_dynamic_peers",
+			set:     func(ctx context.Context) error { return s.AllowDynamicPeers.Set(ctx, true) },
+			get:     func() string { return formatBool(s.AllowDynamicPeers.Get()) },
 			wantKey: "allow_dynamic_peers",
 			wantVal: "true",
 		},
 		{
-			name: "auto_restore_enabled",
-			set: func(ctx context.Context) error { return s.AutoRestoreEnabled.Set(ctx, true) },
-			get: func() string { return formatBool(s.AutoRestoreEnabled.Get()) },
+			name:    "auto_restore_enabled",
+			set:     func(ctx context.Context) error { return s.AutoRestoreEnabled.Set(ctx, true) },
+			get:     func() string { return formatBool(s.AutoRestoreEnabled.Get()) },
 			wantKey: "auto_restore_enabled",
 			wantVal: "true",
 		},
 		{
-			name: "backup_enabled",
-			set: func(ctx context.Context) error { return s.BackupEnabled.Set(ctx, false) },
-			get: func() string { return formatBool(s.BackupEnabled.Get()) },
+			name:    "backup_enabled",
+			set:     func(ctx context.Context) error { return s.BackupEnabled.Set(ctx, false) },
+			get:     func() string { return formatBool(s.BackupEnabled.Get()) },
 			wantKey: "backup_enabled",
 			wantVal: "false",
 		},
 		{
-			name: "backup_dir",
-			set: func(ctx context.Context) error { return s.BackupDir.Set(ctx, "/custom/backup") },
-			get: func() string { return s.BackupDir.Get() },
+			name:    "backup_dir",
+			set:     func(ctx context.Context) error { return s.BackupDir.Set(ctx, "/custom/backup") },
+			get:     func() string { return s.BackupDir.Get() },
 			wantKey: "backup_dir",
 			wantVal: "/custom/backup",
 		},
 		{
-			name: "require_password_for_non_unique_ip",
-			set: func(ctx context.Context) error { return s.RequirePasswordForNonUniqueIP.Set(ctx, false) },
-			get: func() string { return formatBool(s.RequirePasswordForNonUniqueIP.Get()) },
+			name:    "require_password_for_non_unique_ip",
+			set:     func(ctx context.Context) error { return s.RequirePasswordForNonUniqueIP.Set(ctx, false) },
+			get:     func() string { return formatBool(s.RequirePasswordForNonUniqueIP.Get()) },
 			wantKey: "require_password_for_non_unique_ip",
 			wantVal: "false",
 		},
@@ -567,6 +567,34 @@ func TestBGPPortValidation(t *testing.T) {
 	}
 	if err := s.BGPPort.Set(context.Background(), 179); err != nil {
 		t.Errorf("unexpected error for valid port: %v", err)
+	}
+}
+
+func TestPortValidation(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Port.Set(context.Background(), 0); err == nil {
+		t.Error("expected error for port 0")
+	}
+	if err := s.Port.Set(context.Background(), -1); err == nil {
+		t.Error("expected error for negative port")
+	}
+	if err := s.Port.Set(context.Background(), 65536); err == nil {
+		t.Error("expected error for port 65536")
+	}
+	if err := s.Port.Set(context.Background(), 8080); err != nil {
+		t.Errorf("unexpected error for valid port: %v", err)
+	}
+}
+
+func TestPortValidationRejectsInvalidEnvValue(t *testing.T) {
+	t.Setenv("WDBGP_PORT", "70000")
+	store := newMockStore()
+	if _, err := New(store); err == nil {
+		t.Error("expected error for out-of-range WDBGP_PORT")
 	}
 }
 

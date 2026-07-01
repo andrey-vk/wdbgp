@@ -23,8 +23,8 @@ type Settings struct {
 	DBPath                        Setting[string, string]
 	DefaultLanguage               Setting[string, string]
 	DefaultWebAuth                Setting[string, string]
-	FilterAllow                   Setting[string, string]  // global route allow filters
-	FilterDeny                    Setting[string, string]  // global route deny filters
+	FilterAllow                   Setting[string, string] // global route allow filters
+	FilterDeny                    Setting[string, string] // global route deny filters
 	Host                          Setting[string, string]
 	JSMaxCallStack                Setting[int, int]
 	JSMaxEntries                  Setting[int, int]
@@ -131,7 +131,7 @@ func New(store Store) (*Settings, error) {
 	}
 
 	// Port.
-	s.Port, err = newSimple(8080, "port", "WDBGP_PORT", parseInt, nil, store, dbSettings)
+	s.Port, err = newSimple(8080, "port", "WDBGP_PORT", parseInt, validatePort, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
