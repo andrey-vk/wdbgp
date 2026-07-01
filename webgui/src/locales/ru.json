@@ -385,6 +385,10 @@
   "debug.empty": "Совпадающих сервисов не найдено.",
   "debug.percentage": "{p}%",
 
+  "error.generic_title": "Что-то пошло не так",
+  "error.generic_message": "Произошла непредвиденная ошибка. Попробуйте перезагрузить страницу.",
+  "error.reload": "Перезагрузить",
+
   "dialog.yes": "Да",
   "dialog.no": "Нет",
 

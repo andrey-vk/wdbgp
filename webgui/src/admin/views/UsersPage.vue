@@ -116,10 +116,8 @@ onMounted(async () => {
   modes.value = modesResp.data.modes
 
   // Read configured default_web_auth from settings
-  const settings = settingsResp.data.settings
-  if (settings?.default_web_auth?.value) {
-    defaultWebAuth.value = settings.default_web_auth.value
-  }
+  const dw = settingsResp.data.default_web_auth
+  defaultWebAuth.value = dw.value ?? dw.default_value
 
   loading.value = false
 

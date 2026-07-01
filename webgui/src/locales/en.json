@@ -386,6 +386,10 @@
   "debug.empty": "No matching services found.",
   "debug.percentage": "{p}%",
 
+  "error.generic_title": "Something went wrong",
+  "error.generic_message": "An unexpected error occurred. Please try reloading the page.",
+  "error.reload": "Reload",
+
   "dialog.yes": "Yes",
   "dialog.no": "No",
 
