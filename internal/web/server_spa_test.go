@@ -32,7 +32,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.Store) {
 
 func mustGet(t *testing.T, url string) *http.Response {
 	t.Helper()
-	resp, err := http.Get(url)
+	resp, err := http.Get(url) //nolint:gosec // url is always this test's own httptest.Server, never external input
 	if err != nil {
 		t.Fatal(err)
 	}

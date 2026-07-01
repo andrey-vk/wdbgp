@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -133,7 +134,7 @@ func serve(s *settings.Settings, db *store.Store) error {
 	}
 	serverErrors := make(chan error, 1)
 	port := fmt.Sprintf("%d", s.Port.Get())
-	if err := os.WriteFile("/tmp/wdbgp-port", []byte(port), 0644); err != nil {
+	if err := os.WriteFile(portFilePath(s.DBPath.Get()), []byte(port), 0600); err != nil {
 		return fmt.Errorf("write port file: %w", err)
 	}
 
@@ -306,7 +307,11 @@ func printStats(ctx context.Context, db *store.Store) error {
 }
 
 func healthcheck() error {
-	port, err := os.ReadFile("/tmp/wdbgp-port")
+	dbPath := os.Getenv("WDBGP_DB")
+	if dbPath == "" {
+		dbPath = "/data/wdbgp.sqlite3"
+	}
+	port, err := os.ReadFile(portFilePath(dbPath))
 	if err != nil {
 		return fmt.Errorf("read port file: %w", err)
 	}
@@ -344,4 +349,12 @@ func lastSlash(s string) int {
 		}
 	}
 	return -1
+}
+
+// portFilePath returns where the HTTP listen port is recorded so that a
+// separate `wdbgp healthcheck` invocation can find it. It lives next to the
+// database rather than in the shared /tmp, since /tmp isn't necessarily
+// exclusive to this process (gosec G303).
+func portFilePath(dbPath string) string {
+	return filepath.Join(filepath.Dir(dbPath), "wdbgp-port")
 }

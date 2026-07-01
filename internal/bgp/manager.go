@@ -109,9 +109,9 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	}
 
 	speaker := NewSpeaker(SpeakerConfig{
-		ASN:       uint32(m.cfg.LocalASN.Get()),
+		ASN:       uint32(m.cfg.LocalASN.Get()), //nolint:gosec // LocalASN is validated to 1-4294967295 (validateASN), the exact uint32 range
 		RouterID:  routerID,
-		Port:      int32(m.cfg.BGPPort.Get()),
+		Port:      int32(m.cfg.BGPPort.Get()), //nolint:gosec // BGPPort is validated to 1-65535 (validatePort), well within int32
 		LocalAddr: localAddr,
 	}, logger.Logger)
 
