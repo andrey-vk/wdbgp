@@ -32,11 +32,7 @@ func run() error {
 
 	// healthcheck doesn't need store or settings — just probes HTTP endpoint
 	if command == "healthcheck" {
-		port := os.Getenv("WDBGP_PORT")
-		if port == "" {
-			port = "8080"
-		}
-		return healthcheck(port)
+		return healthcheck()
 	}
 
 	// Determine DBPath from env so we can open the store.
@@ -135,6 +131,11 @@ func serve(s *settings.Settings, db *store.Store) error {
 		IdleTimeout:       60 * time.Second,
 	}
 	serverErrors := make(chan error, 1)
+	port := fmt.Sprintf("%d", s.Port.Get())
+	if err := os.WriteFile("/tmp/wdbgp-port", []byte(port), 0644); err != nil {
+		return fmt.Errorf("write port file: %w", err)
+	}
+
 	go func() {
 		logging.Info("HTTP server starting",
 			"address", fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
@@ -277,15 +278,19 @@ func printStats(ctx context.Context, db *store.Store) error {
 	return nil
 }
 
-func healthcheck(port string) error {
+func healthcheck() error {
+	port, err := os.ReadFile("/tmp/wdbgp-port")
+	if err != nil {
+		return fmt.Errorf("read port file: %w", err)
+	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	response, err := client.Get("http://127.0.0.1:" + port + "/healthz")
+	resp, err := client.Get("http://127.0.0.1:" + string(port) + "/healthz")
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close() //nolint:errcheck // health check response body, no data to read
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("health endpoint returned %s", response.Status)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("health endpoint returned %s", resp.Status)
 	}
 	return nil
 }
