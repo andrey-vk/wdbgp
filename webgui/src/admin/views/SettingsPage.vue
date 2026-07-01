@@ -3,7 +3,6 @@ import { ref, onMounted, watch, onBeforeUnmount } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
-import { z } from 'zod'
 import apiClient from '@/api/client'
 import { settingsSchema } from '@/types/settings'
 import { sections } from '@/admin/settingsMeta'
@@ -11,14 +10,6 @@ import SettingField from '@/components/SettingField.vue'
 import Button from 'primevue/button'
 import Textarea from 'primevue/textarea'
 import Message from 'primevue/message'
-
-const settingsResponsePartial = z.object({
-  settings: settingsSchema.partial(),
-  route_filters: z.object({
-    filter_allow: z.string(),
-    filter_deny: z.string(),
-  }),
-})
 
 const { t } = useI18n()
 const toast = useToast()
@@ -35,20 +26,17 @@ const values = ref<Record<string, boolean | number | string | null>>({})
 const effectiveDefaults = ref<Record<string, boolean | number | string>>({})
 // Env override flags from backend
 const envOverrides = ref<Record<string, boolean>>({})
-// Route filter values
-const filterAllow = ref('')
-const filterDeny = ref('')
 
 onMounted(async () => {
   try {
     const resp = await apiClient.get('/admin/settings')
-    const parsed = settingsResponsePartial.parse(resp.data)
+    const parsed = settingsSchema.partial().parse(resp.data)
 
     const v: Record<string, boolean | number | string | null> = {}
     const d: Record<string, boolean | number | string> = {}
     const e: Record<string, boolean> = {}
 
-    for (const [key, setting] of Object.entries(parsed.settings)) {
+    for (const [key, setting] of Object.entries(parsed)) {
       v[key] = setting.value
       d[key] = setting.default_value
       e[key] = setting.env_override
@@ -57,26 +45,16 @@ onMounted(async () => {
     values.value = v
     effectiveDefaults.value = d
     envOverrides.value = e
-    filterAllow.value = parsed.route_filters.filter_allow
-    filterDeny.value = parsed.route_filters.filter_deny
   } finally {
     loading.value = false
   }
-
 })
 
-let valuesInitialLoad = true
-let filtersInitialLoad = true
-
+let initialLoad = true
 watch(values, () => {
-  if (valuesInitialLoad) { valuesInitialLoad = false; return }
+  if (initialLoad) { initialLoad = false; return }
   dirty.value = true
 }, { deep: true })
-
-watch([filterAllow, filterDeny], () => {
-  if (filtersInitialLoad) { filtersInitialLoad = false; return }
-  dirty.value = true
-})
 
 watch(dirty, (val) => {
   if (val) {
@@ -114,8 +92,6 @@ async function handleSave() {
       if (envOverrides.value[key]) continue
       body[key] = val
     }
-    body.filter_allow = filterAllow.value
-    body.filter_deny = filterDeny.value
     await apiClient.put('/admin/settings', body)
     dirty.value = false
     saved.value = true
@@ -196,7 +172,8 @@ async function handlePurgeMetrics() {
             >{{ t('settings.filter_allow') }}</label>
             <Textarea
               id="filter_allow"
-              v-model="filterAllow"
+              :model-value="(values['filter_allow'] ?? '') as string"
+              @update:model-value="(v: string) => { values['filter_allow'] = v || null }"
               rows="4"
               fluid
             />
@@ -208,7 +185,8 @@ async function handlePurgeMetrics() {
             >{{ t('settings.filter_deny') }}</label>
             <Textarea
               id="filter_deny"
-              v-model="filterDeny"
+              :model-value="(values['filter_deny'] ?? '') as string"
+              @update:model-value="(v: string) => { values['filter_deny'] = v || null }"
               rows="4"
               fluid
             />

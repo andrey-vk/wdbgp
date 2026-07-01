@@ -34,6 +34,8 @@ export const settingsSchema = z.object({
   db_path: settingStringSchema,
   default_language: settingStringSchema,
   default_web_auth: settingStringSchema,
+  filter_allow: settingStringSchema,
+  filter_deny: settingStringSchema,
   host: settingStringSchema,
   js_max_call_stack: settingIntSchema,
   js_max_entries: settingIntSchema,
@@ -63,14 +65,8 @@ export const settingsSchema = z.object({
   trust_proxy_headers: settingBoolSchema,
 })
 
-// Full API response type — matches GET /api/admin/settings response
-export const settingsResponseSchema = z.object({
-  settings: settingsSchema,
-  route_filters: z.object({
-    filter_allow: z.string(),
-    filter_deny: z.string(),
-  }),
-})
+// Full API response type — matches GET /api/admin/settings response (flat SettingsJSON)
+export const settingsResponseSchema = settingsSchema
 
 export type SettingsResponse = z.infer<typeof settingsResponseSchema>
 export type Settings = z.infer<typeof settingsSchema>

@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest'
-import { z } from 'zod'
 import {
   settingsSchema,
   settingsResponseSchema,
@@ -86,7 +85,7 @@ describe('settingsSchema', () => {
     expect(result.host.value).toBe('127.0.0.1')
   })
 
-  it('parses a complete settings object with all 40 fields', () => {
+  it('parses a complete settings object with all fields', () => {
     const mkBool = (v: boolean | null, dv: boolean, env: boolean) =>
       ({ value: v, default_value: dv, env_override: env })
     const mkInt = (v: number | null, dv: number, env: boolean) =>
@@ -108,6 +107,8 @@ describe('settingsSchema', () => {
       db_path: mkStr(null, '/data/wdbgp.sqlite3', false),
       default_language: mkStr('en', 'en', false),
       default_web_auth: mkStr('network', 'network', false),
+      filter_allow: mkStr('', '', false),
+      filter_deny: mkStr('', '', false),
       host: mkStr(null, '0.0.0.0', false),
       js_max_call_stack: mkInt(null, 1000, false),
       js_max_entries: mkInt(null, 1000000, false),
@@ -144,29 +145,22 @@ describe('settingsSchema', () => {
 })
 
 describe('settingsResponseSchema', () => {
-  it('parses full settings response (partial settings)', () => {
+  it('parses flat settings response (partial settings)', () => {
     const response = {
-      settings: {
-        port: { value: null, default_value: 8080, env_override: false },
-        metrics_enabled: { value: true, default_value: false, env_override: false },
-        host: { value: '127.0.0.1', default_value: '0.0.0.0', env_override: false },
-      },
-      route_filters: { filter_allow: '', filter_deny: '' },
+      port: { value: null, default_value: 8080, env_override: false },
+      metrics_enabled: { value: true, default_value: false, env_override: false },
+      host: { value: '127.0.0.1', default_value: '0.0.0.0', env_override: false },
+      filter_allow: { value: '', default_value: '', env_override: false },
+      filter_deny: { value: '', default_value: '', env_override: false },
     }
     // Build a partial schema for testing partial responses
-    const partialResponseSchema = z.object({
-      settings: settingsSchema.partial(),
-      route_filters: z.object({
-        filter_allow: z.string(),
-        filter_deny: z.string(),
-      }),
-    })
+    const partialResponseSchema = settingsSchema.partial()
     const result = partialResponseSchema.parse(response)
-    expect(result.settings.port.default_value).toBe(8080)
-    expect(result.route_filters.filter_allow).toBe('')
+    expect(result.port?.default_value).toBe(8080)
+    expect(result.filter_allow?.value).toBe('')
   })
 
-  it('validates a complete settings response', () => {
+  it('validates a complete flat settings response', () => {
     const mkBool = (v: boolean | null, dv: boolean, env: boolean) =>
       ({ value: v, default_value: dv, env_override: env })
     const mkInt = (v: number | null, dv: number, env: boolean) =>
@@ -175,66 +169,59 @@ describe('settingsResponseSchema', () => {
       ({ value: v, default_value: dv, env_override: env })
 
     const response = {
-      settings: {
-        active_dial: mkBool(true, true, false),
-        adapter_backup_dir: mkStr(null, '/data/backup/adapters', false),
-        adapter_backup_max: mkInt(null, 10, false),
-        admin_cookie_secure: mkStr('auto', 'auto', false),
-        admin_password: mkStr(null, '', false),
-        allow_dynamic_peers: mkBool(false, false, false),
-        auto_restore_enabled: mkBool(false, false, false),
-        bgp_port: mkInt(null, 179, false),
-        backup_dir: mkStr(null, '/data', false),
-        backup_enabled: mkBool(true, true, false),
-        db_path: mkStr(null, '/data/wdbgp.sqlite3', false),
-        default_language: mkStr('en', 'en', false),
-        default_web_auth: mkStr('network', 'network', false),
-        host: mkStr(null, '0.0.0.0', false),
-        js_max_call_stack: mkInt(null, 1000, false),
-        js_max_entries: mkInt(null, 1000000, false),
-        js_max_requests: mkInt(null, 200, false),
-        js_max_response: mkInt(null, 16777216, false),
-        js_max_source: mkInt(null, 1048576, false),
-        js_max_total: mkInt(null, 67108864, false),
-        js_timeout: mkInt(null, 120, false),
-        local_asn: mkInt(null, 64512, false),
-        local_address_v4: mkStr(null, '192.0.2.2', false),
-        local_address_v6: mkStr(null, '', false),
-        log_format: mkStr('text', 'text', false),
-        log_level: mkStr('INFO', 'INFO', false),
-        metrics_enabled: mkBool(false, false, false),
-        metrics_history_days: mkInt(null, 14, false),
-        port: mkInt(null, 8080, false),
-        rate_limit_admin: mkInt(null, 30, false),
-        rate_limit_login: mkInt(null, 5, false),
-        require_password_for_non_unique_ip: mkBool(true, true, false),
-        router_id: mkStr(null, '192.0.2.1', false),
-        security_headers: mkBool(false, false, false),
-        session_max_age: mkInt(null, 28800, false),
-        session_secret: mkStr(null, '', false),
-        status_allowed: mkStr(null, '', false),
-        status_token: mkStr(null, '', false),
-        sync_interval: mkInt(null, 3600, false),
-        trust_proxy_headers: mkBool(false, false, false),
-      },
-      route_filters: { filter_allow: '', filter_deny: '' },
+      active_dial: mkBool(true, true, false),
+      adapter_backup_dir: mkStr(null, '/data/backup/adapters', false),
+      adapter_backup_max: mkInt(null, 10, false),
+      admin_cookie_secure: mkStr('auto', 'auto', false),
+      admin_password: mkStr(null, '', false),
+      allow_dynamic_peers: mkBool(false, false, false),
+      auto_restore_enabled: mkBool(false, false, false),
+      bgp_port: mkInt(null, 179, false),
+      backup_dir: mkStr(null, '/data', false),
+      backup_enabled: mkBool(true, true, false),
+      db_path: mkStr(null, '/data/wdbgp.sqlite3', false),
+      default_language: mkStr('en', 'en', false),
+      default_web_auth: mkStr('network', 'network', false),
+      filter_allow: mkStr('', '', false),
+      filter_deny: mkStr('', '', false),
+      host: mkStr(null, '0.0.0.0', false),
+      js_max_call_stack: mkInt(null, 1000, false),
+      js_max_entries: mkInt(null, 1000000, false),
+      js_max_requests: mkInt(null, 200, false),
+      js_max_response: mkInt(null, 16777216, false),
+      js_max_source: mkInt(null, 1048576, false),
+      js_max_total: mkInt(null, 67108864, false),
+      js_timeout: mkInt(null, 120, false),
+      local_asn: mkInt(null, 64512, false),
+      local_address_v4: mkStr(null, '192.0.2.2', false),
+      local_address_v6: mkStr(null, '', false),
+      log_format: mkStr('text', 'text', false),
+      log_level: mkStr('INFO', 'INFO', false),
+      metrics_enabled: mkBool(false, false, false),
+      metrics_history_days: mkInt(null, 14, false),
+      port: mkInt(null, 8080, false),
+      rate_limit_admin: mkInt(null, 30, false),
+      rate_limit_login: mkInt(null, 5, false),
+      require_password_for_non_unique_ip: mkBool(true, true, false),
+      router_id: mkStr(null, '192.0.2.1', false),
+      security_headers: mkBool(false, false, false),
+      session_max_age: mkInt(null, 28800, false),
+      session_secret: mkStr(null, '', false),
+      status_allowed: mkStr(null, '', false),
+      status_token: mkStr(null, '', false),
+      sync_interval: mkInt(null, 3600, false),
+      trust_proxy_headers: mkBool(false, false, false),
     }
 
     const result = settingsResponseSchema.parse(response)
-    expect(result.settings.port.default_value).toBe(8080)
-    expect(result.route_filters.filter_allow).toBe('')
+    expect(result.port.default_value).toBe(8080)
+    expect(result.filter_allow.value).toBe('')
   })
 
-  it('rejects response without route_filters', () => {
+  it('rejects response with unknown field', () => {
     expect(() => settingsResponseSchema.parse({
-      settings: { port: { value: null, default_value: 8080, env_override: false } },
-    })).toThrow()
-  })
-
-  it('rejects response with wrong route_filts shape', () => {
-    expect(() => settingsResponseSchema.parse({
-      settings: { port: { value: null, default_value: 8080, env_override: false } },
-      route_filters: { wrong: 'field' },
+      port: { value: null, default_value: 8080, env_override: false },
+      route_filters: { filter_allow: '', filter_deny: '' },
     })).toThrow()
   })
 })

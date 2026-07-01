@@ -2,12 +2,11 @@ import { describe, it, expect, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import PrimeVue from 'primevue/config'
-import { z } from 'zod'
 import { settingsSchema } from '@/types/settings'
 import apiClient from '@/api/client'
 
 // ---------------------------------------------------------------------------
-// Build a valid settings response for ALL 40+ fields in settingsSchema
+// Build a valid settings response for ALL fields in settingsSchema
 // ---------------------------------------------------------------------------
 
 function mkBool(v: boolean | null, dv: boolean, env: boolean) {
@@ -35,6 +34,8 @@ function buildSettings(): Record<string, unknown> {
     db_path: mkStr(null, '/data/wdbgp.sqlite3', false),
     default_language: mkStr('en', 'en', false),
     default_web_auth: mkStr('network', 'network', false),
+    filter_allow: mkStr('', '', false),
+    filter_deny: mkStr('', '', false),
     host: mkStr(null, '0.0.0.0', false),
     js_max_call_stack: mkInt(null, 1000, false),
     js_max_entries: mkInt(null, 1000000, false),
@@ -72,10 +73,7 @@ function buildSettings(): Record<string, unknown> {
 vi.mock('@/api/client', () => ({
   default: {
     get: vi.fn().mockResolvedValue({
-      data: {
-        settings: buildSettings(),
-        route_filters: { filter_allow: '', filter_deny: '' },
-      },
+      data: buildSettings(),
     }),
     put: vi.fn().mockResolvedValue({ data: { ok: true } }),
     post: vi.fn().mockResolvedValue({ data: { ok: true } }),
@@ -131,23 +129,14 @@ describe('SettingsPage', () => {
   })
 
   it('validates the settings response schema', () => {
-    const response = {
-      settings: buildSettings(),
-      route_filters: { filter_allow: '', filter_deny: '' },
-    }
+    const response = buildSettings()
 
-    const partialResponseSchema = z.object({
-      settings: settingsSchema.partial(),
-      route_filters: z.object({
-        filter_allow: z.string(),
-        filter_deny: z.string(),
-      }),
-    })
+    const partialResponseSchema = settingsSchema.partial()
 
     // Should not throw
     const parsed = partialResponseSchema.parse(response)
-    expect(parsed.route_filters.filter_allow).toBe('')
-    expect(parsed.settings.port?.default_value).toBe(8080)
+    expect(parsed.filter_allow?.value).toBe('')
+    expect(parsed.port?.default_value).toBe(8080)
   })
 
   it('sends typed values in PUT body', async () => {
