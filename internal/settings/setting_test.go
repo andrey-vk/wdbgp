@@ -228,7 +228,9 @@ func TestSimpleSetting_JSON_DBSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Set(context.Background(), true)
+	if err := s.Set(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
 	j := s.JSON(map[string]string{"test_key": "true"})
 	if j.Value == nil || *j.Value != true {
 		t.Errorf("Value should be true from DB, got %v", j.Value)
@@ -417,7 +419,9 @@ func TestSimpleSetting_OnChange_Reset(t *testing.T) {
 	}
 
 	// Set first, then register callback
-	s.Set(context.Background(), 99)
+	if err := s.Set(context.Background(), 99); err != nil {
+		t.Fatal(err)
+	}
 
 	var got int
 	s.OnChange(func(v int) {
@@ -581,7 +585,9 @@ func TestComplexSetting_Reset(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s.Set(context.Background(), "99")
+	if err := s.Set(context.Background(), "99"); err != nil {
+		t.Fatal(err)
+	}
 	if s.Get() != 99 {
 		t.Fatal("expected 99 after Set")
 	}

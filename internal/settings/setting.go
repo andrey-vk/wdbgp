@@ -154,16 +154,20 @@ func newComplex[T any](defaultJSON string, dbKey, envVar string, parse func(stri
 
 	if envSource == "" {
 		// Fall back to DB value (pre-loaded by caller).
+		useDefault := true
 		if dbStr, ok := dbSettings[dbKey]; ok {
 			if val, parseErr := parse(dbStr); parseErr == nil {
 				s.value = val
-			} else {
-				// Invalid DB value -> fall back to parsed default.
-				s.value, _ = parse(defaultJSON)
+				useDefault = false
 			}
-		} else {
-			// No DB value -> use parsed default.
-			s.value, _ = parse(defaultJSON)
+			// Invalid DB value -> fall back to parsed default.
+		}
+		if useDefault {
+			val, err := parse(defaultJSON)
+			if err != nil {
+				return nil, fmt.Errorf("settings: default value %q for %s does not parse: %w", defaultJSON, dbKey, err)
+			}
+			s.value = val
 		}
 	}
 
@@ -280,7 +284,10 @@ func (s *complexSetting[T]) Reset(ctx context.Context) error {
 		return fmt.Errorf("settings: cannot reset %s, overridden by %s", s.dbKey, s.envVar)
 	}
 
-	defaultParsed, _ := s.parse(s.defaultVal)
+	defaultParsed, err := s.parse(s.defaultVal)
+	if err != nil {
+		return fmt.Errorf("settings: default value %q for %s does not parse: %w", s.defaultVal, s.dbKey, err)
+	}
 
 	s.mu.Lock()
 	s.value = defaultParsed
@@ -335,14 +342,19 @@ func (s *simpleSetting[T]) JSON(dbSettings map[string]string) SettingJSON[T] {
 	j := SettingJSON[T]{DefaultValue: s.defaultVal}
 
 	if envStr := os.Getenv(s.envVar); s.envVar != "" && envStr != "" {
-		v, _ := s.parse(envStr)
-		j.Value = &v
+		// An env override always counts as EnvOverride, even if it doesn't
+		// currently parse — Value just stays nil in that case rather than
+		// showing a misleading zero value.
+		if v, err := s.parse(envStr); err == nil {
+			j.Value = &v
+		}
 		j.EnvOverride = true
 		return j
 	}
 	if dbStr, ok := dbSettings[s.dbKey]; ok {
-		v, _ := s.parse(dbStr)
-		j.Value = &v
+		if v, err := s.parse(dbStr); err == nil {
+			j.Value = &v
+		}
 	}
 	// else Value remains nil
 	return j

@@ -25,7 +25,11 @@ func newTestServer(t *testing.T) (*httptest.Server, *store.Store) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() {
+		if errClose := db.Close(); errClose != nil {
+			t.Logf("close: %v", errClose)
+		}
+	})
 	server := New(s, db, nil, nil)
 	return httptest.NewServer(server.Handler()), db
 }
@@ -51,8 +55,11 @@ func TestSPAAdminServesHTML(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close() //nolint:errcheck,gosec // body already fully read, close error is not actionable
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(body), "<!DOCTYPE html>") && !strings.Contains(string(body), "<!doctype html>") {
 		t.Error("admin.html should be HTML")
 	}
@@ -66,8 +73,11 @@ func TestSPARootServesUserHTML(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close() //nolint:errcheck,gosec // body already fully read, close error is not actionable
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(body), "<!DOCTYPE html>") && !strings.Contains(string(body), "<!doctype html>") {
 		t.Error("user.html should be HTML")
 	}
@@ -79,8 +89,11 @@ func TestSPAAssetsServed(t *testing.T) {
 
 	// Get admin.html and extract an asset path from it
 	resp := mustGet(t, ts.URL+"/admin")
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close() //nolint:errcheck,gosec // body already fully read, close error is not actionable
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Find an asset src in the HTML: src="/assets/..." or href="/assets/..."
 	content := string(body)
@@ -103,8 +116,11 @@ func TestSPAAssetsServed(t *testing.T) {
 	if resp2.StatusCode != http.StatusOK {
 		t.Errorf("GET %s = %d, want 200", assetURL, resp2.StatusCode)
 	}
-	body2, _ := io.ReadAll(resp2.Body)
-	resp2.Body.Close()
+	body2, err := io.ReadAll(resp2.Body)
+	resp2.Body.Close() //nolint:errcheck,gosec // body already fully read, close error is not actionable
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(body2) == 0 {
 		t.Error("asset body is empty")
 	}
@@ -119,8 +135,11 @@ func TestSPANotFoundFallback(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close() //nolint:errcheck,gosec // body already fully read, close error is not actionable
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.Contains(string(body), "<!DOCTYPE html>") && !strings.Contains(string(body), "<!doctype html>") {
 		t.Error("SPA fallback should serve user.html")
 	}

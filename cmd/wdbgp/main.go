@@ -320,7 +320,7 @@ func healthcheck() error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // process exits immediately after, Close is best-effort
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("health endpoint returned %s", resp.Status)
 	}

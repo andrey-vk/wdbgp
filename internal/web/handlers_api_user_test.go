@@ -22,7 +22,9 @@ func TestUserAuthBothRequiresBothFactors(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a "both" user
-	srv.settings.AllowDynamicPeers.Set(context.Background(), false)
+	if err := srv.settings.AllowDynamicPeers.Set(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
 	userBody := `{"name":"both-user","peer_ip":"10.0.0.1","peer_asn":65001,"networks":["10.1.1.0/24"],"web_auth":"both","enabled":true}`
 	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
 	req.Header.Set("Content-Type", "application/json")

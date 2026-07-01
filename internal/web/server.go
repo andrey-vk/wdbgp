@@ -35,7 +35,10 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	if !ok {
 		defaultLang = localeEnglish
 	}
-	spaFS, _ := spa.DistFS()
+	spaFS, err := spa.DistFS()
+	if err != nil {
+		logging.Error("SPA build not embedded, falling back to 503 for SPA routes", "error", err)
+	}
 	server := &Server{
 		settings: st, store: s, syncer: syncer, bgp: bgp,
 		defaultLang:  defaultLang,

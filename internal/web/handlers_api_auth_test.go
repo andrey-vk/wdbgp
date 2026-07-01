@@ -30,7 +30,10 @@ func TestLoginCookieExpiresWithZeroMaxAge(t *testing.T) {
 	}()
 
 	s := testSettings()
-	s.SessionMaxAge.Set(context.Background(), 0) // unconfigured — should produce a session cookie
+	// unconfigured — should produce a session cookie
+	if err := s.SessionMaxAge.Set(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
 
 	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
 
@@ -82,7 +85,9 @@ func TestLoginCookieExpiresWithMaxAge(t *testing.T) {
 	}()
 
 	s := testSettings()
-	s.SessionMaxAge.Set(context.Background(), 3600) // 1 hour
+	if err := s.SessionMaxAge.Set(context.Background(), 3600); err != nil { // 1 hour
+		t.Fatal(err)
+	}
 
 	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
 

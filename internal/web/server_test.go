@@ -21,15 +21,23 @@ func testSettings() *settings.Settings {
 	if err != nil {
 		panic(err)
 	}
-	// Set test-specific values (context not needed for tests since env isn't overriding)
-	s.AdminPassword.Set(context.Background(), "admin")
-	s.SessionSecret.Set(context.Background(), "test-secret")
-	s.AdminCookieSecure.Set(context.Background(), "true")
-	s.DefaultLanguage.Set(context.Background(), "ru")
-	s.RateLimitLogin.Set(context.Background(), 0)    // Disable rate limiting in tests
-	s.RateLimitAdmin.Set(context.Background(), 0)    // Disable rate limiting in tests
-	s.SessionMaxAge.Set(context.Background(), 28800) // 8 hours
-	s.StatusAllowed.Set(context.Background(), "0.0.0.0/0")
+	// Set test-specific values (context not needed for tests since env isn't overriding).
+	// testSettings has no *testing.T (it's called from many places as a bare
+	// helper), so a Set() failure here panics same as the New() error above —
+	// this is test setup, it must not fail silently.
+	mustSet := func(err error) {
+		if err != nil {
+			panic(err)
+		}
+	}
+	mustSet(s.AdminPassword.Set(context.Background(), "admin"))
+	mustSet(s.SessionSecret.Set(context.Background(), "test-secret"))
+	mustSet(s.AdminCookieSecure.Set(context.Background(), "true"))
+	mustSet(s.DefaultLanguage.Set(context.Background(), "ru"))
+	mustSet(s.RateLimitLogin.Set(context.Background(), 0))    // Disable rate limiting in tests
+	mustSet(s.RateLimitAdmin.Set(context.Background(), 0))    // Disable rate limiting in tests
+	mustSet(s.SessionMaxAge.Set(context.Background(), 28800)) // 8 hours
+	mustSet(s.StatusAllowed.Set(context.Background(), "0.0.0.0/0"))
 	return s
 }
 
@@ -187,7 +195,7 @@ func TestDegradedModeShowsErrorPage(t *testing.T) {
 	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	s := testSettings()
-	s.DefaultLanguage.Set(context.Background(), "en")
+	mustSetSetting(t, s.DefaultLanguage, "en")
 	srv := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{})
 	srv.SetDegraded(DegradedInfo{
 		CurrentVersion: 999,
@@ -223,7 +231,7 @@ func TestDegradedModeAllRoutesShowError(t *testing.T) {
 	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	s := testSettings()
-	s.DefaultLanguage.Set(context.Background(), "en")
+	mustSetSetting(t, s.DefaultLanguage, "en")
 	srv := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{})
 	srv.SetDegraded(DegradedInfo{
 		CurrentVersion: 999,
@@ -374,7 +382,7 @@ func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
 	defer db.Close() //nolint:errcheck,gosec // test cleanup
 
 	s := testSettings()
-	s.AllowDynamicPeers.Set(context.Background(), true)
+	mustSetSetting(t, s.AllowDynamicPeers, true)
 	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
@@ -420,7 +428,7 @@ func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
 	}
 
 	s := testSettings()
-	s.AllowDynamicPeers.Set(context.Background(), true)
+	mustSetSetting(t, s.AllowDynamicPeers, true)
 	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
@@ -457,7 +465,7 @@ func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
 	}
 
 	s := testSettings()
-	s.RequirePasswordForNonUniqueIP.Set(context.Background(), true)
+	mustSetSetting(t, s.RequirePasswordForNonUniqueIP, true)
 	handler := New(s, db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
@@ -701,13 +709,13 @@ func TestSettingsNullValueDeletesOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.AdminPassword.Set(context.Background(), "admin")
-	s.SessionSecret.Set(context.Background(), "test-secret")
-	s.AdminCookieSecure.Set(context.Background(), "true")
-	s.RateLimitLogin.Set(context.Background(), 0)
-	s.RateLimitAdmin.Set(context.Background(), 0)
-	s.SessionMaxAge.Set(context.Background(), 28800)
-	s.StatusAllowed.Set(context.Background(), "0.0.0.0/0")
+	mustSetSetting(t, s.AdminPassword, "admin")
+	mustSetSetting(t, s.SessionSecret, "test-secret")
+	mustSetSetting(t, s.AdminCookieSecure, "true")
+	mustSetSetting(t, s.RateLimitLogin, 0)
+	mustSetSetting(t, s.RateLimitAdmin, 0)
+	mustSetSetting(t, s.SessionMaxAge, 28800)
+	mustSetSetting(t, s.StatusAllowed, "0.0.0.0/0")
 
 	handler := New(s, db, feeds.NewSyncer(db, s), &fakeBGP{}).Handler()
 	cookie := adminCookie(s)

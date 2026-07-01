@@ -293,7 +293,9 @@ func TestSettings_JSON(t *testing.T) {
 	}
 
 	// Set a field to verify DB value appears in JSON
-	s.RateLimitLogin.Set(context.Background(), 42)
+	if err := s.RateLimitLogin.Set(context.Background(), 42); err != nil {
+		t.Fatal(err)
+	}
 
 	j := s.JSON(context.Background())
 

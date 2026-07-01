@@ -374,8 +374,8 @@ func New(store Store) (*Settings, error) {
 
 // JSON returns a serializable representation of all settings.
 func (s *Settings) JSON(ctx context.Context) SettingsJSON {
-	dbSettings, _ := s.store().GetAllSettings(ctx)
-	if dbSettings == nil {
+	dbSettings, err := s.store().GetAllSettings(ctx)
+	if err != nil {
 		dbSettings = make(map[string]string)
 	}
 	j := SettingsJSON{

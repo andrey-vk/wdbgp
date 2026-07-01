@@ -13,6 +13,16 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
+// mustSetSetting sets a setting and fails the test immediately if it errors —
+// used in test setup, where an unexpected Set() failure means the test's
+// preconditions are already broken.
+func mustSetSetting[JSON, Runtime any](t *testing.T, s settings.Setting[JSON, Runtime], v JSON) {
+	t.Helper()
+	if err := s.Set(context.Background(), v); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAPISettingsGet_TypedResponse(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "typed-settings.sqlite3"), false, "", false)
 	if err != nil {
@@ -28,8 +38,8 @@ func TestAPISettingsGet_TypedResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.SessionSecret.Set(context.Background(), "test-secret")
-	st.AdminCookieSecure.Set(context.Background(), "true")
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	mustSetSetting(t, st.AdminCookieSecure, "true")
 
 	server := New(st, db, nil, nil)
 	cookie := adminCookie(st)
@@ -78,7 +88,7 @@ func TestAPISettingsPut_TypedBool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.SessionSecret.Set(context.Background(), "test-secret")
+	mustSetSetting(t, st.SessionSecret, "test-secret")
 	server := New(st, nil, nil, nil)
 
 	body := `{"metrics_enabled": true}`
@@ -103,7 +113,7 @@ func TestAPISettingsPut_TypedInt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.SessionSecret.Set(context.Background(), "test-secret")
+	mustSetSetting(t, st.SessionSecret, "test-secret")
 	server := New(st, nil, nil, nil)
 
 	body := `{"port": 9090}`
@@ -128,9 +138,9 @@ func TestAPISettingsPut_Reset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.SessionSecret.Set(context.Background(), "test-secret")
+	mustSetSetting(t, st.SessionSecret, "test-secret")
 	// Set first
-	st.Port.Set(context.Background(), 9090)
+	mustSetSetting(t, st.Port, 9090)
 	if st.Port.Get() != 9090 {
 		t.Fatal("precondition failed")
 	}
@@ -158,7 +168,7 @@ func TestAPISettingsPut_InvalidType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.SessionSecret.Set(context.Background(), "test-secret")
+	mustSetSetting(t, st.SessionSecret, "test-secret")
 	server := New(st, nil, nil, nil)
 
 	body := `{"port": "not-a-number"}`
@@ -181,7 +191,7 @@ func TestAPISettingsPut_EnvOverridden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.SessionSecret.Set(context.Background(), "test-secret")
+	mustSetSetting(t, st.SessionSecret, "test-secret")
 	server := New(st, nil, nil, nil)
 
 	body := `{"port": 9999}`
@@ -212,9 +222,9 @@ func TestAPISettingsPut_RouteFilters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.SessionSecret.Set(context.Background(), "test-secret")
-	st.AdminPassword.Set(context.Background(), "admin")
-	st.AdminCookieSecure.Set(context.Background(), "true")
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	mustSetSetting(t, st.AdminPassword, "admin")
+	mustSetSetting(t, st.AdminCookieSecure, "true")
 	server := New(st, db, nil, nil)
 
 	body := `{"filter_allow": "10.0.0.0/8\n192.168.0.0/16", "filter_deny": "10.1.0.0/16"}`
