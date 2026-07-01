@@ -18,6 +18,10 @@ type BGP interface {
 	AddPeer(context.Context, store.User) error
 	UpdatePeer(context.Context, store.User) error
 	DeletePeer(context.Context, string, int64) error
+	// Status reports whether a BGP speaker is currently running, and the
+	// error from the last failed Start/ReloadPeers attempt (nil when
+	// running is true).
+	Status() (running bool, lastErr error)
 }
 
 type Server struct {

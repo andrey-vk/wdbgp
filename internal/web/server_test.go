@@ -47,6 +47,12 @@ type fakeBGP struct {
 	adds       int
 	updates    int
 	deletes    int
+
+	// down/downErr let tests simulate a failed BGP speaker via Status().
+	// Zero value is healthy (running=true, lastErr=nil), matching every
+	// existing test that constructs a bare &fakeBGP{}.
+	down    bool
+	downErr error
 }
 
 func (f *fakeBGP) Reconcile(context.Context) error {
@@ -76,6 +82,10 @@ func (f *fakeBGP) UpdatePeer(context.Context, store.User) error {
 func (f *fakeBGP) DeletePeer(context.Context, string, int64) error {
 	f.deletes++
 	return nil
+}
+
+func (f *fakeBGP) Status() (bool, error) {
+	return !f.down, f.downErr
 }
 
 // adminCookie returns a valid admin session cookie for API tests.

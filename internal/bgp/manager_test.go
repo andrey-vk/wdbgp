@@ -23,10 +23,34 @@ func testSettings(t *testing.T, fields map[string]string) *settings.Settings {
 	return s
 }
 
+// newTestManager builds a Manager with its restart-only-setting snapshot
+// (localASN/localAddrV4/localAddrV6) populated to match cfg, mirroring what
+// startLocked() does — without actually starting a BGP speaker/listener.
+// For tests that exercise buildRoute()/buildPeerConfigs() directly.
+func newTestManager(t *testing.T, fields map[string]string, db *store.Store) *Manager {
+	t.Helper()
+	cfg := testSettings(t, fields)
+	m := NewManager(cfg, db)
+	m.localASN = uint32(cfg.LocalASN.Get()) //nolint:gosec // test value, always in range
+	addr, err := netip.ParseAddr(cfg.LocalAddressV4.Get())
+	if err != nil {
+		t.Fatalf("invalid local_address_v4 in test fields: %v", err)
+	}
+	m.localAddrV4 = addr
+	if v6 := cfg.LocalAddressV6.Get(); v6 != "" {
+		addr6, err := netip.ParseAddr(v6)
+		if err != nil {
+			t.Fatalf("invalid local_address_v6 in test fields: %v", err)
+		}
+		m.localAddrV6 = addr6
+	}
+	return m
+}
+
 func TestBuildRouteCarriesCommunities(t *testing.T) {
-	manager := NewManager(testSettings(t, map[string]string{
+	manager := newTestManager(t, map[string]string{
 		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
-	}), nil)
+	}, nil)
 	prefix := netip.MustParsePrefix("149.154.160.0/20")
 	comms := map[string]uint32{"testcat": 10000, "testcat|testsvc": 10001}
 	user := store.User{ID: 7}
@@ -70,9 +94,9 @@ func TestBuildRouteCarriesCommunities(t *testing.T) {
 }
 
 func TestBuildRouteHonorsUserNextHop(t *testing.T) {
-	manager := NewManager(testSettings(t, map[string]string{
+	manager := newTestManager(t, map[string]string{
 		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
-	}), nil)
+	}, nil)
 
 	// IPv4 prefix with user.NextHop override
 	user := store.User{ID: 7, NextHop: "10.0.0.1"}
@@ -120,8 +144,54 @@ func TestManagerStartsWithoutPeers(t *testing.T) {
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if running, lastErr := manager.Status(); !running || lastErr != nil {
+		t.Fatalf("Status() = (%v, %v), want (true, nil) after successful Start", running, lastErr)
+	}
 	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if running, lastErr := manager.Status(); running || lastErr != nil {
+		t.Fatalf("Status() = (%v, %v), want (false, nil) after Stop", running, lastErr)
+	}
+}
+
+func TestManagerStatusReportsStartFailure(t *testing.T) {
+	ctx := context.Background()
+	s1, err := store.Open(filepath.Join(t.TempDir(), "bgp1.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s1.Close()
+	s2, err := store.Open(filepath.Join(t.TempDir(), "bgp2.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	// Two managers configured to bind the same BGP port — the second Start
+	// deterministically fails with "address already in use", a real,
+	// environment-independent failure (unlike, say, an invalid router_id,
+	// which settings validation now rejects before it ever reaches here).
+	fields := map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "18179",
+		"local_address_v4": "192.0.2.2",
+	}
+	manager1 := NewManager(testSettings(t, fields), s1)
+	if err := manager1.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager1.Stop(ctx)
+
+	manager2 := NewManager(testSettings(t, fields), s2)
+	if err := manager2.Start(ctx); err == nil {
+		t.Fatal("expected Start to fail on a port already in use")
+	}
+	running, lastErr := manager2.Status()
+	if running {
+		t.Fatal("Status() reports running=true after a failed Start")
+	}
+	if lastErr == nil {
+		t.Fatal("Status() lastErr is nil after a failed Start")
 	}
 }
 
@@ -176,9 +246,9 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 // =============================================================================
 
 func TestBuildRouteHasUserCommunityButNotOtherUser(t *testing.T) {
-	manager := NewManager(testSettings(t, map[string]string{
+	manager := newTestManager(t, map[string]string{
 		"local_asn": "64512", "local_address_v4": "172.16.0.1",
-	}), nil)
+	}, nil)
 	prefix := netip.MustParsePrefix("8.8.8.0/24")
 	comms := map[string]uint32{"cat": 10000, "cat|svc": 10001}
 
@@ -213,9 +283,9 @@ func TestBuildRouteHasUserCommunityButNotOtherUser(t *testing.T) {
 }
 
 func TestBuildRouteIncludesCategoryAndServiceCommunities(t *testing.T) {
-	manager := NewManager(testSettings(t, map[string]string{
+	manager := newTestManager(t, map[string]string{
 		"local_asn": "64512", "local_address_v4": "172.16.0.1",
-	}), nil)
+	}, nil)
 	prefix := netip.MustParsePrefix("149.154.160.0/20")
 	comms := map[string]uint32{"Messengers": 20000, "Messengers|Telegram": 20001}
 
@@ -246,9 +316,9 @@ func TestBuildRouteIncludesCategoryAndServiceCommunities(t *testing.T) {
 }
 
 func TestBuildRouteSkipsCommunityForUnknownCategory(t *testing.T) {
-	manager := NewManager(testSettings(t, map[string]string{
+	manager := newTestManager(t, map[string]string{
 		"local_asn": "64512", "local_address_v4": "172.16.0.1",
-	}), nil)
+	}, nil)
 	prefix := netip.MustParsePrefix("1.1.1.0/24")
 	// Category "Unknown" has no community in the map
 	comms := map[string]uint32{"Known": 10000}
@@ -269,9 +339,9 @@ func TestBuildRouteSkipsCommunityForUnknownCategory(t *testing.T) {
 }
 
 func TestBuildRouteIPv6NoPanic(t *testing.T) {
-	manager := NewManager(testSettings(t, map[string]string{
+	manager := newTestManager(t, map[string]string{
 		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
-	}), nil)
+	}, nil)
 	prefix := netip.MustParsePrefix("2001:db8::/32")
 	comms := map[string]uint32{"cat": 10000}
 	route, err := manager.buildRoute(prefix, store.User{ID: 1}, "cat", "svc", comms)

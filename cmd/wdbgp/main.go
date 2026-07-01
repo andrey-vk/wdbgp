@@ -112,7 +112,12 @@ func serve(s *settings.Settings, db *store.Store) error {
 
 	bgpManager := bgp.NewManager(s, db)
 	if err := bgpManager.Start(ctx); err != nil {
-		return fmt.Errorf("start BGP: %w", err)
+		// Not fatal: the web UI must stay reachable so an admin can see
+		// what's wrong (via the BGP status banner) and fix the setting
+		// without needing shell/redeploy access. bgpManager.Status()
+		// reflects this failure for the rest of the process's life until
+		// a reload succeeds.
+		logging.Error("BGP manager failed to start, continuing with BGP down", "error", err)
 	}
 	defer func() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
