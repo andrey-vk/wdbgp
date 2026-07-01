@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/store"
@@ -133,6 +134,10 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed URL"})
 		return
 	}
+	// Merge adapter's declared additional hosts with user-provided hosts.
+	if extraHosts := s.store.BuiltinAdapterAllowedHosts(r.Context(), body.AdapterID); extraHosts != "" {
+		body.AllowedHosts = mergeAllowedHosts(body.AllowedHosts, extraHosts)
+	}
 	f := store.Feed{
 		ID: id, Name: body.Name, URL: body.URL, Enabled: body.Enabled,
 		SyncInterval: int(body.SyncInterval), Data: body.Data,
@@ -232,4 +237,18 @@ func (s *Server) apiFeedsSyncAll(w http.ResponseWriter, r *http.Request) {
 	s.store.RecordUserSnapshot(r.Context(), s.settings.MetricsEnabled.Get(), peerStates)
 	s.store.RecordFeedSnapshot(r.Context(), s.settings.MetricsEnabled.Get())
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
+}
+
+// mergeAllowedHosts adds host to a comma-separated hosts string if not already present.
+func mergeAllowedHosts(hosts, host string) string {
+	host = strings.TrimSpace(host)
+	for _, h := range strings.Split(hosts, ",") {
+		if strings.TrimSpace(h) == host {
+			return hosts
+		}
+	}
+	if hosts == "" {
+		return host
+	}
+	return hosts + "," + host
 }
