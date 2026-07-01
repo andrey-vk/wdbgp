@@ -164,6 +164,7 @@ async function handlePurgeMetrics() {
               :value="values[key] ?? null"
               :default-value="effectiveDefaults[key] ?? ''"
               :env-override="envOverrides[key] ?? false"
+              :restart="meta.restart"
               @update:value="(v: boolean | number | string | null) => { values[key] = v }"
             />
           </div>
