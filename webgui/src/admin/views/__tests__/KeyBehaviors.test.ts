@@ -180,7 +180,7 @@ describe('SettingsPage unsaved guard', () => {
 
     expect(wrapper.exists()).toBe(true)
     // The settings page should render section headers
-    expect(wrapper.html()).toContain('settings.section_general')
+    expect(wrapper.html()).toContain('settings.section_admin_access')
     // Save button should be present
     expect(wrapper.html()).toContain('settings.save')
   })

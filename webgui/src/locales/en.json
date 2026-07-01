@@ -28,6 +28,13 @@
   "menu.debug": "Debug",
   "topbar.logout": "Logout",
 
+  "settings.section_admin_access": "Admin Access",
+  "settings.section_localization": "Localization",
+  "settings.section_security": "Security",
+  "settings.section_metrics": "Metrics",
+  "settings.section_database": "Database",
+  "settings.section_status_api": "Status API",
+  "settings.section_backup": "Backup",
   "settings.section_general": "General",
   "settings.section_rate_limit": "Rate Limiting",
   "settings.section_logging": "Logging",

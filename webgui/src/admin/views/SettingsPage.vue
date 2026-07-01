@@ -8,7 +8,6 @@ import { settingsSchema } from '@/types/settings'
 import { sections } from '@/admin/settingsMeta'
 import SettingField from '@/components/SettingField.vue'
 import Button from 'primevue/button'
-import Textarea from 'primevue/textarea'
 import Message from 'primevue/message'
 
 const { t } = useI18n()
@@ -154,41 +153,6 @@ async function handlePurgeMetrics() {
               :default-value="effectiveDefaults[key] ?? ''"
               :env-override="envOverrides[key] ?? false"
               @update:value="(v: boolean | number | string | null) => { values[key] = v }"
-            />
-          </div>
-        </div>
-      </div>
-
-      <!-- Route filters section -->
-      <div class="card p-6">
-        <div class="mb-4 pb-2 border-b border-surface">
-          <h2 class="m-0 text-lg">{{ t('settings.section_filters') }}</h2>
-        </div>
-        <div class="flex flex-col gap-3">
-          <div class="flex flex-col gap-1">
-            <label
-              class="text-sm font-medium"
-              for="filter_allow"
-            >{{ t('settings.filter_allow') }}</label>
-            <Textarea
-              id="filter_allow"
-              :model-value="(values['filter_allow'] ?? '') as string"
-              @update:model-value="(v: string) => { values['filter_allow'] = v || null }"
-              rows="4"
-              fluid
-            />
-          </div>
-          <div class="flex flex-col gap-1">
-            <label
-              class="text-sm font-medium"
-              for="filter_deny"
-            >{{ t('settings.filter_deny') }}</label>
-            <Textarea
-              id="filter_deny"
-              :model-value="(values['filter_deny'] ?? '') as string"
-              @update:model-value="(v: string) => { values['filter_deny'] = v || null }"
-              rows="4"
-              fluid
             />
           </div>
         </div>
