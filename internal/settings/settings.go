@@ -319,38 +319,38 @@ func New(store Store) (*Settings, error) {
 		return nil, err
 	}
 
-	// RequirePasswordForNonUniqueIP: env-only.
-	s.RequirePasswordForNonUniqueIP, err = newSimple(true, "", "WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP", parseBool, store, dbSettings)
+	// RequirePasswordForNonUniqueIP.
+	s.RequirePasswordForNonUniqueIP, err = newSimple(true, "require_password_for_non_unique_ip", "WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
-	// AllowDynamicPeers: env-only.
-	s.AllowDynamicPeers, err = newSimple(false, "", "WDBGP_ALLOW_DYNAMIC_PEERS", parseBool, store, dbSettings)
+	// AllowDynamicPeers.
+	s.AllowDynamicPeers, err = newSimple(false, "allow_dynamic_peers", "WDBGP_ALLOW_DYNAMIC_PEERS", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
-	// ActiveDial: env-only.
-	s.ActiveDial, err = newSimple(true, "", "WDBGP_ACTIVE_DIAL", parseBool, store, dbSettings)
+	// ActiveDial.
+	s.ActiveDial, err = newSimple(true, "active_dial", "WDBGP_ACTIVE_DIAL", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
-	// BackupEnabled: env-only.
-	s.BackupEnabled, err = newSimple(true, "", "WDBGP_BACKUP_ENABLED", parseBool, store, dbSettings)
+	// BackupEnabled.
+	s.BackupEnabled, err = newSimple(true, "backup_enabled", "WDBGP_BACKUP_ENABLED", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
-	// BackupDir: env-only, computed default depends on DBPath.
-	s.BackupDir, err = newSimple(dbDir, "", "WDBGP_BACKUP_DIR", parseString, store, dbSettings)
+	// BackupDir: computed default depends on DBPath.
+	s.BackupDir, err = newSimple(dbDir, "backup_dir", "WDBGP_BACKUP_DIR", parseString, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
-	// AutoRestoreEnabled: env-only.
-	s.AutoRestoreEnabled, err = newSimple(false, "", "WDBGP_AUTO_RESTORE_ENABLED", parseBool, store, dbSettings)
+	// AutoRestoreEnabled.
+	s.AutoRestoreEnabled, err = newSimple(false, "auto_restore_enabled", "WDBGP_AUTO_RESTORE_ENABLED", parseBool, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}

@@ -343,6 +343,88 @@ func TestSettings_JSON_EnvSet(t *testing.T) {
 	}
 }
 
+func TestSettingsPersistAfterSet(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name     string
+		set      func(context.Context) error
+		get      func() string
+		wantKey  string
+		wantVal  string
+	}{
+		{
+			name: "active_dial",
+			set: func(ctx context.Context) error { return s.ActiveDial.Set(ctx, false) },
+			get: func() string { return formatBool(s.ActiveDial.Get()) },
+			wantKey: "active_dial",
+			wantVal: "false",
+		},
+		{
+			name: "allow_dynamic_peers",
+			set: func(ctx context.Context) error { return s.AllowDynamicPeers.Set(ctx, true) },
+			get: func() string { return formatBool(s.AllowDynamicPeers.Get()) },
+			wantKey: "allow_dynamic_peers",
+			wantVal: "true",
+		},
+		{
+			name: "auto_restore_enabled",
+			set: func(ctx context.Context) error { return s.AutoRestoreEnabled.Set(ctx, true) },
+			get: func() string { return formatBool(s.AutoRestoreEnabled.Get()) },
+			wantKey: "auto_restore_enabled",
+			wantVal: "true",
+		},
+		{
+			name: "backup_enabled",
+			set: func(ctx context.Context) error { return s.BackupEnabled.Set(ctx, false) },
+			get: func() string { return formatBool(s.BackupEnabled.Get()) },
+			wantKey: "backup_enabled",
+			wantVal: "false",
+		},
+		{
+			name: "backup_dir",
+			set: func(ctx context.Context) error { return s.BackupDir.Set(ctx, "/custom/backup") },
+			get: func() string { return s.BackupDir.Get() },
+			wantKey: "backup_dir",
+			wantVal: "/custom/backup",
+		},
+		{
+			name: "require_password_for_non_unique_ip",
+			set: func(ctx context.Context) error { return s.RequirePasswordForNonUniqueIP.Set(ctx, false) },
+			get: func() string { return formatBool(s.RequirePasswordForNonUniqueIP.Get()) },
+			wantKey: "require_password_for_non_unique_ip",
+			wantVal: "false",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			if err := tt.set(ctx); err != nil {
+				t.Errorf("Set failed: %v", err)
+				return
+			}
+			if got := tt.get(); got != tt.wantVal {
+				t.Errorf("Get = %q, want %q", got, tt.wantVal)
+			}
+			if store.saved[tt.wantKey] != tt.wantVal {
+				t.Errorf("saved[%q] = %q, want %q", tt.wantKey, store.saved[tt.wantKey], tt.wantVal)
+			}
+		})
+	}
+}
+
+func formatBool(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
 func TestSettings_ComputedDefaults(t *testing.T) {
 	t.Setenv("WDBGP_DB", "/custom/path/db.sqlite3")
 	store := newMockStore()
