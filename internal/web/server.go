@@ -229,6 +229,10 @@ func (s *Server) degradedHandler(w http.ResponseWriter, r *http.Request) {
 func (s *Server) adminSpaHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // language cookie is not sensitive, no Secure/HttpOnly needed
+		Name: "wdbgp_language", Value: s.settings.DefaultLanguage.Get(),
+		Path: "/", MaxAge: 31536000, SameSite: http.SameSiteLaxMode,
+	})
 	s.serveSpaFile(w, r, "admin.html")
 }
 
@@ -241,6 +245,10 @@ func (s *Server) userSpaHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
+		http.SetCookie(w, &http.Cookie{ //nolint:gosec // language cookie is not sensitive, no Secure/HttpOnly needed
+			Name: "wdbgp_language", Value: s.settings.DefaultLanguage.Get(),
+			Path: "/", MaxAge: 31536000, SameSite: http.SameSiteLaxMode,
+		})
 		s.serveSpaFile(w, r, "user.html")
 		return
 	}
@@ -249,6 +257,10 @@ func (s *Server) userSpaHandler(w http.ResponseWriter, r *http.Request) {
 	if catcher.notFound {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
+		http.SetCookie(w, &http.Cookie{ //nolint:gosec // language cookie is not sensitive, no Secure/HttpOnly needed
+			Name: "wdbgp_language", Value: s.settings.DefaultLanguage.Get(),
+			Path: "/", MaxAge: 31536000, SameSite: http.SameSiteLaxMode,
+		})
 		s.serveSpaFile(w, r, "user.html")
 	}
 }
