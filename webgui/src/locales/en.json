@@ -231,6 +231,10 @@
   "feeds.sync_interval_hint": "Seconds between automatic syncs. 0 means use global interval.",
   "feeds.sync_interval_global": "global",
 
+  "feeds.assign_mode": "Assign to mode",
+  "feeds.assign_mode_hint": "Optionally assign this feed to a catalog mode. Feeds must be assigned to a mode to be synced.",
+  "feeds.no_mode": "None (assign later)",
+
   "modes.title": "Catalog Modes",
   "modes.name": "Name",
   "modes.name_hint": "Display name for this catalog mode.",

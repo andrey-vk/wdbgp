@@ -76,6 +76,7 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 		AdapterID     int64  `json:"adapter_id"`
 		AllowedHosts  string `json:"allowed_hosts"`
 		RestrictHosts bool   `json:"restrict_hosts"`
+		ModeID        *int64 `json:"mode_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
@@ -90,6 +91,13 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
+	}
+	if body.ModeID != nil && *body.ModeID > 0 {
+		if _, err := s.store.DB.ExecContext(r.Context(),
+			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
+			*body.ModeID, id); err != nil {
+			logging.FromContext(r.Context()).Debug("feed mode assignment failed", "error", err, "feed_id", id, "mode_id", *body.ModeID)
+		}
 	}
 	f, err := s.store.Feed(r.Context(), id)
 	if err != nil {

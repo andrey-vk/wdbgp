@@ -26,11 +26,16 @@ interface AdapterOption {
   id: number; name: string
 }
 
+interface ModeOption {
+  id: number; name: string
+}
+
 const { t } = useI18n()
 const confirmDialog = useConfirm()
 const toast = useToast()
 const feeds = ref<Feed[]>([])
 const adapters = ref<AdapterOption[]>([])
+const modes = ref<ModeOption[]>([])
 const selected = ref<Feed | null>(null)
 const form = ref({
   url: '',
@@ -41,6 +46,7 @@ const form = ref({
   enabled: true,
   data: '',
   sync_interval: 0,
+  mode_id: 0,
 })
 const loading = ref(true)
 const saving = ref(false)
@@ -55,8 +61,16 @@ onMounted(async () => {
   feeds.value = feedsResp.data.feeds
   feeds.value.sort((a, b) => (a.name || a.url || '').localeCompare(b.name || b.url || ''))
   adapters.value = adaptersResp.data.adapters.map((a) => ({ id: a.id, name: a.name }))
+  fetchModes()
   loading.value = false
 })
+
+async function fetchModes() {
+  try {
+    const resp = await apiClient.get('/admin/modes')
+    modes.value = (resp.data.modes || []) as ModeOption[]
+  } catch { /* silent */ }
+}
 
 function selectFeed(feed: Feed) {
   selected.value = feed
@@ -72,6 +86,7 @@ function selectFeed(feed: Feed) {
     enabled: feed.enabled,
     data: feed.data || '',
     sync_interval: feed.sync_interval,
+    mode_id: 0,
   }
   editMode.value = false
 }
@@ -87,6 +102,7 @@ function startNew() {
     enabled: true,
     data: '',
     sync_interval: 0,
+    mode_id: 0,
   }
   editMode.value = true
 }
@@ -106,6 +122,7 @@ function cancelEdit() {
       enabled: selected.value.enabled,
       data: selected.value.data || '',
       sync_interval: selected.value.sync_interval,
+      mode_id: 0,
     }
   }
   editMode.value = false
@@ -130,6 +147,7 @@ async function handleSave() {
       enabled: resp.data.enabled,
       data: resp.data.data || '',
       sync_interval: resp.data.sync_interval,
+      mode_id: 0,
     }
     editMode.value = false
     toast.add({ severity: 'success', summary: t('feeds.saved'), life: 3000 })
@@ -169,6 +187,7 @@ async function handleSync() {
         enabled: updated.enabled,
         data: updated.data || '',
         sync_interval: updated.sync_interval,
+        mode_id: 0,
       }
     }
   } catch {
@@ -392,6 +411,21 @@ async function loadList() {
                 id="fadapter"
                 v-model="form.adapter_id"
                 :options="adapters"
+                option-label="name"
+                option-value="id"
+                fluid
+              />
+            </FormField>
+            <FormField
+              v-if="!selected"
+              :label="t('feeds.assign_mode')"
+              :hint="'feeds.assign_mode_hint'"
+              input-id="fmode"
+            >
+              <Select
+                id="fmode"
+                v-model="form.mode_id"
+                :options="[{id:0, name:t('feeds.no_mode')}, ...modes]"
                 option-label="name"
                 option-value="id"
                 fluid
