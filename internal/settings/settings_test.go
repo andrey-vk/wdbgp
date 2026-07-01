@@ -597,3 +597,20 @@ func TestIPv4Validation(t *testing.T) {
 		t.Error("expected error for IPv6 as router ID")
 	}
 }
+
+func TestSyncIntervalValidation(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncInterval.Set(context.Background(), 0); err == nil {
+		t.Error("expected error for sync_interval 0")
+	}
+	if err := s.SyncInterval.Set(context.Background(), -1); err == nil {
+		t.Error("expected error for sync_interval -1")
+	}
+	if err := s.SyncInterval.Set(context.Background(), 3600); err != nil {
+		t.Errorf("unexpected error for valid sync_interval: %v", err)
+	}
+}

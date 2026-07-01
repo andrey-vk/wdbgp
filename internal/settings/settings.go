@@ -197,7 +197,7 @@ func New(store Store) (*Settings, error) {
 	}
 
 	// SyncInterval.
-	s.SyncInterval, err = newSimple(3600, "sync_interval", "WDBGP_SYNC_INTERVAL", parseInt, nil, store, dbSettings)
+	s.SyncInterval, err = newSimple(3600, "sync_interval", "WDBGP_SYNC_INTERVAL", parseInt, validatePositive, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -441,6 +441,14 @@ func (s *Settings) store() Store {
 	// Fallback: shouldn't happen, but use Host.
 	if ss, ok := s.Host.(*simpleSetting[string]); ok {
 		return ss.store
+	}
+	return nil
+}
+
+// validatePositive checks that a value is greater than zero.
+func validatePositive(v int) error {
+	if v <= 0 {
+		return fmt.Errorf("must be positive, got %d", v)
 	}
 	return nil
 }
