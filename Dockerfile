@@ -31,7 +31,6 @@ FROM scratch
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=certs /data /data
 COPY --from=build /out/wdbgp /usr/local/bin/wdbgp
-COPY --from=frontend /src/webgui/dist /webgui/dist
 
 ENV WDBGP_DB=/data/wdbgp.sqlite3 \
     WDBGP_HOST=0.0.0.0 \

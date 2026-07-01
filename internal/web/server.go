@@ -4,20 +4,15 @@ import (
 	"html/template"
 	"net/http"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/feeds"
 	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/settings"
+	"github.com/andrey-vk/wdbgp/internal/spa"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
-
-// spaDistDir is the directory containing the Vue SPA production build.
-// Relative to the working directory when the server starts.
-const spaDistDir = "webgui/dist"
 
 const degradedTemplateHTML = `<!DOCTYPE html>
 <html lang="{{.Lang}}">
@@ -42,6 +37,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	server := &Server{
 		settings: st, store: s, syncer: syncer, bgp: bgp,
 		defaultLang:  defaultLang,
+		spaFS:        spa.HTTPFS(),
 		loginLimiter: newRateLimiter(time.Minute, st.RateLimitLogin.Get()), // per minute
 		adminLimiter: newRateLimiter(time.Minute, st.RateLimitAdmin.Get()), // per minute
 		startTime:    time.Now(),
@@ -51,8 +47,9 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	mux.HandleFunc("GET /status", server.status)
 
 	// === SPA static file serving ===
-	mux.Handle("GET /assets/", http.StripPrefix("/assets/",
-		http.FileServer(http.Dir(spaDistDir+"/assets"))))
+	if server.spaFS != nil {
+		mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServer(server.spaFS)))
+	}
 	// Admin SPA at /admin (must be before user catch-all)
 	mux.HandleFunc("GET /admin", server.adminSpaHandler)
 	mux.HandleFunc("GET /admin/{path...}", server.adminSpaHandler)
@@ -144,7 +141,6 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	return server
 }
 
-
 // parseCIDRs parses comma-separated CIDR strings into []netip.Prefix.
 func parseCIDRs(s string) []netip.Prefix {
 	parts := strings.FieldsFunc(s, func(r rune) bool {
@@ -228,44 +224,51 @@ func (s *Server) degradedHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminSpaHandler serves the Vue admin SPA at /admin.
-// It tries to serve the exact file from dist/ first; if not found,
-// falls back to admin.html for client-side Vue Router navigation.
 func (s *Server) adminSpaHandler(w http.ResponseWriter, r *http.Request) {
-	if _, err := os.Stat(spaDistDir); os.IsNotExist(err) {
-		http.Error(w, "SPA build directory not found", http.StatusServiceUnavailable)
-		return
-	}
-
-	// Serve admin.html for all admin routes (client-side Vue Router handles the rest)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	http.ServeFile(w, r, filepath.Join(spaDistDir, "admin.html"))
+	s.serveSpaFile(w, r, "admin.html")
 }
 
 // userSpaHandler serves the Vue user SPA at root.
-// Uses http.FileServer for static files (CodeQL-safe via http.Dir path sanitization)
-// and falls back to user.html for client-side Vue Router navigation.
 func (s *Server) userSpaHandler(w http.ResponseWriter, r *http.Request) {
-	if _, err := os.Stat(spaDistDir); os.IsNotExist(err) {
+	if s.spaFS == nil {
 		http.Error(w, "SPA build directory not found", http.StatusServiceUnavailable)
 		return
 	}
-
-	// Root path: serve user.html directly (FileServer would show directory listing)
 	if r.URL.Path == "/" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeFile(w, r, filepath.Join(spaDistDir, "user.html"))
+		s.serveSpaFile(w, r, "user.html")
 		return
 	}
-
 	catcher := &notFoundCatcher{ResponseWriter: w}
-	http.FileServer(http.Dir(spaDistDir)).ServeHTTP(catcher, r)
+	http.FileServer(s.spaFS).ServeHTTP(catcher, r)
 	if catcher.notFound {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeFile(w, r, filepath.Join(spaDistDir, "user.html"))
+		s.serveSpaFile(w, r, "user.html")
 	}
+}
+
+func (s *Server) serveSpaFile(w http.ResponseWriter, r *http.Request, name string) {
+	f, err := s.spaFS.Open(name)
+	if err != nil {
+		http.Error(w, "SPA build not found", http.StatusServiceUnavailable)
+		return
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			logger := logging.FromContext(r.Context())
+			logger.Warn("failed to close spa file", "name", name, "error", err)
+		}
+	}()
+	stat, err := f.Stat()
+	if err != nil {
+		http.Error(w, "SPA build not found", http.StatusServiceUnavailable)
+		return
+	}
+	http.ServeContent(w, r, name, stat.ModTime(), f)
 }
 
 // notFoundCatcher intercepts 404 responses for SPA fallback.

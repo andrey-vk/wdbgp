@@ -27,6 +27,7 @@ type Server struct {
 	bgp          BGP
 	defaultLang  locale
 	handler      http.Handler
+	spaFS        http.FileSystem
 	loginLimiter *rateLimiter
 	adminLimiter *rateLimiter
 	startTime    time.Time
