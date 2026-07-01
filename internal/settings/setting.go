@@ -46,6 +46,7 @@ type simpleSetting[T any] struct {
 	envVar      string
 	store       Store
 	parse       func(string) (T, error)
+	validate    func(T) error
 	callbacks   []OnChangeFunc[T]
 	callbacksMu sync.Mutex
 }
@@ -59,6 +60,7 @@ type complexSetting[T any] struct {
 	envVar      string
 	store       Store
 	parse       func(string) (T, error)
+	validate    func(T) error
 	callbacks   []OnChangeFunc[T]
 	callbacksMu sync.Mutex
 }
@@ -68,7 +70,7 @@ type complexSetting[T any] struct {
 // Precedence: env var -> DB value -> default.
 // If the env var is set but fails to parse, an error is returned.
 // If the DB value exists but fails to parse, the default is used silently.
-func newSimple[T any](defaultVal T, dbKey, envVar string, parse func(string) (T, error), store Store, dbSettings map[string]string) (*simpleSetting[T], error) {
+func newSimple[T any](defaultVal T, dbKey, envVar string, parse func(string) (T, error), validate func(T) error, store Store, dbSettings map[string]string) (*simpleSetting[T], error) {
 	s := &simpleSetting[T]{
 		value:      defaultVal,
 		defaultVal: defaultVal,
@@ -76,6 +78,7 @@ func newSimple[T any](defaultVal T, dbKey, envVar string, parse func(string) (T,
 		envVar:     envVar,
 		store:      store,
 		parse:      parse,
+		validate:   validate,
 	}
 
 	// Env var takes highest precedence.
@@ -99,6 +102,13 @@ func newSimple[T any](defaultVal T, dbKey, envVar string, parse func(string) (T,
 		// Invalid DB value is silently ignored — value stays at default.
 	}
 
+	// Validate the initial value.
+	if s.validate != nil {
+		if err := s.validate(s.value); err != nil {
+			return nil, fmt.Errorf("settings: invalid default for %s: %w", dbKey, err)
+		}
+	}
+
 	return s, nil
 }
 
@@ -108,13 +118,14 @@ func newSimple[T any](defaultVal T, dbKey, envVar string, parse func(string) (T,
 // Precedence: env var -> DB value -> defaultJSON (parsed).
 // If env is set but fails to parse, an error is returned.
 // If DB value exists but fails to parse, parse(defaultJSON) is used silently.
-func newComplex[T any](defaultJSON string, dbKey, envVar string, parse func(string) (T, error), store Store, dbSettings map[string]string) (*complexSetting[T], error) {
+func newComplex[T any](defaultJSON string, dbKey, envVar string, parse func(string) (T, error), validate func(T) error, store Store, dbSettings map[string]string) (*complexSetting[T], error) {
 	s := &complexSetting[T]{
 		defaultVal: defaultJSON,
 		dbKey:      dbKey,
 		envVar:     envVar,
 		store:      store,
 		parse:      parse,
+		validate:   validate,
 	}
 
 	// Env var takes highest precedence.
@@ -141,6 +152,13 @@ func newComplex[T any](defaultJSON string, dbKey, envVar string, parse func(stri
 	} else {
 		// No DB value -> use parsed default.
 		s.value, _ = parse(defaultJSON)
+	}
+
+	// Validate the initial value.
+	if validate != nil {
+		if err := validate(s.value); err != nil {
+			return nil, fmt.Errorf("settings: invalid default for %s: %w", dbKey, err)
+		}
 	}
 
 	return s, nil
@@ -172,6 +190,13 @@ func (s *simpleSetting[T]) Set(ctx context.Context, v T) error {
 		return fmt.Errorf("settings: invalid value for %s=%q: %w", s.dbKey, raw, err)
 	}
 
+	// Validate domain rules.
+	if s.validate != nil {
+		if err := s.validate(parsed); err != nil {
+			return fmt.Errorf("settings: invalid value for %s: %w", s.dbKey, err)
+		}
+	}
+
 	s.mu.Lock()
 	s.value = parsed
 	s.mu.Unlock()
@@ -193,6 +218,13 @@ func (s *complexSetting[T]) Set(ctx context.Context, v string) error {
 	parsed, err := s.parse(v)
 	if err != nil {
 		return fmt.Errorf("settings: invalid value for %s=%q: %w", s.dbKey, v, err)
+	}
+
+	// Validate domain rules.
+	if s.validate != nil {
+		if err := s.validate(parsed); err != nil {
+			return fmt.Errorf("settings: invalid value for %s: %w", s.dbKey, err)
+		}
 	}
 
 	s.mu.Lock()

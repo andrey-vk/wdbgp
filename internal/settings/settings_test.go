@@ -552,3 +552,48 @@ func TestSecretSettingsJSONReturnsNil_DB(t *testing.T) {
 		t.Errorf("SessionSecret.Value = %v, want nil (secret must not leak)", j.SessionSecret.Value)
 	}
 }
+
+func TestBGPPortValidation(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BGPPort.Set(context.Background(), 0); err == nil {
+		t.Error("expected error for port 0")
+	}
+	if err := s.BGPPort.Set(context.Background(), 65536); err == nil {
+		t.Error("expected error for port 65536")
+	}
+	if err := s.BGPPort.Set(context.Background(), 179); err != nil {
+		t.Errorf("unexpected error for valid port: %v", err)
+	}
+}
+
+func TestASNValidation(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LocalASN.Set(context.Background(), 0); err == nil {
+		t.Error("expected error for ASN 0")
+	}
+	if err := s.LocalASN.Set(context.Background(), 64512); err != nil {
+		t.Errorf("unexpected error for valid ASN: %v", err)
+	}
+}
+
+func TestIPv4Validation(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RouterID.Set(context.Background(), "not-an-ip"); err == nil {
+		t.Error("expected error for invalid IPv4")
+	}
+	if err := s.RouterID.Set(context.Background(), "::1"); err == nil {
+		t.Error("expected error for IPv6 as router ID")
+	}
+}

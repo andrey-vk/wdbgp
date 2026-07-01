@@ -115,7 +115,7 @@ func TestManagerStartsWithoutPeers(t *testing.T) {
 	}
 	defer s.Close()
 	manager := NewManager(testSettings(t, map[string]string{
-		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
 		"local_address_v4": "192.0.2.2",
 	}), s)
 	if err := manager.Start(context.Background()); err != nil {
@@ -153,7 +153,7 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	}
 
 	manager := NewManager(testSettings(t, map[string]string{
-		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
 		"local_address_v4": "192.0.2.1",
 	}), s)
 	if err := manager.Start(ctx); err != nil {
@@ -352,7 +352,7 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	}
 
 	manager := NewManager(testSettings(t, map[string]string{
-		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
 		"local_address_v4": "192.0.2.1",
 	}), s)
 	if err := manager.Start(ctx); err != nil {
@@ -413,7 +413,7 @@ func TestReconcileClearsRoutesOnModeChange(t *testing.T) {
 	}
 
 	manager := NewManager(testSettings(t, map[string]string{
-		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
 		"local_address_v4": "192.0.2.1",
 	}), s)
 	if err := manager.Start(ctx); err != nil {
@@ -502,7 +502,7 @@ func TestDeletePeerHandlesSameIPDifferentASN(t *testing.T) {
 	_ = userBID // used later in verification
 
 	manager := NewManager(testSettings(t, map[string]string{
-		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
 		"local_address_v4": "192.0.2.1",
 	}), s)
 	if err := manager.Start(ctx); err != nil {
@@ -597,7 +597,7 @@ func TestDynamicPeerIsPassiveOnly(t *testing.T) {
 	}
 
 	manager := NewManager(testSettings(t, map[string]string{
-		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "-1",
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
 		"local_address_v4": "192.0.2.1",
 	}), s)
 	if err := manager.Start(ctx); err != nil {
