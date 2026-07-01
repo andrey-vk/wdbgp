@@ -25,6 +25,20 @@ func main() {
 }
 
 func run() error {
+	command := "serve"
+	if len(os.Args) > 1 {
+		command = os.Args[1]
+	}
+
+	// healthcheck doesn't need store or settings — just probes HTTP endpoint
+	if command == "healthcheck" {
+		port := os.Getenv("WDBGP_PORT")
+		if port == "" {
+			port = "8080"
+		}
+		return healthcheck(port)
+	}
+
 	// Determine DBPath from env so we can open the store.
 	dbPath := os.Getenv("WDBGP_DB")
 	if dbPath == "" {
@@ -56,14 +70,6 @@ func run() error {
 
 	// Configure logging based on settings
 	logging.Configure(s.LogLevel.Get(), s.LogFormat.Get())
-
-	command := "serve"
-	if len(os.Args) > 1 {
-		command = os.Args[1]
-	}
-	if command == "healthcheck" {
-		return healthcheck(s)
-	}
 
 	switch command {
 	case "migrate", "init":
@@ -271,9 +277,9 @@ func printStats(ctx context.Context, db *store.Store) error {
 	return nil
 }
 
-func healthcheck(s *settings.Settings) error {
+func healthcheck(port string) error {
 	client := &http.Client{Timeout: 3 * time.Second}
-	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", s.Port.Get()))
+	response, err := client.Get("http://127.0.0.1:" + port + "/healthz")
 	if err != nil {
 		return err
 	}
