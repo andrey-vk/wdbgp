@@ -65,6 +65,7 @@ const newCredPassword = ref('')
 const resetPassword = ref('')
 const dynamicPeer = ref(false)
 const defaultWebAuth = ref('network')
+const defaultActiveDial = ref(false)
 
 const showNetworks = computed(() => {
   const auth = form.value.web_auth || selected.value?.web_auth
@@ -118,6 +119,12 @@ onMounted(async () => {
   // Read configured default_web_auth from settings
   const dw = settingsResp.data.default_web_auth
   defaultWebAuth.value = dw.value ?? dw.default_value
+
+  // New peers should match the current global Active Dial setting, not a
+  // hardcoded guess — an admin who's turned it on (or off) globally expects
+  // new peers to follow suit.
+  const ad = settingsResp.data.active_dial
+  defaultActiveDial.value = ad.value ?? ad.default_value
 
   loading.value = false
 
@@ -176,7 +183,7 @@ function startNew() {
     bgp_password: '',
     web_auth: defaultWebAuth.value,
     enabled: true,
-    active_dial: false,
+    active_dial: defaultActiveDial.value,
     catalog_mode_id: modes.value.length > 0 ? modes.value[0].id : 0,
     networks_text: '',
     selection_locked: false,

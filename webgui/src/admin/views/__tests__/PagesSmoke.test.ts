@@ -119,7 +119,7 @@ function defaultGetMock() {
       '/admin/feeds': { data: { feeds: [] } },
       '/admin/modes': { data: { modes: [] } },
       '/admin/adapters': { data: { adapters: [] } },
-      '/admin/settings': { data: { default_language: { value: 'en', default_value: 'en', env_override: false }, default_web_auth: { value: 'network', default_value: 'network', env_override: false }, filter_allow: { value: '', default_value: '', env_override: false }, filter_deny: { value: '', default_value: '', env_override: false } } },
+      '/admin/settings': { data: { default_language: { value: 'en', default_value: 'en', env_override: false }, default_web_auth: { value: 'network', default_value: 'network', env_override: false }, filter_allow: { value: '', default_value: '', env_override: false }, filter_deny: { value: '', default_value: '', env_override: false }, active_dial: { value: null, default_value: false, env_override: false } } },
       '/admin/modes/1/communities': { data: { communities: [] } },
       '/admin/modes/1': { data: { name: 'Test Mode' } },
     }

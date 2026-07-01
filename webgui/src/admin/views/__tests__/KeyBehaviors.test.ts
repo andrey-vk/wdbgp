@@ -76,7 +76,11 @@ function stubPrimeVueComponents() {
     InputNumber: { template: '<input class="stub-inputnum" type="number" />', inheritAttrs: false },
     Textarea: { template: '<textarea class="stub-textarea"></textarea>', inheritAttrs: false },
     Select: { template: '<select class="stub-select"><slot /></select>', inheritAttrs: false },
-    ToggleSwitch: { template: '<input class="stub-toggle" type="checkbox" />', inheritAttrs: false },
+    ToggleSwitch: {
+      props: ['modelValue'],
+      emits: ['update:modelValue'],
+      template: '<input class="stub-toggle" type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
+    },
     Checkbox: { template: '<input class="stub-checkbox" type="checkbox" />', inheritAttrs: false },
     Tag: { template: '<span class="stub-tag"><slot /></span>', inheritAttrs: false },
     Message: { template: '<div class="stub-message"><slot /></div>', inheritAttrs: false },
@@ -118,6 +122,7 @@ beforeEach(() => {
           default_web_auth: { value: 'network', default_value: 'network', env_override: false },
           filter_allow: { value: '', default_value: '', env_override: false },
           filter_deny: { value: '', default_value: '', env_override: false },
+          active_dial: { value: null, default_value: false, env_override: false },
         },
       })
     }
@@ -261,5 +266,59 @@ describe('UsersPage BGP password', () => {
     expect(editHtml).toContain('stub-toggle')
     // Should render the save button
     expect(editHtml).toContain('users.save')
+  })
+
+  // ============================================================
+  // Regression: new peers must default active_dial to the current
+  // global Active Dial setting, not a hardcoded value — an admin who's
+  // turned it on (or off) globally expects new peers to follow suit.
+  // ============================================================
+
+  it('new peer defaults active_dial to the current global setting, not a hardcoded value', async () => {
+    // Simulate an admin who has explicitly turned the global switch ON.
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/settings') {
+        return Promise.resolve({
+          data: {
+            default_language: { value: 'en', default_value: 'en', env_override: false },
+            default_web_auth: { value: 'network', default_value: 'network', env_override: false },
+            filter_allow: { value: '', default_value: '', env_override: false },
+            filter_deny: { value: '', default_value: '', env_override: false },
+            active_dial: { value: true, default_value: false, env_override: false },
+          },
+        })
+      }
+      if (url === '/admin/users') {
+        return Promise.resolve({ data: { users: [] } })
+      }
+      if (url === '/admin/modes') {
+        return Promise.resolve({ data: { modes: [{ id: 1, name: 'Default', enabled: true }] } })
+      }
+      return Promise.resolve({ data: {} })
+    })
+
+    const UsersPage = (await import('@/admin/views/UsersPage.vue')).default
+    const wrapper = mount(UsersPage, {
+      global: { stubs: stubPrimeVueComponents() },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    // Click "Add User" to start a new peer (startNew()).
+    const buttons = wrapper.findAll('.stub-btn')
+    let clickedAdd = false
+    for (const btn of buttons) {
+      if (btn.text().includes('users.add')) {
+        await btn.trigger('click')
+        clickedAdd = true
+        break
+      }
+    }
+    expect(clickedAdd).toBe(true)
+    await nextTick()
+
+    const toggle = wrapper.find('#uadial')
+    expect(toggle.exists()).toBe(true)
+    expect((toggle.element as HTMLInputElement).checked).toBe(true)
   })
 })

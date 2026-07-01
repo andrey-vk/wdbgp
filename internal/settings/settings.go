@@ -337,8 +337,14 @@ func New(store Store) (*Settings, error) {
 		return nil, err
 	}
 
-	// ActiveDial.
-	s.ActiveDial, err = newSimple(true, "active_dial", "WDBGP_ACTIVE_DIAL", parseBool, nil, store, dbSettings)
+	// ActiveDial: defaults to false. Was true early on; that turned out to be
+	// the wrong default for an alpha product, so it changed — deliberately
+	// not backfilled the way the per-user active_dial column is (migration
+	// 023), since this is the "we got it wrong, don't perpetuate it even
+	// implicitly" case, not a "preserve existing behavior" one. Any install
+	// that never explicitly touched this setting will flip from
+	// effectively-on to effectively-off on next restart after upgrading.
+	s.ActiveDial, err = newSimple(false, "active_dial", "WDBGP_ACTIVE_DIAL", parseBool, nil, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}

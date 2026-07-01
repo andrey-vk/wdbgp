@@ -16,7 +16,7 @@ export interface SettingsSection {
 // Default values displayed when no override exists (display purposes only)
 // Values match backend defaults from internal/settings/settings.go
 export const defaults: Record<string, string> = {
-  active_dial: 'true',
+  active_dial: 'false',
   adapter_backup_dir: '',
   adapter_backup_max: '10',
   admin_cookie_secure: 'auto',
