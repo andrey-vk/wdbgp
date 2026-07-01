@@ -157,6 +157,7 @@ async function fetchStatuses() {
       const key = peer.ip + ':' + peer.asn
       peer.state = states[key] || ''
     }
+    data.value.bgp.connected_peers = data.value.bgp.peers.filter(p => p.state === 'ESTABLISHED').length
   } catch {
     // silent — best-effort polling
   }
