@@ -95,6 +95,7 @@ const selectOptions = computed(() => {
       v-if="envOverride"
       :id="fieldKey"
       class="text-sm"
+      data-testid="setting-env"
     >
       {{ formatDisplayValue(value ?? defaultValue, meta.type) }}
     </div>
@@ -103,6 +104,7 @@ const selectOptions = computed(() => {
     <div
       v-else-if="!editing && value == null"
       :id="fieldKey"
+      data-testid="setting-default"
     >
       <span
         class="underline decoration-dotted underline-offset-4 cursor-pointer opacity-70 hover:opacity-100"
@@ -115,6 +117,7 @@ const selectOptions = computed(() => {
     <div
       v-else
       class="flex items-center gap-2"
+      data-testid="setting-editing"
     >
       <div class="flex-1">
         <ToggleSwitch
@@ -153,6 +156,7 @@ const selectOptions = computed(() => {
         severity="secondary"
         text
         rounded
+        data-testid="setting-revert"
         :title="t('settings.revert_default')"
         @click="revert"
       />

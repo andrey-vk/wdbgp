@@ -48,38 +48,38 @@ function mountField(meta: SettingMeta, value: boolean | number | string | null, 
 describe('SettingField', () => {
   it('renders default state as clickable text (case 1)', () => {
     const wrapper = mountField(boolMeta, null, false)
-    expect(wrapper.find('.setting-default').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Off')
   })
 
   it('default clickable text shows number for int type', () => {
     const wrapper = mountField(intMeta, null, 8080)
-    expect(wrapper.find('.setting-default').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('8080')
   })
 
   it('default clickable text shows string for string type', () => {
     const wrapper = mountField(stringMeta, null, 'hello')
-    expect(wrapper.find('.setting-default').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('hello')
   })
 
   it('default clickable text shows select option label', () => {
     const wrapper = mountField(selectMeta, null, 'a')
-    expect(wrapper.find('.setting-default').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Option A')
   })
 
   it('clicking default text enters editing mode (case 1 → editing)', async () => {
     const wrapper = mountField(boolMeta, null, false)
-    await wrapper.find('.setting-default').trigger('click')
-    expect(wrapper.find('.setting-default').exists()).toBe(false)
+    await wrapper.find('[data-testid="setting-default"] span').trigger('click')
+    expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(false)
     expect(wrapper.findComponent({ name: 'ToggleSwitch' }).exists()).toBe(true)
   })
 
   it('renders env override as readonly text (case 2)', () => {
     const wrapper = mountField(boolMeta, true, false, true)
-    expect(wrapper.find('.setting-default').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(false)
     expect(wrapper.findComponent({ name: 'ToggleSwitch' }).exists()).toBe(false)
     // Should show ENV badge
     expect(wrapper.text()).toContain('ENV')
@@ -92,17 +92,17 @@ describe('SettingField', () => {
 
   it('revert button emits null and returns to default', async () => {
     const wrapper = mountField(boolMeta, true, false)
-    await wrapper.findComponent({ name: 'Button' }).trigger('click')
+    await wrapper.find('[data-testid="setting-revert"]').trigger('click')
     expect(wrapper.emitted('update:value')?.[0]).toEqual([null])
   })
 
   it('revert from editing returns to default (case editing → default)', async () => {
     const wrapper = mountField(boolMeta, null, false)
     // Click to enter editing mode
-    await wrapper.find('.setting-default').trigger('click')
-    expect(wrapper.find('.setting-default').exists()).toBe(false)
+    await wrapper.find('[data-testid="setting-default"] span').trigger('click')
+    expect(wrapper.find('[data-testid="setting-default"]').exists()).toBe(false)
     // Click revert
-    await wrapper.findComponent({ name: 'Button' }).trigger('click')
+    await wrapper.find('[data-testid="setting-revert"]').trigger('click')
     expect(wrapper.emitted('update:value')?.[0]).toEqual([null])
   })
 
