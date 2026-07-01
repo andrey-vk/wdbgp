@@ -14,6 +14,12 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.settings.JSON(r.Context()))
 }
 
+// filterKeysAffectBGP are the setting keys that change what routes get
+// announced. Unlike the restart-only BGP identity settings (ASN, router ID,
+// etc.), these take effect immediately — reconcileLocked() just needs to
+// run again with the new value already persisted, no speaker restart.
+var filterKeysAffectBGP = map[string]bool{"filter_allow": true, "filter_deny": true}
+
 // apiSettingsPut handles PUT /api/admin/settings.
 func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	var body map[string]json.RawMessage
@@ -23,6 +29,7 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	reconcileNeeded := false
 	for key, raw := range body {
 		if string(raw) == "null" {
 			// Reset to default
@@ -36,6 +43,21 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 				return
 			}
+		}
+		if filterKeysAffectBGP[key] {
+			reconcileNeeded = true
+		}
+	}
+
+	// Global route filters change what DesiredPrefixes() computes, so a
+	// change here must apply now — otherwise already-announced prefixes
+	// keep using the old filter set until the next scheduled sync/reconcile
+	// (up to sync_interval seconds later), which for a deny filter means
+	// routes the admin just tried to block stay live in the meantime.
+	if reconcileNeeded && s.bgp != nil {
+		if err := s.bgp.Reconcile(ctx); err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Settings saved but BGP reconciliation failed: " + err.Error()})
+			return
 		}
 	}
 

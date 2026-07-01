@@ -57,6 +57,9 @@ type fakeBGP struct {
 
 func (f *fakeBGP) Reconcile(context.Context) error {
 	f.reconciles++
+	if f.down {
+		return f.downErr
+	}
 	return nil
 }
 

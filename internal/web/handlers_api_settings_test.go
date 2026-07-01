@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -299,5 +300,96 @@ func TestAPISettingsPut_RouteFilters(t *testing.T) {
 	}
 	if len(filters.Deny) != 1 {
 		t.Errorf("expected 1 deny filter, got %d: %v", len(filters.Deny), filters.Deny)
+	}
+}
+
+// TestAPISettingsPut_RouteFiltersTriggerReconcile guards against a bug where
+// changing global filter_allow/filter_deny persisted the new value but never
+// told the running BGP manager to recompute routes — already-announced
+// prefixes would keep using the old filter set until the next scheduled
+// sync (up to sync_interval seconds later), which for a deny filter means
+// routes the admin just tried to block stay live in the meantime.
+func TestAPISettingsPut_RouteFiltersTriggerReconcile(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	fake := &fakeBGP{}
+	server := New(st, nil, nil, fake)
+	cookie := adminCookie(st)
+
+	body := `{"filter_deny": "10.1.0.0/16"}`
+	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	server.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if fake.reconciles != 1 {
+		t.Errorf("Reconcile called %d times, want 1", fake.reconciles)
+	}
+}
+
+// TestAPISettingsPut_UnrelatedSettingDoesNotTriggerReconcile confirms the
+// reconcile-on-filter-change logic doesn't fire for settings that have
+// nothing to do with route filters.
+func TestAPISettingsPut_UnrelatedSettingDoesNotTriggerReconcile(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	fake := &fakeBGP{}
+	server := New(st, nil, nil, fake)
+	cookie := adminCookie(st)
+
+	body := `{"rate_limit_login": 42}`
+	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	server.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if fake.reconciles != 0 {
+		t.Errorf("Reconcile called %d times, want 0", fake.reconciles)
+	}
+}
+
+// TestAPISettingsPut_RouteFiltersReconcileFailureSurfaces confirms a reconcile
+// failure after a successful settings save produces a clear error rather
+// than a bare 200, so the admin knows the filter change may not have
+// actually applied to the live BGP session.
+func TestAPISettingsPut_RouteFiltersReconcileFailureSurfaces(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	fake := &fakeBGP{down: true, downErr: fmt.Errorf("bgp speaker is not running")}
+	server := New(st, nil, nil, fake)
+	cookie := adminCookie(st)
+
+	body := `{"filter_allow": "10.0.0.0/8"}`
+	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	server.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Settings saved but BGP reconciliation failed") {
+		t.Errorf("body = %s, want it to mention settings were saved despite reconcile failure", w.Body.String())
 	}
 }
