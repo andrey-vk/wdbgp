@@ -115,7 +115,7 @@ func serve(s *settings.Settings, db *store.Store) error {
 	}()
 
 	syncer := feeds.NewSyncer(db, s)
-	go syncLoop(ctx, time.Duration(s.SyncInterval.Get())*time.Second, syncer, bgpManager)
+	go syncLoop(ctx, time.Duration(s.SyncInterval.Get())*time.Second, syncer, bgpManager, db, s)
 
 	httpServer := &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
@@ -192,7 +192,7 @@ func serveDegraded(s *settings.Settings, db *store.Store) error {
 	return httpServer.Shutdown(shutdownCtx)
 }
 
-func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer, manager *bgp.Manager) {
+func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer, manager *bgp.Manager, db *store.Store, s *settings.Settings) {
 	syncNow := func() {
 		logger := logging.FromContext(ctx)
 		logger.Info("starting feed sync")
@@ -212,6 +212,10 @@ func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer,
 		} else if ctx.Err() == nil {
 			logger.Info("BGP reconcile completed")
 		}
+
+		db.RecordFeedSnapshot(ctx, s.MetricsEnabled.Get())
+		peerStates, _ := manager.PeerStates(ctx) //nolint:errcheck
+		db.RecordUserSnapshot(ctx, s.MetricsEnabled.Get(), peerStates)
 	}
 	syncNow()
 	ticker := time.NewTicker(interval)

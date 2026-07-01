@@ -1,7 +1,6 @@
 package web
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -157,24 +156,4 @@ func (s *Server) apiDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// recordFeedSnapshot saves a feed prefix count snapshot, only when changed.
-func (s *Server) recordFeedSnapshot(ctx context.Context) {
-	if !s.settings.MetricsEnabled.Get() {
-		return
-	}
-	feeds, err := s.store.Feeds(ctx, false)
-	if err != nil {
-		return
-	}
-	counts := make(map[int64]int)
-	for _, f := range feeds {
-		var count int
-		if err := s.store.DB.QueryRowContext(ctx,
-			"SELECT COUNT(DISTINCT cidr) FROM catalog_entries WHERE feed_id = ?", f.ID).Scan(&count); err == nil && count > 0 {
-			counts[f.ID] = count
-		}
-	}
-	_ = s.store.SaveFeedSnapshot(ctx, counts) //nolint:errcheck // best-effort snapshot recording
 }

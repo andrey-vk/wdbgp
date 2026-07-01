@@ -284,7 +284,11 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.recordUserSnapshot(r.Context())
+	var peerStates map[string]string
+	if s.bgp != nil {
+		peerStates, _ = s.bgp.PeerStates(r.Context()) //nolint:errcheck // best-effort
+	}
+	s.store.RecordUserSnapshot(r.Context(), s.settings.MetricsEnabled.Get(), peerStates)
 
 	// Reload to get full data (CatalogModeName, Networks, etc.)
 	created, _ := s.store.User(r.Context(), userID) //nolint:errcheck // just created, must exist
@@ -504,7 +508,11 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.recordUserSnapshot(r.Context())
+	var peerStates map[string]string
+	if s.bgp != nil {
+		peerStates, _ = s.bgp.PeerStates(r.Context()) //nolint:errcheck // best-effort
+	}
+	s.store.RecordUserSnapshot(r.Context(), s.settings.MetricsEnabled.Get(), peerStates)
 
 	// Reload to get full data
 	updated, _ := s.store.User(r.Context(), id) //nolint:errcheck // just updated, must exist
@@ -554,41 +562,14 @@ func (s *Server) apiUsersDelete(w http.ResponseWriter, r *http.Request) {
 				logging.FromContext(r.Context()).Debug("bgp reconcile failed after user delete", "error", err)
 			}
 		}
-		s.recordUserSnapshot(r.Context())
+		var peerStates map[string]string
+		if s.bgp != nil {
+			peerStates, _ = s.bgp.PeerStates(r.Context()) //nolint:errcheck // best-effort
+		}
+		s.store.RecordUserSnapshot(r.Context(), s.settings.MetricsEnabled.Get(), peerStates)
 	}
 
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
-}
-
-// recordUserSnapshot saves user metric snapshot if anything changed.
-func (s *Server) recordUserSnapshot(ctx context.Context) {
-	if !s.settings.MetricsEnabled.Get() {
-		return
-	}
-	users, err := s.store.Users(ctx, false)
-	if err != nil {
-		return
-	}
-	total := len(users)
-	disabled := 0
-	for _, u := range users {
-		if !u.Enabled {
-			disabled++
-		}
-	}
-
-	var connected int
-	if s.bgp != nil {
-		peerStates, _ := s.bgp.PeerStates(ctx) //nolint:errcheck // best-effort lookup for display
-		for _, u := range users {
-			key := fmt.Sprintf("%s:%d", u.PeerIP, u.PeerASN)
-			if peerStates[key] == "ESTABLISHED" {
-				connected++
-			}
-		}
-	}
-
-	_ = s.store.SaveUserSnapshot(ctx, disabled, connected, total) //nolint:errcheck // best-effort snapshot recording
 }
 
 // apiUserCredentialsList handles GET /api/admin/users/{id}/credentials.
@@ -880,7 +861,11 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	s.recordUserSnapshot(r.Context())
+	var peerStates map[string]string
+	if s.bgp != nil {
+		peerStates, _ = s.bgp.PeerStates(r.Context()) //nolint:errcheck // best-effort
+	}
+	s.store.RecordUserSnapshot(r.Context(), s.settings.MetricsEnabled.Get(), peerStates)
 
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }

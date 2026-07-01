@@ -170,6 +170,53 @@ func (s *Store) PurgeUserSnapshots(ctx context.Context, days int) error {
 	return err
 }
 
+// RecordFeedSnapshot saves a feed prefix count snapshot, only when metrics are enabled.
+func (s *Store) RecordFeedSnapshot(ctx context.Context, metricsEnabled bool) {
+	if !metricsEnabled {
+		return
+	}
+	feeds, err := s.Feeds(ctx, false)
+	if err != nil {
+		return
+	}
+	counts := make(map[int64]int)
+	for _, f := range feeds {
+		var count int
+		if err := s.DB.QueryRowContext(ctx,
+			"SELECT COUNT(DISTINCT cidr) FROM catalog_entries WHERE feed_id = ?", f.ID).Scan(&count); err == nil && count > 0 {
+			counts[f.ID] = count
+		}
+	}
+	_ = s.SaveFeedSnapshot(ctx, counts) //nolint:errcheck // best-effort snapshot recording
+}
+
+// RecordUserSnapshot saves a user metric snapshot, only when metrics are enabled.
+// peerStates is the BGP peer state map (peer IP:ASN → state string).
+func (s *Store) RecordUserSnapshot(ctx context.Context, metricsEnabled bool, peerStates map[string]string) {
+	if !metricsEnabled {
+		return
+	}
+	users, err := s.Users(ctx, false)
+	if err != nil {
+		return
+	}
+	total := len(users)
+	disabled := 0
+	for _, u := range users {
+		if !u.Enabled {
+			disabled++
+		}
+	}
+	var connected int
+	for _, u := range users {
+		key := fmt.Sprintf("%s:%d", u.PeerIP, u.PeerASN)
+		if peerStates[key] == "ESTABLISHED" {
+			connected++
+		}
+	}
+	_ = s.SaveUserSnapshot(ctx, disabled, connected, total) //nolint:errcheck // best-effort snapshot recording
+}
+
 // PurgeFeedSnapshots deletes feed snapshots older than N days,
 // keeping the newest record just outside the window.
 func (s *Store) PurgeFeedSnapshots(ctx context.Context, days int) error {

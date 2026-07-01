@@ -204,3 +204,139 @@ func TestSaveFeedSnapshotDedup(t *testing.T) {
 		t.Fatalf("snapshots count = %d, want 1 (unchanged skip)", len(snapshots))
 	}
 }
+
+// =============================================================================
+// TestRecordFeedSnapshotEnabled — RecordFeedSnapshot with metrics enabled records a snapshot
+// =============================================================================
+
+func TestRecordFeedSnapshotEnabled(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Insert a feed using a built-in adapter and some catalog entries
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO feeds(name, url, adapter_id, enabled) VALUES ('test', 'http://test', (SELECT id FROM feed_adapters LIMIT 1), 1)"); err != nil {
+		t.Fatalf("insert feed: %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES ((SELECT id FROM feeds LIMIT 1), 'cat', 'svc', '10.0.0.0/8')"); err != nil {
+		t.Fatalf("insert entry: %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES ((SELECT id FROM feeds LIMIT 1), 'cat', 'svc2', '192.168.0.0/16')"); err != nil {
+		t.Fatalf("insert entry: %v", err)
+	}
+
+	// Record feed snapshot with metrics enabled
+	s.RecordFeedSnapshot(ctx, true)
+
+	// Verify it was recorded
+	snapshots, err := s.GetFeedSnapshots(ctx, 14)
+	if err != nil {
+		t.Fatalf("GetFeedSnapshots: %v", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots count = %d, want 1", len(snapshots))
+	}
+	if len(snapshots[0].Prefixes) == 0 {
+		t.Fatal("feed prefixes empty, want at least one feed entry")
+	}
+}
+
+// =============================================================================
+// TestRecordFeedSnapshotDisabled — RecordFeedSnapshot with metrics disabled is a no-op
+// =============================================================================
+
+func TestRecordFeedSnapshotDisabled(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO feeds(name, url, adapter_id, enabled) VALUES ('test', 'http://test', (SELECT id FROM feed_adapters LIMIT 1), 1)"); err != nil {
+		t.Fatalf("insert feed: %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES ((SELECT id FROM feeds LIMIT 1), 'cat', 'svc', '10.0.0.0/8')"); err != nil {
+		t.Fatalf("insert entry: %v", err)
+	}
+
+	// Record feed snapshot with metrics disabled
+	s.RecordFeedSnapshot(ctx, false)
+
+	// Verify nothing was recorded
+	snapshots, err := s.GetFeedSnapshots(ctx, 14)
+	if err != nil {
+		t.Fatalf("GetFeedSnapshots: %v", err)
+	}
+	if len(snapshots) != 0 {
+		t.Fatalf("snapshots count = %d, want 0 (disabled)", len(snapshots))
+	}
+}
+
+// =============================================================================
+// TestRecordUserSnapshotEnabled — RecordUserSnapshot with metrics enabled records a snapshot
+// =============================================================================
+
+func TestRecordUserSnapshotEnabled(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Insert users
+	if _, err := s.AddUser(ctx, User{Name: "u1", PeerIP: "1.1.1.1", PeerASN: 100, Enabled: true}); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	if _, err := s.AddUser(ctx, User{Name: "u2", PeerIP: "2.2.2.2", PeerASN: 200, Enabled: false}); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	if _, err := s.AddUser(ctx, User{Name: "u3", PeerIP: "3.3.3.3", PeerASN: 300, Enabled: true}); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	// Simulate peer states: u1 established, u3 not established
+	peerStates := map[string]string{
+		"1.1.1.1:100": "ESTABLISHED",
+		"3.3.3.3:300": "IDLE",
+	}
+
+	// Record user snapshot with metrics enabled
+	s.RecordUserSnapshot(ctx, true, peerStates)
+
+	// Verify it was recorded
+	snapshots, err := s.GetUserSnapshots(ctx, 14)
+	if err != nil {
+		t.Fatalf("GetUserSnapshots: %v", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots count = %d, want 1", len(snapshots))
+	}
+	sn := snapshots[0]
+	if sn.UsersDisabled != 1 || sn.UsersConnected != 1 || sn.UsersTotal != 3 {
+		t.Fatalf("snapshot = %+v, want disabled=1 connected=1 total=3", sn)
+	}
+}
+
+// =============================================================================
+// TestRecordUserSnapshotDisabled — RecordUserSnapshot with metrics disabled is a no-op
+// =============================================================================
+
+func TestRecordUserSnapshotDisabled(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Insert a user
+	if _, err := s.AddUser(ctx, User{Name: "u1", PeerIP: "1.1.1.1", PeerASN: 100, Enabled: true}); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	// Record user snapshot with metrics disabled
+	s.RecordUserSnapshot(ctx, false, nil)
+
+	// Verify nothing was recorded
+	snapshots, err := s.GetUserSnapshots(ctx, 14)
+	if err != nil {
+		t.Fatalf("GetUserSnapshots: %v", err)
+	}
+	if len(snapshots) != 0 {
+		t.Fatalf("snapshots count = %d, want 0 (disabled)", len(snapshots))
+	}
+}

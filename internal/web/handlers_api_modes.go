@@ -294,7 +294,11 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after mode feeds save", "error", err)
 		}
 	}
-	s.recordUserSnapshot(r.Context())
+	var peerStates map[string]string
+	if s.bgp != nil {
+		peerStates, _ = s.bgp.PeerStates(r.Context()) //nolint:errcheck // best-effort
+	}
+	s.store.RecordUserSnapshot(r.Context(), s.settings.MetricsEnabled.Get(), peerStates)
 	// Return updated feed list
 	feeds, err := s.store.ModeFeeds(r.Context(), modeID)
 	if err != nil {

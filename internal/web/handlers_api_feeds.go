@@ -200,7 +200,7 @@ func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after feed sync", "error", err)
 		}
 	}
-	s.recordFeedSnapshot(r.Context())
+	s.store.RecordFeedSnapshot(r.Context(), s.settings.MetricsEnabled.Get())
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
 
@@ -217,7 +217,11 @@ func (s *Server) apiFeedsSyncAll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Some feeds failed to sync"})
 		return
 	}
-	s.recordUserSnapshot(r.Context())
-	s.recordFeedSnapshot(r.Context())
+	var peerStates map[string]string
+	if s.bgp != nil {
+		peerStates, _ = s.bgp.PeerStates(r.Context()) //nolint:errcheck // best-effort
+	}
+	s.store.RecordUserSnapshot(r.Context(), s.settings.MetricsEnabled.Get(), peerStates)
+	s.store.RecordFeedSnapshot(r.Context(), s.settings.MetricsEnabled.Get())
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
