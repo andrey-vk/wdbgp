@@ -82,6 +82,46 @@ func TestUserAuthBothRequiresBothFactors(t *testing.T) {
 }
 
 // =============================================================================
+// TestUserSaveFiltersRejectsInvalidCIDR — apiUserSaveFilters must not persist
+// a malformed CIDR. SetUserRouteFilters -> insertRouteFilters already runs
+// every value through NormalizeRouteFilters before inserting, so this locks
+// in behavior that already exists rather than testing a gap.
+// =============================================================================
+
+func TestUserSaveFiltersRejectsInvalidCIDR(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	userBody := `{"name":"filter-user","peer_ip":"10.0.0.1","peer_asn":65001,"networks":["10.5.5.0/24"],"web_auth":"network","enabled":true,"filter_editable":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create user: %d body=%s", w.Code, w.Body.String())
+	}
+
+	body := `{"allow":["10.0.0.0/33"],"deny":[]}`
+	req = httptest.NewRequest("POST", "/api/user/filters", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.5.5.1:1234"
+	w = httptest.NewRecorder()
+	srv.requireUser(srv.apiUserSaveFilters).ServeHTTP(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("expected an error status for invalid CIDR, got 200")
+	}
+
+	filters, err := st.UserRouteFilters(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filters.Allow) != 0 {
+		t.Errorf("invalid CIDR should not have been persisted, got Allow=%v", filters.Allow)
+	}
+}
+
+// =============================================================================
 // TestUserSaveSelectionsPreservesHidden — when a feed is disabled, its catalog
 // items are not sent in the save-selections payload, but the user's existing
 // selections for those hidden items must be preserved (not deleted).

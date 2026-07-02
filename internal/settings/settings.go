@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Settings holds all configuration fields as typed Setting interfaces.
@@ -291,12 +292,12 @@ func New(store Store) (*Settings, error) {
 	}
 
 	// FilterAllow.
-	s.FilterAllow, err = newSimple("", "filter_allow", "", parseString, nil, store, dbSettings)
+	s.FilterAllow, err = newSimple("", "filter_allow", "", parseString, validateFilterList, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 	// FilterDeny.
-	s.FilterDeny, err = newSimple("", "filter_deny", "", parseString, nil, store, dbSettings)
+	s.FilterDeny, err = newSimple("", "filter_deny", "", parseString, validateFilterList, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -513,6 +514,25 @@ func validateIPv6(v string) error {
 	}
 	if !ip.Is6() {
 		return fmt.Errorf("must be a valid IPv6 address, got %q", v)
+	}
+	return nil
+}
+
+// validateFilterList checks that a newline-separated list of CIDRs (the
+// storage format for filter_allow/filter_deny) contains only well-formed
+// prefixes. Blank lines and #-prefixed comments are skipped, matching how
+// store.splitNewlines interprets the same value when building the filter
+// at reconcile time — an entry this validator accepts is guaranteed to
+// still parse there.
+func validateFilterList(v string) error {
+	for _, line := range strings.Split(v, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if _, err := netip.ParsePrefix(line); err != nil {
+			return fmt.Errorf("invalid CIDR %q: %w", line, err)
+		}
 	}
 	return nil
 }

@@ -351,6 +351,42 @@ func TestAPISettingsPut_RouteFilters(t *testing.T) {
 	}
 }
 
+// TestAPISettingsPut_RouteFiltersRejectInvalidCIDR guards against a typo'd
+// CIDR (e.g. a /33 on IPv4) being persisted into filter_allow/filter_deny —
+// prior to validateFilterList, this saved successfully and only surfaced
+// as a reconcile failure later, requiring a manual DB fix.
+func TestAPISettingsPut_RouteFiltersRejectInvalidCIDR(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	server := New(st, nil, nil, nil)
+	cookie := adminCookie(st)
+
+	for key, body := range map[string]string{
+		"filter_allow": `{"filter_allow": "10.0.0.0/33"}`,
+		"filter_deny":  `{"filter_deny": "not-a-cidr"}`,
+	} {
+		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		server.handler.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s: status = %d, want 400, body=%s", key, w.Code, w.Body.String())
+		}
+	}
+
+	if st.FilterAllow.Get() != "" {
+		t.Errorf("filter_allow = %q, want unchanged empty default", st.FilterAllow.Get())
+	}
+	if st.FilterDeny.Get() != "" {
+		t.Errorf("filter_deny = %q, want unchanged empty default", st.FilterDeny.Get())
+	}
+}
+
 // TestAPISettingsPut_RouteFiltersTriggerReconcile guards against a bug where
 // changing global filter_allow/filter_deny persisted the new value but never
 // told the running BGP manager to recompute routes — already-announced

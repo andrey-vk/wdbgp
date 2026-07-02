@@ -696,3 +696,26 @@ func TestSyncIntervalValidation(t *testing.T) {
 		t.Errorf("unexpected error for valid sync_interval: %v", err)
 	}
 }
+
+func TestFilterListValidation(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FilterAllow.Set(context.Background(), "10.0.0.0/33"); err == nil {
+		t.Error("expected error for CIDR with out-of-range prefix length")
+	}
+	if err := s.FilterAllow.Set(context.Background(), "not-a-cidr"); err == nil {
+		t.Error("expected error for malformed CIDR")
+	}
+	if err := s.FilterAllow.Set(context.Background(), "10.0.0.0/8\n# a comment\n\n192.168.0.0/16"); err != nil {
+		t.Errorf("unexpected error for valid multi-line list with comments/blank lines: %v", err)
+	}
+	if err := s.FilterAllow.Set(context.Background(), ""); err != nil {
+		t.Errorf("unexpected error for empty list: %v", err)
+	}
+	if err := s.FilterAllow.Set(context.Background(), "10.0.0.0/8\n10.0.0.0/33"); err == nil {
+		t.Error("expected error when one line of a multi-line list is invalid")
+	}
+}
