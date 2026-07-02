@@ -213,3 +213,56 @@ func TestFeedsGetNotFound(t *testing.T) {
 		t.Fatalf("GET 404: status = %d, want 404, body=%s", w.Code, w.Body.String())
 	}
 }
+
+// TestFeedsCreateRejectsInvalidModeID guards against a bug where a stale/
+// invalid mode_id let AddFeed commit the feed row before the
+// catalog_mode_feeds insert failed — the failure was only logged at Debug
+// level, so the API still returned 201 with the feed silently assigned to no
+// mode (and therefore excluded from Feeds(ctx, true) and every future
+// automatic sync). mode_id must now be validated before the feed is created.
+func TestFeedsCreateRejectsInvalidModeID(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+
+	req0 := httptest.NewRequest("GET", "/api/admin/feeds", nil)
+	w0 := httptest.NewRecorder()
+	srv.apiFeedsList(w0, req0)
+	var before struct {
+		Feeds []feedJSON `json:"feeds"`
+	}
+	if err := json.NewDecoder(w0.Body).Decode(&before); err != nil {
+		t.Fatal(err)
+	}
+
+	createBody := strings.NewReader(`{"name":"bad-mode-feed","url":"http://example.com/feed.json","enabled":true,"sync_interval":3600,"mode_id":999999,"adapter_id":1}`)
+	req := httptest.NewRequest("POST", "/api/admin/feeds", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiFeedsCreate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+
+	req1 := httptest.NewRequest("GET", "/api/admin/feeds", nil)
+	w1 := httptest.NewRecorder()
+	srv.apiFeedsList(w1, req1)
+	var after struct {
+		Feeds []feedJSON `json:"feeds"`
+	}
+	if err := json.NewDecoder(w1.Body).Decode(&after); err != nil {
+		t.Fatal(err)
+	}
+	if len(after.Feeds) != len(before.Feeds) {
+		t.Fatalf("feed count = %d after rejected create, want unchanged %d — a feed with an invalid mode_id must not have been created", len(after.Feeds), len(before.Feeds))
+	}
+	for _, f := range after.Feeds {
+		if f.Name == "bad-mode-feed" {
+			t.Fatal("bad-mode-feed must not have been created after rejected mode_id")
+		}
+	}
+}
