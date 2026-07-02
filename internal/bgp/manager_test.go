@@ -625,6 +625,58 @@ func TestDeletePeerHandlesSameIPDifferentASN(t *testing.T) {
 	}
 }
 
+// TestUpdatePeerClearsRoutesOnPasswordChange guards against a stale
+// peerRoutes cache after a peer session gets recreated for a reason other
+// than an IP/ASN change. speaker.SetPeers recreates a same-key peer when
+// its BGP password changes; if the manager's route cache isn't cleared too,
+// reconcileLocked compares against the stale cache, finds no diff, and
+// never re-announces routes to the freshly recreated (routeless) peer.
+func TestUpdatePeerClearsRoutesOnPasswordChange(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	userID, err := s.AddUser(ctx, store.User{
+		Name: "user", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true, BGPPassword: "old-pass",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.1",
+	}), s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Start() already loaded the peer from the DB.
+
+	// Simulate a prior successful reconcile having announced routes.
+	manager.mu.Lock()
+	manager.peerRoutes["192.0.2.2:65001"] = []Route{{Prefix: netip.MustParsePrefix("8.8.8.0/24")}}
+	manager.mu.Unlock()
+
+	// Same IP/ASN, only the BGP password changes — SetPeers recreates the
+	// peer session, so the stale cache must be cleared.
+	if err := manager.UpdatePeer(ctx, store.User{
+		ID: userID, Name: "user", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true, BGPPassword: "new-pass",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if _, ok := manager.peerRoutes["192.0.2.2:65001"]; ok {
+		t.Fatal("peerRoutes should have been cleared after a password change recreated the peer session")
+	}
+}
+
 func routePrefixStrings(routes []Route) []string {
 	var out []string
 	for _, r := range routes {
