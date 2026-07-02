@@ -6,3 +6,5 @@ tests
 *.sqlite3
 *.log
 README*
+webgui/node_modules
+webgui/dist
