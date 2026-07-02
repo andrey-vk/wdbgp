@@ -60,8 +60,8 @@ type ServiceKey struct {
 }
 
 type RouteFilters struct {
-	Allow []string
-	Deny  []string
+	Allow []string `json:"allow"`
+	Deny  []string `json:"deny"`
 }
 
 func Open(path string, backupEnabled bool, backupDir string, autoRestoreEnabled bool) (*Store, error) {

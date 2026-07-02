@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/netip"
 	"testing"
 
@@ -336,5 +337,30 @@ func TestSplitNewlines(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestRouteFiltersJSONLowercaseKeys guards against RouteFilters marshaling
+// as "Allow"/"Deny" — the user SPA reads userData.filters?.allow/?.deny
+// (lowercase), so an untagged struct silently marshals to keys the frontend
+// never matches and the filter editor always renders empty.
+func TestRouteFiltersJSONLowercaseKeys(t *testing.T) {
+	raw, err := json.Marshal(RouteFilters{Allow: []string{"10.0.0.0/8"}, Deny: []string{"192.168.0.0/16"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decoded["allow"]; !ok {
+		t.Errorf("marshaled JSON = %s, want lowercase \"allow\" key", raw)
+	}
+	if _, ok := decoded["deny"]; !ok {
+		t.Errorf("marshaled JSON = %s, want lowercase \"deny\" key", raw)
+	}
+	if _, ok := decoded["Allow"]; ok {
+		t.Errorf("marshaled JSON = %s, should not have capitalized \"Allow\" key", raw)
 	}
 }

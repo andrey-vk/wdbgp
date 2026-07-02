@@ -122,6 +122,60 @@ func TestUserSaveFiltersRejectsInvalidCIDR(t *testing.T) {
 }
 
 // =============================================================================
+// TestUserMeReturnsLowercaseFilterKeys — apiUserMe embeds store.RouteFilters
+// directly in the response; the user SPA reads userData.filters?.allow and
+// ?.deny (lowercase). Guards against the untagged-struct regression where
+// the wire JSON came back as "Allow"/"Deny" and the filter editor always
+// rendered empty despite filters being set.
+// =============================================================================
+
+func TestUserMeReturnsLowercaseFilterKeys(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	userBody := `{"name":"filter-user","peer_ip":"10.0.0.1","peer_asn":65001,"networks":["10.5.5.0/24"],"web_auth":"network","enabled":true,"filter_editable":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create user: %d body=%s", w.Code, w.Body.String())
+	}
+
+	if err := st.SetUserRouteFilters(ctx, 1, store.RouteFilters{
+		Allow: []string{"10.0.0.0/8"},
+		Deny:  []string{"192.168.0.0/16"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req = httptest.NewRequest("GET", "/api/user/me", nil)
+	req.RemoteAddr = "10.5.5.1:1234"
+	w = httptest.NewRecorder()
+	srv.requireUser(srv.apiUserMe).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("apiUserMe: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	filters, ok := resp["filters"].(map[string]any)
+	if !ok {
+		t.Fatalf("filters field missing or wrong shape: %v", resp["filters"])
+	}
+	allow, ok := filters["allow"].([]any)
+	if !ok || len(allow) != 1 || allow[0] != "10.0.0.0/8" {
+		t.Errorf("filters.allow = %v, want [\"10.0.0.0/8\"]", filters["allow"])
+	}
+	deny, ok := filters["deny"].([]any)
+	if !ok || len(deny) != 1 || deny[0] != "192.168.0.0/16" {
+		t.Errorf("filters.deny = %v, want [\"192.168.0.0/16\"]", filters["deny"])
+	}
+}
+
+// =============================================================================
 // TestUserSaveSelectionsPreservesHidden — when a feed is disabled, its catalog
 // items are not sent in the save-selections payload, but the user's existing
 // selections for those hidden items must be preserved (not deleted).
