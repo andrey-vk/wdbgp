@@ -349,20 +349,27 @@ func New(store Store) (*Settings, error) {
 		return nil, err
 	}
 
-	// BackupEnabled.
-	s.BackupEnabled, err = newSimple(true, "backup_enabled", "WDBGP_BACKUP_ENABLED", parseBool, nil, store, dbSettings)
+	// BackupEnabled, BackupDir, AutoRestoreEnabled: env-only, no dbKey.
+	// main.go reads these three straight from the environment to call
+	// store.Open() — before settings.New() (this function) ever runs, since
+	// there's no DB to read DB-backed values from until Open() has decided
+	// whether to back up/restore it. A DB-stored value here would never be
+	// read by anything: editing them via the UI would silently do nothing
+	// until the value is also set as an env var, same reasoning as Host
+	// above.
+	s.BackupEnabled, err = newSimple(true, "", "WDBGP_BACKUP_ENABLED", parseBool, nil, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// BackupDir: computed default depends on DBPath.
-	s.BackupDir, err = newSimple(dbDir, "backup_dir", "WDBGP_BACKUP_DIR", parseString, nil, store, dbSettings)
+	s.BackupDir, err = newSimple(dbDir, "", "WDBGP_BACKUP_DIR", parseString, nil, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// AutoRestoreEnabled.
-	s.AutoRestoreEnabled, err = newSimple(false, "auto_restore_enabled", "WDBGP_AUTO_RESTORE_ENABLED", parseBool, nil, store, dbSettings)
+	s.AutoRestoreEnabled, err = newSimple(false, "", "WDBGP_AUTO_RESTORE_ENABLED", parseBool, nil, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}

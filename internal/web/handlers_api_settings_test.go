@@ -134,11 +134,13 @@ func TestAPISettingsPut_TypedInt(t *testing.T) {
 }
 
 // TestAPISettingsPut_HostPortDBPathAreReadOnly verifies host/port/db_path
-// can no longer be changed via the API — they're env-only (WDBGP_HOST,
-// WDBGP_PORT, WDBGP_DB), same as they always required a restart to take
-// effect, but now genuinely can't be edited from a running instance
-// instead of silently accepting a value that could lock an admin out of
-// the UI or point at an unbindable port with no local recovery path.
+// and backup_enabled/backup_dir/auto_restore_enabled can no longer be
+// changed via the API — they're all env-only. host/port/db_path always
+// required a restart to take effect and could lock an admin out with no
+// local recovery path; the three backup settings are read by main.go
+// straight from the environment to open the store, before settings.New()
+// (and therefore any DB-stored value) exists — a DB write for them was
+// always silently ineffective.
 func TestAPISettingsPut_HostPortDBPathAreReadOnly(t *testing.T) {
 	store := settings.NewTestStore()
 	st, err := settings.New(store)
@@ -150,9 +152,12 @@ func TestAPISettingsPut_HostPortDBPathAreReadOnly(t *testing.T) {
 	cookie := adminCookie(st)
 
 	for key, body := range map[string]string{
-		"host":    `{"host": "127.0.0.1"}`,
-		"port":    `{"port": 9090}`,
-		"db_path": `{"db_path": "/other.sqlite3"}`,
+		"host":                 `{"host": "127.0.0.1"}`,
+		"port":                 `{"port": 9090}`,
+		"db_path":              `{"db_path": "/other.sqlite3"}`,
+		"backup_enabled":       `{"backup_enabled": false}`,
+		"backup_dir":           `{"backup_dir": "/other/backup"}`,
+		"auto_restore_enabled": `{"auto_restore_enabled": true}`,
 	} {
 		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
@@ -181,6 +186,15 @@ func TestAPISettingsPut_HostPortDBPathAreReadOnly(t *testing.T) {
 	}
 	if st.DBPath.Get() != "/data/wdbgp.sqlite3" {
 		t.Errorf("db_path = %q, want unchanged default", st.DBPath.Get())
+	}
+	if !st.BackupEnabled.Get() {
+		t.Error("backup_enabled = false, want unchanged default true")
+	}
+	if st.BackupDir.Get() != "/data" {
+		t.Errorf("backup_dir = %q, want unchanged default /data", st.BackupDir.Get())
+	}
+	if st.AutoRestoreEnabled.Get() {
+		t.Error("auto_restore_enabled = true, want unchanged default false")
 	}
 }
 

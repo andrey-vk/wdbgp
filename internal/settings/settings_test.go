@@ -410,27 +410,6 @@ func TestSettingsPersistAfterSet(t *testing.T) {
 			wantVal: "true",
 		},
 		{
-			name:    "auto_restore_enabled",
-			set:     func(ctx context.Context) error { return s.AutoRestoreEnabled.Set(ctx, true) },
-			get:     func() string { return formatBool(s.AutoRestoreEnabled.Get()) },
-			wantKey: "auto_restore_enabled",
-			wantVal: "true",
-		},
-		{
-			name:    "backup_enabled",
-			set:     func(ctx context.Context) error { return s.BackupEnabled.Set(ctx, false) },
-			get:     func() string { return formatBool(s.BackupEnabled.Get()) },
-			wantKey: "backup_enabled",
-			wantVal: "false",
-		},
-		{
-			name:    "backup_dir",
-			set:     func(ctx context.Context) error { return s.BackupDir.Set(ctx, "/custom/backup") },
-			get:     func() string { return s.BackupDir.Get() },
-			wantKey: "backup_dir",
-			wantVal: "/custom/backup",
-		},
-		{
 			name:    "require_password_for_non_unique_ip",
 			set:     func(ctx context.Context) error { return s.RequirePasswordForNonUniqueIP.Set(ctx, false) },
 			get:     func() string { return formatBool(s.RequirePasswordForNonUniqueIP.Get()) },

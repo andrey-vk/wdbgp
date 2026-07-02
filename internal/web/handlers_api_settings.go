@@ -78,13 +78,13 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 	case "allow_dynamic_peers":
 		return callBoolSetting(ctx, s.settings.AllowDynamicPeers, raw)
 	case "auto_restore_enabled":
-		return callBoolSetting(ctx, s.settings.AutoRestoreEnabled, raw)
+		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
 	case "bgp_port":
 		return callUint16Setting(ctx, s.settings.BGPPort, raw)
 	case "backup_dir":
-		return callStringSetting(ctx, s.settings.BackupDir, raw)
+		return fmt.Errorf("backup_dir is set via WDBGP_BACKUP_DIR and cannot be changed here")
 	case "backup_enabled":
-		return callBoolSetting(ctx, s.settings.BackupEnabled, raw)
+		return fmt.Errorf("backup_enabled is set via WDBGP_BACKUP_ENABLED and cannot be changed here")
 	case "default_language":
 		return callStringSetting(ctx, s.settings.DefaultLanguage, raw)
 	case "default_web_auth":
@@ -169,13 +169,13 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 	case "allow_dynamic_peers":
 		return s.settings.AllowDynamicPeers.Reset(ctx)
 	case "auto_restore_enabled":
-		return s.settings.AutoRestoreEnabled.Reset(ctx)
+		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
 	case "bgp_port":
 		return s.settings.BGPPort.Reset(ctx)
 	case "backup_dir":
-		return s.settings.BackupDir.Reset(ctx)
+		return fmt.Errorf("backup_dir is set via WDBGP_BACKUP_DIR and cannot be changed here")
 	case "backup_enabled":
-		return s.settings.BackupEnabled.Reset(ctx)
+		return fmt.Errorf("backup_enabled is set via WDBGP_BACKUP_ENABLED and cannot be changed here")
 	case "default_language":
 		return s.settings.DefaultLanguage.Reset(ctx)
 	case "default_web_auth":

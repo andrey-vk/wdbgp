@@ -169,9 +169,9 @@ export const sections: SettingsSection[] = [
   {
     name: 'settings.section_backup',
     fields: {
-      backup_enabled:       { label: 'settings.backup_enabled',        hint: 'settings.backup_enabled_hint',        type: 'bool', envVar: 'WDBGP_BACKUP_ENABLED' },
-      backup_dir:           { label: 'settings.backup_dir',            hint: 'settings.backup_dir_hint',            type: 'string', envVar: 'WDBGP_BACKUP_DIR' },
-      auto_restore_enabled: { label: 'settings.auto_restore_enabled',  hint: 'settings.auto_restore_enabled_hint',  type: 'bool', envVar: 'WDBGP_AUTO_RESTORE_ENABLED' },
+      backup_enabled:       { label: 'settings.backup_enabled',        hint: 'settings.backup_enabled_hint',        type: 'bool', readonly: true, envVar: 'WDBGP_BACKUP_ENABLED' },
+      backup_dir:           { label: 'settings.backup_dir',            hint: 'settings.backup_dir_hint',            type: 'string', readonly: true, envVar: 'WDBGP_BACKUP_DIR' },
+      auto_restore_enabled: { label: 'settings.auto_restore_enabled',  hint: 'settings.auto_restore_enabled_hint',  type: 'bool', readonly: true, envVar: 'WDBGP_AUTO_RESTORE_ENABLED' },
       adapter_backup_dir:   { label: 'settings.adapter_backup_dir',    hint: 'settings.adapter_backup_dir_hint',    type: 'string', envVar: 'WDBGP_ADAPTER_BACKUP_DIR' },
       adapter_backup_max:   { label: 'settings.adapter_backup_max',    hint: 'settings.adapter_backup_max_hint',    type: 'number', envVar: 'WDBGP_ADAPTER_BACKUP_MAX' },
     },
