@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -349,7 +350,7 @@ func envBool(name string, fallback bool) bool {
 	if value == "" {
 		return fallback
 	}
-	switch value {
+	switch strings.ToLower(value) {
 	case "1", "true", "yes", "on":
 		return true
 	case "0", "false", "no", "off":
