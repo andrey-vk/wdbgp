@@ -34,9 +34,9 @@ func testSettings() *settings.Settings {
 	mustSet(s.SessionSecret.Set(context.Background(), "test-secret"))
 	mustSet(s.AdminCookieSecure.Set(context.Background(), "true"))
 	mustSet(s.DefaultLanguage.Set(context.Background(), "ru"))
-	mustSet(s.RateLimitLogin.Set(context.Background(), 0))    // Disable rate limiting in tests
-	mustSet(s.RateLimitAdmin.Set(context.Background(), 0))    // Disable rate limiting in tests
-	mustSet(s.SessionMaxAge.Set(context.Background(), 28800)) // 8 hours
+	mustSet(s.RateLimitLogin.Set(context.Background(), 1000000)) // effectively unlimited in tests
+	mustSet(s.RateLimitAdmin.Set(context.Background(), 1000000)) // effectively unlimited in tests
+	mustSet(s.SessionMaxAge.Set(context.Background(), 28800))    // 8 hours
 	mustSet(s.StatusAllowed.Set(context.Background(), "0.0.0.0/0"))
 	return s
 }
@@ -728,8 +728,8 @@ func TestSettingsNullValueDeletesOverride(t *testing.T) {
 	mustSetSetting(t, s.AdminPassword, "admin")
 	mustSetSetting(t, s.SessionSecret, "test-secret")
 	mustSetSetting(t, s.AdminCookieSecure, "true")
-	mustSetSetting(t, s.RateLimitLogin, 0)
-	mustSetSetting(t, s.RateLimitAdmin, 0)
+	mustSetSetting(t, s.RateLimitLogin, 1000000)
+	mustSetSetting(t, s.RateLimitAdmin, 1000000)
 	mustSetSetting(t, s.SessionMaxAge, 28800)
 	mustSetSetting(t, s.StatusAllowed, "0.0.0.0/0")
 

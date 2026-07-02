@@ -214,13 +214,13 @@ func New(store Store) (*Settings, error) {
 	}
 
 	// RateLimitLogin.
-	s.RateLimitLogin, err = newSimple(5, "rate_limit_login", "WDBGP_RATE_LIMIT_LOGIN", parseInt, nil, store, dbSettings)
+	s.RateLimitLogin, err = newSimple(5, "rate_limit_login", "WDBGP_RATE_LIMIT_LOGIN", parseInt, validatePositive, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// RateLimitAdmin.
-	s.RateLimitAdmin, err = newSimple(30, "rate_limit_admin", "WDBGP_RATE_LIMIT_ADMIN", parseInt, nil, store, dbSettings)
+	s.RateLimitAdmin, err = newSimple(30, "rate_limit_admin", "WDBGP_RATE_LIMIT_ADMIN", parseInt, validatePositive, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
