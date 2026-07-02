@@ -159,14 +159,26 @@ func New(store Store) (*Settings, error) {
 		return nil, err
 	}
 
-	// LocalAddressV4.
-	s.LocalAddressV4, err = newSimple("192.0.2.2", "local_address_v4", "WDBGP_BGP_LOCAL_ADDRESS", parseString, validateIPv4, store, dbSettings)
+	// LocalAddressV4. WDBGP_BIRD_LOCAL_ADDRESS is a legacy alias from before
+	// the GoBGP rewrite — used as the default (so WDBGP_BGP_LOCAL_ADDRESS and
+	// any DB-stored value still take priority) so an install upgrading
+	// without renaming its env vars doesn't silently fall back to
+	// 192.0.2.2, changing its BGP local bind/next-hop address.
+	localAddrV4Default := "192.0.2.2"
+	if legacy := os.Getenv("WDBGP_BIRD_LOCAL_ADDRESS"); legacy != "" {
+		localAddrV4Default = legacy
+	}
+	s.LocalAddressV4, err = newSimple(localAddrV4Default, "local_address_v4", "WDBGP_BGP_LOCAL_ADDRESS", parseString, validateIPv4, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
-	// LocalAddressV6.
-	s.LocalAddressV6, err = newSimple("", "local_address_v6", "WDBGP_BGP_LOCAL_ADDRESS_V6", parseString, validateIPv6, store, dbSettings)
+	// LocalAddressV6. Same legacy-alias handling as LocalAddressV4.
+	localAddrV6Default := ""
+	if legacy := os.Getenv("WDBGP_BIRD_LOCAL_ADDRESS_V6"); legacy != "" {
+		localAddrV6Default = legacy
+	}
+	s.LocalAddressV6, err = newSimple(localAddrV6Default, "local_address_v6", "WDBGP_BGP_LOCAL_ADDRESS_V6", parseString, validateIPv6, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}

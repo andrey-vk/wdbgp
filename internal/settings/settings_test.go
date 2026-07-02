@@ -247,6 +247,46 @@ func TestNewSettings_InvalidEnv(t *testing.T) {
 	}
 }
 
+// TestNewSettings_LegacyBirdLocalAddressAlias guards against a regression
+// from the internal/config -> internal/settings rewrite: existing releases
+// accepted WDBGP_BIRD_LOCAL_ADDRESS(_V6) as a fallback when the newer
+// WDBGP_BGP_LOCAL_ADDRESS(_V6) was unset. An install upgrading without
+// renaming its env vars must not silently fall back to the hardcoded
+// default (192.0.2.2 / empty), which would change the BGP local bind/
+// next-hop address and could drop IPv6 announcements.
+func TestNewSettings_LegacyBirdLocalAddressAlias(t *testing.T) {
+	t.Setenv("WDBGP_BIRD_LOCAL_ADDRESS", "203.0.113.5")
+	t.Setenv("WDBGP_BIRD_LOCAL_ADDRESS_V6", "2001:db8::5")
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s.LocalAddressV4.Get() != "203.0.113.5" {
+		t.Errorf("LocalAddressV4 = %q, want 203.0.113.5 (legacy alias)", s.LocalAddressV4.Get())
+	}
+	if s.LocalAddressV6.Get() != "2001:db8::5" {
+		t.Errorf("LocalAddressV6 = %q, want 2001:db8::5 (legacy alias)", s.LocalAddressV6.Get())
+	}
+}
+
+// TestNewSettings_NewLocalAddressVarTakesPriorityOverLegacy guards the
+// precedence direction: the new env var name must win when both are set.
+func TestNewSettings_NewLocalAddressVarTakesPriorityOverLegacy(t *testing.T) {
+	t.Setenv("WDBGP_BIRD_LOCAL_ADDRESS", "203.0.113.5")
+	t.Setenv("WDBGP_BGP_LOCAL_ADDRESS", "198.51.100.9")
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s.LocalAddressV4.Get() != "198.51.100.9" {
+		t.Errorf("LocalAddressV4 = %q, want 198.51.100.9 (new env var wins over legacy alias)", s.LocalAddressV4.Get())
+	}
+}
+
 func TestSettings_SetAndReset(t *testing.T) {
 	store := newMockStore()
 	s, err := New(store)
