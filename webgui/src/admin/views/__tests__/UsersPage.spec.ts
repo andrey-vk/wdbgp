@@ -286,3 +286,51 @@ describe('UsersPage networks normalization', () => {
     expect(payload.networks).toBeUndefined()
   })
 })
+
+describe('UsersPage filter_mode / filter_editable independence', () => {
+  it('derives the select value from filter_mode, not filter_editable', async () => {
+    const wrapper = await mountUsersPage()
+    const vm = wrapper.vm as unknown as {
+      form: { filter_mode: string; filter_editable: boolean; filter_override: boolean }
+      filterModeSelect: string
+    }
+
+    // An admin-managed user: extend mode configured by the admin, but the
+    // user themselves was never granted self-service editing. Before the
+    // fix, the select derived its value from filter_editable/filter_override
+    // instead of filter_mode, so this combination incorrectly displayed as
+    // "global".
+    vm.form.filter_mode = 'extend'
+    vm.form.filter_editable = false
+    vm.form.filter_override = false
+    expect(vm.filterModeSelect).toBe('extend')
+
+    vm.form.filter_mode = 'override'
+    vm.form.filter_editable = false
+    expect(vm.filterModeSelect).toBe('override')
+  })
+
+  it('changing the mode does not touch filter_editable', async () => {
+    const wrapper = await mountUsersPage()
+    const vm = wrapper.vm as unknown as {
+      form: { filter_mode: string; filter_editable: boolean; filter_override: boolean }
+      filterModeSelect: string
+    }
+
+    vm.form.filter_editable = false
+    vm.filterModeSelect = 'extend'
+    expect(vm.form.filter_mode).toBe('extend')
+    expect(vm.form.filter_editable).toBe(false)
+
+    vm.filterModeSelect = 'override'
+    expect(vm.form.filter_mode).toBe('override')
+    expect(vm.form.filter_override).toBe(true)
+    expect(vm.form.filter_editable).toBe(false)
+
+    // Also verify it doesn't spuriously turn filter_editable on when it was
+    // already true — switching mode must never touch it either way.
+    vm.form.filter_editable = true
+    vm.filterModeSelect = 'global'
+    expect(vm.form.filter_editable).toBe(true)
+  })
+})

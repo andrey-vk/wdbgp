@@ -100,15 +100,21 @@ const filterModeOptions = [
   { label: t('users.filter_mode_override'), value: 'override' },
 ]
 
+// filter_mode (how this user's routes interact with global filters) and
+// filter_editable (whether the user themselves may call POST /api/user/
+// filters) are independent permissions — an admin can configure per-user
+// CIDR values under extend/override without granting the user any
+// self-service editing at all. Deriving the mode from filter_editable/
+// filter_override, and forcing filter_editable on whenever a non-global
+// mode was picked, conflated the two: an admin-managed user with
+// filter_mode=extend and filter_editable=false displayed as "global" here,
+// and picking a non-global mode always silently granted self-editing.
 const filterModeSelect = computed({
   get() {
-    if (form.value.filter_override) return 'override'
-    if (form.value.filter_editable) return 'extend'
-    return 'global'
+    return form.value.filter_mode || 'global'
   },
   set(val: string) {
     form.value.filter_mode = val
-    form.value.filter_editable = val !== 'global'
     form.value.filter_override = val === 'override'
   }
 })
@@ -1026,13 +1032,25 @@ async function toggleEnabled() {
                   fluid
                 />
               </FormField>
-              <template v-if="form.filter_editable">
+              <template v-if="form.filter_mode !== 'global'">
                 <FormField :label="t('users.filter_allow')" :hint="'users.filter_allow_hint'" input-id="ufallow">
                   <Textarea id="ufallow" v-model="form.filter_allow_text" rows="3" fluid />
                 </FormField>
                 <FormField :label="t('users.filter_deny')" :hint="'users.filter_deny_hint'" input-id="ufdeny">
                   <Textarea id="ufdeny" v-model="form.filter_deny_text" rows="3" fluid />
                 </FormField>
+                <div class="switch-row">
+                  <FormField
+                    :label="t('users.filter_editable')"
+                    :hint="'users.filter_editable_hint'"
+                    input-id="ufedit"
+                  >
+                    <ToggleSwitch
+                      id="ufedit"
+                      v-model="form.filter_editable"
+                    />
+                  </FormField>
+                </div>
               </template>
               <p v-else class="m-0 text-sm text-gray-500 dark:text-gray-400">
                 {{ t('users.filter_fields_hidden') }}

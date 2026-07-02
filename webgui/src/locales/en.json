@@ -322,7 +322,8 @@
   "users.selection_locked_hint": "Prevent the user from changing category/service selections.",
   "users.catalog_editable": "Allow mode change",
   "users.catalog_editable_hint": "Allow the user to switch to a different catalog mode.",
-  "users.filter_editable": "Allow filters",
+  "users.filter_editable": "Allow user self-editing",
+  "users.filter_editable_hint": "Allow the user to edit their own allow/deny CIDRs via their account page.",
   "users.filter_mode": "Filter mode",
   "users.filter_mode_hint": "How user route filters interact with global filters.",
   "users.filter_override": "Override global filters",
@@ -359,7 +360,7 @@
   "users.networks_not_needed": "Not used for login-only authentication.",
   "users.credentials_not_needed": "No credentials needed for this authentication method.",
 
-  "users.filter_fields_hidden": "Enable user filters to set allowed/denied CIDRs.",
+  "users.filter_fields_hidden": "Set filter mode to Append or Override to configure allowed/denied CIDRs.",
   "users.catalog_editable_hidden": "Not available when selections are locked.",
   "users.group_bgp": "BGP Connection",
   "users.group_auth": "Authentication",
