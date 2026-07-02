@@ -316,6 +316,8 @@
   "users.catalog_mode_hint": "Catalog mode assigned to this user.",
   "users.networks": "Client networks",
   "users.networks_hint": "CIDR prefixes for web auth (one per line). At least one required.",
+  "users.networks_needs_normalization": "These networks aren't fully normalized/combined yet. Fix them or click the button.",
+  "users.networks_normalize_button": "Normalize & combine",
   "users.selection_locked": "Lock selections",
   "users.selection_locked_hint": "Prevent the user from changing category/service selections.",
   "users.catalog_editable": "Allow mode change",

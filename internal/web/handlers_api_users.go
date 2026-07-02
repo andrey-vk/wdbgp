@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -18,6 +19,53 @@ var validWebAuthModes = map[string]bool{"network": true, "login": true, "both": 
 
 func isValidWebAuth(mode string) bool {
 	return validWebAuthModes[mode]
+}
+
+// isActiveWebAuth reports whether a web_auth mode uses IP-based resolution
+// for identifying the user — everything except "login". Must name the same
+// three values as store.activeWebAuthModesSQL (the SQL-side equivalent used
+// by UserByIP and ActiveNetworksOverlap).
+func isActiveWebAuth(mode string) bool {
+	return mode == "network" || mode == "both" || mode == "any"
+}
+
+// validateNetworksNormalized rejects a networks list that isn't already the
+// minimal, masked, deduplicated, fully-merged form store.AggregateNetworks
+// would produce — same rule the admin UI enforces before allowing a save,
+// checked again here so it holds regardless of how the request was made.
+// Order and whitespace don't matter; every other difference does.
+func validateNetworksNormalized(networks []string) error {
+	if len(networks) == 0 {
+		return nil
+	}
+	trimmed := make([]string, len(networks))
+	for i, n := range networks {
+		trimmed[i] = strings.TrimSpace(n)
+	}
+	aggregated, err := store.AggregateNetworks(trimmed)
+	if err != nil {
+		return err
+	}
+	if !sameStringSet(trimmed, aggregated) {
+		return fmt.Errorf("networks must be normalized with no overlapping or adjacent ranges; expected: %s", strings.Join(aggregated, ", "))
+	}
+	return nil
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	sortedA := append([]string(nil), a...)
+	sortedB := append([]string(nil), b...)
+	sort.Strings(sortedA)
+	sort.Strings(sortedB)
+	for i := range sortedA {
+		if sortedA[i] != sortedB[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type userJSON struct {
@@ -85,6 +133,28 @@ func (s *Server) userPeerState(ctx context.Context, u store.User) string {
 	peerStates, _ := s.bgp.PeerStates(ctx) //nolint:errcheck // best-effort lookup for display
 	peerKey := fmt.Sprintf("%s:%d", u.PeerIP, u.PeerASN)
 	return peerStates[peerKey]
+}
+
+// apiUsersNormalizeNetworks handles POST /api/admin/users/normalize-networks.
+// Given a raw list of CIDRs, returns the minimal equivalent set — masked,
+// deduplicated, and with overlapping/adjacent entries merged. Used by the
+// admin UI to preview the auto-fix transform and to decide whether the
+// current input already matches it (see store.AggregateNetworks); the
+// authoritative check happens again at save time in apiUsersCreate/Update.
+func (s *Server) apiUsersNormalizeNetworks(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Networks []string `json:"networks"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
+		return
+	}
+	networks, err := store.AggregateNetworks(body.Networks)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"networks": networks})
 }
 
 // apiUsersList handles GET /api/admin/users.
@@ -255,6 +325,18 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A user whose (effective, post-default) web_auth actually uses IP for
+	// identification must have networks already in normalized form (see
+	// validateNetworksNormalized) — this is purely about the submitted
+	// data's own internal validity, so it's checked here regardless of
+	// other users. login-mode users are exempt: their networks are inert.
+	if isActiveWebAuth(user.WebAuth) {
+		if err := validateNetworksNormalized(user.Networks); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+			return
+		}
+	}
+
 	// Reject dynamic peers when feature flag is off
 	if !s.settings.AllowDynamicPeers.Get() && (user.PeerIP == "0.0.0.0" || user.PeerIP == "::") {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Dynamic peers are disabled"})
@@ -267,10 +349,21 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate peer uniqueness
+	// Validate peer uniqueness before the cross-user network overlap check
+	// below — a duplicate peer identity is a more fundamental conflict than
+	// an overlapping web-auth network, so it should surface first.
 	if err := s.validatePeerUniqueness(r.Context(), user, 0); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
+	}
+
+	// Must not overlap with another active (network/both/any) user's
+	// networks — otherwise UserByIP's resolution becomes ambiguous.
+	if isActiveWebAuth(user.WebAuth) {
+		if err := s.store.ActiveNetworksOverlap(r.Context(), user.Networks, 0); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+			return
+		}
 	}
 
 	userID, err := s.store.AddUser(r.Context(), user)
@@ -471,6 +564,20 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same normalization check as apiUsersCreate, against the final
+	// effective state — this fires even when a request only changes
+	// web_auth back to an active mode without touching networks at all:
+	// current.Networks still holds whatever was already stored (possibly
+	// untouched for a long time while this user sat in login mode, or
+	// dating from before this check existed), and it needs to be
+	// re-validated the moment it becomes active again.
+	if isActiveWebAuth(current.WebAuth) {
+		if err := validateNetworksNormalized(current.Networks); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+			return
+		}
+	}
+
 	// Reject dynamic peers when feature flag is off
 	if !s.settings.AllowDynamicPeers.Get() && (current.PeerIP == "0.0.0.0" || current.PeerIP == "::") {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Dynamic peers are disabled"})
@@ -483,10 +590,21 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate peer uniqueness (skip self)
+	// Validate peer uniqueness before the cross-user network overlap check
+	// below — see apiUsersCreate for why.
 	if err := s.validatePeerUniqueness(r.Context(), current, id); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
+	}
+
+	// Same cross-user overlap check as apiUsersCreate, against the final
+	// effective state — see the normalization check above for why this
+	// must run even when the request doesn't touch networks directly.
+	if isActiveWebAuth(current.WebAuth) {
+		if err := s.store.ActiveNetworksOverlap(r.Context(), current.Networks, id); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+			return
+		}
 	}
 
 	if err := s.store.UpdateUser(r.Context(), current); err != nil {

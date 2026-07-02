@@ -53,7 +53,11 @@ export interface UserSavePayload {
   catalog_editable: boolean
   active_dial: boolean
   web_auth: string
-  networks: string[]
+  // Omitted (not just empty) when the Networks field is hidden for the
+  // current web_auth mode — the backend must leave existing networks
+  // completely untouched in that case, not treat an empty array as "clear
+  // them all out."
+  networks?: string[]
   filter_allow: string[]
   filter_deny: string[]
 }

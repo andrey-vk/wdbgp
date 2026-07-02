@@ -67,6 +67,13 @@ const dynamicPeer = ref(false)
 const defaultWebAuth = ref('network')
 const defaultActiveDial = ref(false)
 
+// Networks normalization: the button/message appear only when the current
+// textarea content differs (ignoring order/whitespace) from the minimal,
+// masked, fully-merged form the backend would compute — matching what
+// apiUsersCreate/Update will actually enforce at save time.
+const networksNormalizedSuggestion = ref<string[] | null>(null)
+const networksNeedNormalization = ref(false)
+
 const showNetworks = computed(() => {
   const auth = form.value.web_auth || selected.value?.web_auth
   return auth === 'network' || auth === 'both' || auth === 'any'
@@ -169,6 +176,8 @@ function selectUser(user: User) {
   }
   dynamicPeer.value = user.peer_ip === '0.0.0.0' || user.peer_ip === '::'
   editMode.value = false
+  networksNeedNormalization.value = false
+  networksNormalizedSuggestion.value = null
   loadCredentials(user.id)
 }
 
@@ -198,6 +207,8 @@ function startNew() {
   }
   dynamicPeer.value = false
   editMode.value = true
+  networksNeedNormalization.value = false
+  networksNormalizedSuggestion.value = null
 }
 
 function startEdit() {
@@ -230,6 +241,8 @@ function cancelEdit() {
     dynamicPeer.value = selected.value.peer_ip === '0.0.0.0' || selected.value.peer_ip === '::'
   }
   editMode.value = false
+  networksNeedNormalization.value = false
+  networksNormalizedSuggestion.value = null
 }
 
 function onDynamicPeerChange(value: boolean) {
@@ -255,7 +268,53 @@ function webAuthLabel(val: string): string {
   return found ? found.label : val
 }
 
+function parseNetworksInput(text: string): string[] {
+  return text.split('\n').map(s => s.trim()).filter(Boolean)
+}
+
+function sameNetworkSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  const sortedA = [...a].sort()
+  const sortedB = [...b].sort()
+  return sortedA.every((v, i) => v === sortedB[i])
+}
+
+// Runs on blur: asks the backend for the minimal equivalent form of the
+// current input and compares it (order/whitespace ignored) against what's
+// actually typed. A mismatch means unmasked host bits, an overlap, or an
+// adjacent pair that should be combined — the same rule the save endpoint
+// enforces, checked here first so the admin sees it before submitting.
+async function checkNetworksNormalization() {
+  const current = parseNetworksInput(form.value.networks_text)
+  if (current.length === 0) {
+    networksNeedNormalization.value = false
+    networksNormalizedSuggestion.value = null
+    return
+  }
+  try {
+    const resp = await apiClient.post<{ networks: string[] }>('/admin/users/normalize-networks', { networks: current })
+    networksNormalizedSuggestion.value = resp.data.networks
+    networksNeedNormalization.value = !sameNetworkSet(current, resp.data.networks)
+  } catch {
+    // Malformed CIDR mid-edit, etc. — don't block on the preview call;
+    // the real validation happens at save time via the save endpoint's
+    // own error response.
+    networksNeedNormalization.value = false
+    networksNormalizedSuggestion.value = null
+  }
+}
+
+function applyNetworksNormalization() {
+  if (!networksNormalizedSuggestion.value) return
+  form.value.networks_text = networksNormalizedSuggestion.value.join('\n')
+  networksNeedNormalization.value = false
+}
+
 async function handleSave() {
+  if (networksNeedNormalization.value) {
+    toast.add({ severity: 'error', summary: t('users.networks_needs_normalization'), life: 4000 })
+    return
+  }
   if (!form.value.name.trim()) { toast.add({ severity: 'error', summary: t('users.error_name'), life: 3000 }); return }
   if (!form.value.peer_ip.trim()) { toast.add({ severity: 'error', summary: t('users.error_peer_ip'), life: 3000 }); return }
   const networks = form.value.networks_text.split('\n').map(s => s.trim()).filter(Boolean)
@@ -278,7 +337,10 @@ async function handleSave() {
       catalog_editable: form.value.catalog_editable,
       active_dial: form.value.active_dial,
       web_auth: form.value.web_auth,
-      networks,
+      // Omit entirely when the field is hidden — the backend must not
+      // touch a user's existing networks just because this save happened
+      // to include an unrelated field change while networks weren't shown.
+      networks: showNetworks.value ? networks : undefined,
       filter_allow: form.value.filter_allow_text.split('\n').map(s => s.trim()).filter(s => s !== ''),
       filter_deny: form.value.filter_deny_text.split('\n').map(s => s.trim()).filter(s => s !== ''),
     }
@@ -313,6 +375,8 @@ async function handleSave() {
     }
     dynamicPeer.value = isDynamic(resp.data.peer_ip)
     editMode.value = false
+    networksNeedNormalization.value = false
+    networksNormalizedSuggestion.value = null
     toast.add({ severity: 'success', summary: t('users.saved'), life: 3000 })
   } catch (e: unknown) {
     const err = e as { response?: { data?: { error?: string } } }
@@ -810,7 +874,23 @@ async function toggleEnabled() {
                   v-model="form.networks_text"
                   rows="4"
                   fluid
+                  @blur="checkNetworksNormalization"
                 />
+                <div
+                  v-if="networksNeedNormalization"
+                  class="flex items-center gap-2 mt-1"
+                >
+                  <span class="text-xs text-orange-600 dark:text-orange-400">{{ t('users.networks_needs_normalization') }}</span>
+                  <Button
+                    size="small"
+                    severity="warn"
+                    text
+                    icon="pi pi-sparkles"
+                    :label="t('users.networks_normalize_button')"
+                    data-testid="networks-normalize-button"
+                    @click="applyNetworksNormalization"
+                  />
+                </div>
               </FormField>
               <p
                 v-else
@@ -981,6 +1061,7 @@ async function toggleEnabled() {
                 icon="pi pi-check"
                 severity="primary"
                 :loading="saving"
+                :disabled="networksNeedNormalization"
                 @click="handleSave"
               />
               <Button

@@ -42,4 +42,5 @@ var migrations = []Migration{
 	{27, "add is_builtin to feed_adapters", m.V027, nil},
 	{28, "drop allowed_hosts from feed_adapters", m.V028, nil},
 	{29, "move route filters to app_settings", m.V029, nil},
+	{30, "delete overlapping user networks between active users", m.V030, nil},
 }

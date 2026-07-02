@@ -403,7 +403,7 @@ func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
 	adminCookie := &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test code
 
 	// Without password — should succeed (password is not required for dynamic peers)
-	body := `{"name":"dynamic-no-pw","peer_ip":"0.0.0.0","peer_asn":65100,"networks":["0.0.0.0/0"],"enabled":true}`
+	body := `{"name":"dynamic-no-pw","peer_ip":"0.0.0.0","peer_asn":65100,"networks":["10.90.0.0/24"],"enabled":true}`
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
@@ -415,7 +415,7 @@ func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
 	}
 
 	// With password — should also succeed
-	body = `{"name":"dynamic-with-pw","peer_ip":"0.0.0.0","peer_asn":65101,"bgp_password":"secret123","password_enabled":true,"networks":["10.0.0.0/8"],"enabled":true}`
+	body = `{"name":"dynamic-with-pw","peer_ip":"0.0.0.0","peer_asn":65101,"bgp_password":"secret123","password_enabled":true,"networks":["10.91.0.0/24"],"enabled":true}`
 	request = httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)

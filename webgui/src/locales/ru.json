@@ -315,6 +315,8 @@
   "users.catalog_mode_hint": "Режим каталога, назначенный этому пользователю.",
   "users.networks": "Сети клиента",
   "users.networks_hint": "CIDR-префиксы для веб-аутентификации (по одному на строку). Минимум один обязателен.",
+  "users.networks_needs_normalization": "Эти сети ещё не полностью нормализованы/объединены. Исправьте их вручную или нажмите кнопку.",
+  "users.networks_normalize_button": "Нормализовать и объединить",
   "users.selection_locked": "Заблокировать выбор",
   "users.selection_locked_hint": "Запретить пользователю менять выбранные категории/сервисы.",
   "users.catalog_editable": "Разрешить смену режима",

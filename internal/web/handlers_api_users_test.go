@@ -1559,3 +1559,287 @@ func TestUpdateUserInvalidWebAuth(t *testing.T) {
 		t.Fatalf("invalid web_auth update: status = %d, want 400, body=%s", w.Code, w.Body.String())
 	}
 }
+
+// =============================================================================
+// TestCreateUserRejectsUnnormalizedNetworks — networks with unmasked host
+// bits, overlaps, or combinable-adjacent ranges must be rejected, not
+// silently accepted verbatim.
+// =============================================================================
+
+func TestCreateUserRejectsUnnormalizedNetworks(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	// Each case needs its own peer_ip/ASN — otherwise a case that's wrongly
+	// accepted (the exact regression this test guards against) would occupy
+	// the identity and make the next case fail for the unrelated reason of
+	// "peer already exists" instead of the network check being exercised.
+	cases := []struct {
+		name     string
+		peerIP   string
+		peerASN  int
+		networks string
+	}{
+		// Distinct, non-overlapping address ranges per case — this test is
+		// only about per-user normalization, not the separate (and, for
+		// this step, explicitly out of scope) cross-user duplicate-CIDR
+		// constraint, so cases must never share an address range.
+		{"unmasked host bits", "10.0.97.1", 65097, `["10.1.0.5/24"]`},
+		{"overlapping ranges", "10.0.97.2", 65098, `["10.2.0.0/24", "10.2.0.128/25"]`},
+		{"adjacent ranges", "10.0.97.3", 65099, `["10.3.0.0/25", "10.3.0.128/25"]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"name":"unnorm-%s","peer_ip":"%s","peer_asn":%d,"networks":%s,"web_auth":"network","enabled":true}`,
+				tc.name, tc.peerIP, tc.peerASN, tc.networks)
+			req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			srv.apiUsersCreate(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestCreateUserAcceptsAlreadyNormalizedNetworks(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	body := `{"name":"norm-ok","peer_ip":"10.0.96.1","peer_asn":65096,"networks":["10.0.0.0/24","10.0.2.0/24"],"web_auth":"network","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateUserRejectsUnnormalizedNetworks(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	createBody := strings.NewReader(`{"name":"unnorm-update","peer_ip":"10.0.95.1","peer_asn":65095,"networks":["10.0.0.0/24"],"web_auth":"network","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created userJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+
+	updateBody := strings.NewReader(`{"networks":["10.0.0.0/25","10.0.0.128/25"]}`)
+	req = httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(created.ID, 10), updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
+// TestApiUsersNormalizeNetworks — POST /api/admin/users/normalize-networks
+// returns the minimal equivalent set for the admin UI's preview/auto-fix
+// button and pre-save validation.
+// =============================================================================
+
+func TestApiUsersNormalizeNetworks(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	body := `{"networks":["10.0.0.0/25","10.0.0.128/25","10.0.2.5/24"]}`
+	req := httptest.NewRequest("POST", "/api/admin/users/normalize-networks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersNormalizeNetworks(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Networks []string `json:"networks"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"10.0.0.0/24", "10.0.2.0/24"}
+	if len(resp.Networks) != len(want) {
+		t.Fatalf("networks = %v, want %v", resp.Networks, want)
+	}
+	got := map[string]bool{}
+	for _, n := range resp.Networks {
+		got[n] = true
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("networks = %v, missing %v", resp.Networks, w)
+		}
+	}
+}
+
+func TestApiUsersNormalizeNetworksRejectsInvalidCIDR(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	body := `{"networks":["not-a-cidr"]}`
+	req := httptest.NewRequest("POST", "/api/admin/users/normalize-networks", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersNormalizeNetworks(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
+// Cross-user network overlap validation (apiUsersCreate/apiUsersUpdate)
+// =============================================================================
+
+func TestCreateUserRejectsOverlapWithActiveUser(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	createBody := `{"name":"existing","peer_ip":"10.0.94.1","peer_asn":65090,"networks":["10.0.0.0/24"],"web_auth":"network","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create existing: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+
+	conflictBody := `{"name":"conflicting","peer_ip":"10.0.94.2","peer_asn":65091,"networks":["10.0.0.128/25"],"web_auth":"network","enabled":true}`
+	req = httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(conflictBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("create conflicting: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "existing") {
+		t.Errorf("error body = %s, want it to name the conflicting user", w.Body.String())
+	}
+}
+
+func TestCreateUserIgnoresOverlapWithLoginModeUser(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	loginBody := `{"name":"login-user","peer_ip":"10.0.93.1","peer_asn":65092,"web_auth":"login","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(loginBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create login-user: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var loginUser userJSON
+	if err := json.NewDecoder(w.Body).Decode(&loginUser); err != nil {
+		t.Fatal(err)
+	}
+	// Give the login-mode user a stale network directly (bypassing the API,
+	// simulating data left over from before it switched to login mode) —
+	// must not affect the create below at all, even though it overlaps
+	// with what network-user is about to claim.
+	if _, err := st.DB.ExecContext(ctx, "INSERT INTO user_networks(user_id, cidr) VALUES (?, ?)", loginUser.ID, "10.5.0.128/25"); err != nil {
+		t.Fatal(err)
+	}
+
+	networkBody := `{"name":"network-user","peer_ip":"10.0.93.2","peer_asn":65093,"networks":["10.5.0.0/24"],"web_auth":"network","enabled":true}`
+	req = httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(networkBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create network-user: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUpdateUserRejectsReactivatingConflictingNetworks(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	// A network-mode user occupies 10.0.0.0/24 first.
+	activeBody := `{"name":"active-user","peer_ip":"10.0.92.1","peer_asn":65094,"networks":["10.0.0.0/24"],"web_auth":"network","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(activeBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create active-user: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+
+	// A second user starts in login mode with an overlapping network,
+	// stored directly (not through the API, which would reject it outright
+	// since it would already be active) to simulate this user having sat
+	// dormant in login mode since before active-user was created.
+	dormantID, err := st.AddUser(ctx, store.User{
+		Name: "dormant-user", PeerIP: "10.0.92.2", PeerASN: 65095, Enabled: true, WebAuth: "login",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec("INSERT INTO user_networks(user_id, cidr) VALUES (?, ?)", dormantID, "10.0.0.128/25"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Switching dormant-user back to network mode, without touching
+	// networks at all, must be rejected — its now-active networks conflict.
+	switchBody := `{"web_auth":"network"}`
+	req = httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(dormantID, 10), strings.NewReader(switchBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(dormantID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "active-user") {
+		t.Errorf("error body = %s, want it to name the conflicting user", w.Body.String())
+	}
+
+	// The mode switch must not have gone through.
+	reloaded, err := st.User(ctx, dormantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.WebAuth != "login" {
+		t.Errorf("web_auth = %q after rejected update, want unchanged \"login\"", reloaded.WebAuth)
+	}
+}
+
+func TestUpdateUserAllowsReactivatingNonConflictingNetworks(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	dormantID, err := st.AddUser(ctx, store.User{
+		Name: "dormant-user", PeerIP: "10.0.91.2", PeerASN: 65096, Enabled: true, WebAuth: "login",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec("INSERT INTO user_networks(user_id, cidr) VALUES (?, ?)", dormantID, "10.0.7.0/24"); err != nil {
+		t.Fatal(err)
+	}
+
+	switchBody := `{"web_auth":"network"}`
+	req := httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(dormantID, 10), strings.NewReader(switchBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(dormantID, 10))
+	w := httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	reloaded, err := st.User(ctx, dormantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.WebAuth != "network" {
+		t.Errorf("web_auth = %q, want \"network\"", reloaded.WebAuth)
+	}
+}

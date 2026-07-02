@@ -4,10 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"net/netip"
 	"sort"
+	"strings"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/andrey-vk/wdbgp/internal/prefixfilter"
 )
 
 // User represents a BGP user/peer.
@@ -126,12 +130,100 @@ func (s *Store) UserNetworks(ctx context.Context, userID int64) ([]string, error
 	return networks, rows.Err()
 }
 
+// AggregateNetworks parses each CIDR, then returns the minimal set of
+// prefixes covering the same address space — masked, deduplicated, and with
+// overlapping or adjacent prefixes merged (see prefixfilter.Aggregate).
+// Returns an error naming the first entry that fails to parse.
+func AggregateNetworks(raw []string) ([]string, error) {
+	prefixes := make([]netip.Prefix, 0, len(raw))
+	for _, r := range raw {
+		p, err := netip.ParsePrefix(strings.TrimSpace(r))
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", r, err)
+		}
+		prefixes = append(prefixes, p.Masked())
+	}
+	aggregated := prefixfilter.Aggregate(prefixes)
+	result := make([]string, len(aggregated))
+	for i, p := range aggregated {
+		result[i] = p.String()
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result, nil
+}
+
+// ActiveNetworksOverlap reports whether any candidate network overlaps with
+// an active (web_auth network/both/any) network belonging to a different
+// user. excludeUserID is the user being saved (0 for a new user, so nothing
+// is excluded). Candidates are expected already-normalized (see
+// AggregateNetworks) — this only checks for cross-user conflicts, not
+// internal redundancy. Returns an error naming the conflicting user and
+// both CIDRs if a conflict is found.
+func (s *Store) ActiveNetworksOverlap(ctx context.Context, candidates []string, excludeUserID int64) error {
+	if len(candidates) == 0 {
+		return nil
+	}
+	candidatePrefixes := make([]netip.Prefix, 0, len(candidates))
+	for _, c := range candidates {
+		p, err := netip.ParsePrefix(strings.TrimSpace(c))
+		if err != nil {
+			return fmt.Errorf("invalid CIDR %q: %w", c, err)
+		}
+		candidatePrefixes = append(candidatePrefixes, p.Masked())
+	}
+
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT un.cidr, u.name
+		FROM user_networks un
+		JOIN users u ON u.id = un.user_id
+		WHERE u.web_auth IN (`+activeWebAuthModesSQL+`) AND un.user_id != ?
+	`, excludeUserID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
+
+	for rows.Next() {
+		var cidr, name string
+		if err := rows.Scan(&cidr, &name); err != nil {
+			return err
+		}
+		otherPrefix, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			continue
+		}
+		for _, candidate := range candidatePrefixes {
+			if candidate.Overlaps(otherPrefix) {
+				return fmt.Errorf("network %s overlaps with %s, already assigned to user %q", candidate, otherPrefix, name)
+			}
+		}
+	}
+	return rows.Err()
+}
+
+// activeWebAuthModesSQL lists the web_auth values that use IP-based user
+// resolution — everything except "login". A user's networks only matter
+// for UserByIP / cross-user overlap validation while their current mode is
+// one of these; a "login"-mode user's networks are stale/vestigial (left
+// over from a previous mode) and must be invisible to both. Fixed, literal
+// values — safe to inline directly, no user input involved.
+const activeWebAuthModesSQL = "'network', 'both', 'any'"
+
 func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 	ip, err := netip.ParseAddr(address)
 	if err != nil {
 		return User{}, err
 	}
-	rows, err := s.DB.QueryContext(ctx, "SELECT user_id, cidr FROM user_networks")
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT un.user_id, un.cidr
+		FROM user_networks un
+		JOIN users u ON u.id = un.user_id
+		WHERE u.web_auth IN (`+activeWebAuthModesSQL+`)
+	`)
 	if err != nil {
 		return User{}, err
 	}
