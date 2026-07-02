@@ -639,8 +639,14 @@ func TestUpdatePeerClearsRoutesOnPasswordChange(t *testing.T) {
 	}
 	defer s.Close()
 
+	// 0.0.0.0 (dynamic/passive-only peer, see TestDynamicPeerIsPassiveOnly)
+	// is deliberately excluded from applyListenerMD5's setsockopt calls
+	// (pc.Address.IsUnspecified()), so a password change here exercises
+	// speaker.SetPeers' recreation logic without touching TCP_MD5SIG —
+	// not every CI/sandbox kernel supports that socket option, and this
+	// test only cares about the peerRoutes cache, not MD5 itself.
 	userID, err := s.AddUser(ctx, store.User{
-		Name: "user", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true, BGPPassword: "old-pass",
+		Name: "user", PeerIP: "0.0.0.0", PeerASN: 65001, Enabled: true, BGPPassword: "old-pass",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -659,20 +665,20 @@ func TestUpdatePeerClearsRoutesOnPasswordChange(t *testing.T) {
 
 	// Simulate a prior successful reconcile having announced routes.
 	manager.mu.Lock()
-	manager.peerRoutes["192.0.2.2:65001"] = []Route{{Prefix: netip.MustParsePrefix("8.8.8.0/24")}}
+	manager.peerRoutes["0.0.0.0:65001"] = []Route{{Prefix: netip.MustParsePrefix("8.8.8.0/24")}}
 	manager.mu.Unlock()
 
 	// Same IP/ASN, only the BGP password changes — SetPeers recreates the
 	// peer session, so the stale cache must be cleared.
 	if err := manager.UpdatePeer(ctx, store.User{
-		ID: userID, Name: "user", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true, BGPPassword: "new-pass",
+		ID: userID, Name: "user", PeerIP: "0.0.0.0", PeerASN: 65001, Enabled: true, BGPPassword: "new-pass",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if _, ok := manager.peerRoutes["192.0.2.2:65001"]; ok {
+	if _, ok := manager.peerRoutes["0.0.0.0:65001"]; ok {
 		t.Fatal("peerRoutes should have been cleared after a password change recreated the peer session")
 	}
 }
