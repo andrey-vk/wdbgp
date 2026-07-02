@@ -746,3 +746,24 @@ func TestRateLimitValidation(t *testing.T) {
 		t.Errorf("unexpected error for valid rate_limit_admin: %v", err)
 	}
 }
+
+// TestDefaultWebAuthValidation guards against a typo like "password" being
+// silently accepted for default_web_auth. apiUsersCreate copies this value
+// into any user that omits web_auth, but requireUser only recognizes
+// network/login/both/any — an unrecognized mode would lock those users out
+// until manually corrected.
+func TestDefaultWebAuthValidation(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DefaultWebAuth.Set(context.Background(), "password"); err == nil {
+		t.Error("expected error for unrecognized web_auth mode")
+	}
+	for _, mode := range []string{"network", "login", "both", "any"} {
+		if err := s.DefaultWebAuth.Set(context.Background(), mode); err != nil {
+			t.Errorf("unexpected error for valid mode %q: %v", mode, err)
+		}
+	}
+}

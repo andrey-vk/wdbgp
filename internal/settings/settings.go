@@ -286,7 +286,7 @@ func New(store Store) (*Settings, error) {
 	}
 
 	// DefaultWebAuth.
-	s.DefaultWebAuth, err = newSimple("network", "default_web_auth", "WDBGP_DEFAULT_WEB_AUTH", parseString, nil, store, dbSettings)
+	s.DefaultWebAuth, err = newSimple("network", "default_web_auth", "WDBGP_DEFAULT_WEB_AUTH", parseString, validateWebAuthMode, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -535,4 +535,20 @@ func validateFilterList(v string) error {
 		}
 	}
 	return nil
+}
+
+// validateWebAuthMode checks that a value is one of the recognized
+// per-user web_auth modes. apiUsersCreate copies default_web_auth into any
+// user that omits web_auth, so an unrecognized value here would silently
+// lock those users out — requireUser (internal/web) only recognizes
+// network/login/both/any. Kept in sync by hand with internal/web's
+// isValidWebAuth (handlers_api_users.go); settings can't import web, which
+// already imports settings.
+func validateWebAuthMode(v string) error {
+	switch v {
+	case "network", "login", "both", "any":
+		return nil
+	default:
+		return fmt.Errorf("web_auth must be one of network, login, both, any, got %q", v)
+	}
 }
