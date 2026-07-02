@@ -295,8 +295,17 @@ func normalizedBuiltInSource(source string) string {
 }
 
 // BuiltinAdapterAllowedHosts returns the additional allowed hosts declared by
-// a built-in adapter, or empty string if the adapter is not built-in or has none.
+// a built-in adapter, or empty string if the adapter is not built-in (or a
+// fork of one) or has none. A fork's source still calls out to the same
+// hosts as the built-in it was copied from, so forked_from is resolved to
+// the underlying built-in adapter before matching — otherwise a feed using
+// a fork of e.g. the IPRanges adapter would default to restrict_hosts=true
+// with no extra hosts and reject its own requests to raw.githubusercontent.com.
 func (s *Store) BuiltinAdapterAllowedHosts(ctx context.Context, adapterID int64) string {
+	var forkedFrom int64
+	if err := s.DB.QueryRowContext(ctx, "SELECT COALESCE(forked_from, 0) FROM feed_adapters WHERE id = ?", adapterID).Scan(&forkedFrom); err == nil && forkedFrom != 0 {
+		adapterID = forkedFrom
+	}
 	for _, key := range []string{"canonical-json", "opencck", "ipranges", "singbox-srs"} {
 		ba := builtInAdapters[key]
 		var id int64

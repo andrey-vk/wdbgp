@@ -326,3 +326,42 @@ func TestMaxForkedAdapterSuffix(t *testing.T) {
 		}
 	})
 }
+
+// TestBuiltinAdapterAllowedHostsResolvesForks guards against a bug where a
+// fork of a built-in adapter (e.g. IPRanges) didn't inherit the built-in's
+// declared allowed hosts — BuiltinAdapterAllowedHosts only matched the
+// built-in row's own ID. A fork's source still calls out to the same
+// hosts as the built-in it was copied from, so a feed using the fork
+// would default to restrict_hosts=true with no extra hosts and reject its
+// own HTTP requests.
+func TestBuiltinAdapterAllowedHostsResolvesForks(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "fork-hosts.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("close: %v", err)
+		}
+	}()
+	ctx := context.Background()
+
+	var iprangesID int64
+	if err := db.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE key = 'ipranges'").Scan(&iprangesID); err != nil {
+		t.Fatal(err)
+	}
+
+	directHosts := db.BuiltinAdapterAllowedHosts(ctx, iprangesID)
+	if directHosts == "" {
+		t.Fatal("precondition failed: built-in ipranges adapter should declare allowed hosts")
+	}
+
+	fork, err := db.ForkAdapter(ctx, iprangesID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := db.BuiltinAdapterAllowedHosts(ctx, fork.ID); got != directHosts {
+		t.Errorf("BuiltinAdapterAllowedHosts(fork) = %q, want %q (inherited from the built-in it was forked from)", got, directHosts)
+	}
+}
