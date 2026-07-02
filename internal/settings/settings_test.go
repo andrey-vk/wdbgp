@@ -763,7 +763,9 @@ func TestFilterListValidation(t *testing.T) {
 // TestRateLimitValidation guards against WDBGP_RATE_LIMIT_LOGIN=0 (or the
 // admin equivalent) silently disabling brute-force protection — the
 // documented range starts at 1, and rateLimiter.allow treats maxRequests
-// <= 0 as "disabled".
+// <= 0 as "disabled". It also guards the upper bound: a value above 1000
+// effectively disables rate limiting in practice even though it isn't
+// literally <= 0.
 func TestRateLimitValidation(t *testing.T) {
 	store := newMockStore()
 	s, err := New(store)
@@ -776,11 +778,20 @@ func TestRateLimitValidation(t *testing.T) {
 	if err := s.RateLimitLogin.Set(context.Background(), -1); err == nil {
 		t.Error("expected error for negative rate_limit_login")
 	}
+	if err := s.RateLimitLogin.Set(context.Background(), 1001); err == nil {
+		t.Error("expected error for rate_limit_login above 1000")
+	}
+	if err := s.RateLimitLogin.Set(context.Background(), 1000); err != nil {
+		t.Errorf("unexpected error for rate_limit_login at the 1000 boundary: %v", err)
+	}
 	if err := s.RateLimitLogin.Set(context.Background(), 5); err != nil {
 		t.Errorf("unexpected error for valid rate_limit_login: %v", err)
 	}
 	if err := s.RateLimitAdmin.Set(context.Background(), 0); err == nil {
 		t.Error("expected error for rate_limit_admin 0")
+	}
+	if err := s.RateLimitAdmin.Set(context.Background(), 1001); err == nil {
+		t.Error("expected error for rate_limit_admin above 1000")
 	}
 	if err := s.RateLimitAdmin.Set(context.Background(), 30); err != nil {
 		t.Errorf("unexpected error for valid rate_limit_admin: %v", err)

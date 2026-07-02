@@ -226,13 +226,13 @@ func New(store Store) (*Settings, error) {
 	}
 
 	// RateLimitLogin.
-	s.RateLimitLogin, err = newSimple(5, "rate_limit_login", "WDBGP_RATE_LIMIT_LOGIN", parseInt, validatePositive, store, dbSettings)
+	s.RateLimitLogin, err = newSimple(5, "rate_limit_login", "WDBGP_RATE_LIMIT_LOGIN", parseInt, validateRateLimit, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// RateLimitAdmin.
-	s.RateLimitAdmin, err = newSimple(30, "rate_limit_admin", "WDBGP_RATE_LIMIT_ADMIN", parseInt, validatePositive, store, dbSettings)
+	s.RateLimitAdmin, err = newSimple(30, "rate_limit_admin", "WDBGP_RATE_LIMIT_ADMIN", parseInt, validateRateLimit, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -479,6 +479,20 @@ func (s *Settings) store() Store {
 func validatePositive(v int) error {
 	if v <= 0 {
 		return fmt.Errorf("must be positive, got %d", v)
+	}
+	return nil
+}
+
+// validateRateLimit checks that a per-minute rate limit is positive and
+// capped at 1000 — well above any legitimate login/admin request rate, but
+// low enough that a misconfigured value can't silently disable brute-force
+// protection.
+func validateRateLimit(v int) error {
+	if v <= 0 {
+		return fmt.Errorf("must be positive, got %d", v)
+	}
+	if v > 1000 {
+		return fmt.Errorf("must not exceed 1000 requests per minute, got %d", v)
 	}
 	return nil
 }
