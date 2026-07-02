@@ -100,7 +100,7 @@ export const sections: SettingsSection[] = [
       bgp_port:                       { label: 'settings.bgp_port',                         hint: 'settings.bgp_port_hint',                         type: 'number', restart: true, envVar: 'WDBGP_BGP_PORT' },
       local_address_v4:               { label: 'settings.local_address_v4',                 hint: 'settings.local_address_v4_hint',                 type: 'string', restart: true, envVar: 'WDBGP_BGP_LOCAL_ADDRESS' },
       local_address_v6:               { label: 'settings.local_address_v6',                 hint: 'settings.local_address_v6_hint',                 type: 'string', restart: true, envVar: 'WDBGP_BGP_LOCAL_ADDRESS_V6' },
-      active_dial:                    { label: 'settings.active_dial',                      hint: 'settings.active_dial_hint',                      type: 'bool', envVar: 'WDBGP_ACTIVE_DIAL' },
+      active_dial:                    { label: 'settings.active_dial',                      hint: 'settings.active_dial_hint',                      type: 'bool', restart: true, envVar: 'WDBGP_ACTIVE_DIAL' },
       allow_dynamic_peers:            { label: 'settings.allow_dynamic_peers',              hint: 'settings.allow_dynamic_peers_hint',              type: 'bool', envVar: 'WDBGP_ALLOW_DYNAMIC_PEERS' },
       require_password_for_non_unique_ip: { label: 'settings.require_password_for_non_unique_ip', hint: 'settings.require_password_for_non_unique_ip_hint', type: 'bool', envVar: 'WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP' },
     },

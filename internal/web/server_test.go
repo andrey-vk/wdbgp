@@ -1002,6 +1002,40 @@ func TestBGPStatusReflectsRestartPendingAfterSettingChange(t *testing.T) {
 	assertPending(true)
 }
 
+// TestBGPStatusReflectsRestartPendingAfterActiveDialChange guards against
+// active_dial being able to change an already-connected peer's dial mode
+// (buildPeerConfigs reads it live) without any way for the admin to notice
+// or apply it — Reconcile only re-announces routes, it never calls
+// SetPeers, so nothing actually picks up the new dial mode until a reload.
+func TestBGPStatusReflectsRestartPendingAfterActiveDialChange(t *testing.T) {
+	s := testSettings()
+	server := New(s, nil, nil, &fakeBGP{})
+	handler := server.Handler()
+	cookie := adminCookie(s)
+
+	assertPending := func(want bool) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/api/admin/bgp/status", nil)
+		req.AddCookie(cookie)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		var resp bgpStatusJSON
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.RestartPending != want {
+			t.Fatalf("restart_pending = %v, want %v", resp.RestartPending, want)
+		}
+	}
+
+	assertPending(false)
+
+	if err := s.ActiveDial.Set(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	assertPending(true)
+}
+
 func TestBGPReloadClearsRestartPendingOnSuccess(t *testing.T) {
 	s := testSettings()
 	fake := &fakeBGP{}

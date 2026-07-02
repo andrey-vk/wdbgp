@@ -154,6 +154,11 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	st.BGPPort.OnChange(func(uint16) { markBGPRestartPending() })
 	st.LocalAddressV4.OnChange(func(string) { markBGPRestartPending() })
 	st.LocalAddressV6.OnChange(func(string) { markBGPRestartPending() })
+	// ActiveDial changes which port buildPeerConfigs assigns existing peers
+	// (active-dial vs passive-only), but Reconcile only re-announces routes —
+	// it never calls SetPeers, so an already-connected peer keeps its old
+	// dial mode until the speaker actually reloads.
+	st.ActiveDial.OnChange(func(bool) { markBGPRestartPending() })
 
 	return server
 }
