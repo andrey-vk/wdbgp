@@ -153,12 +153,15 @@ func AggregateNetworks(raw []string) ([]string, error) {
 }
 
 // ActiveNetworksOverlap reports whether any candidate network overlaps with
-// an active (web_auth network/both/any) network belonging to a different
-// user. excludeUserID is the user being saved (0 for a new user, so nothing
-// is excluded). Candidates are expected already-normalized (see
-// AggregateNetworks) — this only checks for cross-user conflicts, not
-// internal redundancy. Returns an error naming the conflicting user and
-// both CIDRs if a conflict is found.
+// an active (web_auth network/both/any, and enabled) network belonging to a
+// different user. A disabled user's IP match is discarded by requireUser
+// regardless of what UserByIP's raw SQL would resolve to, so a disabled
+// user's network can never actually cause auth ambiguity and must not be
+// able to block an unrelated enabled user's save. excludeUserID is the user
+// being saved (0 for a new user, so nothing is excluded). Candidates are
+// expected already-normalized (see AggregateNetworks) — this only checks
+// for cross-user conflicts, not internal redundancy. Returns an error
+// naming the conflicting user and both CIDRs if a conflict is found.
 func (s *Store) ActiveNetworksOverlap(ctx context.Context, candidates []string, excludeUserID int64) error {
 	if len(candidates) == 0 {
 		return nil
@@ -176,7 +179,7 @@ func (s *Store) ActiveNetworksOverlap(ctx context.Context, candidates []string, 
 		SELECT un.cidr, u.name
 		FROM user_networks un
 		JOIN users u ON u.id = un.user_id
-		WHERE u.web_auth IN (`+activeWebAuthModesSQL+`) AND un.user_id != ?
+		WHERE u.web_auth IN (`+activeWebAuthModesSQL+`) AND u.enabled = 1 AND un.user_id != ?
 	`, excludeUserID)
 	if err != nil {
 		return err

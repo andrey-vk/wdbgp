@@ -51,6 +51,30 @@ func TestActiveNetworksOverlapIgnoresLoginModeUsers(t *testing.T) {
 	}
 }
 
+// TestActiveNetworksOverlapIgnoresDisabledUsers guards against a bug where
+// a disabled user's network could block an unrelated enabled user's save —
+// a disabled user's IP match is always discarded by requireUser, so their
+// network can never actually cause auth ambiguity and must not participate
+// in this check at all.
+func TestActiveNetworksOverlapIgnoresDisabledUsers(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "overlap-disabled.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close() //nolint:errcheck,gosec // test cleanup
+
+	disabledUser, err := s.AddUser(ctx, User{Name: "disabled-user", PeerIP: "10.1.0.1", PeerASN: 65001, Enabled: false, WebAuth: "network"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertRawNetwork(t, s.DB, disabledUser, "10.0.0.0/24")
+
+	if err := s.ActiveNetworksOverlap(ctx, []string{"10.0.0.128/25"}, 0); err != nil {
+		t.Errorf("unexpected error, disabled user's network should be ignored: %v", err)
+	}
+}
+
 func TestActiveNetworksOverlapExcludesSelf(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(filepath.Join(t.TempDir(), "overlap-self.sqlite3"), false, "", false)

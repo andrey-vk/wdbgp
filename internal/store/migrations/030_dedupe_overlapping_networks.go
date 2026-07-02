@@ -11,11 +11,17 @@ import (
 // V030 is a one-time, alpha-stage data cleanup: it removes overlapping
 // networks between different users whose web_auth is network/both/any
 // (login-mode users' networks are inactive and never considered for IP
-// resolution, so they're excluded here too). It mirrors, at whole-entry
-// granularity, how UserByIP's longest-prefix-match already resolves an
-// overlap today: the more specific (longer) prefix is kept, and any
-// less-specific network from a different user that it overlaps with is
-// deleted outright.
+// resolution, so they're excluded here too), and who are enabled. A
+// disabled user's IP match is discarded by requireUser
+// (ipMatch := ipErr == nil && ipUser.Enabled) even if UserByIP's raw SQL
+// would otherwise resolve to them, so a disabled user's network can never
+// actually win an auth resolution — it must not be allowed to "win" this
+// cleanup either and cause an enabled user's broader, still-working
+// network to be deleted out from under them.
+// It mirrors, at whole-entry granularity, how UserByIP's longest-prefix-
+// match already resolves an overlap today: the more specific (longer)
+// prefix is kept, and any less-specific network from a different user
+// that it overlaps with is deleted outright.
 //
 // This is NOT a perfect range-preserving reconciliation — if a deleted
 // broader network also covered addresses outside the overlap, those
@@ -37,7 +43,7 @@ func V030(ctx context.Context, tx *sql.Tx) error {
 		SELECT un.user_id, un.cidr, u.name
 		FROM user_networks un
 		JOIN users u ON u.id = un.user_id
-		WHERE u.web_auth IN ('network', 'both', 'any')
+		WHERE u.web_auth IN ('network', 'both', 'any') AND u.enabled = 1
 	`)
 	if err != nil {
 		return err

@@ -165,3 +165,46 @@ func TestMigration30LeavesNonOverlappingNetworksAlone(t *testing.T) {
 		t.Errorf("userB networks = %v, want [10.0.2.0/24]", got)
 	}
 }
+
+// TestMigration30ExcludesDisabledUsersFromOverlapResolution guards against a
+// bug where a disabled user's narrower network could "win" the overlap
+// comparison against an enabled user's broader network, deleting the
+// enabled user's entire entry — even though a disabled user's IP match is
+// always discarded by requireUser (ipMatch := ipErr == nil &&
+// ipUser.Enabled), so their network could never actually have caused real
+// auth ambiguity in the first place. The enabled user's broader network
+// must survive untouched, and the disabled user's network must be left
+// alone too (it's simply excluded from the comparison, not treated as a
+// loser).
+func TestMigration30ExcludesDisabledUsersFromOverlapResolution(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "m30-disabled.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close() //nolint:errcheck,gosec // test cleanup
+
+	enabledUser, err := s.AddUser(ctx, User{Name: "enabled-user", PeerIP: "10.1.0.1", PeerASN: 65001, Enabled: true, WebAuth: "network"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabledUser, err := s.AddUser(ctx, User{Name: "disabled-user", PeerIP: "10.1.0.2", PeerASN: 65002, Enabled: false, WebAuth: "network"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// disabled-user has a more specific /26 fully inside enabled-user's
+	// broader /24 — without the fix, the more-specific-wins rule would
+	// delete enabled-user's /24 entirely.
+	insertRawNetwork(t, s.DB, enabledUser, "10.0.0.0/24")
+	insertRawNetwork(t, s.DB, disabledUser, "10.0.0.128/26")
+
+	runMigration30(t, s)
+
+	if got := networksFor(t, s, enabledUser); len(got) != 1 || got[0] != "10.0.0.0/24" {
+		t.Errorf("enabled-user networks = %v, want unchanged [10.0.0.0/24] — a disabled user's network must never cause an enabled user's network to be deleted", got)
+	}
+	if got := networksFor(t, s, disabledUser); len(got) != 1 || got[0] != "10.0.0.128/26" {
+		t.Errorf("disabled-user networks = %v, want unchanged [10.0.0.128/26] — disabled users are excluded from the comparison, not treated as losers", got)
+	}
+}
