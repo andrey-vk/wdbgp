@@ -1843,3 +1843,154 @@ func TestUpdateUserAllowsReactivatingNonConflictingNetworks(t *testing.T) {
 		t.Errorf("web_auth = %q, want \"network\"", reloaded.WebAuth)
 	}
 }
+
+// TestCreateUserRejectsInvalidNextHop guards against buildRoute silently
+// ignoring an unparseable next_hop (it only applies the override if
+// netip.ParseAddr succeeds) — a typo must be rejected at write time instead
+// of being accepted and then quietly falling back to the default next hop.
+func TestCreateUserRejectsInvalidNextHop(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+
+	body := `{"name":"nh-user","peer_ip":"10.0.93.1","peer_asn":65100,"next_hop":"not-an-ip","web_auth":"login","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+
+	users, err := st.Users(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range users {
+		if u.Name == "nh-user" {
+			t.Fatalf("user %q must not have been created after rejected next_hop", u.Name)
+		}
+	}
+}
+
+func TestCreateUserAcceptsValidNextHop(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	body := `{"name":"nh-user-ok","peer_ip":"10.0.93.2","peer_asn":65101,"next_hop":"10.0.93.254","web_auth":"login","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestUpdateUserRejectsInvalidNextHop mirrors TestCreateUserRejectsInvalidNextHop
+// for the partial-update path.
+func TestUpdateUserRejectsInvalidNextHop(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	createBody := `{"name":"nh-update-user","peer_ip":"10.0.93.3","peer_asn":65102,"next_hop":"10.0.93.253","web_auth":"login","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created userJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	updateBody := `{"next_hop":"garbage"}`
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d", created.ID), strings.NewReader(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+
+	reloaded, err := st.User(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.NextHop != "10.0.93.253" {
+		t.Errorf("next_hop = %q after rejected update, want unchanged \"10.0.93.253\"", reloaded.NextHop)
+	}
+}
+
+// TestCreateUserRejectsMalformedFilterWithoutCreatingUser guards against a
+// bug where AddUser committed the user row before SetUserRouteFilters
+// rejected a malformed CIDR, leaving a filterless user behind despite the
+// request having failed with an error.
+func TestCreateUserRejectsMalformedFilterWithoutCreatingUser(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+
+	body := `{"name":"bad-filter-user","peer_ip":"10.0.93.4","peer_asn":65103,"web_auth":"login","enabled":true,"filter_allow":["not-a-cidr"]}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+
+	users, err := st.Users(context.Background(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range users {
+		if u.Name == "bad-filter-user" {
+			t.Fatalf("user %q must not have been created after rejected filter_allow", u.Name)
+		}
+	}
+}
+
+// TestUpdateUserRejectsMalformedFilterWithoutMutatingUser mirrors the create
+// case for the partial-update path: a malformed filter CIDR must be caught
+// before UpdateUser writes the merged record, not after.
+func TestUpdateUserRejectsMalformedFilterWithoutMutatingUser(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	createBody := `{"name":"filter-update-user","peer_ip":"10.0.93.5","peer_asn":65104,"web_auth":"login","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(createBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created userJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	updateBody := `{"name":"renamed","filter_deny":["also-not-a-cidr"]}`
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d", created.ID), strings.NewReader(updateBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+
+	reloaded, err := st.User(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Name != "filter-update-user" {
+		t.Errorf("name = %q after rejected update, want unchanged \"filter-update-user\"", reloaded.Name)
+	}
+	filters, err := st.UserRouteFilters(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filters.Deny) != 0 {
+		t.Errorf("filter_deny = %v after rejected update, want empty (unchanged)", filters.Deny)
+	}
+}

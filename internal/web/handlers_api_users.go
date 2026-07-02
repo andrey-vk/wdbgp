@@ -257,6 +257,13 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid peer IP address"})
 		return
 	}
+	// buildRoute silently falls back to the default next hop for anything
+	// that fails netip.ParseAddr, so a typo here would otherwise be accepted
+	// and then quietly ignored at BGP-route-build time instead of erroring.
+	if body.NextHop != "" && !isValidIP(body.NextHop) {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid next hop address"})
+		return
+	}
 	for _, raw := range body.Networks {
 		if _, err := netip.ParsePrefix(strings.TrimSpace(raw)); err != nil {
 			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid network CIDR: " + raw})
@@ -361,6 +368,17 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 	// networks — otherwise UserByIP's resolution becomes ambiguous.
 	if isActiveWebAuth(user.WebAuth) {
 		if err := s.store.ActiveNetworksOverlap(r.Context(), user.Networks, 0); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+			return
+		}
+	}
+
+	// Validate route filters before creating the user — otherwise a
+	// malformed CIDR here would be caught by SetUserRouteFilters only after
+	// AddUser already committed the row, leaving a filterless user behind
+	// despite the request having failed.
+	if len(body.FilterAllow) > 0 || len(body.FilterDeny) > 0 {
+		if _, err := store.NormalizeRouteFilters(store.RouteFilters{Allow: body.FilterAllow, Deny: body.FilterDeny}); err != nil {
 			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 			return
 		}
@@ -475,6 +493,10 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		current.PeerASN = *body.PeerASN
 	}
 	if body.NextHop != nil {
+		if *body.NextHop != "" && !isValidIP(*body.NextHop) {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid next hop address"})
+			return
+		}
 		current.NextHop = *body.NextHop
 	}
 	if body.SelectionLocked != nil {
@@ -607,6 +629,38 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Merge and validate route filters before writing the user record — the
+	// same ordering rationale as apiUsersCreate: a malformed CIDR must not
+	// leave the user record updated (and, on the enabled path below, BGP
+	// peers refreshed) while the filter save itself still fails afterward.
+	// SetUserRouteFilters replaces both sides unconditionally, so a partial
+	// update touching only one of filter_allow/filter_deny must start from
+	// the currently saved value for the untouched side, not an empty slice
+	// — otherwise omitting one field from the request silently wipes the
+	// other.
+	var filterAllow, filterDeny []string
+	filtersProvided := body.FilterAllow != nil || body.FilterDeny != nil
+	if filtersProvided {
+		existing, err := s.store.UserRouteFilters(r.Context(), id)
+		if err != nil {
+			logging.FromContext(r.Context()).Debug("route filters lookup before update failed", "error", err, "user_id", id)
+			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load existing route filters"})
+			return
+		}
+		filterAllow = existing.Allow
+		filterDeny = existing.Deny
+		if body.FilterAllow != nil {
+			filterAllow = *body.FilterAllow
+		}
+		if body.FilterDeny != nil {
+			filterDeny = *body.FilterDeny
+		}
+		if _, err := store.NormalizeRouteFilters(store.RouteFilters{Allow: filterAllow, Deny: filterDeny}); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+			return
+		}
+	}
+
 	if err := s.store.UpdateUser(r.Context(), current); err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
@@ -616,27 +670,8 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save route filters. SetUserRouteFilters replaces both sides
-	// unconditionally, so a partial update touching only one of
-	// filter_allow/filter_deny must start from the currently saved value
-	// for the untouched side, not an empty slice — otherwise omitting one
-	// field from the request silently wipes the other.
-	if body.FilterAllow != nil || body.FilterDeny != nil {
-		existing, err := s.store.UserRouteFilters(r.Context(), id)
-		if err != nil {
-			logging.FromContext(r.Context()).Debug("route filters lookup before update failed", "error", err, "user_id", id)
-			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load existing route filters"})
-			return
-		}
-		allow := existing.Allow
-		deny := existing.Deny
-		if body.FilterAllow != nil {
-			allow = *body.FilterAllow
-		}
-		if body.FilterDeny != nil {
-			deny = *body.FilterDeny
-		}
-		if err := s.store.SetUserRouteFilters(r.Context(), id, store.RouteFilters{Allow: allow, Deny: deny}); err != nil {
+	if filtersProvided {
+		if err := s.store.SetUserRouteFilters(r.Context(), id, store.RouteFilters{Allow: filterAllow, Deny: filterDeny}); err != nil {
 			logging.FromContext(r.Context()).Debug("route filters save after update failed", "error", err, "user_id", id)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save route filters"})
 			return
