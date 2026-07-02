@@ -29,6 +29,19 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// Validate every key before applying any of them. Without this, a
+	// request with one valid and one invalid field could persist the valid
+	// change while still returning 400 — and since Go map iteration order is
+	// randomized, which fields "stick" would be nondeterministic across
+	// requests.
+	for key, raw := range body {
+		if err := s.validateSettingKey(key, raw); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+			return
+		}
+	}
+
 	reconcileNeeded := false
 	for key, raw := range body {
 		if string(raw) == "null" {
@@ -151,6 +164,211 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 		return callStringSetting(ctx, s.settings.AdminPassword, raw)
 	case "session_secret":
 		return callStringSetting(ctx, s.settings.SessionSecret, raw)
+	}
+	return fmt.Errorf("unknown setting: %s", key)
+}
+
+// validateSettingKey reports whether setSetting/resetSetting would accept
+// this key/value, without calling either — mirrors setSetting's case list
+// exactly, but dispatches to Validate instead of Set, and skips validation
+// entirely for a reset ("null") value, since resetting to a pre-validated
+// default can never fail on value grounds (only the readonly-blocked keys
+// below can still reject a reset).
+func (s *Server) validateSettingKey(key string, raw json.RawMessage) error {
+	isReset := string(raw) == "null"
+	switch key {
+	case "active_dial":
+		if isReset {
+			return nil
+		}
+		return callBoolValidate(s.settings.ActiveDial, raw)
+	case "adapter_backup_dir":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.AdapterBackupDir, raw)
+	case "adapter_backup_max":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.AdapterBackupMax, raw)
+	case "admin_cookie_secure":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.AdminCookieSecure, raw)
+	case "allow_dynamic_peers":
+		if isReset {
+			return nil
+		}
+		return callBoolValidate(s.settings.AllowDynamicPeers, raw)
+	case "auto_restore_enabled":
+		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
+	case "bgp_port":
+		if isReset {
+			return nil
+		}
+		return callUint16Validate(s.settings.BGPPort, raw)
+	case "backup_dir":
+		return fmt.Errorf("backup_dir is set via WDBGP_BACKUP_DIR and cannot be changed here")
+	case "backup_enabled":
+		return fmt.Errorf("backup_enabled is set via WDBGP_BACKUP_ENABLED and cannot be changed here")
+	case "default_language":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.DefaultLanguage, raw)
+	case "default_web_auth":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.DefaultWebAuth, raw)
+	case "filter_allow":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.FilterAllow, raw)
+	case "filter_deny":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.FilterDeny, raw)
+	case "host":
+		return fmt.Errorf("host is set via WDBGP_HOST and cannot be changed here")
+	case "js_max_call_stack":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.JSMaxCallStack, raw)
+	case "js_max_entries":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.JSMaxEntries, raw)
+	case "js_max_requests":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.JSMaxRequests, raw)
+	case "js_max_response":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.JSMaxResponseBytes, raw)
+	case "js_max_source":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.JSMaxSourceBytes, raw)
+	case "js_max_total":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.JSMaxTotalBytes, raw)
+	case "js_timeout":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.JSTimeout, raw)
+	case "local_asn":
+		if isReset {
+			return nil
+		}
+		return callUint32Validate(s.settings.LocalASN, raw)
+	case "local_address_v4":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.LocalAddressV4, raw)
+	case "local_address_v6":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.LocalAddressV6, raw)
+	case "log_format":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.LogFormat, raw)
+	case "log_level":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.LogLevel, raw)
+	case "metrics_enabled":
+		if isReset {
+			return nil
+		}
+		return callBoolValidate(s.settings.MetricsEnabled, raw)
+	case "metrics_history_days":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.MetricsHistoryDays, raw)
+	case "port":
+		return fmt.Errorf("port is set via WDBGP_PORT and cannot be changed here")
+	case "rate_limit_admin":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.RateLimitAdmin, raw)
+	case "rate_limit_login":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.RateLimitLogin, raw)
+	case "router_id":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.RouterID, raw)
+	case "security_headers":
+		if isReset {
+			return nil
+		}
+		return callBoolValidate(s.settings.SecurityHeaders, raw)
+	case "session_max_age":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.SessionMaxAge, raw)
+	case "status_allowed":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.StatusAllowed, raw)
+	case "status_token":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.StatusToken, raw)
+	case "sync_interval":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.SyncInterval, raw)
+	case "trust_proxy_headers":
+		if isReset {
+			return nil
+		}
+		return callBoolValidate(s.settings.TrustProxyHeaders, raw)
+	case "require_password_for_non_unique_ip":
+		if isReset {
+			return nil
+		}
+		return callBoolValidate(s.settings.RequirePasswordForNonUniqueIP, raw)
+	case "db_path":
+		return fmt.Errorf("db_path is set via WDBGP_DB and cannot be changed here")
+	case "admin_password":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.AdminPassword, raw)
+	case "session_secret":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.SessionSecret, raw)
 	}
 	return fmt.Errorf("unknown setting: %s", key)
 }
@@ -284,6 +502,46 @@ func callUint32Setting(ctx context.Context, st settings.Setting[uint32, uint32],
 		return fmt.Errorf("invalid ASN: %w", err)
 	}
 	return st.Set(ctx, v)
+}
+
+func callBoolValidate(st settings.Setting[bool, bool], raw json.RawMessage) error {
+	var v bool
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("invalid bool: %w", err)
+	}
+	return st.Validate(v)
+}
+
+func callIntValidate(st settings.Setting[int, int], raw json.RawMessage) error {
+	var v int
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("invalid int: %w", err)
+	}
+	return st.Validate(v)
+}
+
+func callStringValidate(st settings.Setting[string, string], raw json.RawMessage) error {
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("invalid string: %w", err)
+	}
+	return st.Validate(v)
+}
+
+func callUint16Validate(st settings.Setting[uint16, uint16], raw json.RawMessage) error {
+	var v uint16
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("invalid port: %w", err)
+	}
+	return st.Validate(v)
+}
+
+func callUint32Validate(st settings.Setting[uint32, uint32], raw json.RawMessage) error {
+	var v uint32
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("invalid ASN: %w", err)
+	}
+	return st.Validate(v)
 }
 
 // apiSettingsPurgeMetrics handles POST /api/admin/settings/purge-metrics

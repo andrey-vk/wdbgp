@@ -464,6 +464,38 @@ func TestSimpleSetting_Set_PersistsBeforeMutating(t *testing.T) {
 	}
 }
 
+// TestSimpleSetting_Validate_DoesNotMutate proves Validate is a pure
+// dry-run: an invalid value is rejected, a valid one is accepted, and
+// either way Get() and the store are left completely untouched. This is
+// what apiSettingsPut's validate-before-apply pass relies on.
+func TestSimpleSetting_Validate_DoesNotMutate(t *testing.T) {
+	store := newMockStore()
+	s, err := newSimple(5, "test_key", "", parseInt, validatePositive, store, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Validate(0); err == nil {
+		t.Error("expected error for invalid value 0")
+	}
+	if s.Get() != 5 {
+		t.Errorf("Get() = %d after a failed Validate, want unchanged default 5", s.Get())
+	}
+	if len(store.saved) != 0 {
+		t.Errorf("store.saved = %v, Validate must never persist", store.saved)
+	}
+
+	if err := s.Validate(42); err != nil {
+		t.Errorf("unexpected error for valid value: %v", err)
+	}
+	if s.Get() != 5 {
+		t.Errorf("Get() = %d after a successful Validate, want unchanged default 5 — Validate must never mutate", s.Get())
+	}
+	if len(store.saved) != 0 {
+		t.Errorf("store.saved = %v, Validate must never persist even for a valid value", store.saved)
+	}
+}
+
 // TestSimpleSetting_Reset_PersistsBeforeMutating is the Reset-side
 // counterpart of TestSimpleSetting_Set_PersistsBeforeMutating.
 func TestSimpleSetting_Reset_PersistsBeforeMutating(t *testing.T) {

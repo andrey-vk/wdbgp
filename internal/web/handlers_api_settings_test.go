@@ -284,6 +284,39 @@ func TestAPISettingsPut_InvalidType(t *testing.T) {
 	}
 }
 
+// TestAPISettingsPut_RejectsPartiallyInvalidBatch guards against a request
+// containing one valid and one invalid field persisting the valid change
+// while still returning 400 — the whole batch must be validated before any
+// of it is applied, so a request that fails validation leaves every
+// setting in the batch untouched.
+func TestAPISettingsPut_RejectsPartiallyInvalidBatch(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	server := New(st, nil, nil, nil)
+	cookie := adminCookie(st)
+
+	body := `{"rate_limit_admin": 99, "filter_deny": "10.0.0.0/33"}`
+	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	server.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+	if st.RateLimitAdmin.Get() != 30 {
+		t.Errorf("rate_limit_admin = %d, want unchanged default 30 — valid field must not persist when another field in the same request is invalid", st.RateLimitAdmin.Get())
+	}
+	if st.FilterDeny.Get() != "" {
+		t.Errorf("filter_deny = %q, want unchanged empty default", st.FilterDeny.Get())
+	}
+}
+
 func TestAPISettingsPut_EnvOverridden(t *testing.T) {
 	t.Setenv("WDBGP_PORT", "1234")
 	store := settings.NewTestStore()

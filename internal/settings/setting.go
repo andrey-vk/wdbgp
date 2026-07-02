@@ -36,6 +36,13 @@ type Setting[JSON, Runtime any] interface {
 	JSON(dbSettings map[string]string) SettingJSON[JSON]
 	OnChange(fn OnChangeFunc[Runtime]) func()
 
+	// Validate reports whether v would be accepted by Set — same parse and
+	// domain-validation steps, without persisting or mutating anything. Lets
+	// a caller validate an entire batch of settings up front (see
+	// apiSettingsPut) before applying any of it, so one invalid field in a
+	// multi-key request can't leave the others partially applied.
+	Validate(v JSON) error
+
 	// dbEnvKeys exposes the storage/env keys for internal introspection only
 	// (see TestNoSettingIsBothDBAndEnvInaccessible) — a setting with both
 	// empty would be permanently unsettable via any path yet indistinguishable,
@@ -206,8 +213,9 @@ func (s *complexSetting[T]) Get() T {
 	return s.value
 }
 
-// Set saves a new value to the store.
-func (s *simpleSetting[T]) Set(ctx context.Context, v T) error {
+// Validate reports whether v would be accepted by Set, without persisting
+// or mutating anything.
+func (s *simpleSetting[T]) Validate(v T) error {
 	if s.envVar != "" && os.Getenv(s.envVar) != "" {
 		return fmt.Errorf("settings: cannot set %s, overridden by %s", s.dbKey, s.envVar)
 	}
@@ -218,12 +226,22 @@ func (s *simpleSetting[T]) Set(ctx context.Context, v T) error {
 		return fmt.Errorf("settings: invalid value for %s=%q: %w", s.dbKey, raw, err)
 	}
 
-	// Validate domain rules.
 	if s.validate != nil {
 		if err := s.validate(parsed); err != nil {
 			return fmt.Errorf("settings: invalid value for %s: %w", s.dbKey, err)
 		}
 	}
+	return nil
+}
+
+// Set saves a new value to the store.
+func (s *simpleSetting[T]) Set(ctx context.Context, v T) error {
+	if err := s.Validate(v); err != nil {
+		return err
+	}
+
+	raw := fmt.Sprintf("%v", v)
+	parsed, _ := s.parse(raw) //nolint:errcheck // Validate above already confirmed this parses cleanly
 
 	// Persist before changing the in-memory value: if SaveSetting fails
 	// (busy DB, full disk, canceled context), Get() must keep returning the
@@ -241,8 +259,9 @@ func (s *simpleSetting[T]) Set(ctx context.Context, v T) error {
 	return nil
 }
 
-// Set saves a new value to the store.
-func (s *complexSetting[T]) Set(ctx context.Context, v string) error {
+// Validate reports whether v would be accepted by Set, without persisting
+// or mutating anything.
+func (s *complexSetting[T]) Validate(v string) error {
 	if s.envVar != "" && os.Getenv(s.envVar) != "" {
 		return fmt.Errorf("settings: cannot set %s, overridden by %s", s.dbKey, s.envVar)
 	}
@@ -252,12 +271,20 @@ func (s *complexSetting[T]) Set(ctx context.Context, v string) error {
 		return fmt.Errorf("settings: invalid value for %s=%q: %w", s.dbKey, v, err)
 	}
 
-	// Validate domain rules.
 	if s.validate != nil {
 		if err := s.validate(parsed); err != nil {
 			return fmt.Errorf("settings: invalid value for %s: %w", s.dbKey, err)
 		}
 	}
+	return nil
+}
+
+// Set saves a new value to the store.
+func (s *complexSetting[T]) Set(ctx context.Context, v string) error {
+	if err := s.Validate(v); err != nil {
+		return err
+	}
+	parsed, _ := s.parse(v) //nolint:errcheck // Validate above already confirmed this parses cleanly
 
 	// Persist before changing the in-memory value — see simpleSetting.Set.
 	if err := s.store.SaveSetting(ctx, s.dbKey, v); err != nil {
