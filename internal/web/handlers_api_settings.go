@@ -80,7 +80,7 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 	case "auto_restore_enabled":
 		return callBoolSetting(ctx, s.settings.AutoRestoreEnabled, raw)
 	case "bgp_port":
-		return callIntSetting(ctx, s.settings.BGPPort, raw)
+		return callUint16Setting(ctx, s.settings.BGPPort, raw)
 	case "backup_dir":
 		return callStringSetting(ctx, s.settings.BackupDir, raw)
 	case "backup_enabled":
@@ -110,7 +110,7 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 	case "js_timeout":
 		return callIntSetting(ctx, s.settings.JSTimeout, raw)
 	case "local_asn":
-		return callIntSetting(ctx, s.settings.LocalASN, raw)
+		return callUint32Setting(ctx, s.settings.LocalASN, raw)
 	case "local_address_v4":
 		return callStringSetting(ctx, s.settings.LocalAddressV4, raw)
 	case "local_address_v6":
@@ -266,6 +266,22 @@ func callStringSetting(ctx context.Context, st settings.Setting[string, string],
 	var v string
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return fmt.Errorf("invalid string: %w", err)
+	}
+	return st.Set(ctx, v)
+}
+
+func callUint16Setting(ctx context.Context, st settings.Setting[uint16, uint16], raw json.RawMessage) error {
+	var v uint16
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("invalid port: %w", err)
+	}
+	return st.Set(ctx, v)
+}
+
+func callUint32Setting(ctx context.Context, st settings.Setting[uint32, uint32], raw json.RawMessage) error {
+	var v uint32
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("invalid ASN: %w", err)
 	}
 	return st.Set(ctx, v)
 }

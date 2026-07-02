@@ -457,3 +457,23 @@ func parseInt(s string) (int, error) {
 func parseString(s string) (string, error) {
 	return s, nil
 }
+
+// parseUint16 parses a 16-bit unsigned integer string (e.g. TCP/UDP ports).
+// ParseUint's bitSize=16 already rejects anything outside 0-65535.
+func parseUint16(s string) (uint16, error) {
+	v, err := strconv.ParseUint(strings.TrimSpace(s), 10, 16)
+	if err != nil {
+		return 0, err
+	}
+	return uint16(v), nil
+}
+
+// parseUint32 parses a 32-bit unsigned integer string (e.g. 4-byte BGP ASNs).
+// ParseUint's bitSize=32 already rejects anything outside 0-4294967295.
+func parseUint32(s string) (uint32, error) {
+	v, err := strconv.ParseUint(strings.TrimSpace(s), 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	return uint32(v), nil
+}

@@ -597,11 +597,12 @@ func TestBGPPortValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 65536 and negative values are no longer expressible as a Go uint16
+	// literal at all — see TestPortValidationRejectsInvalidEnvValue and
+	// TestBGPPortValidationRejectsInvalidEnvValue for the string-input path
+	// (env var / DB value) where out-of-range values can still arrive.
 	if err := s.BGPPort.Set(context.Background(), 0); err == nil {
 		t.Error("expected error for port 0")
-	}
-	if err := s.BGPPort.Set(context.Background(), 65536); err == nil {
-		t.Error("expected error for port 65536")
 	}
 	if err := s.BGPPort.Set(context.Background(), 179); err != nil {
 		t.Errorf("unexpected error for valid port: %v", err)
@@ -614,14 +615,12 @@ func TestPortValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// 65536 and negative values are no longer expressible as a Go uint16
+	// literal at all — see TestPortValidationRejectsInvalidEnvValue for the
+	// string-input path (env var / DB value) where out-of-range values can
+	// still arrive.
 	if err := s.Port.Set(context.Background(), 0); err == nil {
 		t.Error("expected error for port 0")
-	}
-	if err := s.Port.Set(context.Background(), -1); err == nil {
-		t.Error("expected error for negative port")
-	}
-	if err := s.Port.Set(context.Background(), 65536); err == nil {
-		t.Error("expected error for port 65536")
 	}
 	if err := s.Port.Set(context.Background(), 8080); err != nil {
 		t.Errorf("unexpected error for valid port: %v", err)
@@ -636,6 +635,22 @@ func TestPortValidationRejectsInvalidEnvValue(t *testing.T) {
 	}
 }
 
+func TestPortValidationRejectsNegativeEnvValue(t *testing.T) {
+	t.Setenv("WDBGP_PORT", "-1")
+	store := newMockStore()
+	if _, err := New(store); err == nil {
+		t.Error("expected error for negative WDBGP_PORT")
+	}
+}
+
+func TestBGPPortValidationRejectsInvalidEnvValue(t *testing.T) {
+	t.Setenv("WDBGP_BGP_PORT", "70000")
+	store := newMockStore()
+	if _, err := New(store); err == nil {
+		t.Error("expected error for out-of-range WDBGP_BGP_PORT")
+	}
+}
+
 func TestASNValidation(t *testing.T) {
 	store := newMockStore()
 	s, err := New(store)
@@ -647,6 +662,28 @@ func TestASNValidation(t *testing.T) {
 	}
 	if err := s.LocalASN.Set(context.Background(), 64512); err != nil {
 		t.Errorf("unexpected error for valid ASN: %v", err)
+	}
+	// The full 4-byte ASN range (up to 4294967295) must be settable — this
+	// literal wouldn't even compile if LocalASN were still a platform-width
+	// int on a 32-bit target.
+	if err := s.LocalASN.Set(context.Background(), 4294967295); err != nil {
+		t.Errorf("unexpected error for max valid ASN: %v", err)
+	}
+}
+
+func TestASNValidationRejectsInvalidEnvValue(t *testing.T) {
+	t.Setenv("WDBGP_LOCAL_ASN", "4294967296")
+	store := newMockStore()
+	if _, err := New(store); err == nil {
+		t.Error("expected error for out-of-range WDBGP_LOCAL_ASN")
+	}
+}
+
+func TestASNValidationRejectsNegativeEnvValue(t *testing.T) {
+	t.Setenv("WDBGP_LOCAL_ASN", "-1")
+	store := newMockStore()
+	if _, err := New(store); err == nil {
+		t.Error("expected error for negative WDBGP_LOCAL_ASN")
 	}
 }
 

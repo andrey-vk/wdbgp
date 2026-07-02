@@ -136,14 +136,14 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	// Snapshot restart-only settings for the lifetime of this speaker (see
 	// the Manager field comments) — everything below and every later
 	// reconcile/peer-config build reads these, not m.cfg directly.
-	m.localASN = uint32(m.cfg.LocalASN.Get()) //nolint:gosec // LocalASN is validated to 1-4294967295 (validateASN), the exact uint32 range
+	m.localASN = m.cfg.LocalASN.Get()
 	m.localAddrV4 = localAddr
 	m.localAddrV6 = localAddrV6
 
 	speaker := NewSpeaker(SpeakerConfig{
 		ASN:       m.localASN,
 		RouterID:  routerID,
-		Port:      int32(m.cfg.BGPPort.Get()), //nolint:gosec // BGPPort is validated to 1-65535 (validatePort), well within int32
+		Port:      int32(m.cfg.BGPPort.Get()), // uint16 always fits int32
 		LocalAddr: localAddr,
 	}, logger.Logger)
 

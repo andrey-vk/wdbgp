@@ -17,7 +17,7 @@ type Settings struct {
 	AdminPassword                 Setting[string, string]
 	AllowDynamicPeers             Setting[bool, bool]
 	AutoRestoreEnabled            Setting[bool, bool]
-	BGPPort                       Setting[int, int]
+	BGPPort                       Setting[uint16, uint16]
 	BackupDir                     Setting[string, string]
 	BackupEnabled                 Setting[bool, bool]
 	DBPath                        Setting[string, string]
@@ -33,14 +33,14 @@ type Settings struct {
 	JSMaxSourceBytes              Setting[int, int]
 	JSMaxTotalBytes               Setting[int, int]
 	JSTimeout                     Setting[int, int]
-	LocalASN                      Setting[int, int]
+	LocalASN                      Setting[uint32, uint32]
 	LocalAddressV4                Setting[string, string]
 	LocalAddressV6                Setting[string, string]
 	LogFormat                     Setting[string, string]
 	LogLevel                      Setting[string, string]
 	MetricsEnabled                Setting[bool, bool]
 	MetricsHistoryDays            Setting[int, int]
-	Port                          Setting[int, int]
+	Port                          Setting[uint16, uint16]
 	RateLimitAdmin                Setting[int, int]
 	RateLimitLogin                Setting[int, int]
 	RequirePasswordForNonUniqueIP Setting[bool, bool]
@@ -63,7 +63,7 @@ type SettingsJSON struct {
 	AdminPassword                 SettingJSON[string] `json:"admin_password"`
 	AllowDynamicPeers             SettingJSON[bool]   `json:"allow_dynamic_peers"`
 	AutoRestoreEnabled            SettingJSON[bool]   `json:"auto_restore_enabled"`
-	BGPPort                       SettingJSON[int]    `json:"bgp_port"`
+	BGPPort                       SettingJSON[uint16] `json:"bgp_port"`
 	BackupDir                     SettingJSON[string] `json:"backup_dir"`
 	BackupEnabled                 SettingJSON[bool]   `json:"backup_enabled"`
 	DBPath                        SettingJSON[string] `json:"db_path"`
@@ -79,14 +79,14 @@ type SettingsJSON struct {
 	JSMaxSourceBytes              SettingJSON[int]    `json:"js_max_source"`
 	JSMaxTotalBytes               SettingJSON[int]    `json:"js_max_total"`
 	JSTimeout                     SettingJSON[int]    `json:"js_timeout"`
-	LocalASN                      SettingJSON[int]    `json:"local_asn"`
+	LocalASN                      SettingJSON[uint32] `json:"local_asn"`
 	LocalAddressV4                SettingJSON[string] `json:"local_address_v4"`
 	LocalAddressV6                SettingJSON[string] `json:"local_address_v6"`
 	LogFormat                     SettingJSON[string] `json:"log_format"`
 	LogLevel                      SettingJSON[string] `json:"log_level"`
 	MetricsEnabled                SettingJSON[bool]   `json:"metrics_enabled"`
 	MetricsHistoryDays            SettingJSON[int]    `json:"metrics_history_days"`
-	Port                          SettingJSON[int]    `json:"port"`
+	Port                          SettingJSON[uint16] `json:"port"`
 	RateLimitAdmin                SettingJSON[int]    `json:"rate_limit_admin"`
 	RateLimitLogin                SettingJSON[int]    `json:"rate_limit_login"`
 	RequirePasswordForNonUniqueIP SettingJSON[bool]   `json:"require_password_for_non_unique_ip"`
@@ -135,19 +135,19 @@ func New(store Store) (*Settings, error) {
 	}
 
 	// Port: env-only, no dbKey — same reasoning as Host above.
-	s.Port, err = newSimple(8080, "", "WDBGP_PORT", parseInt, validatePort, store, dbSettings)
+	s.Port, err = newSimple[uint16](8080, "", "WDBGP_PORT", parseUint16, validatePort, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// BGPPort.
-	s.BGPPort, err = newSimple(179, "bgp_port", "WDBGP_BGP_PORT", parseInt, validatePort, store, dbSettings)
+	s.BGPPort, err = newSimple[uint16](179, "bgp_port", "WDBGP_BGP_PORT", parseUint16, validatePort, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LocalASN.
-	s.LocalASN, err = newSimple(64512, "local_asn", "WDBGP_LOCAL_ASN", parseInt, validateASN, store, dbSettings)
+	s.LocalASN, err = newSimple[uint32](64512, "local_asn", "WDBGP_LOCAL_ASN", parseUint32, validateASN, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -445,7 +445,7 @@ func (s *Settings) JSON(ctx context.Context) SettingsJSON {
 func (s *Settings) store() Store {
 	// Any field will do — they all share the same store.
 	// Use a field that always has a dbKey (not env-only with empty dbKey).
-	if ss, ok := s.Port.(*simpleSetting[int]); ok {
+	if ss, ok := s.Port.(*simpleSetting[uint16]); ok {
 		return ss.store
 	}
 	// Fallback: shouldn't happen, but use Host.
@@ -464,16 +464,20 @@ func validatePositive(v int) error {
 }
 
 // validatePort checks that a port number is in the valid range 1-65535.
-func validatePort(v int) error {
-	if v < 1 || v > 65535 {
+// The upper bound is enforced by uint16's width itself; only 0 needs
+// rejecting here.
+func validatePort(v uint16) error {
+	if v == 0 {
 		return fmt.Errorf("port must be 1-65535, got %d", v)
 	}
 	return nil
 }
 
 // validateASN checks that an ASN is in the valid range 1-4294967295.
-func validateASN(v int) error {
-	if v < 1 || v > 4294967295 {
+// The upper bound is enforced by uint32's width itself; only 0 needs
+// rejecting here.
+func validateASN(v uint32) error {
+	if v == 0 {
 		return fmt.Errorf("ASN must be 1-4294967295, got %d", v)
 	}
 	return nil

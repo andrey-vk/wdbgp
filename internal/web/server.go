@@ -149,9 +149,9 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	// show "BGP settings changed — apply now" instead of the change
 	// silently doing nothing until the next process restart.
 	markBGPRestartPending := func() { server.restartPending.Store(true) }
-	st.LocalASN.OnChange(func(int) { markBGPRestartPending() })
+	st.LocalASN.OnChange(func(uint32) { markBGPRestartPending() })
 	st.RouterID.OnChange(func(string) { markBGPRestartPending() })
-	st.BGPPort.OnChange(func(int) { markBGPRestartPending() })
+	st.BGPPort.OnChange(func(uint16) { markBGPRestartPending() })
 	st.LocalAddressV4.OnChange(func(string) { markBGPRestartPending() })
 	st.LocalAddressV6.OnChange(func(string) { markBGPRestartPending() })
 
