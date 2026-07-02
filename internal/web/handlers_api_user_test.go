@@ -82,6 +82,46 @@ func TestUserAuthBothRequiresBothFactors(t *testing.T) {
 }
 
 // =============================================================================
+// TestUserAuthLoginModeCookieOnly — a web_auth=login user must be able to
+// authenticate purely via session cookie, from an IP that does not match any
+// of the user's networks (or when the user has no networks at all). This
+// guards against a variable-shadowing regression in requireUser where the
+// cookie-authenticated user was never actually read into the switch
+// statement, making cookie-only auth silently fail for "login"/"any"/"both".
+// =============================================================================
+
+func TestUserAuthLoginModeCookieOnly(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	userBody := `{"name":"login-user","peer_ip":"10.9.9.9","peer_asn":65009,"web_auth":"login","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create login user: %d body=%s", w.Code, w.Body.String())
+	}
+	var userResp userJSON
+	if err := json.NewDecoder(w.Body).Decode(&userResp); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a session cookie as if the user had just logged in via
+	// POST /api/user/login, then call a protected endpoint from an
+	// unrelated IP that cannot possibly satisfy IP-based auth.
+	sessionToken := userSessionToken(srv.settings.SessionSecret.Get(), userResp.ID)
+	req = httptest.NewRequest("GET", "/api/user/me", nil)
+	req.RemoteAddr = "203.0.113.5:1234"
+	req.AddCookie(&http.Cookie{Name: "wdbgp_user", Value: sessionToken}) //nolint:gosec // test cookie
+	w = httptest.NewRecorder()
+	srv.requireUser(srv.apiUserMe).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("cookie-only auth for web_auth=login user: got %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
 // TestUserSaveFiltersRejectsInvalidCIDR — apiUserSaveFilters must not persist
 // a malformed CIDR. SetUserRouteFilters -> insertRouteFilters already runs
 // every value through NormalizeRouteFilters before inserting, so this locks

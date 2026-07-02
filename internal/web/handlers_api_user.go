@@ -30,7 +30,8 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 		var cookieMatch bool
 		var cookieUser store.User
 		if sessionID > 0 {
-			cookieUser, cookieErr := s.store.User(ctx, sessionID)
+			var cookieErr error
+			cookieUser, cookieErr = s.store.User(ctx, sessionID)
 			cookieMatch = cookieErr == nil && cookieUser.Enabled
 		}
 
