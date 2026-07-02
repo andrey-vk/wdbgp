@@ -510,3 +510,101 @@ func TestAPISettingsPut_RouteFiltersReconcileFailureSurfaces(t *testing.T) {
 		t.Errorf("body = %s, want it to mention settings were saved despite reconcile failure", w.Body.String())
 	}
 }
+
+// TestAPISettingsPut_RejectsEmptyAdminSecrets guards against an authenticated
+// caller setting admin_password or session_secret to "" via the settings
+// API — hmac.Equal(password, "") would then accept an empty login password,
+// and an empty session_secret signs every session with an empty key. Neither
+// is enforced by the setting's own Validate: it has no validate hook at all,
+// since that same hook would also run against the zero-value default at
+// construction time and break commands that don't need admin auth.
+func TestAPISettingsPut_RejectsEmptyAdminSecrets(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	mustSetSetting(t, st.AdminPassword, "test-password")
+	server := New(st, nil, nil, nil)
+	cookie := adminCookie(st)
+
+	for _, body := range []string{`{"admin_password": ""}`, `{"session_secret": ""}`} {
+		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		server.handler.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s: status = %d, want 400, body=%s", body, w.Code, w.Body.String())
+		}
+	}
+
+	if st.AdminPassword.Get() != "test-password" {
+		t.Errorf("admin_password = %q after rejected PUT, want unchanged", st.AdminPassword.Get())
+	}
+	if st.SessionSecret.Get() != "test-secret" {
+		t.Errorf("session_secret = %q after rejected PUT, want unchanged", st.SessionSecret.Get())
+	}
+}
+
+// TestAPISettingsPut_RejectsAdminSecretReset guards against {"admin_password":
+// null} / {"session_secret": null} reaching Reset() — Reset reverts to the
+// zero-value default with no validation at all, so it's just as capable of
+// producing an empty secret as a direct empty-string Set.
+func TestAPISettingsPut_RejectsAdminSecretReset(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	mustSetSetting(t, st.AdminPassword, "test-password")
+	server := New(st, nil, nil, nil)
+	cookie := adminCookie(st)
+
+	for _, body := range []string{`{"admin_password": null}`, `{"session_secret": null}`} {
+		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		server.handler.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s: status = %d, want 400, body=%s", body, w.Code, w.Body.String())
+		}
+	}
+
+	if st.AdminPassword.Get() != "test-password" {
+		t.Errorf("admin_password = %q after rejected reset, want unchanged", st.AdminPassword.Get())
+	}
+	if st.SessionSecret.Get() != "test-secret" {
+		t.Errorf("session_secret = %q after rejected reset, want unchanged", st.SessionSecret.Get())
+	}
+}
+
+// TestAPISettingsPut_AcceptsNonEmptyAdminSecrets is the accompanying
+// happy-path check: a real, non-empty value for either secret must still go
+// through.
+func TestAPISettingsPut_AcceptsNonEmptyAdminSecrets(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	server := New(st, nil, nil, nil)
+	cookie := adminCookie(st)
+
+	body := `{"admin_password": "new-strong-password"}`
+	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	w := httptest.NewRecorder()
+	server.handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	if st.AdminPassword.Get() != "new-strong-password" {
+		t.Errorf("admin_password = %q, want \"new-strong-password\"", st.AdminPassword.Get())
+	}
+}

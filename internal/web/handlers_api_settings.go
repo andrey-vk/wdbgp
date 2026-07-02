@@ -360,17 +360,39 @@ func (s *Server) validateSettingKey(key string, raw json.RawMessage) error {
 	case "db_path":
 		return fmt.Errorf("db_path is set via WDBGP_DB and cannot be changed here")
 	case "admin_password":
-		if isReset {
-			return nil
-		}
-		return callStringValidate(s.settings.AdminPassword, raw)
+		return validateNonEmptySecret(raw, isReset, "admin_password", s.settings.AdminPassword)
 	case "session_secret":
-		if isReset {
-			return nil
-		}
-		return callStringValidate(s.settings.SessionSecret, raw)
+		return validateNonEmptySecret(raw, isReset, "session_secret", s.settings.SessionSecret)
 	}
 	return fmt.Errorf("unknown setting: %s", key)
+}
+
+// validateNonEmptySecret rejects an empty value for the admin_password/
+// session_secret settings. Their underlying Setting has no validate hook of
+// its own: newSimple also runs validate against the zero-value default at
+// construction time, and a fresh install with neither the secret nor its env
+// var set must still be able to start — main.go's serve() already refuses to
+// actually serve requests until both are non-empty, so construction-time
+// enforcement would be redundant and would also wrongly block commands like
+// migrate/sync that construct Settings but don't need admin auth at all.
+// An empty value is only a problem once something is running and the API is
+// used to set (or reset, which reverts to the same empty default) one of
+// these at runtime: an empty admin_password lets any login attempt with an
+// empty password succeed (hmac.Equal against ""), and an empty session_secret
+// signs sessions with an empty key. So the check lives here instead, scoped
+// to requests that explicitly try to change the value while serving.
+func validateNonEmptySecret(raw json.RawMessage, isReset bool, name string, st settings.Setting[string, string]) error {
+	if isReset {
+		return fmt.Errorf("%s cannot be reset via the settings API; set its environment variable and restart instead", name)
+	}
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("invalid string: %w", err)
+	}
+	if v == "" {
+		return fmt.Errorf("%s cannot be empty", name)
+	}
+	return st.Validate(v)
 }
 
 // resetSetting calls Reset on the typed setting.
@@ -457,9 +479,9 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 	case "db_path":
 		return fmt.Errorf("db_path is set via WDBGP_DB and cannot be changed here")
 	case "admin_password":
-		return s.settings.AdminPassword.Reset(ctx)
+		return fmt.Errorf("admin_password cannot be reset via the settings API; set WDBGP_ADMIN_PASSWORD and restart instead")
 	case "session_secret":
-		return s.settings.SessionSecret.Reset(ctx)
+		return fmt.Errorf("session_secret cannot be reset via the settings API; set WDBGP_SESSION_SECRET and restart instead")
 	}
 	return fmt.Errorf("unknown setting: %s", key)
 }
