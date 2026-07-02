@@ -195,7 +195,7 @@ describe('SettingsPage', () => {
     // Directly set values and trigger save
     const vm = wrapper.vm as InstanceType<typeof SettingsPage>
     vm.values = {
-      port: 9090,
+      bgp_port: 9090,
       metrics_enabled: true,
       default_language: 'en',
       filter_allow: '',
@@ -208,8 +208,8 @@ describe('SettingsPage', () => {
 
     // Verify typed values were sent
     const body = putMock.mock.calls[0][1] as Record<string, unknown>
-    expect(body.port).toBe(9090)
-    expect(typeof body.port).toBe('number')
+    expect(body.bgp_port).toBe(9090)
+    expect(typeof body.bgp_port).toBe('number')
     expect(body.metrics_enabled).toBe(true)
     expect(typeof body.metrics_enabled).toBe('boolean')
     expect(body.default_language).toBe('en')
@@ -255,6 +255,52 @@ describe('SettingsPage', () => {
     expect(body).not.toHaveProperty('port')
     // bgp_port is not overridden and should be present
     expect(body.bgp_port).toBe(179)
+  })
+
+  it('skips readonly fields in PUT body even when not env-overridden', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    // host/port/db_path are readonly (env-only) but not currently env-overridden,
+    // e.g. a deployment relying on hardcoded defaults instead of setting the env vars.
+    vm.values = {
+      host: '0.0.0.0',
+      port: 8080,
+      db_path: '/data/wdbgp.sqlite3',
+      metrics_enabled: true,
+    }
+    vm.envOverrides = {
+      host: false,
+      port: false,
+      db_path: false,
+    }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    await vm.handleSave()
+
+    const body = putMock.mock.calls[0][1] as Record<string, unknown>
+    expect(body).not.toHaveProperty('host')
+    expect(body).not.toHaveProperty('port')
+    expect(body).not.toHaveProperty('db_path')
+    expect(body.metrics_enabled).toBe(true)
   })
 
   it('stops saving spinner on error', async () => {
@@ -313,7 +359,7 @@ describe('SettingsPage', () => {
     const vm = wrapper.vm as InstanceType<typeof SettingsPage>
     // Set non-password field + empty password + filled password
     vm.values = {
-      port: 9090,
+      bgp_port: 9090,
       admin_password: '',        // empty → should be skipped
       session_secret: 'new-secret', // non-empty → should be sent
     }
@@ -323,8 +369,8 @@ describe('SettingsPage', () => {
     await vm.handleSave()
 
     const body = putMock.mock.calls[0][1] as Record<string, unknown>
-    // port should be present
-    expect(body.port).toBe(9090)
+    // bgp_port should be present
+    expect(body.bgp_port).toBe(9090)
     // admin_password (empty) should be skipped
     expect(body).not.toHaveProperty('admin_password')
     // session_secret (non-empty) should be included
@@ -354,7 +400,7 @@ describe('SettingsPage', () => {
     const vm = wrapper.vm as InstanceType<typeof SettingsPage>
     // null password fields (default state from backend) should be skipped
     vm.values = {
-      port: 8080,
+      bgp_port: 8080,
       admin_password: null,
     }
 
@@ -363,8 +409,8 @@ describe('SettingsPage', () => {
     await vm.handleSave()
 
     const body = putMock.mock.calls[0][1] as Record<string, unknown>
-    // port should be present
-    expect(body.port).toBe(8080)
+    // bgp_port should be present
+    expect(body.bgp_port).toBe(8080)
     // admin_password (null) should be skipped
     expect(body).not.toHaveProperty('admin_password')
   })

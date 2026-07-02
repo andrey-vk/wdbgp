@@ -95,8 +95,8 @@ async function handleSave() {
   try {
     const body: Record<string, boolean | number | string | null> = {}
     for (const [key, val] of Object.entries(values.value)) {
-      // Skip env-overridden fields — they're read-only
-      if (envOverrides.value[key]) continue
+      // Skip env-overridden and permanently-readonly fields
+      if (envOverrides.value[key] || metaMap[key]?.readonly) continue
       // Skip password fields with empty value (no change)
       if (val === '' || val == null) {
         if (metaMap[key]?.type === 'password') continue
