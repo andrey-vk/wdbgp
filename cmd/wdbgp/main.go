@@ -265,6 +265,18 @@ func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer,
 	syncNow()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// sync_interval is saved through the settings API without any restart
+	// requirement, but the ticker was only ever built once at startup from
+	// the interval captured here — a saved change had no runtime effect
+	// until the next process restart. Reset the ticker in place when it
+	// changes, the same way RateLimitLogin/RateLimitAdmin already reload
+	// live (see web.New's OnChange registrations).
+	unsubscribe := s.SyncInterval.OnChange(func(v int) {
+		if v > 0 {
+			ticker.Reset(time.Duration(v) * time.Second)
+		}
+	})
+	defer unsubscribe()
 	for {
 		select {
 		case <-ctx.Done():
