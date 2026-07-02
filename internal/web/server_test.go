@@ -99,6 +99,19 @@ func adminCookie(s *settings.Settings) *http.Cookie {
 	return &http.Cookie{Name: "wdbgp_admin", Value: sessionToken(s.SessionSecret.Get())} //nolint:gosec // test helper, no security attrs needed
 }
 
+// testCSRFToken is a fixed value shared between the cookie and header set by
+// addCSRF — the double-submit check only cares that they match, not what the
+// value is.
+const testCSRFToken = "test-csrf-token" //nolint:gosec // test-only fixed value, not a real secret
+
+// addCSRF attaches a matching CSRF cookie and header to req, satisfying
+// validCSRFRequest for mutating requests routed through apiRequireAdmin or
+// requireUser.
+func addCSRF(req *http.Request) {
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: testCSRFToken}) //nolint:gosec // test helper
+	req.Header.Set(csrfHeaderName, testCSRFToken)
+}
+
 // =============================================================================
 // Status endpoint
 // =============================================================================
@@ -356,6 +369,7 @@ func TestAddUserRejectsSameIPAndSameASN(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
+	addCSRF(request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -382,6 +396,7 @@ func TestAddUserAcceptsUniqueIPWithoutPassword(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
+	addCSRF(request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
@@ -407,6 +422,7 @@ func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
+	addCSRF(request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
@@ -419,6 +435,7 @@ func TestAddUserDynamicPeersNoPasswordRequired(t *testing.T) {
 	request = httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
+	addCSRF(request)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
@@ -452,6 +469,7 @@ func TestAddUserRejectsDuplicateDynamicPeerASN(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
+	addCSRF(request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -489,6 +507,7 @@ func TestAddUserRejectsSharedIPWithoutPasswordWhenRequired(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
+	addCSRF(request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -524,6 +543,7 @@ func TestAddUserAcceptsSharedIPWithPassword(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
+	addCSRF(request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
@@ -559,6 +579,7 @@ func TestSameIPv4RequiresMatchingPassword(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
+	addCSRF(request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 
@@ -598,6 +619,7 @@ func TestSameIPv6RequiresMatchingPassword(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/users", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(adminCookie)
+	addCSRF(request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 
@@ -648,15 +670,16 @@ func TestAdminLoginAPI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("correct password: status=%d, want 200", rec.Code)
 	}
-	// Check cookie
+	// Check cookies — login sets both the session cookie and a paired CSRF cookie.
 	cookies := rec.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "wdbgp_admin" {
-		t.Fatalf("expected wdbgp_admin cookie, got %v", cookies)
+	if len(cookies) != 2 || cookies[0].Name != "wdbgp_admin" || cookies[1].Name != csrfCookieName {
+		t.Fatalf("expected wdbgp_admin and %s cookies, got %v", csrfCookieName, cookies)
 	}
 
 	// Test /api/admin/me with the cookie
 	req = httptest.NewRequest(http.MethodGet, "/api/admin/me", nil)
 	req.AddCookie(cookies[0])
+	addCSRF(req)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -683,6 +706,7 @@ func TestAdminSettingsAPI(t *testing.T) {
 	// GET settings
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -701,6 +725,7 @@ func TestAdminSettingsAPI(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPut, "/api/admin/settings", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -741,6 +766,7 @@ func TestSettingsNullValueDeletesOverride(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/admin/settings", strings.NewReader(put1))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -761,6 +787,7 @@ func TestSettingsNullValueDeletesOverride(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPut, "/api/admin/settings", strings.NewReader(put2))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -796,6 +823,7 @@ func TestAdapterCRUDAPI(t *testing.T) {
 	// List adapters
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/adapters", nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -831,6 +859,7 @@ func TestAdapterCRUDAPI(t *testing.T) {
 	// Fork it
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/admin/adapters/%d/fork", builtin), nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -854,6 +883,7 @@ func TestAdapterCRUDAPI(t *testing.T) {
 	// Acknowledge the fork
 	req = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/admin/adapters/%d/acknowledge", forked.ID), nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -863,6 +893,7 @@ func TestAdapterCRUDAPI(t *testing.T) {
 	// Delete forked adapter
 	req = httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/admin/adapters/%d", forked.ID), nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -872,6 +903,7 @@ func TestAdapterCRUDAPI(t *testing.T) {
 	// Verify built-in cannot be deleted
 	req = httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/admin/adapters/%d", builtin), nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -883,6 +915,7 @@ func TestAdapterCRUDAPI(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPut, fmt.Sprintf("/api/admin/adapters/%d", builtin), strings.NewReader(editBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -916,6 +949,7 @@ func TestAdminLogoutAPI(t *testing.T) {
 	// Logout
 	req = httptest.NewRequest(http.MethodPost, "/api/admin/logout", nil)
 	req.AddCookie(cookies[0])
+	addCSRF(req)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -944,6 +978,7 @@ func TestBGPStatusReflectsSpeakerHealth(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/bgp/status", nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -963,6 +998,7 @@ func TestBGPStatusReflectsSpeakerHealth(t *testing.T) {
 
 	req = httptest.NewRequest(http.MethodGet, "/api/admin/bgp/status", nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
@@ -983,6 +1019,7 @@ func TestBGPStatusReflectsRestartPendingAfterSettingChange(t *testing.T) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, "/api/admin/bgp/status", nil)
 		req.AddCookie(cookie)
+		addCSRF(req)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		var resp bgpStatusJSON
@@ -1017,6 +1054,7 @@ func TestBGPStatusReflectsRestartPendingAfterActiveDialChange(t *testing.T) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, "/api/admin/bgp/status", nil)
 		req.AddCookie(cookie)
+		addCSRF(req)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		var resp bgpStatusJSON
@@ -1049,6 +1087,7 @@ func TestBGPReloadClearsRestartPendingOnSuccess(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/bgp/reload", nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -1079,6 +1118,7 @@ func TestBGPReloadReportsFailureAndKeepsRestartPending(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/bgp/reload", nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {

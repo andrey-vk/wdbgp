@@ -52,6 +52,21 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// Self-heal a missing CSRF cookie so a browser that has never
+		// logged in via /api/user/login (pure network/IP auth) still gets
+		// one on its first authenticated request. This request itself
+		// still fails the check below if it's a mutating one, since the
+		// browser hasn't seen the new cookie yet.
+		secure := r.TLS != nil
+		if _, err := r.Cookie(csrfCookieName); err != nil {
+			setCSRFCookie(w, secure, 0, time.Time{})
+		}
+
+		if !validCSRFRequest(r) {
+			writeJSON(w, http.StatusForbidden, apiResponse{OK: false, Error: "CSRF token missing or invalid"})
+			return
+		}
+
 		next(w, r)
 	}
 }
@@ -229,6 +244,7 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 		maxAge = 28800 // 8 hours default
 	}
 	setUserSessionCookie(w, user.ID, s.settings.SessionSecret.Get(), maxAge, secure)
+	setCSRFCookie(w, secure, maxAge, time.Now().Add(time.Duration(maxAge)*time.Second))
 
 	// Load catalog and filtered selections for the response
 	loginCatalog, err := s.store.CatalogForMode(ctx, user.CatalogModeID, false)
@@ -315,6 +331,7 @@ func (s *Server) apiUserLogout(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})
+	clearCSRFCookie(w, secure)
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
 

@@ -113,6 +113,7 @@ func TestUserAuthLoginModeCookieOnly(t *testing.T) {
 	req = httptest.NewRequest("GET", "/api/user/me", nil)
 	req.RemoteAddr = "203.0.113.5:1234"
 	req.AddCookie(&http.Cookie{Name: "wdbgp_user", Value: sessionToken}) //nolint:gosec // test cookie
+	addCSRF(req)
 	w = httptest.NewRecorder()
 	srv.requireUser(srv.apiUserMe).ServeHTTP(w, req)
 
@@ -311,6 +312,7 @@ func TestUserSaveSelectionsPreservesHidden(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "10.0.0.1:12345"
 	req.AddCookie(&http.Cookie{Name: "wdbgp_user", Value: sessionToken}) //nolint:gosec // test cookie
+	addCSRF(req)
 	w = httptest.NewRecorder()
 	srv.requireUser(srv.apiUserSaveSelections).ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -352,6 +354,7 @@ func TestUserSaveSelectionsPreservesHidden(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "10.0.0.1:12345"
 	req.AddCookie(&http.Cookie{Name: "wdbgp_user", Value: sessionToken}) //nolint:gosec // test cookie
+	addCSRF(req)
 	w = httptest.NewRecorder()
 	srv.requireUser(srv.apiUserSaveSelections).ServeHTTP(w, req)
 	if w.Code != http.StatusOK {

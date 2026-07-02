@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -147,5 +148,86 @@ func TestRateLimiterStillEnforcesLimit(t *testing.T) {
 	}
 	if rl.allow("9.9.9.9") {
 		t.Fatal("request 4 should still be denied")
+	}
+}
+
+// =============================================================================
+// TestValidCSRFRequest — double-submit cookie check: safe methods are always
+// exempt; mutating methods require a header that matches the cookie.
+// =============================================================================
+
+func TestValidCSRFRequest(t *testing.T) {
+	cases := []struct {
+		name      string
+		method    string
+		cookie    string
+		hasCookie bool
+		header    string
+		wantValid bool
+	}{
+		{name: "GET is exempt even with no token at all", method: http.MethodGet, hasCookie: false, wantValid: true},
+		{name: "matching cookie and header", method: http.MethodPost, hasCookie: true, cookie: "tok-1", header: "tok-1", wantValid: true},
+		{name: "missing cookie", method: http.MethodPost, hasCookie: false, header: "tok-1", wantValid: false},
+		{name: "missing header", method: http.MethodPost, hasCookie: true, cookie: "tok-1", header: "", wantValid: false},
+		{name: "mismatched cookie and header", method: http.MethodPut, hasCookie: true, cookie: "tok-1", header: "tok-2", wantValid: false},
+		{name: "DELETE requires token too", method: http.MethodDelete, hasCookie: false, wantValid: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, "/api/admin/settings", nil)
+			if tc.hasCookie {
+				req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: tc.cookie}) //nolint:gosec // test cookie
+			}
+			if tc.header != "" {
+				req.Header.Set(csrfHeaderName, tc.header)
+			}
+			if got := validCSRFRequest(req); got != tc.wantValid {
+				t.Errorf("validCSRFRequest() = %v, want %v", got, tc.wantValid)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// TestAPIRequireAdminRejectsMutatingRequestWithoutCSRFToken — an admin with a
+// valid session cookie but no CSRF token cannot perform a mutating request
+// through apiRequireAdmin, closing the cross-site request forgery gap left
+// once the legacy CSRF middleware was dropped from the SPA rewrite.
+// =============================================================================
+
+func TestAPIRequireAdminRejectsMutatingRequestWithoutCSRFToken(t *testing.T) {
+	st := testSettings()
+	s := &Server{settings: st}
+	called := false
+	handler := s.apiRequireAdmin(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/settings", nil)
+	req.AddCookie(&http.Cookie{Name: "wdbgp_admin", Value: sessionToken(st.SessionSecret.Get())}) //nolint:gosec // test cookie
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+	if called {
+		t.Fatal("next handler must not run without a valid CSRF token")
+	}
+
+	// A matching cookie+header pair must succeed.
+	req2 := httptest.NewRequest(http.MethodPost, "/api/admin/settings", nil)
+	req2.AddCookie(&http.Cookie{Name: "wdbgp_admin", Value: sessionToken(st.SessionSecret.Get())}) //nolint:gosec // test cookie
+	addCSRF(req2)
+	w2 := httptest.NewRecorder()
+	handler(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with matching CSRF token; body=%s", w2.Code, w2.Body.String())
+	}
+	if !called {
+		t.Fatal("next handler should have run with a valid CSRF token")
 	}
 }

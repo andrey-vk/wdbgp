@@ -88,6 +88,7 @@ func (s *Server) apiAdminLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   maxAge,
 		Expires:  expires,
 	})
+	setCSRFCookie(w, s.adminCookieSecure(r), maxAge, expires)
 
 	s.logAdminAction(r, "API_LOGIN_SUCCESS", "Admin logged in via API")
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
@@ -111,6 +112,7 @@ func (s *Server) apiAdminLogout(w http.ResponseWriter, r *http.Request) {
 		Secure:   s.adminCookieSecure(r),
 		MaxAge:   -1,
 	})
+	clearCSRFCookie(w, s.adminCookieSecure(r))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -155,8 +157,23 @@ func (s *Server) apiRequireAdmin(next http.HandlerFunc) http.HandlerFunc {
 						MaxAge:   maxAge,
 						Expires:  expires,
 					})
+					setCSRFCookie(w, s.adminCookieSecure(r), maxAge, expires)
 				}
 			}
+		}
+
+		// Self-heal a missing CSRF cookie (e.g. a session that predates
+		// this feature), so the next request from the same browser has a
+		// token to echo back. This request itself still fails the check
+		// below if it's a mutating one, since the browser hasn't seen the
+		// new cookie yet.
+		if _, err := r.Cookie(csrfCookieName); err != nil {
+			setCSRFCookie(w, s.adminCookieSecure(r), 0, time.Time{})
+		}
+
+		if !validCSRFRequest(r) {
+			writeJSON(w, http.StatusForbidden, apiResponse{OK: false, Error: "CSRF token missing or invalid"})
+			return
 		}
 
 		next(w, r)

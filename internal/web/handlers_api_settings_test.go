@@ -46,6 +46,7 @@ func TestAPISettingsGet_TypedResponse(t *testing.T) {
 	cookie := adminCookie(st)
 	req := httptest.NewRequest("GET", "/api/admin/settings", nil)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -97,6 +98,7 @@ func TestAPISettingsPut_TypedBool(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	cookie := adminCookie(st)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -122,6 +124,7 @@ func TestAPISettingsPut_TypedInt(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	cookie := adminCookie(st)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -162,6 +165,7 @@ func TestAPISettingsPut_HostPortDBPathAreReadOnly(t *testing.T) {
 		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(cookie)
+		addCSRF(req)
 		w := httptest.NewRecorder()
 		server.handler.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
@@ -171,6 +175,7 @@ func TestAPISettingsPut_HostPortDBPathAreReadOnly(t *testing.T) {
 		resetReq := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"`+key+`": null}`))
 		resetReq.Header.Set("Content-Type", "application/json")
 		resetReq.AddCookie(cookie)
+		addCSRF(resetReq)
 		resetW := httptest.NewRecorder()
 		server.handler.ServeHTTP(resetW, resetReq)
 		if resetW.Code != http.StatusBadRequest {
@@ -221,6 +226,7 @@ func TestAPISettingsPut_UnknownKeyRejected(t *testing.T) {
 		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(cookie)
+		addCSRF(req)
 		w := httptest.NewRecorder()
 		server.handler.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
@@ -251,6 +257,7 @@ func TestAPISettingsPut_Reset(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	cookie := adminCookie(st)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -276,6 +283,7 @@ func TestAPISettingsPut_InvalidType(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	cookie := adminCookie(st)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -303,6 +311,7 @@ func TestAPISettingsPut_RejectsPartiallyInvalidBatch(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -332,6 +341,7 @@ func TestAPISettingsPut_EnvOverridden(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	cookie := adminCookie(st)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -365,6 +375,7 @@ func TestAPISettingsPut_RouteFilters(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	cookie := adminCookie(st)
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -405,6 +416,7 @@ func TestAPISettingsPut_RouteFiltersRejectInvalidCIDR(t *testing.T) {
 		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(cookie)
+		addCSRF(req)
 		w := httptest.NewRecorder()
 		server.handler.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
@@ -441,6 +453,7 @@ func TestAPISettingsPut_RouteFiltersTriggerReconcile(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -470,6 +483,7 @@ func TestAPISettingsPut_UnrelatedSettingDoesNotTriggerReconcile(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -500,6 +514,7 @@ func TestAPISettingsPut_RouteFiltersReconcileFailureSurfaces(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
@@ -533,6 +548,7 @@ func TestAPISettingsPut_RejectsEmptyAdminSecrets(t *testing.T) {
 		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(cookie)
+		addCSRF(req)
 		w := httptest.NewRecorder()
 		server.handler.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
@@ -567,6 +583,7 @@ func TestAPISettingsPut_RejectsAdminSecretReset(t *testing.T) {
 		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(cookie)
+		addCSRF(req)
 		w := httptest.NewRecorder()
 		server.handler.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest {
@@ -599,6 +616,7 @@ func TestAPISettingsPut_AcceptsNonEmptyAdminSecrets(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(cookie)
+	addCSRF(req)
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {

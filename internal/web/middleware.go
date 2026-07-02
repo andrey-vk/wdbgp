@@ -1,6 +1,9 @@
 package web
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"encoding/hex"
 	"net"
 	"net/http"
 	"net/netip"
@@ -39,6 +42,71 @@ func (s *Server) clientIP(r *http.Request) string {
 		return host
 	}
 	return r.RemoteAddr
+}
+
+// csrfCookieName/csrfHeaderName implement the double-submit-cookie pattern:
+// the cookie is deliberately NOT HttpOnly so the SPA's HTTP client can read
+// it and echo it back as a header. A cross-site attacker can trigger a
+// request with the browser's cookies attached (defeated separately by
+// SameSite=Strict) but cannot read the cookie's value to also set the
+// header, so the two must originate from the same site.
+const (
+	csrfCookieName = "wdbgp_csrf"
+	csrfHeaderName = "X-CSRF-Token"
+)
+
+// newCSRFToken returns a fresh random token for the CSRF cookie.
+func newCSRFToken() string {
+	var b [32]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// setCSRFCookie issues a new CSRF cookie, mirroring the lifetime of the
+// session cookie it accompanies.
+func setCSRFCookie(w http.ResponseWriter, secure bool, maxAge int, expires time.Time) {
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime; deliberately not HttpOnly, see csrfCookieName doc
+		Name:     csrfCookieName,
+		Value:    newCSRFToken(),
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   maxAge,
+		Expires:  expires,
+	})
+}
+
+// clearCSRFCookie removes the CSRF cookie, mirroring session logout.
+func clearCSRFCookie(w http.ResponseWriter, secure bool) {
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime
+		Name:     csrfCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+}
+
+// validCSRFRequest reports whether a mutating request carries a CSRF header
+// that matches its CSRF cookie. Safe methods never mutate state and are
+// exempt.
+func validCSRFRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	cookie, err := r.Cookie(csrfCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	header := r.Header.Get(csrfHeaderName)
+	if header == "" {
+		return false
+	}
+	return hmac.Equal([]byte(cookie.Value), []byte(header))
 }
 
 // rateLimiter implements per-IP rate limiting.
