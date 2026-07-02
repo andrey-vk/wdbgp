@@ -496,9 +496,10 @@ func TestAPISettingsPut_UnrelatedSettingDoesNotTriggerReconcile(t *testing.T) {
 }
 
 // TestAPISettingsPut_RouteFiltersReconcileFailureSurfaces confirms a reconcile
-// failure after a successful settings save produces a clear error rather
-// than a bare 200, so the admin knows the filter change may not have
-// actually applied to the live BGP session.
+// failure after a successful settings save reports 200 with a warning field
+// (not a 500, which previously left the client unable to tell that the
+// setting had, in fact, already been persisted) and that the setting really
+// was saved despite the reconcile failure.
 func TestAPISettingsPut_RouteFiltersReconcileFailureSurfaces(t *testing.T) {
 	store := settings.NewTestStore()
 	st, err := settings.New(store)
@@ -518,11 +519,14 @@ func TestAPISettingsPut_RouteFiltersReconcileFailureSurfaces(t *testing.T) {
 	w := httptest.NewRecorder()
 	server.handler.ServeHTTP(w, req)
 
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500, body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "Settings saved but BGP reconciliation failed") {
+	if !strings.Contains(w.Body.String(), "Settings saved, but BGP reconciliation failed") {
 		t.Errorf("body = %s, want it to mention settings were saved despite reconcile failure", w.Body.String())
+	}
+	if got := st.FilterAllow.Get(); got != "10.0.0.0/8" {
+		t.Errorf("filter_allow = %q, want it persisted despite the reconcile failure", got)
 	}
 }
 

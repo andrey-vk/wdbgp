@@ -67,9 +67,18 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	// keep using the old filter set until the next scheduled sync/reconcile
 	// (up to sync_interval seconds later), which for a deny filter means
 	// routes the admin just tried to block stay live in the meantime.
+	//
+	// By this point every changed setting is already persisted — Reconcile
+	// failing doesn't undo that, and can't safely be made to (a partial
+	// rollback across the generic Setting[T] framework has its own failure
+	// modes). Report success with a warning rather than a 500 "saved but
+	// failed", so the client doesn't have to guess whether the write stuck.
 	if reconcileNeeded && s.bgp != nil {
 		if err := s.bgp.Reconcile(ctx); err != nil {
-			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Settings saved but BGP reconciliation failed: " + err.Error()})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":      true,
+				"warning": "Settings saved, but BGP reconciliation failed: " + err.Error(),
+			})
 			return
 		}
 	}

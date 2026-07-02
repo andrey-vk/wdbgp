@@ -88,8 +88,9 @@ vi.mock('vue-router', () => ({
 }))
 
 // Mock primevue useToast
+const toastAdd = vi.fn()
 vi.mock('primevue/usetoast', () => ({
-  useToast: () => ({ add: vi.fn() }),
+  useToast: () => ({ add: toastAdd }),
 }))
 
 const i18n = createI18n({
@@ -454,5 +455,84 @@ describe('SettingsPage', () => {
     expect(body.bgp_port).toBe(8080)
     // admin_password (null) should be skipped
     expect(body).not.toHaveProperty('admin_password')
+  })
+
+  it('shows a warning toast (not the success banner) when the backend reports a partial-apply warning', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    vm.values = { filter_allow: '10.0.0.0/8' }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    const getMock = apiClient.get as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    getMock.mockClear()
+    toastAdd.mockClear()
+    putMock.mockResolvedValueOnce({
+      data: { ok: true, warning: 'Settings saved, but BGP reconciliation failed: bgp speaker is not running' },
+    })
+
+    await vm.handleSave()
+
+    // apiSettingsPut already persisted the change before Reconcile failed —
+    // the PUT is not retried, but the form must not claim full success, and
+    // must re-fetch the authoritative state rather than trust local edits.
+    expect(vm.saved).toBe(false)
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'warn' }))
+    expect(getMock).toHaveBeenCalled()
+    expect(vm.dirty).toBe(false)
+  })
+
+  it('re-fetches settings after a save error instead of trusting local edits', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    vm.values = { bgp_port: 9999 }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    const getMock = apiClient.get as ReturnType<typeof vi.fn>
+    getMock.mockClear()
+    putMock.mockRejectedValueOnce(new Error('network error'))
+
+    await vm.handleSave()
+
+    // apiSettingsPut validates every key before applying any of them, but a
+    // later key can still fail mid-apply after an earlier one was already
+    // persisted — the form must not assume "error means nothing changed".
+    expect(getMock).toHaveBeenCalled()
   })
 })

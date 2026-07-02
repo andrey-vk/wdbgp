@@ -34,32 +34,45 @@ const effectiveDefaults = ref<Record<string, boolean | number | string>>({})
 // Env override flags from backend
 const envOverrides = ref<Record<string, boolean>>({})
 
+// Fetches the authoritative settings snapshot from the backend. Called on
+// mount, and again after every save attempt (success, warning, or error) —
+// apiSettingsPut persists each changed key before it can fail on a later
+// step (validation of a different key, or BGP reconciliation), so a non-2xx
+// response does not mean nothing changed. Re-fetching keeps the form from
+// silently drifting out of sync with what's actually persisted.
+async function loadSettings() {
+  const resp = await apiClient.get('/admin/settings')
+  const parsed = settingsSchema.partial().parse(resp.data)
+
+  const v: Record<string, boolean | number | string | null> = {}
+  const d: Record<string, boolean | number | string> = {}
+  const e: Record<string, boolean> = {}
+
+  for (const [key, setting] of Object.entries(parsed)) {
+    v[key] = setting.value
+    d[key] = setting.default_value
+    e[key] = setting.env_override
+  }
+
+  values.value = v
+  effectiveDefaults.value = d
+  envOverrides.value = e
+}
+
 onMounted(async () => {
   try {
-    const resp = await apiClient.get('/admin/settings')
-    const parsed = settingsSchema.partial().parse(resp.data)
-
-    const v: Record<string, boolean | number | string | null> = {}
-    const d: Record<string, boolean | number | string> = {}
-    const e: Record<string, boolean> = {}
-
-    for (const [key, setting] of Object.entries(parsed)) {
-      v[key] = setting.value
-      d[key] = setting.default_value
-      e[key] = setting.env_override
-    }
-
-    values.value = v
-    effectiveDefaults.value = d
-    envOverrides.value = e
+    await loadSettings()
   } finally {
     loading.value = false
   }
 })
 
-let initialLoad = true
+// Set around any programmatic replacement of values.value (initial load,
+// and the reload after a save attempt) so that refresh doesn't get
+// mistaken for a user edit and re-arm the dirty/unsaved-changes guard.
+let suppressDirtyWatch = true
 watch(values, () => {
-  if (initialLoad) { initialLoad = false; return }
+  if (suppressDirtyWatch) { suppressDirtyWatch = false; return }
   dirty.value = true
 }, { deep: true })
 
@@ -105,12 +118,28 @@ async function handleSave() {
       if ((val === '' || val == null) && meta.type === 'password') continue
       body[key] = val
     }
-    await apiClient.put('/admin/settings', body)
+    const resp = await apiClient.put('/admin/settings', body)
     dirty.value = false
-    saved.value = true
+    if (resp.data?.warning) {
+      toast.add({ severity: 'warn', summary: resp.data.warning, life: 8000 })
+    } else {
+      saved.value = true
+    }
   } catch {
+    // apiSettingsPut persists each changed key before it can fail on a
+    // later step (e.g. a different key failing validation, or BGP
+    // reconciliation) — an error here doesn't mean nothing was saved, so
+    // the form must not be left showing what the admin typed as if it
+    // were rejected outright.
     toast.add({ severity: 'error', summary: t('settings.save_error'), life: 5000 })
   } finally {
+    try {
+      suppressDirtyWatch = true
+      await loadSettings()
+    } catch {
+      // Best-effort refresh; if it fails the form just keeps showing
+      // whatever it had before the save attempt.
+    }
     saving.value = false
   }
 }
