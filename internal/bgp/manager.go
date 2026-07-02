@@ -32,6 +32,7 @@ type Manager struct {
 	localASN    uint32
 	localAddrV4 netip.Addr
 	localAddrV6 netip.Addr
+	activeDial  bool
 
 	lastErr error // last error from Start/ReloadPeers; nil when speaker is healthy
 }
@@ -139,6 +140,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	m.localASN = m.cfg.LocalASN.Get()
 	m.localAddrV4 = localAddr
 	m.localAddrV6 = localAddrV6
+	m.activeDial = m.cfg.ActiveDial.Get()
 
 	speaker := NewSpeaker(SpeakerConfig{
 		ASN:       m.localASN,
@@ -186,7 +188,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		peerConfigs = append(peerConfigs, PeerConfig{
 			ID:        u.ID,
 			Address:   addr,
-			Port:      peerPort(u.PeerIP, m.cfg.ActiveDial.Get() && u.ActiveDial),
+			Port:      peerPort(u.PeerIP, m.activeDial && u.ActiveDial),
 			ASN:       u.PeerASN,
 			Password:  u.BGPPassword,
 			Name:      u.Name,
@@ -383,7 +385,7 @@ func (m *Manager) buildPeerConfigs() ([]PeerConfig, error) {
 		configs = append(configs, PeerConfig{
 			ID:        u.ID,
 			Address:   addr,
-			Port:      peerPort(u.PeerIP, m.cfg.ActiveDial.Get() && u.ActiveDial),
+			Port:      peerPort(u.PeerIP, m.activeDial && u.ActiveDial),
 			ASN:       u.PeerASN,
 			Password:  u.BGPPassword,
 			Name:      u.Name,

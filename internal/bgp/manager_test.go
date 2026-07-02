@@ -32,6 +32,7 @@ func newTestManager(t *testing.T, fields map[string]string, db *store.Store) *Ma
 	cfg := testSettings(t, fields)
 	m := NewManager(cfg, db)
 	m.localASN = uint32(cfg.LocalASN.Get()) //nolint:gosec // test value, always in range
+	m.activeDial = cfg.ActiveDial.Get()
 	addr, err := netip.ParseAddr(cfg.LocalAddressV4.Get())
 	if err != nil {
 		t.Fatalf("invalid local_address_v4 in test fields: %v", err)
@@ -752,5 +753,71 @@ func TestDynamicPeerIsPassiveOnly(t *testing.T) {
 	state := p.State()
 	if state == StateEstablished || state == StateOpenSent || state == StateOpenConfirm {
 		t.Fatalf("dynamic peer should not actively connect, state=%s", state)
+	}
+}
+
+// TestActiveDialSnapshotSurvivesLiveSettingChange guards against a bug where
+// AddPeer/UpdatePeer/DeletePeer (via buildPeerConfigs) read active_dial live
+// from Settings instead of the snapshot taken at (re)start — like the other
+// restart-only settings (localASN, localAddrV4/V6), an admin toggling
+// active_dial while the speaker is already running must not affect peers
+// added/updated before the next explicit reload.
+func TestActiveDialSnapshotSurvivesLiveSettingChange(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	cfg := testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1180",
+		"local_address_v4": "192.0.2.1", "active_dial": "true",
+	})
+	manager := NewManager(cfg, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	if !manager.activeDial {
+		t.Fatal("snapshot activeDial should be true right after Start with active_dial=true")
+	}
+
+	// Flip the live setting off — must not affect the already-running
+	// speaker's snapshot.
+	if err := cfg.ActiveDial.Set(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if manager.activeDial != true {
+		t.Fatalf("manager.activeDial = %v after live setting change, want unchanged true (snapshot)", manager.activeDial)
+	}
+
+	// AddPeer for a new user with ActiveDial=true must still get an
+	// actively-dialing port (Port=0), based on the snapshot taken at Start —
+	// not the now-false live setting.
+	userID, err := s.AddUser(ctx, store.User{
+		Name: "active-dial-user", PeerIP: "192.0.2.50", PeerASN: 65010,
+		Enabled: true, ActiveDial: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := s.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.speaker.mu.Lock()
+	p, ok := manager.speaker.peers["192.0.2.50:65010"]
+	manager.speaker.mu.Unlock()
+	if !ok {
+		t.Fatal("added peer not found in speaker peers")
+	}
+	if got := p.PeerConfig().Port; got != 0 {
+		t.Errorf("Port = %d after AddPeer with live active_dial=false, want 0 (snapshot active_dial=true must still apply)", got)
 	}
 }
