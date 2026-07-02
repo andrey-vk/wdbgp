@@ -95,12 +95,14 @@ async function handleSave() {
   try {
     const body: Record<string, boolean | number | string | null> = {}
     for (const [key, val] of Object.entries(values.value)) {
-      // Skip env-overridden and permanently-readonly fields
-      if (envOverrides.value[key] || metaMap[key]?.readonly) continue
+      const meta = metaMap[key]
+      // Whitelist: only forward keys we have metadata for and know are
+      // writable. A key with no metaMap entry — e.g. the backend started
+      // returning a field settingsMeta.ts was never updated for — is never
+      // safe to send, since we can't tell if the backend accepts a write.
+      if (!meta || meta.readonly || envOverrides.value[key]) continue
       // Skip password fields with empty value (no change)
-      if (val === '' || val == null) {
-        if (metaMap[key]?.type === 'password') continue
-      }
+      if ((val === '' || val == null) && meta.type === 'password') continue
       body[key] = val
     }
     await apiClient.put('/admin/settings', body)

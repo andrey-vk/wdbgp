@@ -303,6 +303,47 @@ describe('SettingsPage', () => {
     expect(body.metrics_enabled).toBe(true)
   })
 
+  it('skips values with no known settingsMeta entry (whitelist, not blacklist)', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    // A key present in values (e.g. a field the backend started returning
+    // that settingsMeta.ts was never updated for) has no metaMap entry at
+    // all — not even readonly:false. It must never be forwarded, since the
+    // frontend has no way to know whether the backend can accept a write
+    // for it.
+    vm.values = {
+      totally_unrecognized_field: 'x',
+      bgp_port: 179,
+    }
+    vm.envOverrides = {}
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    await vm.handleSave()
+
+    const body = putMock.mock.calls[0][1] as Record<string, unknown>
+    expect(body).not.toHaveProperty('totally_unrecognized_field')
+    expect(body.bgp_port).toBe(179)
+  })
+
   it('stops saving spinner on error', async () => {
     const SettingsPage = (await import('../SettingsPage.vue')).default
     const wrapper = mount(SettingsPage, {

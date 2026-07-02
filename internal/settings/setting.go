@@ -35,6 +35,13 @@ type Setting[JSON, Runtime any] interface {
 	HasDBValue(ctx context.Context) bool
 	JSON(dbSettings map[string]string) SettingJSON[JSON]
 	OnChange(fn OnChangeFunc[Runtime]) func()
+
+	// dbEnvKeys exposes the storage/env keys for internal introspection only
+	// (see TestNoSettingIsBothDBAndEnvInaccessible) — a setting with both
+	// empty would be permanently unsettable via any path yet indistinguishable,
+	// from the JSON() output, from a normal env-only setting whose env var
+	// just isn't currently set.
+	dbEnvKeys() (dbKey, envVar string)
 }
 
 // simpleSetting[T] implements Setting[T, T] — for basic bool/int/string settings.
@@ -405,6 +412,12 @@ func (s *complexSetting[T]) OnChange(fn OnChangeFunc[T]) func() {
 		s.callbacks[idx] = nil
 	}
 }
+
+// dbEnvKeys returns the storage/env keys, for introspection only.
+func (s *simpleSetting[T]) dbEnvKeys() (string, string) { return s.dbKey, s.envVar }
+
+// dbEnvKeys returns the storage/env keys, for introspection only.
+func (s *complexSetting[T]) dbEnvKeys() (string, string) { return s.dbKey, s.envVar }
 
 // fireCallbacks invokes all registered callbacks with the given value.
 func (s *simpleSetting[T]) fireCallbacks(v T) {

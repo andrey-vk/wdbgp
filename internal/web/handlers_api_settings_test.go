@@ -184,6 +184,40 @@ func TestAPISettingsPut_HostPortDBPathAreReadOnly(t *testing.T) {
 	}
 }
 
+// TestAPISettingsPut_UnknownKeyRejected guards the fail-safe default case in
+// setSetting/resetSetting: a key with no explicit case must error out rather
+// than silently succeeding or panicking. This is what would actually catch a
+// future settings field that's exposed via SettingsJSON but never wired into
+// these switches — including a hypothetical dbKey=""+envVar="" field, which
+// would need a case here just like host/port/db_path do today.
+func TestAPISettingsPut_UnknownKeyRejected(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	server := New(st, nil, nil, nil)
+	cookie := adminCookie(st)
+
+	for _, body := range []string{
+		`{"totally_unknown_setting": "x"}`,
+		`{"totally_unknown_setting": null}`,
+	} {
+		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		w := httptest.NewRecorder()
+		server.handler.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s: status = %d, want 400", body, w.Code)
+		}
+		if !strings.Contains(w.Body.String(), "unknown setting") {
+			t.Errorf("PUT %s: body = %q, want it to mention unknown setting", body, w.Body.String())
+		}
+	}
+}
+
 func TestAPISettingsPut_Reset(t *testing.T) {
 	store := settings.NewTestStore()
 	st, err := settings.New(store)

@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"testing"
 )
@@ -139,6 +140,41 @@ func TestNewSettings_AllFieldsExist(t *testing.T) {
 	}
 	if s.MetricsHistoryDays == nil {
 		t.Error("MetricsHistoryDays is nil")
+	}
+}
+
+// TestNoSettingIsBothDBAndEnvInaccessible guards against a setting being
+// defined with both dbKey and envVar empty. Such a setting would be a
+// disguised constant: unreachable via Set/Reset (the backend's setSetting/
+// resetSetting switches would hit their "unknown setting" default case,
+// since nothing would ever wire a case for a key with no dbKey), yet its
+// JSON() output would be indistinguishable from a normal env-only setting
+// whose env var simply isn't set right now — value: null, env_override:
+// false. A frontend readonly flag has to be added by hand for every such
+// field (see settingsMeta.ts); nothing catches a forgotten one except this.
+func TestNoSettingIsBothDBAndEnvInaccessible(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v := reflect.ValueOf(s).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		if !field.CanInterface() {
+			continue
+		}
+		keyer, ok := field.Interface().(interface {
+			dbEnvKeys() (string, string)
+		})
+		if !ok {
+			continue
+		}
+		dbKey, envVar := keyer.dbEnvKeys()
+		if dbKey == "" && envVar == "" {
+			t.Errorf("field %s has both dbKey and envVar empty — permanently unsettable via any path", v.Type().Field(i).Name)
+		}
 	}
 }
 
