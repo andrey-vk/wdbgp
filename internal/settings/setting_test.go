@@ -8,9 +8,11 @@ import (
 )
 
 type mockStore struct {
-	settings map[string]string
-	saved    map[string]string
-	deleted  []string
+	settings  map[string]string
+	saved     map[string]string
+	deleted   []string
+	saveErr   error // if set, SaveSetting returns this instead of succeeding
+	deleteErr error // if set, DeleteSetting returns this instead of succeeding
 }
 
 func newMockStore() *mockStore {
@@ -29,12 +31,18 @@ func (m *mockStore) GetAllSettings(_ context.Context) (map[string]string, error)
 }
 
 func (m *mockStore) SaveSetting(_ context.Context, key, value string) error {
+	if m.saveErr != nil {
+		return m.saveErr
+	}
 	m.saved[key] = value
 	m.settings[key] = value
 	return nil
 }
 
 func (m *mockStore) DeleteSetting(_ context.Context, key string) error {
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
 	m.deleted = append(m.deleted, key)
 	delete(m.settings, key)
 	return nil
@@ -436,6 +444,47 @@ func TestSimpleSetting_OnChange_Reset(t *testing.T) {
 	}
 }
 
+// TestSimpleSetting_Set_PersistsBeforeMutating guards against a failed
+// SaveSetting leaving Get() returning a value the store never actually
+// received — the API would report the save as failed while runtime
+// behavior (e.g. admin password, session secret) already changed.
+func TestSimpleSetting_Set_PersistsBeforeMutating(t *testing.T) {
+	store := newMockStore()
+	s, err := newSimple(5, "test_key", "", parseInt, nil, store, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store.saveErr = fmt.Errorf("disk full")
+	if err := s.Set(context.Background(), 99); err == nil {
+		t.Fatal("expected error from SaveSetting to propagate")
+	}
+	if s.Get() != 5 {
+		t.Errorf("Get() = %d after a failed Set, want unchanged default 5", s.Get())
+	}
+}
+
+// TestSimpleSetting_Reset_PersistsBeforeMutating is the Reset-side
+// counterpart of TestSimpleSetting_Set_PersistsBeforeMutating.
+func TestSimpleSetting_Reset_PersistsBeforeMutating(t *testing.T) {
+	store := newMockStore()
+	s, err := newSimple(5, "test_key", "", parseInt, nil, store, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set(context.Background(), 99); err != nil {
+		t.Fatal(err)
+	}
+
+	store.deleteErr = fmt.Errorf("disk full")
+	if err := s.Reset(context.Background()); err == nil {
+		t.Fatal("expected error from DeleteSetting to propagate")
+	}
+	if s.Get() != 99 {
+		t.Errorf("Get() = %d after a failed Reset, want unchanged value 99", s.Get())
+	}
+}
+
 // =============================================================================
 // complexSetting tests
 // =============================================================================
@@ -600,6 +649,24 @@ func TestComplexSetting_Reset(t *testing.T) {
 	}
 	if len(store.deleted) != 1 || store.deleted[0] != "test_key" {
 		t.Error("store.DeleteSetting should have been called")
+	}
+}
+
+// TestComplexSetting_Set_PersistsBeforeMutating is the complexSetting
+// counterpart of TestSimpleSetting_Set_PersistsBeforeMutating.
+func TestComplexSetting_Set_PersistsBeforeMutating(t *testing.T) {
+	store := newMockStore()
+	s, err := newComplex("42", "test_key", "", parseInt, nil, store, map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store.saveErr = fmt.Errorf("disk full")
+	if err := s.Set(context.Background(), "99"); err == nil {
+		t.Fatal("expected error from SaveSetting to propagate")
+	}
+	if s.Get() != 42 {
+		t.Errorf("Get() = %v after a failed Set, want unchanged default 42", s.Get())
 	}
 }
 

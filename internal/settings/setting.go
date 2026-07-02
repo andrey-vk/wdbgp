@@ -225,13 +225,17 @@ func (s *simpleSetting[T]) Set(ctx context.Context, v T) error {
 		}
 	}
 
-	s.mu.Lock()
-	s.value = parsed
-	s.mu.Unlock()
-
+	// Persist before changing the in-memory value: if SaveSetting fails
+	// (busy DB, full disk, canceled context), Get() must keep returning the
+	// old value, matching what's actually in the store, rather than a value
+	// the API just reported as failed to save.
 	if err := s.store.SaveSetting(ctx, s.dbKey, raw); err != nil {
 		return err
 	}
+
+	s.mu.Lock()
+	s.value = parsed
+	s.mu.Unlock()
 
 	s.fireCallbacks(parsed)
 	return nil
@@ -255,13 +259,14 @@ func (s *complexSetting[T]) Set(ctx context.Context, v string) error {
 		}
 	}
 
-	s.mu.Lock()
-	s.value = parsed
-	s.mu.Unlock()
-
+	// Persist before changing the in-memory value — see simpleSetting.Set.
 	if err := s.store.SaveSetting(ctx, s.dbKey, v); err != nil {
 		return err
 	}
+
+	s.mu.Lock()
+	s.value = parsed
+	s.mu.Unlock()
 
 	s.fireCallbacks(parsed)
 	return nil
@@ -273,13 +278,14 @@ func (s *simpleSetting[T]) Reset(ctx context.Context) error {
 		return fmt.Errorf("settings: cannot reset %s, overridden by %s", s.dbKey, s.envVar)
 	}
 
-	s.mu.Lock()
-	s.value = s.defaultVal
-	s.mu.Unlock()
-
+	// Persist before changing the in-memory value — see simpleSetting.Set.
 	if err := s.store.DeleteSetting(ctx, s.dbKey); err != nil {
 		return err
 	}
+
+	s.mu.Lock()
+	s.value = s.defaultVal
+	s.mu.Unlock()
 
 	s.fireCallbacks(s.defaultVal)
 	return nil
@@ -296,13 +302,14 @@ func (s *complexSetting[T]) Reset(ctx context.Context) error {
 		return fmt.Errorf("settings: default value %q for %s does not parse: %w", s.defaultVal, s.dbKey, err)
 	}
 
-	s.mu.Lock()
-	s.value = defaultParsed
-	s.mu.Unlock()
-
+	// Persist before changing the in-memory value — see simpleSetting.Set.
 	if err := s.store.DeleteSetting(ctx, s.dbKey); err != nil {
 		return err
 	}
+
+	s.mu.Lock()
+	s.value = defaultParsed
+	s.mu.Unlock()
 
 	s.fireCallbacks(defaultParsed)
 	return nil
