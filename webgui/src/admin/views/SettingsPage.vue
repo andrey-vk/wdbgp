@@ -29,6 +29,9 @@ const purging = ref(false)
 
 // Current values: null = use default, non-null = override
 const values = ref<Record<string, boolean | number | string | null>>({})
+// Snapshot of `values` as last loaded from the backend — used by handleSave
+// to only forward fields the admin actually changed.
+const savedValues = ref<Record<string, boolean | number | string | null>>({})
 // Effective defaults from backend
 const effectiveDefaults = ref<Record<string, boolean | number | string>>({})
 // Env override flags from backend
@@ -55,6 +58,7 @@ async function loadSettings() {
   }
 
   values.value = v
+  savedValues.value = { ...v }
   effectiveDefaults.value = d
   envOverrides.value = e
 }
@@ -116,6 +120,12 @@ async function handleSave() {
       if (!meta || meta.readonly || envOverrides.value[key]) continue
       // Skip password fields with empty value (no change)
       if ((val === '' || val == null) && meta.type === 'password') continue
+      // Skip fields whose value hasn't actually changed since the last
+      // load — the backend fires each setting's OnChange on every
+      // Set/Reset, so forwarding an untouched value here can spuriously
+      // mark e.g. a BGP restart as pending for a field the admin never
+      // edited.
+      if (val === savedValues.value[key]) continue
       body[key] = val
     }
     const resp = await apiClient.put('/admin/settings', body)

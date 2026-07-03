@@ -193,12 +193,14 @@ describe('SettingsPage', () => {
     await wrapper.vm.$nextTick()
     await new Promise(r => setTimeout(r, 50))
 
-    // Directly set values and trigger save
+    // Directly set values and trigger save. default_language is set to
+    // 'ru' (not the mocked loaded value 'en') so it counts as a real
+    // change under the unchanged-field filter in handleSave.
     const vm = wrapper.vm as InstanceType<typeof SettingsPage>
     vm.values = {
       bgp_port: 9090,
       metrics_enabled: true,
-      default_language: 'en',
+      default_language: 'ru',
       filter_allow: '',
       filter_deny: '',
     }
@@ -213,7 +215,7 @@ describe('SettingsPage', () => {
     expect(typeof body.bgp_port).toBe('number')
     expect(body.metrics_enabled).toBe(true)
     expect(typeof body.metrics_enabled).toBe('boolean')
-    expect(body.default_language).toBe('en')
+    expect(body.default_language).toBe('ru')
     expect(typeof body.default_language).toBe('string')
   })
 
@@ -455,6 +457,47 @@ describe('SettingsPage', () => {
     expect(body.bgp_port).toBe(8080)
     // admin_password (null) should be skipped
     expect(body).not.toHaveProperty('admin_password')
+  })
+
+  it('excludes fields whose value has not changed since load from the PUT body', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    // active_dial was loaded as `true` (buildSettings) and is left exactly
+    // as-is here — only bgp_port is actually edited. A save that only
+    // touches bgp_port must not also re-fire active_dial's OnChange (which
+    // could spuriously mark a BGP restart as pending for a field the admin
+    // never touched).
+    vm.values = {
+      ...vm.values,
+      active_dial: true,
+      bgp_port: 9090,
+    }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    await vm.handleSave()
+
+    const body = putMock.mock.calls[0][1] as Record<string, unknown>
+    expect(body).not.toHaveProperty('active_dial')
+    expect(body.bgp_port).toBe(9090)
   })
 
   it('shows a warning toast (not the success banner) when the backend reports a partial-apply warning', async () => {
