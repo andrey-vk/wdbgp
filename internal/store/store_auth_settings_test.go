@@ -687,7 +687,7 @@ func TestGenCommunitiesRuntimeRespectsContextCancellation(t *testing.T) {
 	canceledCtx, cancel := context.WithCancel(ctx)
 	cancel()
 
-	if _, err := genCommunitiesRuntime(canceledCtx, tx, nil, 1); err == nil {
+	if _, err := genCommunitiesRuntime(canceledCtx, tx, 1); err == nil {
 		t.Fatal("expected an error from genCommunitiesRuntime with a canceled context, got nil")
 	}
 }

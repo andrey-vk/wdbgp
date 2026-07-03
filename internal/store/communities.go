@@ -111,52 +111,20 @@ func (s *Store) DeleteCommunity(ctx context.Context, modeID int64, category, ser
 func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, error) {
 	var count int
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
-		// Load existing community keys
-		rows, err := tx.QueryContext(ctx,
-			"SELECT category, service FROM catalog_communities WHERE mode_id = ?", modeID)
-		if err != nil {
-			return err
-		}
-
-		existing := make(map[string]bool)
-		for rows.Next() {
-			var category, service string
-			if err := rows.Scan(&category, &service); err != nil {
-				if err := rows.Close(); err != nil {
-					log.Printf("WARNING: rows close: %v", err)
-				}
-				return err
-			}
-			if service == "" {
-				existing["grp:"+category] = true
-			} else {
-				existing["svc:"+category+"|"+service] = true
-			}
-		}
-		if err := rows.Err(); err != nil {
-			// A mid-iteration error looks identical to "no more rows" from
-			// rows.Next() alone — without this check, an incomplete
-			// `existing` set could let genCommunitiesRuntime re-generate
-			// communities for categories/services that already have one.
-			if cerr := rows.Close(); cerr != nil {
-				log.Printf("WARNING: rows close: %v", cerr)
-			}
-			return err
-		}
-		if err := rows.Close(); err != nil {
-			return err
-		}
-
 		var err2 error
-		count, err2 = genCommunitiesRuntime(ctx, tx, existing, modeID)
+		count, err2 = genCommunitiesRuntime(ctx, tx, modeID)
 		return err2
 	})
 	return count, err
 }
 
 // genCommunitiesRuntime generates communities using catalog_mode_feeds (post-migration-20).
-// Used by GenerateCommunities during normal runtime operation.
-func genCommunitiesRuntime(ctx context.Context, tx *sql.Tx, existing map[string]bool, modeID int64) (int, error) {
+// Used by GenerateCommunities during normal runtime operation. Which
+// categories/services already have a community is read once per mode from
+// catalog_communities (into keyComm below) — there is no separate
+// "existing" pre-check query, since that would just be reading the same
+// table under the same mode_id filter a second time in the same transaction.
+func genCommunitiesRuntime(ctx context.Context, tx *sql.Tx, modeID int64) (int, error) {
 	var modeIDs []int64
 	if modeID > 0 {
 		modeIDs = []int64{modeID}
@@ -219,51 +187,55 @@ func genCommunitiesRuntime(ctx context.Context, tx *sql.Tx, existing map[string]
 			log.Printf("WARNING: commRows close: %v", err)
 		}
 
-		catRows, err := tx.QueryContext(ctx, `
-SELECT DISTINCT ce.category
+		// One query for every (category, service) pair in the mode, instead
+		// of a DISTINCT category query followed by a per-category DISTINCT
+		// service query — the per-category query was an N+1: one extra
+		// round trip for every category in the mode.
+		entryRows, err := tx.QueryContext(ctx, `
+SELECT DISTINCT ce.category, ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 WHERE cmf.mode_id = ?
-ORDER BY ce.category`, mid)
+ORDER BY ce.category, ce.service`, mid)
 		if err != nil {
 			return 0, err
 		}
 
 		var categories []string
-		for catRows.Next() {
-			var cat string
-			if err := catRows.Scan(&cat); err != nil {
-				if err := catRows.Close(); err != nil {
-					log.Printf("WARNING: catRows close: %v", err)
+		servicesByCategory := make(map[string][]string)
+		for entryRows.Next() {
+			var category, service string
+			if err := entryRows.Scan(&category, &service); err != nil {
+				if err := entryRows.Close(); err != nil {
+					log.Printf("WARNING: entryRows close: %v", err)
 				}
-				return 0, err
+				return generated, err
 			}
-			categories = append(categories, cat)
-		}
-		if err := catRows.Err(); err != nil {
-			if cerr := catRows.Close(); cerr != nil {
-				log.Printf("WARNING: catRows close: %v", cerr)
+			// Rows are ordered by category, so all of a category's rows are
+			// contiguous — a new category starts whenever it differs from
+			// the last one appended.
+			if len(categories) == 0 || categories[len(categories)-1] != category {
+				categories = append(categories, category)
 			}
-			return 0, err
+			servicesByCategory[category] = append(servicesByCategory[category], service)
 		}
-		if err := catRows.Close(); err != nil {
-			log.Printf("WARNING: catRows close: %v", err)
+		if err := entryRows.Err(); err != nil {
+			if cerr := entryRows.Close(); cerr != nil {
+				log.Printf("WARNING: entryRows close: %v", cerr)
+			}
+			return generated, err
+		}
+		if err := entryRows.Close(); err != nil {
+			log.Printf("WARNING: entryRows close: %v", err)
 		}
 
 		groupIndex := 0
 		for _, category := range categories {
 			groupKey := "grp:" + category
 
-			var groupCommunity uint32
-			if existing != nil && existing[groupKey] {
-				var ok bool
-				groupCommunity, ok = keyComm[groupKey]
-				if !ok {
-					groupIndex++
-					continue
-				}
-			} else {
+			groupCommunity, ok := keyComm[groupKey]
+			if !ok {
 				groupCommunity = findFirstFree(uint32((groupIndex+1)*10000), used)
 				if _, err := tx.ExecContext(ctx,
 					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, '', ?)",
@@ -274,41 +246,9 @@ ORDER BY ce.category`, mid)
 				generated++
 			}
 
-			svcRows, err := tx.QueryContext(ctx, `
-SELECT DISTINCT ce.service
-FROM catalog_entries ce
-JOIN feeds f ON f.id = ce.feed_id
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-WHERE cmf.mode_id = ? AND ce.category = ?
-ORDER BY ce.service`, mid, category)
-			if err != nil {
-				return generated, err
-			}
-
-			var services []string
-			for svcRows.Next() {
-				var svc string
-				if err := svcRows.Scan(&svc); err != nil {
-					if err := svcRows.Close(); err != nil {
-						log.Printf("WARNING: svcRows close: %v", err)
-					}
-					return generated, err
-				}
-				services = append(services, svc)
-			}
-			if err := svcRows.Err(); err != nil {
-				if cerr := svcRows.Close(); cerr != nil {
-					log.Printf("WARNING: svcRows close: %v", cerr)
-				}
-				return generated, err
-			}
-			if err := svcRows.Close(); err != nil {
-				log.Printf("WARNING: svcRows close: %v", err)
-			}
-
-			for _, service := range services {
+			for _, service := range servicesByCategory[category] {
 				svcKey := "svc:" + category + "|" + service
-				if existing != nil && existing[svcKey] {
+				if _, ok := keyComm[svcKey]; ok {
 					continue
 				}
 				svcCommunity := findFirstFree(groupCommunity+1, used)
