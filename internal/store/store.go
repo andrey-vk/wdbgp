@@ -186,6 +186,14 @@ func (s *Store) tryRestore(ctx context.Context, applied []int) error {
 			}
 			versions = append(versions, v)
 		}
+		if err := rows.Err(); err != nil {
+			// A mid-iteration error looks identical to "no more rows" from
+			// rows.Next() alone — without this check, a truncated versions
+			// list from a corrupted/unreadable backup could be mistaken for
+			// a genuinely short migration history instead of being skipped.
+			log.Printf("WARNING: rows iteration: %v", err)
+			versions = nil
+		}
 		if err := rows.Close(); err != nil {
 			log.Printf("WARNING: rows close: %v", err)
 		}

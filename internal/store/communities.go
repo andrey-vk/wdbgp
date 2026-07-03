@@ -133,6 +133,16 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, err
 				existing["svc:"+category+"|"+service] = true
 			}
 		}
+		if err := rows.Err(); err != nil {
+			// A mid-iteration error looks identical to "no more rows" from
+			// rows.Next() alone — without this check, an incomplete
+			// `existing` set could let genCommunitiesRuntime re-generate
+			// communities for categories/services that already have one.
+			if cerr := rows.Close(); cerr != nil {
+				log.Printf("WARNING: rows close: %v", cerr)
+			}
+			return err
+		}
 		if err := rows.Close(); err != nil {
 			return err
 		}
