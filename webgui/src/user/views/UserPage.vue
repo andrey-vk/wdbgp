@@ -8,18 +8,13 @@ import FormField from '@/components/FormField.vue'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { useThemeStore } from '@/admin/stores/theme'
 import { getCurrentLocale } from '@/plugins/i18n'
+import userApi from '@/api/client'
 import type { UserDataResponse } from '@/types/user-page'
 
 const { t } = useI18n()
 const toast = useToast()
 const themeStore = useThemeStore()
 const locale = ref(getCurrentLocale())
-
-const userApi = axios.create({
-  baseURL: '/api',
-  withCredentials: true,
-  headers: { 'Content-Type': 'application/json' },
-})
 
 // ── Auth state ──────────────────────────────────────────────
 const authenticated = ref(false)
