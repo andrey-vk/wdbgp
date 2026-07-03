@@ -843,6 +843,69 @@ func TestSessionMaxAgeValidationRejectsInvalidEnvValue(t *testing.T) {
 	}
 }
 
+// TestLogLevelValidation guards against log_level being settable to a value
+// internal/logging.parseLogLevel doesn't recognize — it would silently fall
+// back to INFO there, so the admin UI could show e.g. "DEBUG" while nothing
+// was actually logged at debug level. The set of accepted values must match
+// parseLogLevel exactly (case-insensitively): FATAL/PANIC are deliberately
+// excluded even though the old pre-rewrite validator accepted them, since
+// slog itself only has Debug/Info/Warn/Error and parseLogLevel silently
+// maps anything else to INFO too.
+func TestLogLevelValidation(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"DEBUG", "INFO", "WARN", "WARNING", "ERROR", "debug", "warn"} {
+		if err := s.LogLevel.Set(context.Background(), v); err != nil {
+			t.Errorf("unexpected error for valid log_level %q: %v", v, err)
+		}
+	}
+	for _, v := range []string{"banana", "TRACE", "FATAL", "PANIC", ""} {
+		if err := s.LogLevel.Set(context.Background(), v); err == nil {
+			t.Errorf("expected error for invalid log_level %q", v)
+		}
+	}
+}
+
+func TestLogLevelValidationRejectsInvalidEnvValue(t *testing.T) {
+	t.Setenv("WDBGP_LOG_LEVEL", "banana")
+	store := newMockStore()
+	if _, err := New(store); err == nil {
+		t.Error("expected error for WDBGP_LOG_LEVEL=banana")
+	}
+}
+
+// TestLogFormatValidation mirrors TestLogLevelValidation for log_format —
+// internal/logging.parseLogFormat only recognizes "json"/"text"
+// (case-insensitively) and silently falls back to "text" for anything else.
+func TestLogFormatValidation(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"json", "text", "JSON", "Text"} {
+		if err := s.LogFormat.Set(context.Background(), v); err != nil {
+			t.Errorf("unexpected error for valid log_format %q: %v", v, err)
+		}
+	}
+	for _, v := range []string{"xml", "yaml", ""} {
+		if err := s.LogFormat.Set(context.Background(), v); err == nil {
+			t.Errorf("expected error for invalid log_format %q", v)
+		}
+	}
+}
+
+func TestLogFormatValidationRejectsInvalidEnvValue(t *testing.T) {
+	t.Setenv("WDBGP_LOG_FORMAT", "xml")
+	store := newMockStore()
+	if _, err := New(store); err == nil {
+		t.Error("expected error for WDBGP_LOG_FORMAT=xml")
+	}
+}
+
 // TestValidateHost guards against WDBGP_HOST=<host>:<port> — a natural typo
 // since the port is actually configured separately via WDBGP_PORT — being
 // silently accepted and passed straight into the listen address.

@@ -248,13 +248,13 @@ func New(store Store) (*Settings, error) {
 	}
 
 	// LogLevel.
-	s.LogLevel, err = newSimple("INFO", "log_level", "WDBGP_LOG_LEVEL", parseString, nil, store, dbSettings)
+	s.LogLevel, err = newSimple("INFO", "log_level", "WDBGP_LOG_LEVEL", parseString, validateLogLevel, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
 
 	// LogFormat.
-	s.LogFormat, err = newSimple("text", "log_format", "WDBGP_LOG_FORMAT", parseString, nil, store, dbSettings)
+	s.LogFormat, err = newSimple("text", "log_format", "WDBGP_LOG_FORMAT", parseString, validateLogFormat, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -517,6 +517,31 @@ func validateSessionMaxAge(v int) error {
 		return fmt.Errorf("must not exceed 31536000 seconds (1 year), got %d", v)
 	}
 	return nil
+}
+
+// validateLogLevel checks that a log level is one of the values
+// internal/logging.parseLogLevel actually recognizes (case-insensitively).
+// Anything else silently falls back to INFO there with no diagnostic, so an
+// admin could believe DEBUG logging is on when it never took effect.
+func validateLogLevel(v string) error {
+	switch strings.ToUpper(v) {
+	case "DEBUG", "INFO", "WARN", "WARNING", "ERROR":
+		return nil
+	default:
+		return fmt.Errorf("must be one of DEBUG, INFO, WARN, WARNING, ERROR, got %q", v)
+	}
+}
+
+// validateLogFormat checks that a log format is one of the values
+// internal/logging.parseLogFormat actually recognizes (case-insensitively).
+// Anything else silently falls back to text there with no diagnostic.
+func validateLogFormat(v string) error {
+	switch strings.ToLower(v) {
+	case "json", "text":
+		return nil
+	default:
+		return fmt.Errorf("must be json or text, got %q", v)
+	}
 }
 
 // validatePort checks that a port number is in the valid range 1-65535.
