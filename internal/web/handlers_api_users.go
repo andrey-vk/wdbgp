@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -1007,8 +1008,26 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 	if body.ModeID > 0 {
 		modeID = body.ModeID
 	}
+	switchingMode := body.ModeID > 0 && body.ModeID != user.CatalogModeID
 
 	err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
+		if switchingMode {
+			// Persist the mode switch alongside the selection rows below, in the
+			// same transaction, so a save that changes mode doesn't leave the
+			// user's active catalog_mode_id pointing at the old mode.
+			result, err := tx.ExecContext(r.Context(),
+				`UPDATE users SET catalog_mode_id = ? WHERE id = ?
+				 AND EXISTS (SELECT 1 FROM catalog_modes WHERE id = ? AND enabled = 1)`,
+				modeID, id, modeID)
+			if err != nil {
+				return err
+			}
+			if count, err := result.RowsAffected(); err != nil {
+				return fmt.Errorf("rows affected: %w", err)
+			} else if count == 0 {
+				return sql.ErrNoRows
+			}
+		}
 		for _, c := range body.Categories {
 			if c.Checked {
 				if _, err := tx.ExecContext(r.Context(),
@@ -1041,6 +1060,10 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 		}
 		return nil
 	})
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid or disabled mode"})
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return

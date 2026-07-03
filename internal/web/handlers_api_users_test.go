@@ -1356,6 +1356,106 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 }
 
 // =============================================================================
+// TestAdminSaveSelectionsUpdatesUserCatalogMode — switching mode via the
+// selections save endpoint must persist users.catalog_mode_id, not just
+// scope the selection rows to the new mode.
+// =============================================================================
+
+func TestAdminSaveSelectionsUpdatesUserCatalogMode(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	oldModeID, err := st.AddCatalogMode(ctx, "old-mode", "Old Mode", true)
+	if err != nil {
+		t.Fatalf("add old mode: %v", err)
+	}
+	newModeID, err := st.AddCatalogMode(ctx, "new-mode", "New Mode", true)
+	if err != nil {
+		t.Fatalf("add new mode: %v", err)
+	}
+
+	userID, err := st.AddUser(ctx, store.User{
+		Name:          "mode-switch-user",
+		PeerIP:        "172.16.0.2",
+		PeerASN:       65002,
+		Enabled:       true,
+		CatalogModeID: oldModeID,
+		Networks:      []string{"10.0.0.0/8"},
+	})
+	if err != nil {
+		t.Fatalf("add user: %v", err)
+	}
+
+	s := testSettings()
+	body := fmt.Sprintf(`{"categories":[],"services":[],"mode_id":%d}`, newModeID)
+	req := httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d/selections", userID), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", fmt.Sprintf("%d", userID))
+	req.AddCookie(adminCookie(s))
+	w := httptest.NewRecorder()
+	srv.apiAdminUserSaveSelections(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save selections: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	updated, err := st.User(ctx, userID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if updated.CatalogModeID != newModeID {
+		t.Fatalf("catalog_mode_id = %d, want %d (mode switch should persist)", updated.CatalogModeID, newModeID)
+	}
+}
+
+// TestAdminSaveSelectionsRejectsDisabledMode — mode_id pointing at a
+// disabled mode must not silently switch the user onto it.
+func TestAdminSaveSelectionsRejectsDisabledMode(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	oldModeID, err := st.AddCatalogMode(ctx, "old-mode2", "Old Mode 2", true)
+	if err != nil {
+		t.Fatalf("add old mode: %v", err)
+	}
+	disabledModeID, err := st.AddCatalogMode(ctx, "disabled-mode", "Disabled Mode", false)
+	if err != nil {
+		t.Fatalf("add disabled mode: %v", err)
+	}
+
+	userID, err := st.AddUser(ctx, store.User{
+		Name:          "mode-switch-user2",
+		PeerIP:        "172.16.0.3",
+		PeerASN:       65003,
+		Enabled:       true,
+		CatalogModeID: oldModeID,
+		Networks:      []string{"10.0.0.0/8"},
+	})
+	if err != nil {
+		t.Fatalf("add user: %v", err)
+	}
+
+	s := testSettings()
+	body := fmt.Sprintf(`{"categories":[],"services":[],"mode_id":%d}`, disabledModeID)
+	req := httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d/selections", userID), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", fmt.Sprintf("%d", userID))
+	req.AddCookie(adminCookie(s))
+	w := httptest.NewRecorder()
+	srv.apiAdminUserSaveSelections(w, req)
+	if w.Code == http.StatusOK {
+		t.Fatalf("save selections with disabled mode: status = %d, want non-200", w.Code)
+	}
+
+	updated, err := st.User(ctx, userID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if updated.CatalogModeID != oldModeID {
+		t.Fatalf("catalog_mode_id = %d, want unchanged %d", updated.CatalogModeID, oldModeID)
+	}
+}
+
+// =============================================================================
 // TestUserBGPPasswordToggle — 4-way BGP password enable/disable logic
 // =============================================================================
 
