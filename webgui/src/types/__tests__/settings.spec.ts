@@ -81,8 +81,8 @@ describe('settingsSchema', () => {
     }
     // Use partial() to make all fields optional for partial object parsing
     const result = settingsSchema.partial().parse(partial)
-    expect(result.port.value).toBeNull()
-    expect(result.host.value).toBe('127.0.0.1')
+    expect(result.port?.value).toBeNull()
+    expect(result.host?.value).toBe('127.0.0.1')
   })
 
   it('parses a complete settings object with all fields', () => {

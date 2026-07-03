@@ -9,7 +9,7 @@ import { createPinia, setActivePinia } from 'pinia'
 // Mock vue-i18n
 const tMock = vi.fn((key: string, params?: Record<string, unknown>) => {
   if (params && typeof params === 'object') {
-    return key.replace(/\{(\w+)\}/g, (_, k) => params[k] ?? '?')
+    return key.replace(/\{(\w+)\}/g, (_, k) => String(params[k] ?? '?'))
   }
   return key
 })

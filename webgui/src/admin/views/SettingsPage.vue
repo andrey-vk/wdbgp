@@ -164,7 +164,10 @@ async function handlePurgeMetrics() {
   } finally { purging.value = false }
 }
 
-
+// Exposed for SettingsPage.spec.ts, which drives saves and inspects local
+// state directly rather than through the DOM — without this, a rename here
+// would silently break those tests with no static warning.
+defineExpose({ values, envOverrides, saving, dirty, saved, handleSave })
 </script>
 
 <template>
