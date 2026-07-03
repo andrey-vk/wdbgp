@@ -237,14 +237,21 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Set session cookie
+	// Set session cookie. session_max_age=0 is a sentinel for a
+	// browser-session-scoped cookie (MaxAge/Expires both left unset) — the
+	// server-side freshness check in parseUserSessionToken independently
+	// defaults to an 8h cap in that case, same as apiAdminLogin.
 	secure := s.adminCookieSecure(r)
-	maxAge := s.settings.SessionMaxAge.Get()
-	if maxAge <= 0 {
-		maxAge = 28800 // 8 hours default
+	maxAge := 0
+	if s.settings.SessionMaxAge.Get() > 0 {
+		maxAge = s.settings.SessionMaxAge.Get()
+	}
+	var expires time.Time
+	if maxAge > 0 {
+		expires = time.Now().Add(time.Duration(maxAge) * time.Second)
 	}
 	setUserSessionCookie(w, user.ID, s.settings.SessionSecret.Get(), maxAge, secure)
-	setCSRFCookie(w, secure, maxAge, time.Now().Add(time.Duration(maxAge)*time.Second))
+	setCSRFCookie(w, secure, maxAge, expires)
 
 	// Load catalog and filtered selections for the response
 	loginCatalog, err := s.store.CatalogForMode(ctx, user.CatalogModeID, false)

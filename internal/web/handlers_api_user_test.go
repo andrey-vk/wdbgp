@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
@@ -119,6 +120,64 @@ func TestUserAuthLoginModeCookieOnly(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("cookie-only auth for web_auth=login user: got %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
+// TestUserLoginSessionCookieSentinel — session_max_age=0 must produce a
+// browser-session-scoped wdbgp_user cookie (no Max-Age/Expires), matching
+// apiAdminLogin's handling of the same sentinel, instead of always issuing a
+// persistent 28800s cookie.
+// =============================================================================
+
+func TestUserLoginSessionCookieSentinel(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+	srv.loginLimiter = newRateLimiter(time.Minute, 1000)
+
+	mustSetSetting(t, srv.settings.SessionMaxAge, 0)
+
+	userBody := `{"name":"login-user2","peer_ip":"10.9.9.10","peer_asn":65010,"web_auth":"login","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create login user: %d body=%s", w.Code, w.Body.String())
+	}
+
+	credBody := `{"login":"session-login","password":"test"}` //nolint:gosec // test credentials, not real
+	req = httptest.NewRequest("PUT", "/api/admin/users/1/credentials", strings.NewReader(credBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", "1")
+	w = httptest.NewRecorder()
+	srv.apiUserCredentialsSet(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("set credentials: %d", w.Code)
+	}
+
+	loginBody := `{"login":"session-login","password":"test"}` //nolint:gosec // test credentials, not real
+	req = httptest.NewRequest("POST", "/api/user/login", strings.NewReader(loginBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.apiUserLogin(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var sessionCookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == userSessionCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("no wdbgp_user cookie set")
+	}
+	if sessionCookie.MaxAge != 0 {
+		t.Errorf("MaxAge = %d, want 0 (browser-session cookie) when session_max_age=0", sessionCookie.MaxAge)
+	}
+	if !sessionCookie.Expires.IsZero() {
+		t.Errorf("Expires = %v, want zero (browser-session cookie) when session_max_age=0", sessionCookie.Expires)
 	}
 }
 
