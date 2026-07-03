@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -178,6 +179,62 @@ func TestUserLoginSessionCookieSentinel(t *testing.T) {
 	}
 	if !sessionCookie.Expires.IsZero() {
 		t.Errorf("Expires = %v, want zero (browser-session cookie) when session_max_age=0", sessionCookie.Expires)
+	}
+}
+
+// =============================================================================
+// TestUserSwitchModeSurfacesReconcileFailure — apiUserSwitchMode must not
+// report {ok:true} when the catalog_mode_id write succeeds but the
+// subsequent BGP reconcile fails, matching apiUserSaveSelections and
+// apiUserSaveFilters' "saved but BGP reconciliation failed" behavior.
+// =============================================================================
+
+func TestUserSwitchModeSurfacesReconcileFailure(t *testing.T) {
+	srv, st, fake := setupUserTestServer(t)
+	ctx := context.Background()
+
+	newModeID, err := st.AddCatalogMode(ctx, "new-mode", "New Mode", true)
+	if err != nil {
+		t.Fatalf("add mode: %v", err)
+	}
+
+	userBody := `{"name":"mode-switch-user","peer_ip":"10.4.4.1","peer_asn":65004,"networks":["10.4.4.0/24"],"web_auth":"network","enabled":true,"catalog_editable":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create user: %d body=%s", w.Code, w.Body.String())
+	}
+	var userResp userJSON
+	if err := json.NewDecoder(w.Body).Decode(&userResp); err != nil {
+		t.Fatal(err)
+	}
+
+	fake.down = true
+	fake.downErr = fmt.Errorf("bgp speaker is not running")
+
+	body := fmt.Sprintf(`{"mode_id":%d}`, newModeID)
+	req = httptest.NewRequest("PUT", "/api/user/mode", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.4.4.1:1234"
+	addCSRF(req)
+	w = httptest.NewRecorder()
+	srv.requireUser(srv.apiUserSwitchMode).ServeHTTP(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("status = %d, want non-200 when reconcile fails, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "BGP reconciliation failed") {
+		t.Errorf("body = %s, want it to mention the reconcile failure", w.Body.String())
+	}
+
+	updated, err := st.User(ctx, userResp.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if updated.CatalogModeID != newModeID {
+		t.Fatalf("catalog_mode_id = %d, want %d (write should persist despite reconcile failure)", updated.CatalogModeID, newModeID)
 	}
 }
 

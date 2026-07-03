@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -580,7 +579,8 @@ func (s *Server) apiUserSwitchMode(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
-			logging.FromContext(r.Context()).Debug("bgp reconcile failed after mode switch", "error", err)
+			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Catalog mode updated but BGP reconciliation failed: " + err.Error()})
+			return
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
