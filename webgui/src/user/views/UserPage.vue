@@ -228,6 +228,15 @@ async function switchMode(modeId: number): Promise<void> {
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch {
     toast.add({ severity: 'error', summary: t('user.save_error'), life: 5000 })
+    // The backend commits the mode change before it can fail on a later
+    // step (e.g. BGP reconciliation), so an error here doesn't mean the
+    // switch didn't happen — resync from the server's true state rather
+    // than leaving the UI showing pre-switch mode/catalog/selections.
+    try {
+      await reloadUserData()
+    } catch {
+      // best-effort; if this also fails, UI keeps showing pre-switch state
+    }
   }
 }
 
