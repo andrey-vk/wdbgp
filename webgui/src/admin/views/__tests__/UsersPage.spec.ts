@@ -122,8 +122,13 @@ async function mountUsersPage() {
   })
   await new Promise(resolve => setTimeout(resolve, 50))
   await nextTick()
-  return wrapper
+  return { wrapper, UsersPage }
 }
+
+// Derived from mountUsersPage's own return type rather than a hand-written
+// interface, so a rename in UsersPage.vue's defineExpose is caught here
+// statically instead of silently passing through an unchecked cast.
+type UsersPageVM = InstanceType<Awaited<ReturnType<typeof mountUsersPage>>['UsersPage']>
 
 describe('UsersPage networks normalization', () => {
   it('flags unnormalized input and does not flag already-normalized input', async () => {
@@ -134,12 +139,8 @@ describe('UsersPage networks normalization', () => {
       return Promise.resolve({ data: {} })
     })
 
-    const wrapper = await mountUsersPage()
-    const vm = wrapper.vm as unknown as {
-      form: { networks_text: string }
-      networksNeedNormalization: boolean
-      checkNetworksNormalization: () => Promise<void>
-    }
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
 
     vm.form.networks_text = '10.0.0.5/24'
     await vm.checkNetworksNormalization()
@@ -151,12 +152,8 @@ describe('UsersPage networks normalization', () => {
   })
 
   it('flags overlapping and adjacent ranges as needing normalization', async () => {
-    const wrapper = await mountUsersPage()
-    const vm = wrapper.vm as unknown as {
-      form: { networks_text: string }
-      networksNeedNormalization: boolean
-      checkNetworksNormalization: () => Promise<void>
-    }
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
 
     mockPost.mockImplementation((url: string) => {
       if (url === '/admin/users/normalize-networks') {
@@ -181,12 +178,8 @@ describe('UsersPage networks normalization', () => {
       return Promise.resolve({ data: {} })
     })
 
-    const wrapper = await mountUsersPage()
-    const vm = wrapper.vm as unknown as {
-      form: { networks_text: string }
-      networksNeedNormalization: boolean
-      checkNetworksNormalization: () => Promise<void>
-    }
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
 
     vm.form.networks_text = '  10.0.2.0/24  \n\n10.0.0.0/24'
     await vm.checkNetworksNormalization()
@@ -201,13 +194,8 @@ describe('UsersPage networks normalization', () => {
       return Promise.resolve({ data: {} })
     })
 
-    const wrapper = await mountUsersPage()
-    const vm = wrapper.vm as unknown as {
-      form: { networks_text: string }
-      networksNeedNormalization: boolean
-      checkNetworksNormalization: () => Promise<void>
-      applyNetworksNormalization: () => void
-    }
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
 
     vm.form.networks_text = '10.0.0.5/24'
     await vm.checkNetworksNormalization()
@@ -226,13 +214,8 @@ describe('UsersPage networks normalization', () => {
       return Promise.resolve({ data: {} })
     })
 
-    const wrapper = await mountUsersPage()
-    const vm = wrapper.vm as unknown as {
-      form: { name: string; peer_ip: string; networks_text: string }
-      networksNeedNormalization: boolean
-      checkNetworksNormalization: () => Promise<void>
-      handleSave: () => Promise<void>
-    }
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
 
     vm.form.name = 'someone'
     vm.form.peer_ip = '10.0.50.1'
@@ -261,11 +244,8 @@ describe('UsersPage networks normalization', () => {
       },
     }))
 
-    const wrapper = await mountUsersPage()
-    const vm = wrapper.vm as unknown as {
-      form: { name: string; peer_ip: string; web_auth: string; networks_text: string }
-      handleSave: () => Promise<void>
-    }
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
 
     vm.form.name = 'login-user'
     vm.form.peer_ip = '10.0.60.1'
@@ -289,11 +269,8 @@ describe('UsersPage networks normalization', () => {
 
 describe('UsersPage filter_mode / filter_editable independence', () => {
   it('derives the select value from filter_mode, not filter_editable', async () => {
-    const wrapper = await mountUsersPage()
-    const vm = wrapper.vm as unknown as {
-      form: { filter_mode: string; filter_editable: boolean; filter_override: boolean }
-      filterModeSelect: string
-    }
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
 
     // An admin-managed user: extend mode configured by the admin, but the
     // user themselves was never granted self-service editing. Before the
@@ -311,11 +288,8 @@ describe('UsersPage filter_mode / filter_editable independence', () => {
   })
 
   it('changing the mode does not touch filter_editable', async () => {
-    const wrapper = await mountUsersPage()
-    const vm = wrapper.vm as unknown as {
-      form: { filter_mode: string; filter_editable: boolean; filter_override: boolean }
-      filterModeSelect: string
-    }
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
 
     vm.form.filter_editable = false
     vm.filterModeSelect = 'extend'

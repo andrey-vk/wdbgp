@@ -519,6 +519,18 @@ async function toggleEnabled() {
     toast.add({ severity: 'error', summary: 'Failed', life: 3000 })
   }
 }
+
+// Exposed for UsersPage.spec.ts, which drives interactions and inspects
+// local state directly rather than through the DOM — without this, a
+// rename here would silently break those tests with no static warning.
+defineExpose({
+  form,
+  networksNeedNormalization,
+  checkNetworksNormalization,
+  applyNetworksNormalization,
+  handleSave,
+  filterModeSelect,
+})
 </script>
 
 <template>
