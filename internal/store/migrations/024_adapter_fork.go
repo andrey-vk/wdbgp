@@ -29,6 +29,12 @@ func V024(ctx context.Context, tx *sql.Tx) error {
 			hasForkedVersion = true
 		}
 	}
+	if err := rows.Err(); err != nil {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("WARNING: rows close: %v", cerr)
+		}
+		return err
+	}
 	if err := rows.Close(); err != nil {
 		log.Printf("WARNING: rows close: %v", err)
 	}

@@ -62,6 +62,9 @@ func TestMigration14AddsWebAuthAndUserCredentials(t *testing.T) {
 		}
 		columns[name] = colType
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	_ = rows.Close() //nolint:errcheck // test cleanup
 
 	if columns["user_id"] != "INTEGER" {
@@ -107,6 +110,9 @@ func TestMigration15AddsAppSettings(t *testing.T) {
 			t.Fatal(err)
 		}
 		columns[name] = colType
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	_ = rows.Close() //nolint:errcheck // test cleanup
 
