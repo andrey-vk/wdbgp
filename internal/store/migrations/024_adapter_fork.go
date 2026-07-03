@@ -3,50 +3,23 @@ package migrations
 import (
 	"context"
 	"database/sql"
-	"log"
 )
 
 func V024(ctx context.Context, tx *sql.Tx) error {
 	// Check which columns already exist for idempotency
-	rows, err := tx.Query("SELECT name FROM pragma_table_info('feed_adapters')")
+	cols, err := existingColumns(tx, "feed_adapters")
 	if err != nil {
 		return err
 	}
-	hasForkedFrom := false
-	hasForkedVersion := false
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			if err := rows.Close(); err != nil {
-				log.Printf("WARNING: rows close: %v", err)
-			}
-			return err
-		}
-		switch name {
-		case "forked_from":
-			hasForkedFrom = true
-		case "forked_version":
-			hasForkedVersion = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		if cerr := rows.Close(); cerr != nil {
-			log.Printf("WARNING: rows close: %v", cerr)
-		}
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		log.Printf("WARNING: rows close: %v", err)
-	}
 
 	// Add forked_from column (NULL for built-ins, references built-in adapter ID for forks)
-	if !hasForkedFrom {
+	if !cols["forked_from"] {
 		if _, err := tx.Exec(`ALTER TABLE feed_adapters ADD COLUMN forked_from INTEGER DEFAULT NULL`); err != nil {
 			return err
 		}
 	}
 	// Add forked_version column (tracks version of built-in at fork time)
-	if !hasForkedVersion {
+	if !cols["forked_version"] {
 		if _, err := tx.Exec(`ALTER TABLE feed_adapters ADD COLUMN forked_version INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}

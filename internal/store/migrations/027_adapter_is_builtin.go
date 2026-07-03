@@ -3,40 +3,17 @@ package migrations
 import (
 	"context"
 	"database/sql"
-	"log"
 )
 
 func V027(ctx context.Context, tx *sql.Tx) error {
 	// Check which columns already exist for idempotency
-	rows, err := tx.Query("SELECT name FROM pragma_table_info('feed_adapters')")
+	cols, err := existingColumns(tx, "feed_adapters")
 	if err != nil {
 		return err
 	}
-	hasIsBuiltin := false
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			if err := rows.Close(); err != nil {
-				log.Printf("WARNING: rows close: %v", err)
-			}
-			return err
-		}
-		if name == "is_builtin" {
-			hasIsBuiltin = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		if cerr := rows.Close(); cerr != nil {
-			log.Printf("WARNING: rows close: %v", cerr)
-		}
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		log.Printf("WARNING: rows close: %v", err)
-	}
 
 	// 1. Add is_builtin column (default 0 for custom/forked adapters)
-	if !hasIsBuiltin {
+	if !cols["is_builtin"] {
 		if _, err := tx.ExecContext(ctx,
 			`ALTER TABLE feed_adapters ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err

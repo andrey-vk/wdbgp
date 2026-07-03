@@ -3,47 +3,20 @@ package migrations
 import (
 	"context"
 	"database/sql"
-	"log"
 )
 
 func V020(ctx context.Context, tx *sql.Tx) error {
 	// --- feed_adapters columns ---
-	rows, err := tx.Query("SELECT name FROM pragma_table_info('feed_adapters')")
+	cols, err := existingColumns(tx, "feed_adapters")
 	if err != nil {
 		return err
 	}
-	hasBuiltinVersion := false
-	hasIsCustomized := false
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			if err := rows.Close(); err != nil {
-				log.Printf("WARNING: rows close: %v", err)
-			}
-			return err
-		}
-		switch name {
-		case "builtin_version":
-			hasBuiltinVersion = true
-		case "is_customized":
-			hasIsCustomized = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		if cerr := rows.Close(); cerr != nil {
-			log.Printf("WARNING: rows close: %v", cerr)
-		}
-		return err
-	}
-	if err := rows.Close(); err != nil {
-		log.Printf("WARNING: rows close: %v", err)
-	}
-	if !hasBuiltinVersion {
+	if !cols["builtin_version"] {
 		if _, err := tx.Exec("ALTER TABLE feed_adapters ADD COLUMN builtin_version INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return err
 		}
 	}
-	if !hasIsCustomized {
+	if !cols["is_customized"] {
 		if _, err := tx.Exec("ALTER TABLE feed_adapters ADD COLUMN is_customized INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return err
 		}
