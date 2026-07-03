@@ -30,7 +30,7 @@ type adapterJSON struct {
 	RequiresReview bool   `json:"requires_review"`
 }
 
-func adapterToJSON(a store.FeedAdapter) adapterJSON {
+func (s *Server) adapterToJSON(a store.FeedAdapter) adapterJSON {
 	aj := adapterJSON{
 		ID: a.ID, Key: a.Key, Name: a.Name,
 		Language: a.Language, APIVersion: a.APIVersion,
@@ -39,7 +39,7 @@ func adapterToJSON(a store.FeedAdapter) adapterJSON {
 		ForkedFrom: a.ForkedFrom, ForkedVersion: a.ForkedVersion,
 	}
 	if a.ForkedFrom != 0 {
-		if store.ForkedAdapterNeedsReview(a.ForkedFrom, a.ForkedVersion) {
+		if s.store.ForkedAdapterNeedsReview(a.ForkedFrom, a.ForkedVersion) {
 			aj.RequiresReview = true
 		}
 	}
@@ -54,7 +54,7 @@ func (s *Server) apiAdaptersList(w http.ResponseWriter, r *http.Request) {
 	}
 	result := make([]adapterJSON, len(adapters))
 	for i, a := range adapters {
-		result[i] = adapterToJSON(a)
+		result[i] = s.adapterToJSON(a)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"adapters": result})
 }
@@ -74,7 +74,7 @@ func (s *Server) apiAdaptersGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load adapter"})
 		return
 	}
-	writeJSON(w, http.StatusOK, adapterToJSON(adapter))
+	writeJSON(w, http.StatusOK, s.adapterToJSON(adapter))
 }
 
 func (s *Server) apiAdaptersCreate(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +103,7 @@ func (s *Server) apiAdaptersCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, adapterToJSON(created))
+	writeJSON(w, http.StatusCreated, s.adapterToJSON(created))
 }
 
 func (s *Server) apiAdaptersUpdate(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +159,7 @@ func (s *Server) apiAdaptersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load updated adapter"})
 		return
 	}
-	writeJSON(w, http.StatusOK, adapterToJSON(updated))
+	writeJSON(w, http.StatusOK, s.adapterToJSON(updated))
 }
 
 func (s *Server) apiAdaptersDelete(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +206,7 @@ func (s *Server) apiAdaptersFork(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, adapterToJSON(forked))
+	writeJSON(w, http.StatusCreated, s.adapterToJSON(forked))
 }
 
 // apiAdaptersAcknowledge handles POST /api/admin/adapters/{id}/acknowledge
@@ -230,7 +230,7 @@ func (s *Server) apiAdaptersAcknowledge(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Update forked_version to match current builtin version
-	if v, ok := store.BuiltInAdapterVersion(adapter.ForkedFrom); ok {
+	if v, ok := s.store.BuiltInAdapterVersion(adapter.ForkedFrom); ok {
 		adapter.ForkedVersion = v
 	}
 	if err := s.store.UpdateFeedAdapter(r.Context(), adapter); err != nil {
@@ -242,7 +242,7 @@ func (s *Server) apiAdaptersAcknowledge(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load adapter"})
 		return
 	}
-	writeJSON(w, http.StatusOK, adapterToJSON(updated))
+	writeJSON(w, http.StatusOK, s.adapterToJSON(updated))
 }
 
 func backupAdapterSource(adapter store.FeedAdapter, backupDir string, maxCopies int) {

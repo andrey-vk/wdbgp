@@ -203,10 +203,10 @@ func TestMigrationForkedFromToInteger(t *testing.T) {
 	}
 
 	// Verify ForkedAdapterNeedsReview works with ID (at minimum, doesn't panic).
-	_ = ForkedAdapterNeedsReview(forked.ForkedFrom, forked.ForkedVersion)
+	_ = db.ForkedAdapterNeedsReview(forked.ForkedFrom, forked.ForkedVersion)
 
 	// Verify BuiltInAdapterVersion works with ID
-	ver, ok := BuiltInAdapterVersion(forked.ForkedFrom)
+	ver, ok := db.BuiltInAdapterVersion(forked.ForkedFrom)
 	if !ok {
 		t.Fatal("BuiltInAdapterVersion not found for built-in adapter")
 	}
@@ -363,5 +363,45 @@ func TestBuiltinAdapterAllowedHostsResolvesForks(t *testing.T) {
 
 	if got := db.BuiltinAdapterAllowedHosts(ctx, fork.ID); got != directHosts {
 		t.Errorf("BuiltinAdapterAllowedHosts(fork) = %q, want %q (inherited from the built-in it was forked from)", got, directHosts)
+	}
+}
+
+// TestBuiltInAdapterVersionIsPerStore guards against the built-in adapter
+// version map being a package-level global: two Store instances opened in
+// the same process assign the same auto-increment IDs to their built-in
+// adapters (each starts from a fresh DB), so a shared global would let the
+// second store's seeding silently overwrite the first store's entries.
+func TestBuiltInAdapterVersionIsPerStore(t *testing.T) {
+	store1, err := Open(filepath.Join(t.TempDir(), "s1.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := store1.Close(); err != nil {
+			t.Logf("close store1: %v", err)
+		}
+	}()
+
+	store2, err := Open(filepath.Join(t.TempDir(), "s2.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := store2.Close(); err != nil {
+			t.Logf("close store2: %v", err)
+		}
+	}()
+
+	want, ok := store1.BuiltInAdapterVersion(1)
+	if !ok {
+		t.Fatal("store1.BuiltInAdapterVersion(1) not found — precondition for this test failed")
+	}
+
+	// Directly corrupt store2's entry for the same numeric ID. With a
+	// shared package-level map this line would also corrupt store1's view.
+	store2.setBuiltInAdapterVersion(1, int(want)+999)
+
+	if got, ok := store1.BuiltInAdapterVersion(1); !ok || got != want {
+		t.Errorf("store1.BuiltInAdapterVersion(1) = %d (ok=%v) after mutating store2's entry for the same ID, want unaffected %d", got, ok, want)
 	}
 }

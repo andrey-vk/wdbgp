@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/retry"
@@ -33,6 +34,14 @@ type Store struct {
 	DBVersion      int    // current DB schema version (when degraded)
 	ServerVersion  int    // expected server schema version (when degraded)
 	DegradedReason string // why degraded: "no backup found", "auto-restore disabled", etc.
+
+	// builtInMu guards builtInAdapterVersionByID. It's per-Store (not a
+	// package-level global) so that two Store instances in the same process
+	// — every test binary in this package opens several — don't stomp on
+	// each other's built-in adapter IDs, which are only unique within a
+	// single database.
+	builtInMu                 sync.RWMutex
+	builtInAdapterVersionByID map[int64]int
 }
 
 type FeedAdapter struct {
@@ -88,7 +97,10 @@ func Open(path string, backupEnabled bool, backupDir string, autoRestoreEnabled 
 		}
 		return nil, err
 	}
-	s := &Store{DB: db, dbPath: path, backupEnabled: backupEnabled, backupDir: backupDir, autoRestore: autoRestoreEnabled}
+	s := &Store{
+		DB: db, dbPath: path, backupEnabled: backupEnabled, backupDir: backupDir, autoRestore: autoRestoreEnabled,
+		builtInAdapterVersionByID: make(map[int64]int),
+	}
 	if err := s.Migrate(context.Background()); err != nil {
 		if err := db.Close(); err != nil {
 			log.Printf("WARNING: close: %v", err)

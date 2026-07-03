@@ -169,7 +169,15 @@ var builtInAdapters = map[string]builtInAdapter{
 	},
 }
 
-var builtInAdapterVersionByID = map[int64]int{}
+// setBuiltInAdapterVersion records the current builtin version for an
+// adapter ID. Guarded by builtInMu since this map is per-Store but can still
+// be read (ForkAdapter, adapter list rendering) from a different goroutine
+// than the one seeding it.
+func (s *Store) setBuiltInAdapterVersion(id int64, version int) {
+	s.builtInMu.Lock()
+	defer s.builtInMu.Unlock()
+	s.builtInAdapterVersionByID[id] = version
+}
 
 func (s *Store) seedBuiltInAdapters(ctx context.Context) error {
 	for key, adapter := range builtInAdapters {
@@ -184,7 +192,7 @@ VALUES (?, ?, 'javascript', 1, ?, ?)`,
 		// Capture the adapter ID for the version map (regardless of whether it was just inserted or already existed).
 		var id int64
 		if err := s.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE key = ?", key).Scan(&id); err == nil {
-			builtInAdapterVersionByID[id] = adapter.builtinVersion
+			s.setBuiltInAdapterVersion(id, adapter.builtinVersion)
 		}
 		// Then, read current state of the adapter.
 		var isCustomized, builtinVersion int
@@ -205,7 +213,7 @@ VALUES (?, ?, 'javascript', 1, ?, ?)`,
 				adapter.builtinVersion, key); err != nil {
 				return err
 			}
-			builtInAdapterVersionByID[id] = adapter.builtinVersion
+			s.setBuiltInAdapterVersion(id, adapter.builtinVersion)
 		} else if builtinVersion == 0 && storedSource != "" && (strings.TrimSpace(storedSource) != strings.TrimSpace(normBuiltIn) ||
 			currentName != adapter.name) {
 			// Freshly migrated adapter (builtin_version == 0) whose source
@@ -217,7 +225,7 @@ VALUES (?, ?, 'javascript', 1, ?, ?)`,
 				adapter.builtinVersion, key); err != nil {
 				return err
 			}
-			builtInAdapterVersionByID[id] = adapter.builtinVersion
+			s.setBuiltInAdapterVersion(id, adapter.builtinVersion)
 		} else {
 			// Not customized: update name, source, builtin_version.
 			if _, err := s.DB.ExecContext(ctx, `
@@ -228,7 +236,7 @@ WHERE key = ?`,
 				adapter.builtinVersion, key); err != nil {
 				return err
 			}
-			builtInAdapterVersionByID[id] = adapter.builtinVersion
+			s.setBuiltInAdapterVersion(id, adapter.builtinVersion)
 		}
 
 		// Set forked_version for built-ins that have it unset.
@@ -244,20 +252,22 @@ WHERE key = ?`,
 
 // ForkedAdapterNeedsReview returns true when the built-in adapter that a fork
 // was created from has been updated since the fork was made.
-func ForkedAdapterNeedsReview(forkedFromID int64, forkedVersion int64) bool {
+func (s *Store) ForkedAdapterNeedsReview(forkedFromID int64, forkedVersion int64) bool {
 	if forkedFromID == 0 {
 		return false
 	}
-	builtinVer, ok := builtInAdapterVersionByID[forkedFromID]
+	builtinVer, ok := s.BuiltInAdapterVersion(forkedFromID)
 	if !ok {
 		return false
 	}
-	return int64(builtinVer) > forkedVersion
+	return builtinVer > forkedVersion
 }
 
 // BuiltInAdapterVersion returns the current builtin version for a given adapter ID.
-func BuiltInAdapterVersion(id int64) (int64, bool) {
-	v, ok := builtInAdapterVersionByID[id]
+func (s *Store) BuiltInAdapterVersion(id int64) (int64, bool) {
+	s.builtInMu.RLock()
+	defer s.builtInMu.RUnlock()
+	v, ok := s.builtInAdapterVersionByID[id]
 	return int64(v), ok
 }
 
@@ -361,7 +371,7 @@ func (s *Store) ForkAdapter(ctx context.Context, sourceID int64) (FeedAdapter, e
 		APIVersion: src.APIVersion,
 		ForkedFrom: src.ID,
 		ForkedVersion: func() int64 {
-			if v, ok := BuiltInAdapterVersion(src.ID); ok {
+			if v, ok := s.BuiltInAdapterVersion(src.ID); ok {
 				return v
 			}
 			return src.Revision
