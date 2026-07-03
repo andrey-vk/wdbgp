@@ -652,8 +652,15 @@ func uniqueServices(values []ServiceKey) []ServiceKey {
 	return result
 }
 
-func (s *Store) SetUserCatalogMode(
+// SetUserCatalogModeTx sets a user's catalog_mode_id within an existing
+// transaction, so callers that also need to persist selection changes in
+// the same transaction don't have to duplicate this query. Returns
+// sql.ErrNoRows if modeID doesn't reference an enabled catalog mode (or,
+// when requireEditable, if switching from the user's current mode isn't
+// allowed).
+func SetUserCatalogModeTx(
 	ctx context.Context,
+	tx *sql.Tx,
 	userID int64,
 	modeID int64,
 	requireEditable bool,
@@ -667,7 +674,7 @@ WHERE id = ?
 		query += " AND (catalog_mode_id = ? OR catalog_mode_editable = 1)"
 		args = append(args, modeID)
 	}
-	result, err := s.DB.ExecContext(ctx, query, args...)
+	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -679,34 +686,13 @@ WHERE id = ?
 	return nil
 }
 
-func (s *Store) SetUserCatalogModeSelection(
+func (s *Store) SetUserCatalogMode(
 	ctx context.Context,
 	userID int64,
 	modeID int64,
 	requireEditable bool,
-	categories []string,
-	services []ServiceKey,
 ) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
-		query := `UPDATE users
-SET catalog_mode_id = ?
-WHERE id = ?
-  AND EXISTS (SELECT 1 FROM catalog_modes WHERE id = ? AND enabled = 1)`
-		args := []any{modeID, userID, modeID}
-		if requireEditable {
-			query += " AND (catalog_mode_id = ? OR catalog_mode_editable = 1)"
-			args = append(args, modeID)
-		}
-		result, err := tx.ExecContext(ctx, query, args...)
-		if err != nil {
-			return err
-		}
-		if count, err := result.RowsAffected(); err != nil {
-			return fmt.Errorf("rows affected: %w", err)
-		} else if count == 0 {
-			return sql.ErrNoRows
-		}
-		return SetVisibleUserModeSelection(
-			ctx, tx, userID, modeID, categories, services)
+		return SetUserCatalogModeTx(ctx, tx, userID, modeID, requireEditable)
 	})
 }

@@ -1455,6 +1455,60 @@ func TestAdminSaveSelectionsRejectsDisabledMode(t *testing.T) {
 	}
 }
 
+// TestAdminSaveSelectionsWithoutModeChangeSucceedsEvenIfCurrentModeDisabled —
+// the mode-switch UPDATE must only run when the request actually asks to
+// switch modes (mode_id > 0 and different from the user's current mode). A
+// save that only touches selections must succeed even if the user's
+// *current* mode was disabled sometime after they were assigned to it —
+// there's nothing to validate against catalog_modes.enabled when the mode
+// itself isn't changing.
+func TestAdminSaveSelectionsWithoutModeChangeSucceedsEvenIfCurrentModeDisabled(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	modeID, err := st.AddCatalogMode(ctx, "soon-disabled-mode", "Soon Disabled Mode", true)
+	if err != nil {
+		t.Fatalf("add mode: %v", err)
+	}
+
+	userID, err := st.AddUser(ctx, store.User{
+		Name:          "no-mode-change-user",
+		PeerIP:        "172.16.0.4",
+		PeerASN:       65004,
+		Enabled:       true,
+		CatalogModeID: modeID,
+		Networks:      []string{"10.0.0.0/8"},
+	})
+	if err != nil {
+		t.Fatalf("add user: %v", err)
+	}
+
+	// Disable the mode after the user was already assigned to it.
+	if err := st.UpdateCatalogMode(ctx, store.CatalogMode{ID: modeID, Name: "Soon Disabled Mode", Enabled: false}); err != nil {
+		t.Fatalf("disable mode: %v", err)
+	}
+
+	s := testSettings()
+	body := `{"categories":[],"services":[]}` // no mode_id: not switching
+	req := httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d/selections", userID), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", fmt.Sprintf("%d", userID))
+	req.AddCookie(adminCookie(s))
+	w := httptest.NewRecorder()
+	srv.apiAdminUserSaveSelections(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save selections without mode change: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	updated, err := st.User(ctx, userID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if updated.CatalogModeID != modeID {
+		t.Fatalf("catalog_mode_id = %d, want unchanged %d", updated.CatalogModeID, modeID)
+	}
+}
+
 // =============================================================================
 // TestUserBGPPasswordToggle — 4-way BGP password enable/disable logic
 // =============================================================================

@@ -1015,17 +1015,8 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 			// Persist the mode switch alongside the selection rows below, in the
 			// same transaction, so a save that changes mode doesn't leave the
 			// user's active catalog_mode_id pointing at the old mode.
-			result, err := tx.ExecContext(r.Context(),
-				`UPDATE users SET catalog_mode_id = ? WHERE id = ?
-				 AND EXISTS (SELECT 1 FROM catalog_modes WHERE id = ? AND enabled = 1)`,
-				modeID, id, modeID)
-			if err != nil {
+			if err := store.SetUserCatalogModeTx(r.Context(), tx, id, modeID, false); err != nil {
 				return err
-			}
-			if count, err := result.RowsAffected(); err != nil {
-				return fmt.Errorf("rows affected: %w", err)
-			} else if count == 0 {
-				return sql.ErrNoRows
 			}
 		}
 		for _, c := range body.Categories {
