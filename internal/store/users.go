@@ -521,6 +521,26 @@ func SetVisibleUserModeSelection(
 	categories []string,
 	services []ServiceKey,
 ) error {
+	hiddenCategories, err := hiddenSelectedCategories(ctx, tx, userID, modeID)
+	if err != nil {
+		return err
+	}
+	categories = append(categories, hiddenCategories...)
+
+	hiddenServices, err := hiddenSelectedServices(ctx, tx, userID, modeID)
+	if err != nil {
+		return err
+	}
+	services = append(services, hiddenServices...)
+
+	return SetUserModeSelection(ctx, tx, userID, modeID,
+		uniqueStrings(categories), uniqueServices(services))
+}
+
+// hiddenSelectedCategories returns categories the user has selected whose
+// entries are now entirely hidden (feed disabled) — these must be preserved
+// across a visible-selection overwrite rather than dropped.
+func hiddenSelectedCategories(ctx context.Context, tx *sql.Tx, userID, modeID int64) (categories []string, err error) {
 	rows, err := tx.QueryContext(ctx, `
 SELECT sc.category
 FROM selected_categories sc
@@ -540,21 +560,30 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
       WHERE ce.category = sc.category AND cmf.mode_id = sc.mode_id AND f.enabled = 1
   )`, userID, modeID)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	for rows.Next() {
 		var category string
 		if err := rows.Scan(&category); err != nil {
-			_ = rows.Close() //nolint:errcheck
-			return err
+			return nil, err
 		}
 		categories = append(categories, category)
 	}
-	if err := rows.Close(); err != nil {
-		return err
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
+	return categories, nil
+}
 
-	rows, err = tx.QueryContext(ctx, `
+// hiddenSelectedServices is hiddenSelectedCategories' service-level
+// counterpart — see its doc comment.
+func hiddenSelectedServices(ctx context.Context, tx *sql.Tx, userID, modeID int64) (services []ServiceKey, err error) {
+	rows, err := tx.QueryContext(ctx, `
 SELECT ss.category, ss.service
 FROM selected_services ss
 WHERE ss.user_id = ? AND ss.mode_id = ?
@@ -579,22 +608,24 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
         AND f.enabled = 1
   )`, userID, modeID)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	for rows.Next() {
 		var service ServiceKey
 		if err := rows.Scan(&service.Category, &service.Service); err != nil {
-			_ = rows.Close() //nolint:errcheck
-			return err
+			return nil, err
 		}
 		services = append(services, service)
 	}
-	if err := rows.Close(); err != nil {
-		return err
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-
-	return SetUserModeSelection(ctx, tx, userID, modeID,
-		uniqueStrings(categories), uniqueServices(services))
+	return services, nil
 }
 
 func uniqueStrings(values []string) []string {
