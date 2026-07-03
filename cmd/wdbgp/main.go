@@ -42,6 +42,13 @@ func run() error {
 	if dbPath == "" {
 		dbPath = "/data/wdbgp.sqlite3"
 	}
+	// Validated here, before store.Open touches the filesystem — by the
+	// time settings.New() runs (which also validates DBPath), the store
+	// has already been opened once from this same value, so validating
+	// only there would be too late to actually fail fast.
+	if err := settings.ValidateDBPath(dbPath); err != nil {
+		return fmt.Errorf("WDBGP_DB=%q: %w", dbPath, err)
+	}
 
 	// Read backup/env-only settings from env for store.Open.
 	backupEnabled := envBool("WDBGP_BACKUP_ENABLED", true)

@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -119,8 +120,11 @@ func New(store Store) (*Settings, error) {
 
 	s := &Settings{}
 
-	// DBPath: env-only, no dbKey.
-	s.DBPath, err = newSimple("/data/wdbgp.sqlite3", "", "WDBGP_DB", parseString, nil, store, dbSettings)
+	// DBPath: env-only, no dbKey. Also validated directly by cmd/wdbgp
+	// before store.Open is called — by the time this constructor runs, the
+	// store has already been opened once from the same env var, so this
+	// validation here is a backstop, not the first line of defense.
+	s.DBPath, err = newSimple("/data/wdbgp.sqlite3", "", "WDBGP_DB", parseString, ValidateDBPath, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +134,7 @@ func New(store Store) (*Settings, error) {
 	// the app that's already listening on it. A bad value here can lock
 	// an admin out of the UI with no way to fix it short of shell/redeploy
 	// access, and it already required a restart to take effect anyway.
-	s.Host, err = newSimple("0.0.0.0", "", "WDBGP_HOST", parseString, nil, store, dbSettings)
+	s.Host, err = newSimple("0.0.0.0", "", "WDBGP_HOST", parseString, ValidateHost, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -513,6 +517,42 @@ func validatePort(v uint16) error {
 func validateASN(v uint32) error {
 	if v == 0 {
 		return fmt.Errorf("ASN must be 1-4294967295, got %d", v)
+	}
+	return nil
+}
+
+// ValidateHost checks that a listen-address host doesn't have a port
+// accidentally embedded in it (a common typo: WDBGP_HOST=0.0.0.0:8080
+// instead of setting WDBGP_PORT separately). Exported so cmd/wdbgp can
+// validate WDBGP_HOST before it's used to construct the listen address.
+func ValidateHost(v string) error {
+	if _, _, err := net.SplitHostPort(v); err == nil {
+		return fmt.Errorf("must not include a port number (port is configured separately via WDBGP_PORT), got %q", v)
+	}
+	return nil
+}
+
+// ValidateDBPath checks that a database file's parent directory, if it
+// already exists, is actually a directory and is writable. A parent
+// directory that doesn't exist yet is not an error here — store.Open
+// creates it via os.MkdirAll. Exported so cmd/wdbgp can validate WDBGP_DB
+// before calling store.Open: by the time settings.New() runs, the store
+// (and thus a file at this path) has already been opened once, so this
+// check only has fail-fast value if run before that call.
+func ValidateDBPath(v string) error {
+	dir := filepath.Dir(v)
+	stat, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("cannot stat parent directory %s: %w", dir, err)
+	}
+	if !stat.IsDir() {
+		return fmt.Errorf("parent path %s is not a directory", dir)
+	}
+	if stat.Mode().Perm()&0o200 == 0 {
+		return fmt.Errorf("directory %s is not writable", dir)
 	}
 	return nil
 }

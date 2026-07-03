@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"sync"
 	"testing"
@@ -795,6 +796,79 @@ func TestRateLimitValidation(t *testing.T) {
 	}
 	if err := s.RateLimitAdmin.Set(context.Background(), 30); err != nil {
 		t.Errorf("unexpected error for valid rate_limit_admin: %v", err)
+	}
+}
+
+// TestValidateHost guards against WDBGP_HOST=<host>:<port> — a natural typo
+// since the port is actually configured separately via WDBGP_PORT — being
+// silently accepted and passed straight into the listen address.
+func TestValidateHost(t *testing.T) {
+	cases := []struct {
+		name    string
+		host    string
+		wantErr bool
+	}{
+		{name: "plain IPv4", host: "0.0.0.0", wantErr: false},
+		{name: "plain hostname", host: "localhost", wantErr: false},
+		{name: "IPv4 with embedded port", host: "0.0.0.0:8080", wantErr: true},
+		{name: "hostname with embedded port", host: "example.com:8080", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateHost(tc.host)
+			if tc.wantErr && err == nil {
+				t.Errorf("ValidateHost(%q) = nil, want error", tc.host)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("ValidateHost(%q) = %v, want nil", tc.host, err)
+			}
+		})
+	}
+}
+
+func TestHostValidationRejectsEmbeddedPortInEnvValue(t *testing.T) {
+	t.Setenv("WDBGP_HOST", "0.0.0.0:8080")
+	store := newMockStore()
+	if _, err := New(store); err == nil {
+		t.Error("expected error for WDBGP_HOST with an embedded port")
+	}
+}
+
+// TestValidateDBPath guards against a WDBGP_DB whose parent directory
+// exists but isn't usable (not a directory, or not writable) — a
+// nonexistent parent is not an error since store.Open creates it via
+// os.MkdirAll.
+func TestValidateDBPath(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := ValidateDBPath(dir + "/sub/wdbgp.sqlite3"); err != nil {
+		t.Errorf("ValidateDBPath with a not-yet-created parent = %v, want nil (store.Open creates it)", err)
+	}
+	if err := ValidateDBPath(dir + "/wdbgp.sqlite3"); err != nil {
+		t.Errorf("ValidateDBPath with an existing writable parent = %v, want nil", err)
+	}
+
+	// Parent path exists but is a file, not a directory.
+	notADir := dir + "/not-a-dir"
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateDBPath(notADir + "/wdbgp.sqlite3"); err == nil {
+		t.Error("expected error when the parent path is a file, not a directory")
+	}
+
+	// Parent directory exists but isn't writable. Skipped as root, which
+	// ignores the write permission bit entirely.
+	if os.Getuid() == 0 {
+		t.Skip("running as root, which bypasses the writable-directory check")
+	}
+	readOnlyDir := dir + "/readonly"
+	if err := os.Mkdir(readOnlyDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(readOnlyDir, 0o700) //nolint:errcheck,gosec // test cleanup so t.TempDir() can remove it
+	if err := ValidateDBPath(readOnlyDir + "/wdbgp.sqlite3"); err == nil {
+		t.Error("expected error when the parent directory is not writable")
 	}
 }
 
