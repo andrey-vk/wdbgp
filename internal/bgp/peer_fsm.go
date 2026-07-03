@@ -1,6 +1,7 @@
 package bgp
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -303,12 +304,17 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 		// Read message (blocking with deadline)
 		msg, err := ReadMessage(conn)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			// ReadMessage always wraps the underlying error (fmt.Errorf
+			// "...: %w"), so these must unwrap via errors.As/Is — a plain
+			// type assertion or == comparison against the wrapped error
+			// never matches, silently skipping both branches below.
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				// Hold timer expired — tear down session with NOTIFICATION.
 				p.sendNotification(conn, 4, 0, nil) // Hold Timer Expired
 				return fmt.Errorf("hold timer expired")
 			}
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return fmt.Errorf("peer closed connection")
 			}
 			return fmt.Errorf("read: %w", err)
@@ -518,6 +524,12 @@ func (p *Peer) sendNotification(conn net.Conn, code, subcode uint8, data []byte)
 		ErrorSubcode: subcode,
 		Data:         data,
 	}
+	// Give the write its own fresh deadline: this is called right after a
+	// read-deadline expiry (e.g. hold timer), so the connection's existing
+	// deadline has, by definition, already passed — without resetting it
+	// here, this Write would immediately fail with the same stale timeout
+	// and the peer would never actually receive the NOTIFICATION.
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	if _, err := conn.Write(notif.Serialize()); err != nil {
 		p.logger.Debug("send notification write", "error", err)
 	}
