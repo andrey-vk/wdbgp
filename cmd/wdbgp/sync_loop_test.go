@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,28 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
+
+// syncBuffer is a mutex-guarded bytes.Buffer. slog.TextHandler serializes
+// concurrent writes internally, but that internal lock isn't exposed to
+// callers — a test goroutine polling buf.String() while syncLoop's goroutine
+// logs through the handler races on the underlying bytes.Buffer unless both
+// sides go through the same lock.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // TestSyncLoopReloadsIntervalLive guards against a bug where sync_interval
 // saved through the settings API had no runtime effect until a full process
@@ -47,7 +70,7 @@ func TestSyncLoopReloadsIntervalLive(t *testing.T) {
 	syncer := feeds.NewSyncer(db, s)
 	manager := bgp.NewManager(s, db) // never Start()ed — Reconcile just errors harmlessly
 
-	var buf bytes.Buffer
+	var buf syncBuffer
 	testLogger := &logging.Logger{Logger: slog.New(slog.NewTextHandler(&buf, nil))}
 	runCtx, cancel := context.WithCancel(logging.WithLogger(ctx, testLogger))
 	defer cancel()
