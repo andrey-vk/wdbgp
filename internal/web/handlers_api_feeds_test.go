@@ -266,3 +266,37 @@ func TestFeedsCreateRejectsInvalidModeID(t *testing.T) {
 		}
 	}
 }
+
+// TestFeedsCreateRejectsInvalidAdapterID guards against a stale/invalid
+// adapter_id only being caught by the feeds.adapter_id foreign-key
+// constraint on insert, which surfaced as a raw driver error under a 500
+// instead of a clean 400 — unlike mode_id, which was already validated
+// up front (see TestFeedsCreateRejectsInvalidModeID).
+func TestFeedsCreateRejectsInvalidAdapterID(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	createBody := strings.NewReader(`{"name":"bad-adapter-feed","url":"http://example.com/feed.json","enabled":true,"sync_interval":3600,"adapter_id":999999}`)
+	req := httptest.NewRequest("POST", "/api/admin/feeds", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiFeedsCreate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+
+	req1 := httptest.NewRequest("GET", "/api/admin/feeds", nil)
+	w1 := httptest.NewRecorder()
+	srv.apiFeedsList(w1, req1)
+	var after struct {
+		Feeds []feedJSON `json:"feeds"`
+	}
+	if err := json.NewDecoder(w1.Body).Decode(&after); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range after.Feeds {
+		if f.Name == "bad-adapter-feed" {
+			t.Fatal("bad-adapter-feed must not have been created after rejected adapter_id")
+		}
+	}
+}

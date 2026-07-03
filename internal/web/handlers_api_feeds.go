@@ -99,6 +99,13 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Validate adapter_id before creating the feed — otherwise a stale/invalid
+	// adapter_id only fails on the feeds.adapter_id foreign-key constraint,
+	// surfacing as a raw driver error under a 500 instead of a clean 400.
+	if _, err := s.store.FeedAdapter(r.Context(), body.AdapterID); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid adapter"})
+		return
+	}
 	id, err := s.store.AddFeed(r.Context(), body.Name, body.URL, body.AdapterID, body.Enabled, int(body.SyncInterval), body.Data, body.AllowedHosts, body.RestrictHosts)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
