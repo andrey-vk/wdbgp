@@ -53,6 +53,12 @@ type fakeBGP struct {
 	// existing test that constructs a bare &fakeBGP{}.
 	down    bool
 	downErr error
+
+	// peerStates overrides PeerStates' return value when non-nil, so tests
+	// can simulate a speaker with no established peers (e.g. down or just
+	// started) without disturbing the default fake entry every other test
+	// relies on.
+	peerStates map[string]string
 }
 
 func (f *fakeBGP) Reconcile(context.Context) error {
@@ -72,6 +78,9 @@ func (f *fakeBGP) ReloadPeers(context.Context) error {
 }
 
 func (f *fakeBGP) PeerStates(context.Context) (map[string]string, error) {
+	if f.peerStates != nil {
+		return f.peerStates, nil
+	}
 	return map[string]string{"172.16.0.2:65001": "ESTABLISHED"}, nil
 }
 

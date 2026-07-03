@@ -140,7 +140,7 @@ func (s *Server) apiDashboard(w http.ResponseWriter, r *http.Request) {
 		Categories: categories,
 		Services:   services,
 		BGP: dashboardBGPJSON{
-			TotalPeers:     len(peerStates),
+			TotalPeers:     len(peers),
 			ConnectedPeers: connectedPeers,
 			Peers:          peers,
 		},
