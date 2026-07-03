@@ -148,7 +148,7 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, err
 		}
 
 		var err2 error
-		count, err2 = genCommunitiesRuntime(tx, existing, modeID)
+		count, err2 = genCommunitiesRuntime(ctx, tx, existing, modeID)
 		return err2
 	})
 	return count, err
@@ -156,12 +156,12 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, err
 
 // genCommunitiesRuntime generates communities using catalog_mode_feeds (post-migration-20).
 // Used by GenerateCommunities during normal runtime operation.
-func genCommunitiesRuntime(tx *sql.Tx, existing map[string]bool, modeID int64) (int, error) {
+func genCommunitiesRuntime(ctx context.Context, tx *sql.Tx, existing map[string]bool, modeID int64) (int, error) {
 	var modeIDs []int64
 	if modeID > 0 {
 		modeIDs = []int64{modeID}
 	} else {
-		modes, err := tx.Query("SELECT DISTINCT id FROM catalog_modes ORDER BY id")
+		modes, err := tx.QueryContext(ctx, "SELECT DISTINCT id FROM catalog_modes ORDER BY id")
 		if err != nil {
 			return 0, err
 		}
@@ -185,7 +185,7 @@ func genCommunitiesRuntime(tx *sql.Tx, existing map[string]bool, modeID int64) (
 
 	generated := 0
 	for _, mid := range modeIDs {
-		commRows, err := tx.Query(
+		commRows, err := tx.QueryContext(ctx,
 			"SELECT category, service, community FROM catalog_communities WHERE mode_id = ? ORDER BY community",
 			mid)
 		if err != nil {
@@ -209,11 +209,17 @@ func genCommunitiesRuntime(tx *sql.Tx, existing map[string]bool, modeID int64) (
 				keyComm["svc:"+category+"|"+service] = community
 			}
 		}
+		if err := commRows.Err(); err != nil {
+			if cerr := commRows.Close(); cerr != nil {
+				log.Printf("WARNING: commRows close: %v", cerr)
+			}
+			return 0, err
+		}
 		if err := commRows.Close(); err != nil {
 			log.Printf("WARNING: commRows close: %v", err)
 		}
 
-		catRows, err := tx.Query(`
+		catRows, err := tx.QueryContext(ctx, `
 SELECT DISTINCT ce.category
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
@@ -235,6 +241,12 @@ ORDER BY ce.category`, mid)
 			}
 			categories = append(categories, cat)
 		}
+		if err := catRows.Err(); err != nil {
+			if cerr := catRows.Close(); cerr != nil {
+				log.Printf("WARNING: catRows close: %v", cerr)
+			}
+			return 0, err
+		}
 		if err := catRows.Close(); err != nil {
 			log.Printf("WARNING: catRows close: %v", err)
 		}
@@ -253,7 +265,7 @@ ORDER BY ce.category`, mid)
 				}
 			} else {
 				groupCommunity = findFirstFree(uint32((groupIndex+1)*10000), used)
-				if _, err := tx.Exec(
+				if _, err := tx.ExecContext(ctx,
 					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, '', ?)",
 					mid, category, groupCommunity); err != nil {
 					return generated, err
@@ -262,7 +274,7 @@ ORDER BY ce.category`, mid)
 				generated++
 			}
 
-			svcRows, err := tx.Query(`
+			svcRows, err := tx.QueryContext(ctx, `
 SELECT DISTINCT ce.service
 FROM catalog_entries ce
 JOIN feeds f ON f.id = ce.feed_id
@@ -284,6 +296,12 @@ ORDER BY ce.service`, mid, category)
 				}
 				services = append(services, svc)
 			}
+			if err := svcRows.Err(); err != nil {
+				if cerr := svcRows.Close(); cerr != nil {
+					log.Printf("WARNING: svcRows close: %v", cerr)
+				}
+				return generated, err
+			}
 			if err := svcRows.Close(); err != nil {
 				log.Printf("WARNING: svcRows close: %v", err)
 			}
@@ -295,7 +313,7 @@ ORDER BY ce.service`, mid, category)
 				}
 				svcCommunity := findFirstFree(groupCommunity+1, used)
 
-				if _, err := tx.Exec(
+				if _, err := tx.ExecContext(ctx,
 					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)",
 					mid, category, service, svcCommunity); err != nil {
 					return generated, err

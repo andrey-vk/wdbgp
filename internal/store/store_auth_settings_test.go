@@ -659,6 +659,33 @@ func TestGenerateCommunitiesFillsMissing(t *testing.T) {
 	}
 }
 
+// TestGenCommunitiesRuntimeRespectsContextCancellation — genCommunitiesRuntime
+// used tx.Query/tx.Exec internally, ignoring the ctx callers pass in. A
+// canceled/expired request context should abort community generation instead
+// of running to completion regardless. Since Store.Transaction's own
+// BeginTx(ctx, ...) would already reject an upfront-canceled context before
+// ever reaching genCommunitiesRuntime, this calls it directly against a
+// separately-started *sql.Tx to isolate what genCommunitiesRuntime itself
+// does with the context it's given.
+func TestGenCommunitiesRuntimeRespectsContextCancellation(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	syncTestData(ctx, t, s)
+
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // test cleanup
+
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	if _, err := genCommunitiesRuntime(canceledCtx, tx, nil, 1); err == nil {
+		t.Fatal("expected an error from genCommunitiesRuntime with a canceled context, got nil")
+	}
+}
+
 // =============================================================================
 // Prefix counting — additional tests
 // =============================================================================
