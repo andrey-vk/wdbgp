@@ -242,7 +242,7 @@ func New(store Store) (*Settings, error) {
 	}
 
 	// SessionMaxAge.
-	s.SessionMaxAge, err = newSimple(28800, "session_max_age", "WDBGP_SESSION_MAX_AGE", parseInt, nil, store, dbSettings)
+	s.SessionMaxAge, err = newSimple(28800, "session_max_age", "WDBGP_SESSION_MAX_AGE", parseInt, validateSessionMaxAge, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -497,6 +497,24 @@ func validateRateLimit(v int) error {
 	}
 	if v > 1000 {
 		return fmt.Errorf("must not exceed 1000 requests per minute, got %d", v)
+	}
+	return nil
+}
+
+// validateSessionMaxAge checks that a session max age is either the special
+// sentinel 0 — a browser-session-scoped cookie, though the server still caps
+// actual session validity at a fixed 8h default in that case, see
+// apiRequireAdmin/requireUser — or within 60-31536000 seconds (1 minute to
+// 1 year).
+func validateSessionMaxAge(v int) error {
+	if v == 0 {
+		return nil
+	}
+	if v < 60 {
+		return fmt.Errorf("must be 0 (session cookie) or at least 60 seconds, got %d", v)
+	}
+	if v > 31536000 {
+		return fmt.Errorf("must not exceed 31536000 seconds (1 year), got %d", v)
 	}
 	return nil
 }

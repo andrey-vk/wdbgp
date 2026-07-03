@@ -799,6 +799,50 @@ func TestRateLimitValidation(t *testing.T) {
 	}
 }
 
+// TestSessionMaxAgeValidation guards against session_max_age being settable
+// to an absurdly large value (sessions that never meaningfully expire) or a
+// tiny nonzero one (sessions expiring almost immediately, which looks like
+// "login is broken" with no clear diagnostic). 0 is a special sentinel
+// (browser-session-scoped cookie, see validateSessionMaxAge) and must stay
+// valid — it was the cause of a prior, since-fixed bug where SessionMaxAge=0
+// deleted the cookie immediately (CHANGELOG.md).
+func TestSessionMaxAgeValidation(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SessionMaxAge.Set(context.Background(), 0); err != nil {
+		t.Errorf("unexpected error for the 0 (session cookie) sentinel: %v", err)
+	}
+	if err := s.SessionMaxAge.Set(context.Background(), 59); err == nil {
+		t.Error("expected error for session_max_age below 60 seconds")
+	}
+	if err := s.SessionMaxAge.Set(context.Background(), -1); err == nil {
+		t.Error("expected error for negative session_max_age")
+	}
+	if err := s.SessionMaxAge.Set(context.Background(), 60); err != nil {
+		t.Errorf("unexpected error for session_max_age at the 60s boundary: %v", err)
+	}
+	if err := s.SessionMaxAge.Set(context.Background(), 31536000); err != nil {
+		t.Errorf("unexpected error for session_max_age at the 1-year boundary: %v", err)
+	}
+	if err := s.SessionMaxAge.Set(context.Background(), 31536001); err == nil {
+		t.Error("expected error for session_max_age above 1 year")
+	}
+	if err := s.SessionMaxAge.Set(context.Background(), 28800); err != nil {
+		t.Errorf("unexpected error for valid session_max_age: %v", err)
+	}
+}
+
+func TestSessionMaxAgeValidationRejectsInvalidEnvValue(t *testing.T) {
+	t.Setenv("WDBGP_SESSION_MAX_AGE", "999999999999")
+	store := newMockStore()
+	if _, err := New(store); err == nil {
+		t.Error("expected error for WDBGP_SESSION_MAX_AGE above 1 year")
+	}
+}
+
 // TestValidateHost guards against WDBGP_HOST=<host>:<port> — a natural typo
 // since the port is actually configured separately via WDBGP_PORT — being
 // silently accepted and passed straight into the listen address.
