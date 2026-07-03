@@ -173,26 +173,25 @@ func (s *Store) tryRestore(ctx context.Context, applied []int) error {
 			continue
 		}
 		var versions []int
+		corrupted := false
 		for rows.Next() {
 			var v int
 			if err := rows.Scan(&v); err != nil {
-				if err := rows.Close(); err != nil {
-					log.Printf("WARNING: rows close: %v", err)
-				}
-				if err := backupDB.Close(); err != nil {
-					log.Printf("WARNING: backup close: %v", err)
-				}
-				continue
+				// A Scan error here means this backup's migration history is
+				// unreadable/corrupted. rows.Next() returning false right
+				// after (since we stop iterating) looks identical to a
+				// genuinely short migration history, and rows.Err() does not
+				// surface Scan-level errors — so this backup must be
+				// rejected explicitly rather than relying on either of those.
+				log.Printf("WARNING: scan backup version: %v", err)
+				corrupted = true
+				break
 			}
 			versions = append(versions, v)
 		}
 		if err := rows.Err(); err != nil {
-			// A mid-iteration error looks identical to "no more rows" from
-			// rows.Next() alone — without this check, a truncated versions
-			// list from a corrupted/unreadable backup could be mistaken for
-			// a genuinely short migration history instead of being skipped.
 			log.Printf("WARNING: rows iteration: %v", err)
-			versions = nil
+			corrupted = true
 		}
 		if err := rows.Close(); err != nil {
 			log.Printf("WARNING: rows close: %v", err)
@@ -200,7 +199,7 @@ func (s *Store) tryRestore(ctx context.Context, applied []int) error {
 		if err := backupDB.Close(); err != nil {
 			log.Printf("WARNING: backup close: %v", err)
 		}
-		if len(versions) == 0 {
+		if corrupted || len(versions) == 0 {
 			continue
 		}
 		maxVersion := versions[len(versions)-1]
