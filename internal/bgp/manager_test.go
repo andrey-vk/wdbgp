@@ -684,6 +684,58 @@ func TestUpdatePeerClearsRoutesOnPasswordChange(t *testing.T) {
 	}
 }
 
+// TestUpdatePeerRejectsDuplicatePeerIPASNOnFirstTrack guards UpdatePeer's
+// "not yet tracked" branch (a user ID the manager hasn't seen before —
+// e.g. a peer being re-enabled after being disabled) against appending a
+// peer that duplicates an existing tracked peer's IP+ASN. AddPeer already
+// rejects this; UpdatePeer's equivalent branch didn't.
+func TestUpdatePeerRejectsDuplicatePeerIPASNOnFirstTrack(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	userAID, err := s.AddUser(ctx, store.User{
+		Name: "userA", PeerIP: "192.0.2.9", PeerASN: 65009, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.1",
+	}), s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// userAID is now tracked in peerConfigs (loaded by Start). A different
+	// user ID sharing the same PeerIP+PeerASN, not yet tracked, must be
+	// rejected the same way AddPeer would reject it.
+	err = manager.UpdatePeer(ctx, store.User{
+		ID: userAID + 1000, Name: "userB-duplicate", PeerIP: "192.0.2.9", PeerASN: 65009, Enabled: true,
+	})
+	if err == nil {
+		t.Fatal("expected UpdatePeer to reject a not-yet-tracked peer duplicating an existing peer's IP+ASN")
+	}
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	count := 0
+	for _, u := range manager.peerConfigs {
+		if u.PeerIP == "192.0.2.9" && u.PeerASN == 65009 {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("peerConfigs has %d entries for 192.0.2.9:65009, want 1 (no duplicate appended)", count)
+	}
+}
+
 func routePrefixStrings(routes []Route) []string {
 	var out []string
 	for _, r := range routes {

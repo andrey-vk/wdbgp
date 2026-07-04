@@ -267,6 +267,19 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 		}
 	}
 	if !found {
+		// Same duplicate-key check AddPeer does: a not-yet-tracked user
+		// (e.g. one being re-enabled) must not be allowed to share an
+		// existing tracked peer's IP+ASN — two logical users would collapse
+		// onto the same physical BGP session, keyed by "IP:ASN" throughout
+		// this manager.
+		for _, u := range m.peerConfigs {
+			if u.PeerIP == user.PeerIP && u.PeerASN == user.PeerASN {
+				if user.PeerIP == "0.0.0.0" || user.PeerIP == "::" {
+					return fmt.Errorf("dynamic peer with ASN %d already exists", user.PeerASN)
+				}
+				return fmt.Errorf("peer %s with ASN %d already exists", user.PeerIP, user.PeerASN)
+			}
+		}
 		m.peerConfigs = append(m.peerConfigs, user)
 		cfgs, err := m.buildPeerConfigs()
 		if err != nil {
