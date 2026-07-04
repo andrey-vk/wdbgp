@@ -110,6 +110,7 @@ async function handleSave() {
     const savedMode: Mode = resp.data
     // Save feed assignments
     savingFeeds.value = true
+    let feedsSaveFailed = false
     try {
       await apiClient.put('/admin/modes/' + savedMode.id + '/feeds', {
         feed_ids: assignedFeedIds.value,
@@ -117,15 +118,30 @@ async function handleSave() {
       // Fire-and-forget regenerate communities
       apiClient.post('/admin/modes/' + savedMode.id + '/communities/generate').catch(() => {})
     } catch {
-      toast.add({ severity: 'error', summary: t('modes.feeds_save_failed'), life: 3000 })
-      savingFeeds.value = false
-      return
+      feedsSaveFailed = true
     } finally { savingFeeds.value = false }
+
+    // The mode itself (name/enabled) is already persisted at this point
+    // regardless of whether the feed assignment succeeded — resync the UI
+    // to that reality instead of leaving a newly-created mode invisible in
+    // the sidebar (with the form still looking like an unsaved "add"), or
+    // an existing mode's form stuck showing pre-save values. Without this,
+    // clicking Save again after a feed-assignment failure would re-POST a
+    // create instead of a PUT update, producing a duplicate mode.
     await loadList()
     selected.value = savedMode
     form.value = { name: savedMode.name, enabled: savedMode.enabled }
     editMode.value = false
-    toast.add({ severity: 'success', summary: t('modes.saved'), life: 3000 })
+
+    if (feedsSaveFailed) {
+      // The feed assignment didn't take — reload it from the server so the
+      // view doesn't show the admin's failed attempted change as if it had
+      // been saved.
+      await loadModeFeeds()
+      toast.add({ severity: 'error', summary: t('modes.feeds_save_failed'), life: 3000 })
+    } else {
+      toast.add({ severity: 'success', summary: t('modes.saved'), life: 3000 })
+    }
   } finally { saving.value = false }
 }
 
@@ -180,6 +196,19 @@ function toggleFeed(feedId: number) {
   if (idx >= 0) assignedFeedIds.value.splice(idx, 1)
   else assignedFeedIds.value.push(feedId)
 }
+
+// Exposed for ModesPage.spec.ts, which drives saves and inspects local
+// state directly rather than through the DOM — without this, a rename here
+// would silently break those tests with no static warning.
+defineExpose({
+  modes,
+  selected,
+  form,
+  editMode,
+  assignedFeedIds,
+  handleSave,
+  startNew,
+})
 </script>
 
 <template>
