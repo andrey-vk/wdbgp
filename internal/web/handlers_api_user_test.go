@@ -125,6 +125,90 @@ func TestUserAuthLoginModeCookieOnly(t *testing.T) {
 }
 
 // =============================================================================
+// TestRequireUserSelfHealCSRFCookieHonorsProxyHTTPS /
+// TestUserLogoutCookiesSecureBehindProxy — requireUser's CSRF self-heal and
+// apiUserLogout used to compute Secure via a bare r.TLS != nil check, unlike
+// apiUserLogin (and every admin cookie path) which uses adminCookieSecure —
+// the helper that also honors TrustProxyHeaders + X-Forwarded-Proto for
+// deployments terminating TLS at a reverse proxy, where r.TLS is always nil
+// inside the Go process. Behind such a proxy, the old code would write/clear
+// a non-Secure cookie while login correctly wrote a Secure one.
+// =============================================================================
+
+func TestRequireUserSelfHealCSRFCookieHonorsProxyHTTPS(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	// "auto" (neither explicit true nor false) so the check must fall
+	// through to the TrustProxyHeaders/X-Forwarded-Proto branch, same as
+	// adminCookieSecure — testSettings() defaults this to "true", which
+	// would short-circuit before ever exercising that branch.
+	mustSetSetting(t, srv.settings.AdminCookieSecure, "auto")
+	mustSetSetting(t, srv.settings.TrustProxyHeaders, true)
+
+	userBody := `{"name":"proxy-user","peer_ip":"10.5.5.5","peer_asn":65005,"networks":["10.5.5.0/24"],"web_auth":"network","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create user: %d body=%s", w.Code, w.Body.String())
+	}
+
+	// No r.TLS set (as if TLS were terminated at a reverse proxy) — only
+	// the X-Forwarded-Proto header signals HTTPS. No CSRF cookie on the
+	// request, so requireUser's self-heal must issue one.
+	req = httptest.NewRequest("GET", "/api/user/me", nil)
+	req.RemoteAddr = "10.5.5.1:1234"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	w = httptest.NewRecorder()
+	srv.requireUser(srv.apiUserMe).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("requireUser: got %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	var csrfCookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == csrfCookieName {
+			csrfCookie = c
+		}
+	}
+	if csrfCookie == nil {
+		t.Fatal("expected a self-healed CSRF cookie in the response")
+	}
+	if !csrfCookie.Secure {
+		t.Error("self-healed CSRF cookie must be Secure when behind a trusted TLS-terminating proxy (X-Forwarded-Proto: https)")
+	}
+}
+
+func TestUserLogoutCookiesSecureBehindProxy(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	mustSetSetting(t, srv.settings.AdminCookieSecure, "auto")
+	mustSetSetting(t, srv.settings.TrustProxyHeaders, true)
+
+	req := httptest.NewRequest("POST", "/api/user/logout", nil)
+	req.Header.Set("X-Forwarded-Proto", "https")
+	w := httptest.NewRecorder()
+	srv.apiUserLogout(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("logout: got %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	secure := map[string]bool{}
+	for _, c := range w.Result().Cookies() {
+		secure[c.Name] = c.Secure
+	}
+	if !secure[userSessionCookieName] {
+		t.Error("wdbgp_user clearing cookie must be Secure when behind a trusted TLS-terminating proxy")
+	}
+	if !secure[csrfCookieName] {
+		t.Error("wdbgp_csrf clearing cookie must be Secure when behind a trusted TLS-terminating proxy")
+	}
+}
+
+// =============================================================================
 // TestUserLoginSessionCookieSentinel — session_max_age=0 must produce a
 // browser-session-scoped wdbgp_user cookie (no Max-Age/Expires), matching
 // apiAdminLogin's handling of the same sentinel, instead of always issuing a

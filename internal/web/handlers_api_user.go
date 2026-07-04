@@ -56,9 +56,8 @@ func (s *Server) requireUser(next http.HandlerFunc) http.HandlerFunc {
 		// one on its first authenticated request. This request itself
 		// still fails the check below if it's a mutating one, since the
 		// browser hasn't seen the new cookie yet.
-		secure := r.TLS != nil
 		if _, err := r.Cookie(csrfCookieName); err != nil {
-			setCSRFCookie(w, secure, 0, time.Time{})
+			setCSRFCookie(w, s.adminCookieSecure(r), 0, time.Time{})
 		}
 
 		if !validCSRFRequest(r) {
@@ -327,7 +326,7 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 // apiUserLogout handles POST /api/user/logout.
 // Clears the user session cookie.
 func (s *Server) apiUserLogout(w http.ResponseWriter, r *http.Request) {
-	secure := r.TLS != nil
+	secure := s.adminCookieSecure(r)
 	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime
 		Name:     "wdbgp_user",
 		Value:    "",
