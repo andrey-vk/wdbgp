@@ -22,6 +22,7 @@ const props = defineProps<{
   envOverride: boolean
   restart?: boolean
   envVar?: string
+  disabled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -32,7 +33,7 @@ const emit = defineEmits<{
 const editing = ref(false)
 
 function startEditing() {
-  if (props.meta.readonly) return
+  if (props.meta.readonly || props.disabled) return
   editing.value = true
   if (props.value == null && props.meta.type !== 'password') {
     emit('update:value', props.defaultValue)
@@ -70,6 +71,7 @@ function onChange(val: string | number | boolean | undefined) {
 }
 
 function revert() {
+  if (props.disabled) return
   editing.value = false
   emit('update:value', null)
 }
@@ -127,7 +129,8 @@ const selectOptions = computed(() => {
       data-testid="setting-default"
     >
       <span
-        class="underline decoration-dotted underline-offset-4 cursor-pointer opacity-70 hover:opacity-100"
+        class="underline decoration-dotted underline-offset-4 opacity-70"
+        :class="disabled ? 'cursor-not-allowed' : 'cursor-pointer hover:opacity-100'"
         :title="t('settings.click_to_override')"
         @click="startEditing"
       >{{ formatDisplayValue(defaultValue, meta.type) }}</span>
@@ -144,6 +147,7 @@ const selectOptions = computed(() => {
           v-if="meta.type === 'bool'"
           :model-value="(value ?? defaultValue) as boolean"
           :input-id="fieldKey"
+          :disabled="disabled"
           @update:model-value="onChange"
         />
         <InputNumber
@@ -151,6 +155,7 @@ const selectOptions = computed(() => {
           :model-value="(value ?? defaultValue) as number"
           :input-id="fieldKey"
           fluid
+          :disabled="disabled"
           @update:model-value="onChange"
         />
         <Select
@@ -161,6 +166,7 @@ const selectOptions = computed(() => {
           option-value="value"
           :input-id="fieldKey"
           fluid
+          :disabled="disabled"
           @update:model-value="onChange"
         />
         <Textarea
@@ -169,6 +175,7 @@ const selectOptions = computed(() => {
           :input-id="fieldKey"
           rows="5"
           fluid
+          :disabled="disabled"
           @update:model-value="onChange"
         />
         <template v-else-if="meta.type === 'password'">
@@ -177,6 +184,7 @@ const selectOptions = computed(() => {
             :input-id="fieldKey"
             fluid
             :feedback="false"
+            :disabled="disabled"
             @update:model-value="onChange"
           />
           <p v-if="!value" class="text-xs text-muted-color mt-1">{{ t('settings.password_input_hint') }}</p>
@@ -186,6 +194,7 @@ const selectOptions = computed(() => {
           :model-value="(value ?? defaultValue) as string"
           :input-id="fieldKey"
           fluid
+          :disabled="disabled"
           @update:model-value="onChange"
         />
       </div>
@@ -197,6 +206,7 @@ const selectOptions = computed(() => {
         rounded
         data-testid="setting-revert"
         :title="t('settings.revert_default')"
+        :disabled="disabled"
         @click="revert"
       />
     </div>

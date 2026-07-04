@@ -578,4 +578,57 @@ describe('SettingsPage', () => {
     // persisted — the form must not assume "error means nothing changed".
     expect(getMock).toHaveBeenCalled()
   })
+
+  it('disables setting fields while the post-save reload is in flight, so an edit cannot race the reload', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride', 'disabled'],
+            template: '<div class="stub-settingfield" :data-disabled="disabled">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    vm.values = { bgp_port: 9090 }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    const getMock = apiClient.get as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    getMock.mockClear()
+
+    // Hold the post-save reload's GET open so we can inspect mid-flight
+    // state — this is exactly the window where an admin's own edit used to
+    // race the reload and get silently discarded.
+    let resolveReload!: (v: { data: Record<string, unknown> }) => void
+    getMock.mockReturnValueOnce(new Promise((resolve) => { resolveReload = resolve }))
+
+    const savePromise = vm.handleSave()
+    await new Promise(r => setTimeout(r, 0)) // let handleSave's PUT resolve and reach the reload GET
+    await wrapper.vm.$nextTick()
+
+    const stubs = wrapper.findAll('.stub-settingfield')
+    expect(stubs.length).toBeGreaterThan(0)
+    for (const stub of stubs) {
+      expect(stub.attributes('data-disabled')).toBe('true')
+    }
+
+    resolveReload({ data: buildSettings() })
+    await savePromise
+
+    await wrapper.vm.$nextTick()
+    for (const stub of wrapper.findAll('.stub-settingfield')) {
+      expect(stub.attributes('data-disabled')).toBe('false')
+    }
+  })
 })
