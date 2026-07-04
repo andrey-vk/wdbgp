@@ -27,6 +27,14 @@ func V031(ctx context.Context, tx *sql.Tx) error {
 
 // V031NoTxSQL performs the feed_adapters rebuild. Must run outside the
 // migration transaction so PRAGMA foreign_keys actually takes effect.
+//
+// Runs as a single multi-statement exec with no surrounding transaction, so
+// it must tolerate being killed mid-run and re-executed from the top on the
+// next boot (NoTxSQL migrations must be idempotent — see store.go). Mirrors
+// migration 20's users rebuild: CREATE TABLE IF NOT EXISTS so a retry after
+// a crash between CREATE and DROP doesn't fail on "table already exists",
+// and INSERT ... WHERE NOT EXISTS so that retry doesn't duplicate rows into
+// the survivor from the killed run.
 func V031NoTxSQL(ctx context.Context, db *sql.DB) error {
 	var hasKey int
 	if err := db.QueryRowContext(ctx,
@@ -39,7 +47,7 @@ func V031NoTxSQL(ctx context.Context, db *sql.DB) error {
 	}
 	_, err := db.ExecContext(ctx, `
 PRAGMA foreign_keys = OFF;
-CREATE TABLE feed_adapters_new (
+CREATE TABLE IF NOT EXISTS feed_adapters_new (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     language TEXT NOT NULL DEFAULT 'javascript'
@@ -55,8 +63,9 @@ CREATE TABLE feed_adapters_new (
 );
 INSERT INTO feed_adapters_new (id, name, language, api_version, source, revision, builtin_version, is_customized, forked_from, forked_version, is_builtin)
 SELECT id, name, language, api_version, source, revision, builtin_version, is_customized, forked_from, forked_version, is_builtin
-FROM feed_adapters;
-DROP TABLE feed_adapters;
+FROM feed_adapters
+WHERE NOT EXISTS (SELECT 1 FROM feed_adapters_new LIMIT 1);
+DROP TABLE IF EXISTS feed_adapters;
 ALTER TABLE feed_adapters_new RENAME TO feed_adapters;
 CREATE INDEX IF NOT EXISTS idx_feed_adapters_builtin ON feed_adapters(is_builtin);
 PRAGMA foreign_keys = ON;
