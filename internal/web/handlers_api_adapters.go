@@ -261,10 +261,39 @@ func backupAdapterSource(adapter store.FeedAdapter, backupDir string, maxCopies 
 		log.Printf("WARNING: backup adapter write: %v", err)
 		return
 	}
-	pruneAdapterBackups(strconv.FormatInt(adapter.ID, 10), backupDir, maxCopies)
+	pruneAdapterBackups(adapter, backupDir, maxCopies)
 }
 
-func pruneAdapterBackups(adapterID, dir string, max int) {
+// legacyAdapterKey reconstructs the key that feed_adapters.key used to be
+// auto-assigned before that column was dropped, so backup files written
+// under the old {key}_r{rev}_{ts}.js naming (before backups switched to
+// {id}_r{rev}_{ts}.js) still get swept into rotation instead of silently
+// escaping AdapterBackupMax forever. Built-in adapters can never have
+// backups (editing them is blocked in apiAdaptersUpdate), and every
+// non-built-in adapter always got its key auto-generated from name this
+// same way, so this reconstruction is exact, not a guess.
+func legacyAdapterKey(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + 32
+		}
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			return r
+		}
+		return '-'
+	}, name)
+}
+
+// backupTimestamp extracts the sortable timestamp suffix from a backup
+// filename ({prefix}_r{rev}_{timestamp}.js), so files can be ordered
+// chronologically even when old (key-prefixed) and new (id-prefixed)
+// backups for the same adapter are mixed together.
+func backupTimestamp(filename string) string {
+	parts := strings.Split(strings.TrimSuffix(filename, ".js"), "_")
+	return parts[len(parts)-1]
+}
+
+func pruneAdapterBackups(adapter store.FeedAdapter, dir string, max int) {
 	if max <= 0 {
 		return
 	}
@@ -272,16 +301,20 @@ func pruneAdapterBackups(adapterID, dir string, max int) {
 	if err != nil {
 		return // no entries to prune
 	}
+	idPrefix := strconv.FormatInt(adapter.ID, 10) + "_"
+	legacyPrefix := legacyAdapterKey(adapter.Name) + "_"
 	var files []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), adapterID+"_") {
+		if strings.HasPrefix(e.Name(), idPrefix) || strings.HasPrefix(e.Name(), legacyPrefix) {
 			files = append(files, e.Name())
 		}
 	}
 	if len(files) <= max {
 		return
 	}
-	sort.Strings(files)
+	sort.Slice(files, func(i, j int) bool {
+		return backupTimestamp(files[i]) < backupTimestamp(files[j])
+	})
 	for _, f := range files[:len(files)-max] {
 		if err := os.Remove(filepath.Join(dir, f)); err != nil {
 			log.Printf("WARNING: remove backup: %v", err)
