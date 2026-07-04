@@ -28,6 +28,7 @@ const checkedServices = ref<Set<string>>(new Set())
 const countData = ref<{ v4: number; v6: number; delta_v4: number; delta_v6: number } | null>(null)
 const countLoading = ref(false)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
+let countRequestSeq = 0
 
 // ── Save state ──────────────────────────────────────────────
 const saving = ref(false)
@@ -226,18 +227,21 @@ function debounceCount(): void {
 }
 
 async function fetchCounts(): Promise<void> {
+  const seq = ++countRequestSeq
   const selections = {
     ...buildSelectionPayload(),
     mode_id: selectedModeId.value,
   }
   try {
     const resp = await apiClient.post('/admin/users/' + userId.value + '/count-selections', selections)
+    if (seq !== countRequestSeq) return // a newer request superseded this one
     countData.value = resp.data
   } catch (err) {
+    if (seq !== countRequestSeq) return
     if (import.meta.env.DEV) console.error('Failed to count selections', err)
     countData.value = null
   } finally {
-    countLoading.value = false
+    if (seq === countRequestSeq) countLoading.value = false
   }
 }
 

@@ -313,4 +313,89 @@ describe('UserPage', () => {
     expect(wrapper.find('[data-testid="total-v4"]').text()).toContain('0')
     expect(wrapper.find('[data-testid="total-v4"]').text()).not.toContain('500')
   })
+
+  it('ignores a stale count-prefixes response that arrives after a newer one, instead of clobbering it', async () => {
+    vi.useFakeTimers()
+    try {
+      const userData = {
+        user: {
+          id: 1,
+          name: 'Alice',
+          catalog_mode_id: 1,
+          catalog_mode_name: 'Mode A',
+          selection_locked: false,
+          filter_editable: false,
+          filter_override: false,
+          filter_mode: 'allow',
+          catalog_editable: true,
+          networks: [],
+        },
+        catalog: { CategoryA: ['svc1'], CategoryB: ['svc2'] },
+        selections: { categories: [], services: [] },
+        communities: {},
+        prefix_counts: { v4: {}, v6: {} },
+        filters: { allow: [], deny: [] },
+        modes: [],
+      }
+      mockGet.mockResolvedValue({ data: userData })
+
+      let resolveStale: (v: unknown) => void = () => {}
+      let resolveFresh: (v: unknown) => void = () => {}
+      let countCalls = 0
+      mockPost.mockImplementation((url: string) => {
+        if (url !== '/user/count-prefixes') return Promise.resolve({ data: {} })
+        countCalls++
+        if (countCalls === 1) {
+          // Initial fetch from loadUserData at mount — resolve immediately.
+          return Promise.resolve({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+        }
+        if (countCalls === 2) {
+          return new Promise((resolve) => { resolveStale = resolve })
+        }
+        return new Promise((resolve) => { resolveFresh = resolve })
+      })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await vi.runOnlyPendingTimersAsync()
+      await wrapper.vm.$nextTick()
+
+      const categorySpan = wrapper.findAll('span').find((s) => s.text() === 'CategoryA')
+      const otherCategorySpan = wrapper.findAll('span').find((s) => s.text() === 'CategoryB')
+      expect(categorySpan).toBeTruthy()
+      expect(otherCategorySpan).toBeTruthy()
+
+      // Two toggles spaced past the 300ms debounce window, so each fires its
+      // own request rather than collapsing into one.
+      await categorySpan!.trigger('click')
+      await vi.advanceTimersByTimeAsync(300)
+      await otherCategorySpan!.trigger('click')
+      await vi.advanceTimersByTimeAsync(300)
+
+      expect(countCalls).toBe(3) // initial + stale + fresh
+
+      // Fresh (later-dispatched) response arrives first...
+      resolveFresh({ data: { v4: 99, v6: 0, delta_v4: 0, delta_v6: 0 } })
+      await vi.runOnlyPendingTimersAsync()
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="total-v4"]').text()).toContain('99')
+
+      // ...then the stale (earlier-dispatched) one arrives late. It must not
+      // overwrite the fresh count that's already showing.
+      resolveStale({ data: { v4: 1, v6: 0, delta_v4: 0, delta_v6: 0 } })
+      await vi.runOnlyPendingTimersAsync()
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="total-v4"]').text()).toContain('99')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
