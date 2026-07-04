@@ -323,6 +323,19 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		user.WebAuth = s.settings.DefaultWebAuth.Get()
 	}
 
+	// Reject a mode ID that doesn't reference an existing, enabled catalog
+	// mode — same check apiUserSwitchMode enforces for a user's own
+	// self-service mode switch. Without this, a nonexistent ID surfaces as
+	// a raw FK-violation 500 instead of a clean 400, and a disabled mode is
+	// silently accepted.
+	if mode, err := s.store.CatalogMode(r.Context(), user.CatalogModeID); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode not found"})
+		return
+	} else if !mode.Enabled {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode is disabled"})
+		return
+	}
+
 	// Only network/both actually authenticate by IP match — login and any
 	// (credentials, optionally combined with IP for "both") don't need one.
 	// Checked against the effective (post-default) mode, not the raw
@@ -578,6 +591,20 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if current.WebAuth == "" {
 		current.WebAuth = s.settings.DefaultWebAuth.Get()
+	}
+
+	// Only validate the mode when this request actually asks to change it —
+	// an update that doesn't touch catalog_mode_id must still succeed even
+	// if the user's *current* mode was disabled sometime after assignment
+	// (same reasoning as apiAdminUserSaveSelections' switchingMode gate).
+	if body.CatalogModeID != nil {
+		if mode, err := s.store.CatalogMode(r.Context(), current.CatalogModeID); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode not found"})
+			return
+		} else if !mode.Enabled {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode is disabled"})
+			return
+		}
 	}
 
 	// Only network/both actually authenticate by IP match — see the

@@ -432,6 +432,127 @@ func TestUsersUpdateAnyModeAllowsEmptyNetworks(t *testing.T) {
 }
 
 // =============================================================================
+// TestUsersCreate/UpdateRejects*CatalogModeID — apiUsersCreate/apiUsersUpdate
+// used to accept an arbitrary catalog_mode_id with no existence/enabled
+// check, unlike apiUserSwitchMode which validates both for a user's own
+// self-service mode switch. A nonexistent ID surfaced as a raw 500 (FK
+// violation) instead of a clean 400; a disabled-but-existing mode ID was
+// silently accepted.
+// =============================================================================
+
+func TestUsersCreateRejectsNonexistentCatalogModeID(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	body := strings.NewReader(`{"name":"bad-mode-user","peer_ip":"192.168.9.20","peer_asn":65020,"catalog_mode_id":99999,"web_auth":"any","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/users", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("create with nonexistent catalog_mode_id: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUsersCreateRejectsDisabledCatalogModeID(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	disabledModeID, err := st.AddCatalogMode(ctx, "disabled-create-mode", "Disabled Create Mode", false)
+	if err != nil {
+		t.Fatalf("add disabled mode: %v", err)
+	}
+
+	body := strings.NewReader(fmt.Sprintf(
+		`{"name":"disabled-mode-user","peer_ip":"192.168.9.21","peer_asn":65021,"catalog_mode_id":%d,"web_auth":"any","enabled":true}`,
+		disabledModeID))
+	req := httptest.NewRequest("POST", "/api/admin/users", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("create with disabled catalog_mode_id: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestUsersUpdateRejectsDisabledCatalogModeID(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	createBody := strings.NewReader(`{"name":"update-mode-user","peer_ip":"192.168.9.22","peer_asn":65022,"web_auth":"any","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created userJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	disabledModeID, err := st.AddCatalogMode(ctx, "disabled-update-mode", "Disabled Update Mode", false)
+	if err != nil {
+		t.Fatalf("add disabled mode: %v", err)
+	}
+
+	updateBody := strings.NewReader(fmt.Sprintf(`{"catalog_mode_id":%d}`, disabledModeID))
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d", created.ID), updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("update to disabled catalog_mode_id: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestUsersUpdateWithoutModeChangeSucceedsEvenIfCurrentModeDisabled — an
+// update that doesn't touch catalog_mode_id at all must not be rejected
+// just because the user's *existing* mode was disabled sometime after
+// assignment. Mirrors TestAdminSaveSelectionsWithoutModeChangeSucceedsEven-
+// IfCurrentModeDisabled's reasoning for the selections-save endpoint.
+func TestUsersUpdateWithoutModeChangeSucceedsEvenIfCurrentModeDisabled(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	modeID, err := st.AddCatalogMode(ctx, "soon-disabled-user-mode", "Soon Disabled", true)
+	if err != nil {
+		t.Fatalf("add mode: %v", err)
+	}
+
+	createBody := strings.NewReader(fmt.Sprintf(
+		`{"name":"no-mode-change-user","peer_ip":"192.168.9.23","peer_asn":65023,"catalog_mode_id":%d,"web_auth":"any","enabled":true}`,
+		modeID))
+	req := httptest.NewRequest("POST", "/api/admin/users", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+	var created userJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	// Disable the mode after the user was already assigned to it.
+	if err := st.UpdateCatalogMode(ctx, store.CatalogMode{ID: modeID, Name: "Soon Disabled", Enabled: false}); err != nil {
+		t.Fatalf("disable mode: %v", err)
+	}
+
+	updateBody := strings.NewReader(`{"name":"renamed-user"}`)
+	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/admin/users/%d", created.ID), updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(created.ID, 10))
+	w = httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update without touching catalog_mode_id: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// =============================================================================
 // TestUsersUpdatePasswordToggle — password_enabled
 // =============================================================================
 
