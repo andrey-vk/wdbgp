@@ -110,6 +110,11 @@ func (s *Server) apiModesCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Mode name is required"})
+		return
+	}
 	key := strings.TrimSpace(body.Key)
 	if key == "" {
 		key = strings.ToLower(strings.ReplaceAll(body.Name, " ", "-"))
@@ -202,6 +207,10 @@ func (s *Server) apiModesDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.DeleteCatalogMode(r.Context(), id); err != nil {
+		if store.IsNotFound(err) {
+			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Mode not found"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}

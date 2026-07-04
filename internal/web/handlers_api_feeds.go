@@ -83,6 +83,11 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Feed name is required"})
+		return
+	}
 	u, uErr := url.Parse(body.URL)
 	if uErr != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed URL"})
@@ -150,9 +155,21 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Feed name is required"})
+		return
+	}
 	u, uErr := url.Parse(body.URL)
 	if uErr != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed URL"})
+		return
+	}
+	// Validate adapter_id before updating — otherwise a stale/invalid
+	// adapter_id only fails on the feeds.adapter_id foreign-key constraint,
+	// surfacing as a raw driver error under a 500 instead of a clean 400.
+	if _, err := s.store.FeedAdapter(r.Context(), body.AdapterID); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid adapter"})
 		return
 	}
 	// Merge adapter's declared additional hosts with user-provided hosts.
@@ -166,6 +183,10 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		AllowedHosts: body.AllowedHosts, RestrictHosts: body.RestrictHosts,
 	}
 	if err := s.store.UpdateFeed(r.Context(), f); err != nil {
+		if store.IsNotFound(err) {
+			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Feed not found"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
@@ -190,6 +211,10 @@ func (s *Server) apiFeedsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err = s.store.DeleteFeed(r.Context(), id); err != nil {
+		if store.IsNotFound(err) {
+			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Feed not found"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}

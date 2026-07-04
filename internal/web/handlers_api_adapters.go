@@ -169,6 +169,10 @@ func (s *Server) apiAdaptersDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	adapter, err := s.store.FeedAdapter(r.Context(), id)
+	if store.IsNotFound(err) {
+		writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Adapter not found"})
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return

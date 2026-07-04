@@ -214,6 +214,112 @@ func TestFeedsGetNotFound(t *testing.T) {
 	}
 }
 
+// TestFeedsUpdateNotFound / TestFeedsDeleteNotFound guard against
+// UpdateFeed/DeleteFeed's sql.ErrNoRows for a nonexistent feed ID
+// surfacing as a raw 500 instead of the 404 apiFeedsGet already returns.
+func TestFeedsUpdateNotFound(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+
+	updateBody := strings.NewReader(`{"name":"ghost","url":"http://example.com/feed.json","enabled":true,"sync_interval":3600,"adapter_id":1}`)
+	req := httptest.NewRequest("PUT", "/api/admin/feeds/99999", updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", "99999")
+	w := httptest.NewRecorder()
+	srv.apiFeedsUpdate(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("PUT 404: status = %d, want 404, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestFeedsDeleteNotFound(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	req := httptest.NewRequest("DELETE", "/api/admin/feeds/99999", nil)
+	req.SetPathValue("id", "99999")
+	w := httptest.NewRecorder()
+	srv.apiFeedsDelete(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("DELETE 404: status = %d, want 404, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestFeedsUpdateRejectsInvalidAdapterID mirrors
+// TestFeedsCreateRejectsInvalidAdapterID for the update path — a stale/
+// invalid adapter_id must be rejected before UpdateFeed hits the
+// feeds.adapter_id foreign-key constraint (raw 500 instead of clean 400).
+func TestFeedsUpdateRejectsInvalidAdapterID(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+	feedID, err := st.AddFeed(ctx, "existing-feed", "http://example.com/feed.json", 1, true, 3600, "", "", false)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+
+	updateBody := strings.NewReader(`{"name":"existing-feed","url":"http://example.com/feed.json","enabled":true,"sync_interval":3600,"adapter_id":99999}`)
+	req := httptest.NewRequest("PUT", "/api/admin/feeds/"+strconv.FormatInt(feedID, 10), updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(feedID, 10))
+	w := httptest.NewRecorder()
+	srv.apiFeedsUpdate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("update with invalid adapter_id: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestFeedsCreateRejectsEmptyName / TestFeedsUpdateRejectsEmptyName restore
+// a validation the old (pre-SPA) handlers had — the JSON handlers dropped
+// it, and the feeds table only enforces NOT NULL UNIQUE, not non-blank.
+func TestFeedsCreateRejectsEmptyName(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+
+	createBody := strings.NewReader(`{"name":"","url":"http://example.com/feed.json","enabled":true,"sync_interval":3600,"adapter_id":1}`)
+	req := httptest.NewRequest("POST", "/api/admin/feeds", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiFeedsCreate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("create with empty name: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestFeedsUpdateRejectsEmptyName(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+	feedID, err := st.AddFeed(ctx, "existing-feed2", "http://example.com/feed.json", 1, true, 3600, "", "", false)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+
+	updateBody := strings.NewReader(`{"name":"  ","url":"http://example.com/feed.json","enabled":true,"sync_interval":3600,"adapter_id":1}`)
+	req := httptest.NewRequest("PUT", "/api/admin/feeds/"+strconv.FormatInt(feedID, 10), updateBody)
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(feedID, 10))
+	w := httptest.NewRecorder()
+	srv.apiFeedsUpdate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("update with blank name: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
 // TestFeedsCreateRejectsInvalidModeID guards against a bug where a stale/
 // invalid mode_id let AddFeed commit the feed row before the
 // catalog_mode_feeds insert failed — the failure was only logged at Debug

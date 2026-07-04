@@ -636,6 +636,41 @@ func TestModeGetNotFound(t *testing.T) {
 	}
 }
 
+// TestModeDeleteNotFound guards against DeleteCatalogMode's sql.ErrNoRows
+// for a nonexistent (but >3, i.e. not built-in) mode ID surfacing as a raw
+// 500 instead of the 404 apiModesGet/apiModesUpdate already return.
+func TestModeDeleteNotFound(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	req := httptest.NewRequest("DELETE", "/api/admin/modes/99999", nil)
+	req.SetPathValue("id", "99999")
+	w := httptest.NewRecorder()
+	srv.apiModesDelete(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestModesCreateRejectsEmptyName mirrors apiModesUpdate's existing
+// empty-name check, which apiModesCreate lacked — without it, POSTing an
+// empty name created a mode with both empty name and empty key, and a
+// second such POST failed with a raw UNIQUE-constraint driver error
+// instead of a clean validation message.
+func TestModesCreateRejectsEmptyName(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+
+	createBody := strings.NewReader(`{"name":"","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/modes", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiModesCreate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("create with empty name: status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
 // =============================================================================
 // TestModeFeedReplaceAtomic — feed replacement uses a transaction: on invalid
 // feed ID the original assignments must be preserved (rollback).
