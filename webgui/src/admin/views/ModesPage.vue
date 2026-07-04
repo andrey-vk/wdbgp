@@ -13,6 +13,7 @@ import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import Checkbox from 'primevue/checkbox'
 import FormField from '@/components/FormField.vue'
+import ErrorPage from '@/components/ErrorPage.vue'
 
 interface FeedItem {
   id: number; name: string; url: string; enabled: boolean; adapter_name: string
@@ -27,6 +28,7 @@ const modes = ref<Mode[]>([])
 const selected = ref<Mode | null>(null)
 const form = ref({ name: '', enabled: true })
 const loading = ref(true)
+const loadError = ref(false)
 const saving = ref(false)
 const editMode = ref(false)
 
@@ -38,10 +40,15 @@ const loadingFeeds = ref(false)
 const savingFeeds = ref(false)
 
 onMounted(async () => {
-  const resp = await apiClient.get<ModesListResponse>('/admin/modes')
-  modes.value = resp.data.modes
-  modes.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-  loading.value = false
+  try {
+    const resp = await apiClient.get<ModesListResponse>('/admin/modes')
+    modes.value = resp.data.modes
+    modes.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+  } catch {
+    loadError.value = true
+  } finally {
+    loading.value = false
+  }
 })
 
 function selectMode(mode: Mode) {
@@ -224,6 +231,7 @@ defineExpose({
         class="pi pi-spin pi-spinner text-2xl"
       />
     </div>
+    <ErrorPage v-else-if="loadError" />
     <div
       v-else
       class="group flex flex-col md:flex-row gap-4 items-start"

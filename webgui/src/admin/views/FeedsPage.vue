@@ -17,6 +17,7 @@ import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import FormField from '@/components/FormField.vue'
+import ErrorPage from '@/components/ErrorPage.vue'
 
 interface Feed extends ApiFeed {
   adapter_name?: string
@@ -49,20 +50,26 @@ const form = ref({
   mode_id: 0,
 })
 const loading = ref(true)
+const loadError = ref(false)
 const saving = ref(false)
 const syncing = ref(false)
 const editMode = ref(false)
 
 onMounted(async () => {
-  const [feedsResp, adaptersResp] = await Promise.all([
-    apiClient.get('/admin/feeds'),
-    apiClient.get<AdaptersListResponse>('/admin/adapters'),
-  ])
-  feeds.value = feedsResp.data.feeds
-  feeds.value.sort((a, b) => (a.name || a.url || '').localeCompare(b.name || b.url || ''))
-  adapters.value = adaptersResp.data.adapters.map((a) => ({ id: a.id, name: a.name }))
-  fetchModes()
-  loading.value = false
+  try {
+    const [feedsResp, adaptersResp] = await Promise.all([
+      apiClient.get('/admin/feeds'),
+      apiClient.get<AdaptersListResponse>('/admin/adapters'),
+    ])
+    feeds.value = feedsResp.data.feeds
+    feeds.value.sort((a, b) => (a.name || a.url || '').localeCompare(b.name || b.url || ''))
+    adapters.value = adaptersResp.data.adapters.map((a) => ({ id: a.id, name: a.name }))
+    fetchModes()
+  } catch {
+    loadError.value = true
+  } finally {
+    loading.value = false
+  }
 })
 
 async function fetchModes() {
@@ -226,6 +233,7 @@ async function loadList() {
         class="pi pi-spin pi-spinner text-2xl"
       />
     </div>
+    <ErrorPage v-else-if="loadError" />
     <div
       v-else
       class="group flex flex-col md:flex-row gap-4 items-start"

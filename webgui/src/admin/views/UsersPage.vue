@@ -19,6 +19,7 @@ import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import FormField from '@/components/FormField.vue'
+import ErrorPage from '@/components/ErrorPage.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -30,6 +31,7 @@ const modes = ref<Mode[]>([])
 const credentials = ref<Credential[]>([])
 const selected = ref<User | null>(null)
 const loading = ref(true)
+const loadError = ref(false)
 const saving = ref(false)
 const credSaving = ref(false)
 const editMode = ref(false)
@@ -120,26 +122,31 @@ const filterModeSelect = computed({
 })
 
 onMounted(async () => {
-  const [usersResp, modesResp, settingsResp] = await Promise.all([
-    apiClient.get<UsersListResponse>('/admin/users'),
-    apiClient.get<ModesListResponse>('/admin/modes'),
-    apiClient.get('/admin/settings'),
-  ])
-  users.value = usersResp.data.users
-  users.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-  modes.value = modesResp.data.modes
+  try {
+    const [usersResp, modesResp, settingsResp] = await Promise.all([
+      apiClient.get<UsersListResponse>('/admin/users'),
+      apiClient.get<ModesListResponse>('/admin/modes'),
+      apiClient.get('/admin/settings'),
+    ])
+    users.value = usersResp.data.users
+    users.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    modes.value = modesResp.data.modes
 
-  // Read configured default_web_auth from settings
-  const dw = settingsResp.data.default_web_auth
-  defaultWebAuth.value = dw.value ?? dw.default_value
+    // Read configured default_web_auth from settings
+    const dw = settingsResp.data.default_web_auth
+    defaultWebAuth.value = dw.value ?? dw.default_value
 
-  // New peers should match the current global Active Dial setting, not a
-  // hardcoded guess — an admin who's turned it on (or off) globally expects
-  // new peers to follow suit.
-  const ad = settingsResp.data.active_dial
-  defaultActiveDial.value = ad.value ?? ad.default_value
-
-  loading.value = false
+    // New peers should match the current global Active Dial setting, not a
+    // hardcoded guess — an admin who's turned it on (or off) globally expects
+    // new peers to follow suit.
+    const ad = settingsResp.data.active_dial
+    defaultActiveDial.value = ad.value ?? ad.default_value
+  } catch {
+    loadError.value = true
+    return
+  } finally {
+    loading.value = false
+  }
 
   // Restore user selection from UI store (e.g., when returning from selections page)
   const uiStore = useUIStore()
@@ -546,6 +553,7 @@ defineExpose({
         class="pi pi-spin pi-spinner text-2xl"
       />
     </div>
+    <ErrorPage v-else-if="loadError" />
     <div
       v-else
       class="group flex flex-col md:flex-row gap-4 items-start"

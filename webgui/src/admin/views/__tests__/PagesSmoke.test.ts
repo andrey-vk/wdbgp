@@ -252,3 +252,46 @@ describe('Pages smoke tests', () => {
     expect(wrapper.html().length).toBeGreaterThan(0)
   })
 })
+
+// ============================================================
+// Initial-load failure fallback (a non-401 error, e.g. a network
+// blip or 500 — a 401 is handled separately by apiClient's redirect
+// interceptor, see src/api/__tests__/client.spec.ts)
+// ============================================================
+
+describe('Pages show a reload fallback when the initial load fails', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setActivePinia(createPinia())
+
+    const store = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => { store.set(key, value) },
+      removeItem: (key: string) => { store.delete(key) },
+      clear: () => { store.clear() },
+      get length() { return store.size },
+      key: (index: number) => Array.from(store.keys())[index] ?? null,
+    })
+  })
+
+  async function expectErrorFallback(componentPath: string, failingUrl: string) {
+    mockGet.mockImplementation((url: string) => {
+      if (url === failingUrl) return Promise.reject(new Error('network error'))
+      return Promise.resolve({ data: {} })
+    })
+    const Component = (await import(componentPath)).default
+    const wrapper = mount(Component, {
+      global: { stubs: stubPrimeVueComponents() },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(wrapper.text()).toContain('error.generic_title')
+    expect(wrapper.find('.stub-btn').exists()).toBe(true) // ErrorPage's reload button
+  }
+
+  it('UsersPage', () => expectErrorFallback('@/admin/views/UsersPage.vue', '/admin/users'))
+  it('FeedsPage', () => expectErrorFallback('@/admin/views/FeedsPage.vue', '/admin/feeds'))
+  it('AdaptersPage', () => expectErrorFallback('@/admin/views/AdaptersPage.vue', '/admin/adapters'))
+  it('ModesPage', () => expectErrorFallback('@/admin/views/ModesPage.vue', '/admin/modes'))
+  it('DebugPage', () => expectErrorFallback('@/admin/views/DebugPage.vue', '/admin/modes'))
+})

@@ -12,6 +12,7 @@ import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import FormField from '@/components/FormField.vue'
+import ErrorPage from '@/components/ErrorPage.vue'
 
 const { t } = useI18n()
 const confirmDialog = useConfirm()
@@ -20,14 +21,20 @@ const adapters = ref<Adapter[]>([])
 const selected = ref<Adapter | null>(null)
 const form = ref({ name: '', source: '' })
 const loading = ref(true)
+const loadError = ref(false)
 const saving = ref(false)
 const editMode = ref(false)
 
 onMounted(async () => {
-  const resp = await apiClient.get<AdaptersListResponse>('/admin/adapters')
-  adapters.value = resp.data.adapters
-  adapters.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-  loading.value = false
+  try {
+    const resp = await apiClient.get<AdaptersListResponse>('/admin/adapters')
+    adapters.value = resp.data.adapters
+    adapters.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+  } catch {
+    loadError.value = true
+  } finally {
+    loading.value = false
+  }
 })
 
 function selectAdapter(adapter: Adapter) {
@@ -134,6 +141,7 @@ async function loadList() { const resp = await apiClient.get('/admin/adapters');
         class="pi pi-spin pi-spinner text-2xl"
       />
     </div>
+    <ErrorPage v-else-if="loadError" />
     <div
       v-else
       class="group flex flex-col md:flex-row gap-4 items-start"
