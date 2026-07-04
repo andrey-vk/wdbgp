@@ -1,6 +1,5 @@
 export interface Adapter {
   id: number
-  key: string
   name: string
   language: string
   api_version: number

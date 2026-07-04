@@ -56,7 +56,7 @@ func TestFeedsCRUD(t *testing.T) {
 	initialCount := len(initResp.Feeds)
 
 	// Create a built-in adapter for test feeds (may already exist, use INSERT OR IGNORE)
-	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision) VALUES (1, 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
 		t.Fatalf("setup adapter: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestFeedsSyncAll(t *testing.T) {
 	ctx := context.Background()
 
 	// Create adapter and feed
-	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision) VALUES (1, 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
 		t.Fatalf("setup adapter: %v", err)
 	}
 	_, err := st.AddFeed(ctx, "sync-feed", "http://example.com/sync.json", 1, true, 0, "", "", true)
@@ -220,7 +220,7 @@ func TestFeedsGetNotFound(t *testing.T) {
 func TestFeedsUpdateNotFound(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
-	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision) VALUES (1, 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
 		t.Fatalf("setup adapter: %v", err)
 	}
 
@@ -256,7 +256,7 @@ func TestFeedsDeleteNotFound(t *testing.T) {
 func TestFeedsUpdateRejectsInvalidAdapterID(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
-	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision) VALUES (1, 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
 		t.Fatalf("setup adapter: %v", err)
 	}
 	feedID, err := st.AddFeed(ctx, "existing-feed", "http://example.com/feed.json", 1, true, 3600, "", "", false)
@@ -282,7 +282,7 @@ func TestFeedsUpdateRejectsInvalidAdapterID(t *testing.T) {
 func TestFeedsCreateRejectsEmptyName(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
-	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision) VALUES (1, 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
 		t.Fatalf("setup adapter: %v", err)
 	}
 
@@ -300,7 +300,7 @@ func TestFeedsCreateRejectsEmptyName(t *testing.T) {
 func TestFeedsUpdateRejectsEmptyName(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
-	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision) VALUES (1, 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
 		t.Fatalf("setup adapter: %v", err)
 	}
 	feedID, err := st.AddFeed(ctx, "existing-feed2", "http://example.com/feed.json", 1, true, 3600, "", "", false)
@@ -330,7 +330,7 @@ func TestFeedsCreateRejectsInvalidModeID(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'opencck', 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision) VALUES (1, 'OpenCCK', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
 		t.Fatalf("setup adapter: %v", err)
 	}
 

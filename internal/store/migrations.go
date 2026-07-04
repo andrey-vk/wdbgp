@@ -43,4 +43,5 @@ var migrations = []Migration{
 	{28, "drop allowed_hosts from feed_adapters", m.V028, nil},
 	{29, "move route filters to app_settings", m.V029, nil},
 	{30, "delete overlapping user networks between active users", m.V030, nil},
+	{31, "drop key from feed_adapters", m.V031, m.V031NoTxSQL},
 }

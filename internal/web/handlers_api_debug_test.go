@@ -49,7 +49,7 @@ func TestDebugCIDRValid(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a feed with adapter
-	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, key, name, language, api_version, source, revision) VALUES (1, 'test-adapter', 'Test', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
+	if _, err := st.DB.ExecContext(ctx, "INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision) VALUES (1, 'Test', 'javascript', 1, 'function sync(feed, api) { return []; }', 1)"); err != nil {
 		t.Fatalf("setup adapter: %v", err)
 	}
 

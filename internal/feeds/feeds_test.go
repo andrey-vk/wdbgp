@@ -92,7 +92,7 @@ func TestJavaScriptAdapterNormalizesResult(t *testing.T) {
 		context.Background(),
 		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed"},
 		store.FeedAdapter{
-			Key: "test", APIVersion: 1, Source: `
+			APIVersion: 1, Source: `
 function sync(feed, api) {
     return [{
         category: "Messengers",
@@ -184,7 +184,7 @@ func TestJavaScriptAdapterSRSGet(t *testing.T) {
 		context.Background(),
 		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed.srs"},
 		store.FeedAdapter{
-			Key: "test-srs", APIVersion: 1, Source: `
+			APIVersion: 1, Source: `
 function sync(feed, api) {
     var entries = api.srsGet(feed.url, JSON.stringify({cidrs: true}));
     return entries.map(function(e) {
@@ -218,7 +218,7 @@ func TestJavaScriptAdapterRejectsUnlistedHost(t *testing.T) {
 		context.Background(),
 		store.Feed{URL: "https://example.test/feed", RestrictHosts: true},
 		store.FeedAdapter{
-			Key: "test", APIVersion: 1,
+			APIVersion: 1,
 			Source: `function sync(feed, api) {
                 api.httpGet("https://other.test/feed");
                 return [];
@@ -237,8 +237,8 @@ func TestJavaScriptAdapterTimesOut(t *testing.T) {
 		context.Background(),
 		store.Feed{URL: "https://example.test/feed"},
 		store.FeedAdapter{
-			Key: "test", APIVersion: 1,
-			Source: `function sync() { while (true) {} }`,
+			APIVersion: 1,
+			Source:     `function sync() { while (true) {} }`,
 		},
 	)
 	if err == nil ||
@@ -261,8 +261,8 @@ func TestJavaScriptAdapterStopsWhenContextIsCanceled(t *testing.T) {
 		ctx,
 		store.Feed{URL: "https://example.test/feed"},
 		store.FeedAdapter{
-			Key: "test", APIVersion: 1,
-			Source: `function sync() { while (true) {} }`,
+			APIVersion: 1,
+			Source:     `function sync() { while (true) {} }`,
 		},
 	)
 	if !errors.Is(err, context.Canceled) {

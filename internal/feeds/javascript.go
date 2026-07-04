@@ -65,7 +65,7 @@ func (r feedRunner) run(
 	vm := goja.New()
 	vm.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	vm.SetMaxCallStackSize(r.limits.MaxCallStack)
-	program, err := goja.Compile(adapter.Key+".js", adapter.Source, true)
+	program, err := goja.Compile(fmt.Sprintf("adapter-%d.js", adapter.ID), adapter.Source, true)
 	if err != nil {
 		return nil, fmt.Errorf("compile adapter: %w", err)
 	}

@@ -18,7 +18,6 @@ import (
 
 type adapterJSON struct {
 	ID             int64  `json:"id"`
-	Key            string `json:"key"`
 	Name           string `json:"name"`
 	Language       string `json:"language"`
 	APIVersion     int    `json:"api_version"`
@@ -32,7 +31,7 @@ type adapterJSON struct {
 
 func (s *Server) adapterToJSON(a store.FeedAdapter) adapterJSON {
 	aj := adapterJSON{
-		ID: a.ID, Key: a.Key, Name: a.Name,
+		ID: a.ID, Name: a.Name,
 		Language: a.Language, APIVersion: a.APIVersion,
 		Source:   a.Source,
 		Revision: a.Revision, BuiltIn: a.BuiltIn,
@@ -257,15 +256,15 @@ func backupAdapterSource(adapter store.FeedAdapter, backupDir string, maxCopies 
 		log.Printf("WARNING: backup adapter mkdir: %v", err)
 		return
 	}
-	name := fmt.Sprintf("%s_r%d_%s.js", adapter.Key, adapter.Revision, time.Now().UTC().Format("20060102T150405Z"))
+	name := fmt.Sprintf("%d_r%d_%s.js", adapter.ID, adapter.Revision, time.Now().UTC().Format("20060102T150405Z"))
 	if err := os.WriteFile(filepath.Join(backupDir, name), []byte(adapter.Source), 0644); err != nil { //nolint:gosec // backup files on server, single user
 		log.Printf("WARNING: backup adapter write: %v", err)
 		return
 	}
-	pruneAdapterBackups(adapter.Key, backupDir, maxCopies)
+	pruneAdapterBackups(strconv.FormatInt(adapter.ID, 10), backupDir, maxCopies)
 }
 
-func pruneAdapterBackups(key, dir string, max int) {
+func pruneAdapterBackups(adapterID, dir string, max int) {
 	if max <= 0 {
 		return
 	}
@@ -275,7 +274,7 @@ func pruneAdapterBackups(key, dir string, max int) {
 	}
 	var files []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), key+"_") {
+		if strings.HasPrefix(e.Name(), adapterID+"_") {
 			files = append(files, e.Name())
 		}
 	}

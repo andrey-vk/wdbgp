@@ -912,14 +912,14 @@ func TestDeleteFeedAdapter(t *testing.T) {
 
 	// Add a custom adapter
 	_, err := s.DB.ExecContext(ctx,
-		"INSERT INTO feed_adapters(key, name, source) VALUES ('test-del', 'Test Delete', 'function sync(f,a){return[]}')")
+		"INSERT INTO feed_adapters(name, source) VALUES ('Test Delete', 'function sync(f,a){return[]}')")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Find its ID
 	var id int64
-	err = s.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE key='test-del'").Scan(&id)
+	err = s.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE name='Test Delete'").Scan(&id)
 	if err != nil {
 		t.Fatal(err)
 	}

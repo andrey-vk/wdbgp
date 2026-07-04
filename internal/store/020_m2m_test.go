@@ -562,7 +562,7 @@ func TestMigration20PreservesAdapterCustomizations(t *testing.T) {
 
 	// Verify the custom source was NOT overwritten by seedBuiltInAdapters.
 	var storedSource string
-	err = s.DB.QueryRow("SELECT source FROM feed_adapters WHERE key = 'canonical-json'").Scan(&storedSource)
+	err = s.DB.QueryRow("SELECT source FROM feed_adapters WHERE name = 'Canonical JSON'").Scan(&storedSource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestMigration20PreservesAdapterCustomizations(t *testing.T) {
 
 	// Verify is_customized was set to 1 to protect from future overwrites.
 	var isCustomized int
-	err = s.DB.QueryRow("SELECT is_customized FROM feed_adapters WHERE key = 'canonical-json'").Scan(&isCustomized)
+	err = s.DB.QueryRow("SELECT is_customized FROM feed_adapters WHERE name = 'Canonical JSON'").Scan(&isCustomized)
 	if err != nil {
 		t.Fatal(err)
 	}

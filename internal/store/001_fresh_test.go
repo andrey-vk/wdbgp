@@ -60,8 +60,10 @@ func TestResetBuiltInFeedAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Renaming isn't a valid way to simulate a customization here: the real
+	// API blocks editing built-ins entirely, and identity is now name-based
+	// (see feed_adapters.go), so only the source can change in practice.
 	changed := original
-	changed.Name = "Changed"
 	changed.Source = "function sync() { return []; }\n"
 	if err := s.UpdateFeedAdapter(ctx, changed); err != nil {
 		t.Fatal(err)
@@ -81,7 +83,7 @@ func TestResetBuiltInFeedAdapter(t *testing.T) {
 	}
 
 	custom, err := s.AddFeedAdapter(ctx, FeedAdapter{
-		Key: "custom", Name: "Custom",
+		Name:   "Custom",
 		Source: "function sync() { return []; }\n",
 	})
 	if err != nil {

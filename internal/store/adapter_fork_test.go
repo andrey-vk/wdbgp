@@ -95,7 +95,7 @@ func TestAdapterForkAutoNaming(t *testing.T) {
 	}
 }
 
-func TestAdapterResetPreservesKey(t *testing.T) {
+func TestBuiltinAdapterHasNameAndForkedVersion(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "resetkey.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
@@ -121,8 +121,11 @@ func TestAdapterResetPreservesKey(t *testing.T) {
 	if builtin.ID == 0 {
 		t.Fatal("no built-in adapter")
 	}
-	if builtin.Key == "" {
-		t.Fatal("built-in missing key")
+	// Name (combined with is_builtin) is what identifies which built-in a
+	// row represents — see internal/store/feed_adapters.go's
+	// builtInAdapters map, keyed by name.
+	if builtin.Name == "" {
+		t.Fatal("built-in missing name")
 	}
 	if builtin.ForkedVersion == 0 {
 		t.Fatal("built-in forked_version should be > 0 after migration")
@@ -347,7 +350,7 @@ func TestBuiltinAdapterAllowedHostsResolvesForks(t *testing.T) {
 	ctx := context.Background()
 
 	var iprangesID int64
-	if err := db.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE key = 'ipranges'").Scan(&iprangesID); err != nil {
+	if err := db.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE name = 'IPRanges'").Scan(&iprangesID); err != nil {
 		t.Fatal(err)
 	}
 

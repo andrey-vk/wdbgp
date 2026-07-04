@@ -46,7 +46,6 @@ type Store struct {
 
 type FeedAdapter struct {
 	ID            int64
-	Key           string
 	Name          string
 	Language      string
 	APIVersion    int
@@ -497,7 +496,7 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 
 func (s *Store) FeedAdapters(ctx context.Context) ([]FeedAdapter, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT id, key, name, language, api_version, source, revision, COALESCE(forked_from, 0), forked_version, is_builtin
+SELECT id, name, language, api_version, source, revision, COALESCE(forked_from, 0), forked_version, is_builtin
 FROM feed_adapters
 ORDER BY id`)
 	if err != nil {
@@ -513,7 +512,7 @@ ORDER BY id`)
 		var adapter FeedAdapter
 		var isBuiltin int
 		if err := rows.Scan(
-			&adapter.ID, &adapter.Key, &adapter.Name, &adapter.Language,
+			&adapter.ID, &adapter.Name, &adapter.Language,
 			&adapter.APIVersion, &adapter.Source,
 			&adapter.Revision, &adapter.ForkedFrom, &adapter.ForkedVersion,
 			&isBuiltin,
@@ -530,10 +529,10 @@ func (s *Store) FeedAdapter(ctx context.Context, id int64) (FeedAdapter, error) 
 	var adapter FeedAdapter
 	var isBuiltin int
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT id, key, name, language, api_version, source, revision, COALESCE(forked_from, 0), forked_version, is_builtin
+		SELECT id, name, language, api_version, source, revision, COALESCE(forked_from, 0), forked_version, is_builtin
 FROM feed_adapters
 WHERE id = ?`, id).Scan(
-		&adapter.ID, &adapter.Key, &adapter.Name, &adapter.Language,
+		&adapter.ID, &adapter.Name, &adapter.Language,
 		&adapter.APIVersion, &adapter.Source,
 		&adapter.Revision, &adapter.ForkedFrom, &adapter.ForkedVersion,
 		&isBuiltin,
