@@ -114,4 +114,101 @@ describe('UserPage', () => {
     // server state rather than silently keep showing pre-switch data.
     expect(mockGet).toHaveBeenCalledTimes(2)
   })
+
+  it('returns to the login screen when a count-prefixes fetch gets a 401 mid-session, instead of getting stuck on a dead authenticated view', async () => {
+    const userData = {
+      user: {
+        id: 1,
+        name: 'Alice',
+        catalog_mode_id: 1,
+        catalog_mode_name: 'Mode A',
+        selection_locked: false,
+        filter_editable: false,
+        filter_override: false,
+        filter_mode: 'allow',
+        catalog_editable: true,
+        networks: [],
+      },
+      catalog: {},
+      selections: { categories: [], services: [] },
+      communities: {},
+      prefix_counts: { v4: {}, v6: {} },
+      filters: { allow: [], deny: [] },
+      modes: [],
+    }
+    mockGet.mockResolvedValue({ data: userData })
+    // The session expires between the initial auth check and the
+    // count-prefixes fetch that loadUserData triggers right after it.
+    mockPost.mockRejectedValue({ isAxiosError: true, response: { status: 401 } })
+
+    const UserPage = (await import('../UserPage.vue')).default
+    const wrapper = mount(UserPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+          Toast: { template: '<div class="stub-toast" />' },
+        },
+      },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.vm.$nextTick()
+
+    // Only the login form's password input exists once authenticated flips
+    // back to false — the main authenticated view (catalog, save button)
+    // must not still be showing.
+    expect(wrapper.find('input[type="password"]').exists()).toBe(true)
+    expect(wrapper.find('select').exists()).toBe(false)
+  })
+
+  it('returns to the login screen when saveSelections gets a 401, instead of just showing a generic error toast', async () => {
+    const userData = {
+      user: {
+        id: 1,
+        name: 'Alice',
+        catalog_mode_id: 1,
+        catalog_mode_name: 'Mode A',
+        selection_locked: false,
+        filter_editable: false,
+        filter_override: false,
+        filter_mode: 'allow',
+        catalog_editable: true,
+        networks: [],
+      },
+      catalog: { CategoryA: ['svc1'] },
+      selections: { categories: [], services: [] },
+      communities: {},
+      prefix_counts: { v4: {}, v6: {} },
+      filters: { allow: [], deny: [] },
+      modes: [],
+    }
+    mockGet.mockResolvedValue({ data: userData })
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/user/selections') {
+        return Promise.reject({ isAxiosError: true, response: { status: 401 } })
+      }
+      return Promise.resolve({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+    })
+
+    const UserPage = (await import('../UserPage.vue')).default
+    const wrapper = mount(UserPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+          Toast: { template: '<div class="stub-toast" />' },
+        },
+      },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.vm.$nextTick()
+
+    const saveButton = wrapper.find('[data-testid="save-selections"]')
+    expect(saveButton.exists()).toBe(true)
+    await saveButton.trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('input[type="password"]').exists()).toBe(true)
+  })
 })

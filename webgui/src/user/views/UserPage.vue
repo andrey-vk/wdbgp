@@ -128,6 +128,21 @@ function formatDelta(n: number): string {
 }
 
 // ── Auth functions ──────────────────────────────────────────
+// Detects a 401 (expired/invalid session) and resets local auth state so
+// the login screen shows again. Without this, checkAuth was the only
+// function that ever noticed a 401 — every other authenticated action
+// (reload, mode switch, count fetch, save) swallowed it generically,
+// leaving the UI stuck on a non-functional authenticated view until a
+// manual page reload. Returns true if it handled the error, so the caller
+// can skip its own generic error toast for this case.
+function handleAuthError(err: unknown): boolean {
+  if (axios.isAxiosError(err) && err.response?.status === 401) {
+    authenticated.value = false
+    return true
+  }
+  return false
+}
+
 async function checkAuth(): Promise<void> {
   authChecking.value = true
   try {
@@ -137,9 +152,7 @@ async function checkAuth(): Promise<void> {
       await loadUserData(resp.data)
     }
   } catch (err: unknown) {
-    if (axios.isAxiosError(err) && err.response?.status === 401) {
-      authenticated.value = false
-    }
+    handleAuthError(err)
   } finally {
     authChecking.value = false
   }
@@ -211,8 +224,8 @@ async function reloadUserData(): Promise<void> {
   try {
     const resp = await userApi.get('/user/me')
     await loadUserData(resp.data)
-  } catch {
-    // handled by interceptor or auth check
+  } catch (err) {
+    handleAuthError(err)
   } finally {
     loading.value = false
   }
@@ -226,7 +239,8 @@ async function switchMode(modeId: number): Promise<void> {
     selectedModeId.value = modeId
     await reloadUserData()
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
-  } catch {
+  } catch (err) {
+    if (handleAuthError(err)) return
     toast.add({ severity: 'error', summary: t('user.save_error'), life: 5000 })
     // The backend commits the mode change before it can fail on a later
     // step (e.g. BGP reconciliation), so an error here doesn't mean the
@@ -321,7 +335,8 @@ async function fetchCounts(): Promise<void> {
   try {
     const resp = await userApi.post('/user/count-prefixes', selections)
     countData.value = resp.data
-  } catch {
+  } catch (err) {
+    handleAuthError(err)
     countData.value = null
   } finally {
     countLoading.value = false
@@ -352,7 +367,8 @@ async function saveSelections(): Promise<void> {
   try {
     await userApi.post('/user/selections', buildSelectionPayload())
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
-  } catch {
+  } catch (err) {
+    if (handleAuthError(err)) return
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
   } finally {
     saving.value = false
@@ -372,7 +388,8 @@ async function saveFilters(): Promise<void> {
       .filter(Boolean)
     await userApi.post('/user/filters', { allow, deny })
     toast.add({ severity: 'success', summary: t('user.filters_saved'), life: 3000 })
-  } catch {
+  } catch (err) {
+    if (handleAuthError(err)) return
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
   } finally {
     savingFilters.value = false
@@ -588,6 +605,7 @@ onMounted(() => {
               <span class="font-semibold text-gray-900 dark:text-white">{{ totalV6.toLocaleString() }} {{ t('user.prefixes') }}</span>
             </div>
             <button
+              data-testid="save-selections"
               @click="saveSelections"
               :disabled="saving || data.user.selection_locked"
               class="px-4 py-1.5 text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg transition-colors flex items-center gap-1.5"
