@@ -91,23 +91,87 @@ func (s *Store) AddFeed(
 	allowedHosts string,
 	restrictHosts bool,
 ) (int64, error) {
-	// Merge adapter's declared additional hosts with user-provided hosts.
-	if extraHosts := s.BuiltinAdapterAllowedHosts(ctx, adapterID); extraHosts != "" {
-		allowedHosts = mergeHosts(allowedHosts, extraHosts)
-	}
-
+	allowedHosts = s.mergedAllowedHosts(ctx, adapterID, allowedHosts)
 	var feedID int64
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
-		result, err := tx.ExecContext(ctx,
-			"INSERT INTO feeds(name, url, adapter_id, enabled, sync_interval, data, allowed_hosts, restrict_hosts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-			name, url, adapterID, enabled, syncInterval, data, allowedHosts, restrictHosts)
-		if err != nil {
-			return err
-		}
-		feedID, err = result.LastInsertId()
+		var err error
+		feedID, err = addFeedTx(ctx, tx, name, url, adapterID, enabled, syncInterval, data, allowedHosts, restrictHosts)
 		return err
 	})
 	return feedID, err
+}
+
+// AddFeedWithMode is AddFeed plus a catalog_mode_feeds assignment, both in
+// the same transaction — modeID <= 0 skips the assignment. Used instead of
+// AddFeed + a separate catalog_mode_feeds insert wherever the caller needs
+// mode assignment to be atomic with feed creation: a feed row must not be
+// left committed and orphaned (invisible to mode-scoped sync, and a source
+// of duplicate feeds on client retry) if the assignment can't be persisted.
+func (s *Store) AddFeedWithMode(
+	ctx context.Context,
+	name string,
+	url string,
+	adapterID int64,
+	enabled bool,
+	syncInterval int,
+	data string,
+	allowedHosts string,
+	restrictHosts bool,
+	modeID int64,
+) (int64, error) {
+	allowedHosts = s.mergedAllowedHosts(ctx, adapterID, allowedHosts)
+	var feedID int64
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		var err error
+		feedID, err = addFeedTx(ctx, tx, name, url, adapterID, enabled, syncInterval, data, allowedHosts, restrictHosts)
+		if err != nil {
+			return err
+		}
+		if modeID > 0 {
+			if _, err := tx.ExecContext(ctx,
+				"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
+				modeID, feedID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return feedID, err
+}
+
+// mergedAllowedHosts merges the adapter's declared additional hosts with
+// user-provided ones. Must be called before opening a transaction: it
+// queries s.DB directly rather than a *sql.Tx, and this store's
+// single-connection pool (SetMaxOpenConns(1)) would deadlock waiting for a
+// second connection if called from inside an already-open transaction.
+func (s *Store) mergedAllowedHosts(ctx context.Context, adapterID int64, allowedHosts string) string {
+	if extraHosts := s.BuiltinAdapterAllowedHosts(ctx, adapterID); extraHosts != "" {
+		return mergeHosts(allowedHosts, extraHosts)
+	}
+	return allowedHosts
+}
+
+// addFeedTx inserts a feeds row within an existing transaction, shared by
+// AddFeed and AddFeedWithMode.
+func addFeedTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	name string,
+	url string,
+	adapterID int64,
+	enabled bool,
+	syncInterval int,
+	data string,
+	allowedHosts string,
+	restrictHosts bool,
+) (int64, error) {
+	result, err := tx.ExecContext(ctx,
+		"INSERT INTO feeds(name, url, adapter_id, enabled, sync_interval, data, allowed_hosts, restrict_hosts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		name, url, adapterID, enabled, syncInterval, data, allowedHosts, restrictHosts)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
 }
 
 // mergeHosts adds host to a comma-separated hosts string if not already present.

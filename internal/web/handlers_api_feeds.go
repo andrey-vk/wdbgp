@@ -106,22 +106,20 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid adapter"})
 		return
 	}
-	id, err := s.store.AddFeed(r.Context(), body.Name, body.URL, body.AdapterID, body.Enabled, int(body.SyncInterval), body.Data, body.AllowedHosts, body.RestrictHosts)
+	var modeID int64
+	if body.ModeID != nil {
+		modeID = *body.ModeID
+	}
+	// AddFeedWithMode inserts the feed row and the catalog_mode_feeds
+	// assignment in one transaction — mode_id was already validated to
+	// exist above, so a failure here is a genuine store/DB error, and the
+	// whole create rolls back instead of leaving an orphaned feed row with
+	// no mode assignment.
+	id, err := s.store.AddFeedWithMode(r.Context(), body.Name, body.URL, body.AdapterID, body.Enabled, int(body.SyncInterval), body.Data, body.AllowedHosts, body.RestrictHosts, modeID)
 	if err != nil {
+		logging.FromContext(r.Context()).Error("feed create failed", "error", err, "mode_id", modeID)
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
-	}
-	if body.ModeID != nil && *body.ModeID > 0 {
-		if _, err := s.store.DB.ExecContext(r.Context(),
-			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
-			*body.ModeID, id); err != nil {
-			// mode_id was already validated to exist above, so this can now
-			// only fail on a genuine store/DB error — surface it rather than
-			// silently returning 201 with the feed assigned to no mode.
-			logging.FromContext(r.Context()).Error("feed mode assignment failed", "error", err, "feed_id", id, "mode_id", *body.ModeID)
-			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Feed created but mode assignment failed"})
-			return
-		}
 	}
 	f, err := s.store.Feed(r.Context(), id)
 	if err != nil {
