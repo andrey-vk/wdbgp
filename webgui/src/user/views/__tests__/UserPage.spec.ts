@@ -211,4 +211,61 @@ describe('UserPage', () => {
 
     expect(wrapper.find('input[type="password"]').exists()).toBe(true)
   })
+
+  it('refreshes counts after a successful save, so the delta badge does not keep showing the pre-save delta as the new baseline', async () => {
+    const userData = {
+      user: {
+        id: 1,
+        name: 'Alice',
+        catalog_mode_id: 1,
+        catalog_mode_name: 'Mode A',
+        selection_locked: false,
+        filter_editable: false,
+        filter_override: false,
+        filter_mode: 'allow',
+        catalog_editable: true,
+        networks: [],
+      },
+      catalog: { CategoryA: ['svc1'] },
+      selections: { categories: [], services: [] },
+      communities: {},
+      prefix_counts: { v4: {}, v6: {} },
+      filters: { allow: [], deny: [] },
+      modes: [],
+    }
+    mockGet.mockResolvedValue({ data: userData })
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/user/count-prefixes') {
+        return Promise.resolve({ data: { v4: 100, v6: 50, delta_v4: 20, delta_v6: 10 } })
+      }
+      if (url === '/user/selections') {
+        return Promise.resolve({ data: { ok: true } })
+      }
+      return Promise.resolve({ data: {} })
+    })
+
+    const UserPage = (await import('../UserPage.vue')).default
+    const wrapper = mount(UserPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+          Toast: { template: '<div class="stub-toast" />' },
+        },
+      },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.vm.$nextTick()
+
+    const countPrefixesCallsBefore = mockPost.mock.calls.filter(([url]) => url === '/user/count-prefixes').length
+    expect(countPrefixesCallsBefore).toBe(1) // the initial fetch from loadUserData
+
+    const saveButton = wrapper.find('[data-testid="save-selections"]')
+    await saveButton.trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.vm.$nextTick()
+
+    const countPrefixesCallsAfter = mockPost.mock.calls.filter(([url]) => url === '/user/count-prefixes').length
+    expect(countPrefixesCallsAfter).toBe(2) // must re-fetch after save so the delta reflects the new baseline
+  })
 })

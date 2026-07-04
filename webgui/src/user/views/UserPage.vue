@@ -366,6 +366,10 @@ async function saveSelections(): Promise<void> {
   saving.value = true
   try {
     await userApi.post('/user/selections', buildSelectionPayload())
+    // The just-saved selection is now the baseline delta_v4/delta_v6 should
+    // be measured against — without this, the delta badge keeps showing
+    // the pre-save delta as if it were still unsaved.
+    await fetchCounts()
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
