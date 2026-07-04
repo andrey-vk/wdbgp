@@ -179,6 +179,86 @@ func TestNoSettingIsBothDBAndEnvInaccessible(t *testing.T) {
 	}
 }
 
+// TestEnvOnlySettingCannotBeSetOrReset guards the dbKey="" convention: an
+// empty dbKey means "env-only, not persisted to the database" (see the
+// comments next to Port/Host/BackupDir/etc. in settings.go), and several
+// distinct settings intentionally share dbKey="" for exactly that reason.
+// Before this test, Set/Validate/Reset only ever checked whether the
+// setting's own env var was currently set — never whether dbKey was empty
+// — so calling Set on any dbKey="" setting would write to the database
+// under key "", and every other dbKey="" setting would silently read that
+// same row back on next load. Empirically confirmed (via a throwaway
+// reproduction, not committed) that Port.Set(9999) with no env vars set
+// corrupted DBPath/Host/BackupDir to "9999" after a simulated restart.
+func TestEnvOnlySettingCannotBeSetOrReset(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	if err := s.Port.Validate(9999); err == nil {
+		t.Error("Port.Validate should reject a value for an env-only (dbKey=\"\") setting")
+	}
+	if err := s.Port.Set(ctx, 9999); err == nil {
+		t.Error("Port.Set should reject a value for an env-only (dbKey=\"\") setting")
+	}
+	if err := s.Port.Reset(ctx); err == nil {
+		t.Error("Port.Reset should reject an env-only (dbKey=\"\") setting")
+	}
+
+	// Confirm no cross-contamination: nothing was actually persisted to the
+	// shared "" key, so sibling env-only settings must be untouched.
+	if len(store.saved) != 0 {
+		t.Errorf("store.saved = %v, want empty — Set must not have persisted anything", store.saved)
+	}
+	if s.DBPath.Get() != "/data/wdbgp.sqlite3" {
+		t.Errorf("DBPath = %q, want unchanged default (no cross-contamination via the shared \"\" key)", s.DBPath.Get())
+	}
+	if s.Host.Get() != "0.0.0.0" {
+		t.Errorf("Host = %q, want unchanged default (no cross-contamination via the shared \"\" key)", s.Host.Get())
+	}
+}
+
+// TestNoTwoSettingsShareANonEmptyDBKey guards against a copy-paste mistake
+// giving two DB-backed settings the same real dbKey (which would cause the
+// same read/write collision dbKey="" causes for env-only settings, but for
+// settings that are actually meant to be independently persisted). dbKey=""
+// itself is exempt — it's the documented "env-only, no DB slot" marker and
+// is intentionally shared by several settings.
+func TestNoTwoSettingsShareANonEmptyDBKey(t *testing.T) {
+	store := newMockStore()
+	s, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	seen := make(map[string]string) // dbKey -> field name
+	v := reflect.ValueOf(s).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		if !field.CanInterface() {
+			continue
+		}
+		keyer, ok := field.Interface().(interface {
+			dbEnvKeys() (string, string)
+		})
+		if !ok {
+			continue
+		}
+		dbKey, _ := keyer.dbEnvKeys()
+		if dbKey == "" {
+			continue
+		}
+		fieldName := v.Type().Field(i).Name
+		if other, exists := seen[dbKey]; exists {
+			t.Errorf("dbKey %q is shared by both %s and %s", dbKey, other, fieldName)
+		}
+		seen[dbKey] = fieldName
+	}
+}
+
 func TestNewSettings_Defaults(t *testing.T) {
 	store := newMockStore()
 	s, err := New(store)
@@ -629,21 +709,24 @@ func TestBGPPortValidation(t *testing.T) {
 	}
 }
 
+// TestPortValidation — unlike BGPPort (a DB-backed setting), Port is
+// intentionally env-only (dbKey=""), so Set must reject every value,
+// valid or not, rather than silently persisting to the dbKey="" slot
+// shared with DBPath/Host/BackupDir/BackupEnabled/AutoRestoreEnabled. The
+// domain validation on the port range itself is exercised via the actual
+// supported path in TestPortValidationRejectsInvalidEnvValue and
+// TestPortValidationRejectsNegativeEnvValue.
 func TestPortValidation(t *testing.T) {
 	store := newMockStore()
 	s, err := New(store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 65536 and negative values are no longer expressible as a Go uint16
-	// literal at all — see TestPortValidationRejectsInvalidEnvValue for the
-	// string-input path (env var / DB value) where out-of-range values can
-	// still arrive.
 	if err := s.Port.Set(context.Background(), 0); err == nil {
-		t.Error("expected error for port 0")
+		t.Error("expected error for port 0 (env-only setting)")
 	}
-	if err := s.Port.Set(context.Background(), 8080); err != nil {
-		t.Errorf("unexpected error for valid port: %v", err)
+	if err := s.Port.Set(context.Background(), 8080); err == nil {
+		t.Error("expected error even for an otherwise-valid port — Port is env-only and cannot be Set")
 	}
 }
 
