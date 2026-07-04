@@ -154,14 +154,19 @@ func AggregateNetworks(raw []string) ([]string, error) {
 
 // ActiveNetworksOverlap reports whether any candidate network overlaps with
 // an active (web_auth network/both/any, and enabled) network belonging to a
-// different user. A disabled user's IP match is discarded by requireUser
-// regardless of what UserByIP's raw SQL would resolve to, so a disabled
-// user's network can never actually cause auth ambiguity and must not be
-// able to block an unrelated enabled user's save. excludeUserID is the user
-// being saved (0 for a new user, so nothing is excluded). Candidates are
-// expected already-normalized (see AggregateNetworks) — this only checks
-// for cross-user conflicts, not internal redundancy. Returns an error
-// naming the conflicting user and both CIDRs if a conflict is found.
+// different user. Disabled users are excluded here on purpose: their
+// networks are stale/vestigial, so a disabled user's leftover network must
+// not be able to block an unrelated enabled user's save. UserByIP filters
+// out disabled users' networks from its own candidate set for the same
+// reason — that filter is load-bearing, not redundant: without it, a
+// disabled user's more-specific network could win UserByIP's
+// longest-prefix comparison and shadow an enabled user's broader,
+// legitimately-overlapping one instead of falling through to it.
+// excludeUserID is the user being saved (0 for a new user, so nothing is
+// excluded). Candidates are expected already-normalized (see
+// AggregateNetworks) — this only checks for cross-user conflicts, not
+// internal redundancy. Returns an error naming the conflicting user and
+// both CIDRs if a conflict is found.
 func (s *Store) ActiveNetworksOverlap(ctx context.Context, candidates []string, excludeUserID int64) error {
 	if len(candidates) == 0 {
 		return nil
@@ -225,7 +230,7 @@ func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 		SELECT un.user_id, un.cidr
 		FROM user_networks un
 		JOIN users u ON u.id = un.user_id
-		WHERE u.web_auth IN (`+activeWebAuthModesSQL+`)
+		WHERE u.web_auth IN (`+activeWebAuthModesSQL+`) AND u.enabled = 1
 	`)
 	if err != nil {
 		return User{}, err

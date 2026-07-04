@@ -78,3 +78,47 @@ func TestUserByIPStillPrefersMoreSpecificActiveNetwork(t *testing.T) {
 		t.Errorf("UserByIP resolved to user %d, want %d (only the broad range covers this address)", got.ID, broadUser)
 	}
 }
+
+// TestUserByIPFallsBackWhenBestMatchIsDisabled — a disabled user's leftover
+// network must never shadow an enabled user's overlapping-but-broader
+// network. ActiveNetworksOverlap deliberately excludes disabled users from
+// its cross-user overlap check (by design — see its doc comment), so a
+// disabled user's more-specific network and an enabled user's broader one
+// can legally coexist. Before the fix, UserByIP picked the single
+// longest-prefix match across ALL users regardless of enabled state, then
+// hard-failed with sql.ErrNoRows if that winner turned out disabled —
+// instead of falling back to the enabled user whose broader network also
+// covers the address.
+func TestUserByIPFallsBackWhenBestMatchIsDisabled(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "byip-disabled-shadow.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close() //nolint:errcheck,gosec // test cleanup
+
+	// Disabled user with a more-specific (narrower) network.
+	_, err = s.AddUser(ctx, User{
+		Name: "disabled-narrow", PeerIP: "10.2.0.1", PeerASN: 65010, Enabled: false, WebAuth: "network",
+		Networks: []string{"10.0.0.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Enabled user with a broader network that also covers the address.
+	enabledUser, err := s.AddUser(ctx, User{
+		Name: "enabled-broad", PeerIP: "10.2.0.2", PeerASN: 65011, Enabled: true, WebAuth: "network",
+		Networks: []string{"10.0.0.0/16"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.UserByIP(ctx, "10.0.0.5")
+	if err != nil {
+		t.Fatalf("UserByIP returned error %v, want resolution to the enabled user", err)
+	}
+	if got.ID != enabledUser {
+		t.Errorf("UserByIP resolved to user %d, want %d (enabled, broader network) — the disabled user's more-specific network must not shadow it", got.ID, enabledUser)
+	}
+}
