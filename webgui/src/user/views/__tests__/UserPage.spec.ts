@@ -268,4 +268,49 @@ describe('UserPage', () => {
     const countPrefixesCallsAfter = mockPost.mock.calls.filter(([url]) => url === '/user/count-prefixes').length
     expect(countPrefixesCallsAfter).toBe(2) // must re-fetch after save so the delta reflects the new baseline
   })
+
+  it('shows 0, not the full catalog total, when the live count-prefixes fetch fails', async () => {
+    const userData = {
+      user: {
+        id: 1,
+        name: 'Alice',
+        catalog_mode_id: 1,
+        catalog_mode_name: 'Mode A',
+        selection_locked: false,
+        filter_editable: false,
+        filter_override: false,
+        filter_mode: 'allow',
+        catalog_editable: true,
+        networks: [],
+      },
+      catalog: { CategoryA: ['svc1'] },
+      selections: { categories: [], services: [] },
+      communities: {},
+      // The full catalog has 500 IPv4 prefixes available — but the user
+      // hasn't selected any of it, and the live selection-aware count
+      // (countData) failed to load. The summary must not show 500 as if
+      // it reflected the user's own selection.
+      prefix_counts: { v4: { CategoryA: { svc1: 500 } }, v6: {} },
+      filters: { allow: [], deny: [] },
+      modes: [],
+    }
+    mockGet.mockResolvedValue({ data: userData })
+    mockPost.mockRejectedValue(new Error('network error'))
+
+    const UserPage = (await import('../UserPage.vue')).default
+    const wrapper = mount(UserPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+          Toast: { template: '<div class="stub-toast" />' },
+        },
+      },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="total-v4"]').text()).toContain('0')
+    expect(wrapper.find('[data-testid="total-v4"]').text()).not.toContain('500')
+  })
 })

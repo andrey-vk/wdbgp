@@ -90,31 +90,15 @@ function isServiceChecked(service: string, category: string): boolean {
   return checkedServices.value.has(`${category}::${service}`)
 }
 
-const totalV4 = computed(() => {
-  if (countData.value) return countData.value.v4
-  if (!data.value?.prefix_counts) return 0
-  let sum = 0
-  const v4 = data.value.prefix_counts.v4 || {}
-  for (const cat of Object.keys(v4)) {
-    for (const svc of Object.keys(v4[cat])) {
-      sum += v4[cat][svc] || 0
-    }
-  }
-  return sum
-})
-
-const totalV6 = computed(() => {
-  if (countData.value) return countData.value.v6
-  if (!data.value?.prefix_counts) return 0
-  let sum = 0
-  const v6 = data.value.prefix_counts.v6 || {}
-  for (const cat of Object.keys(v6)) {
-    for (const svc of Object.keys(v6[cat])) {
-      sum += v6[cat][svc] || 0
-    }
-  }
-  return sum
-})
+// countData holds the live, selection-aware count from
+// /user/count-prefixes. data.value.prefix_counts is the FULL CATALOG's
+// per-service counts (used elsewhere for the per-row "(+N)" badges,
+// regardless of what's selected) — summing it as a fallback here would
+// show "how big the whole catalog is," not "how many prefixes I've
+// selected," which is actively misleading when countData is unavailable
+// (e.g. the count-prefixes fetch failed). 0 is the honest default.
+const totalV4 = computed(() => countData.value?.v4 ?? 0)
+const totalV6 = computed(() => countData.value?.v6 ?? 0)
 
 const hasDelta = computed(() => {
   if (!countData.value) return false
@@ -603,10 +587,10 @@ onMounted(() => {
             <div class="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400">
               <span v-if="countLoading"><i class="pi pi-spin pi-spinner mr-1" /></span>
               <span>{{ t('user.ipv4') }}:</span>
-              <span class="font-semibold text-gray-900 dark:text-white">{{ totalV4.toLocaleString() }} {{ t('user.prefixes') }}</span>
+              <span data-testid="total-v4" class="font-semibold text-gray-900 dark:text-white">{{ totalV4.toLocaleString() }} {{ t('user.prefixes') }}</span>
               <span class="mx-2">|</span>
               <span>{{ t('user.ipv6') }}:</span>
-              <span class="font-semibold text-gray-900 dark:text-white">{{ totalV6.toLocaleString() }} {{ t('user.prefixes') }}</span>
+              <span data-testid="total-v6" class="font-semibold text-gray-900 dark:text-white">{{ totalV6.toLocaleString() }} {{ t('user.prefixes') }}</span>
             </div>
             <button
               data-testid="save-selections"
