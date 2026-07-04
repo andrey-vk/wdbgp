@@ -18,7 +18,12 @@ const router = useRouter()
 const confirmDialog = useConfirm()
 const toast = useToast()
 
-const modeId = Number(route.params.id)
+// Reactive rather than a plain constant: if the router-view instance is
+// ever reused across a direct navigation between two /modes/:id/communities
+// routes (e.g. a future breadcrumb or prev/next link), a plain `const`
+// captured once at setup would keep every API call pointed at the original
+// mode while the URL/header show a different one.
+const modeId = computed(() => Number(route.params.id))
 const modeName = ref('')
 const communities = ref<CommunityItem[]>([])
 const originalValues = ref<Map<string, number>>(new Map())
@@ -102,11 +107,11 @@ async function loadData() {
   loading.value = true
   try {
     // Load mode info
-    const modeResp = await apiClient.get('/admin/modes/' + modeId)
+    const modeResp = await apiClient.get('/admin/modes/' + modeId.value)
     modeName.value = modeResp.data.name || modeResp.data.mode?.name || ''
 
     // Load communities
-    const commResp = await apiClient.get('/admin/modes/' + modeId + '/communities')
+    const commResp = await apiClient.get('/admin/modes/' + modeId.value + '/communities')
     communities.value = commResp.data.communities || []
 
     // Store original values
@@ -139,7 +144,7 @@ async function handleSave() {
   }
   saving.value = true
   try {
-    await apiClient.put('/admin/modes/' + modeId + '/communities', {
+    await apiClient.put('/admin/modes/' + modeId.value + '/communities', {
       communities: communities.value.map(c => ({ category: c.category, service: c.service, community: c.community })),
     })
     toast.add({ severity: 'success', summary: t('communities.saved'), life: 3000 })
@@ -165,7 +170,7 @@ function handleReset() {
     acceptLabel: t('dialog.yes'),
     rejectLabel: t('dialog.no'),
     accept: async () => {
-      const resp = await apiClient.post('/admin/modes/' + modeId + '/communities/reset')
+      const resp = await apiClient.post('/admin/modes/' + modeId.value + '/communities/reset')
       toast.add({
         severity: 'success',
         summary: t('communities.reset_done', { count: resp.data.generated || 0 }),

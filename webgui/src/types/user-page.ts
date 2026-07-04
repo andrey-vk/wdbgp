@@ -44,6 +44,11 @@ export interface LoginResponse {
     services: Array<{ category: string; service: string }>
   }
   filters: RouteFilters
+  prefix_counts: {
+    v4: Record<string, Record<string, number>>
+    v6: Record<string, Record<string, number>>
+  }
+  modes: Mode[]
 }
 
 export interface LoginRequest {

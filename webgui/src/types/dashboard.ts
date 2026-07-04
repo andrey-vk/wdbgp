@@ -13,6 +13,8 @@ export interface FeedHistoryPoint {
 export interface FeedItem {
   id: number
   name: string
+  enabled: boolean
+  last_error?: string
 }
 
 export interface DashboardData {
