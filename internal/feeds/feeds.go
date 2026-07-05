@@ -276,21 +276,8 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
 			return err
 		}
-		statement, err := tx.PrepareContext(ctx,
-			"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)")
-		if err != nil {
+		if err := insertCatalogEntries(ctx, tx, feed.ID, entries); err != nil {
 			return err
-		}
-		defer func() {
-			if err := statement.Close(); err != nil {
-				log.Printf("DEBUG: close statement: %v", err)
-			}
-		}()
-		for _, entry := range entries {
-			if _, err := statement.ExecContext(ctx,
-				feed.ID, entry.Category, entry.Service, entry.CIDR); err != nil {
-				return err
-			}
 		}
 		_, err = tx.ExecContext(ctx,
 			"UPDATE feeds SET last_success = ?, last_error = NULL WHERE id = ? AND url = ? AND enabled = 1",
@@ -315,6 +302,33 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		}
 	}
 	return adapter.Revision, nil
+}
+
+// catalogEntryInsertBatchSize caps rows per multi-row INSERT. 500 rows x 4
+// bound params = 2000, safely under modernc.org/sqlite's compiled-in
+// SQLITE_MAX_VARIABLE_NUMBER (32766). A single large feed (e.g. ipranges,
+// 100k+ CIDRs) previously took one round-trip per row; batching cuts that
+// by ~500x.
+const catalogEntryInsertBatchSize = 500
+
+func insertCatalogEntries(ctx context.Context, tx *sql.Tx, feedID int64, entries []Entry) error {
+	for start := 0; start < len(entries); start += catalogEntryInsertBatchSize {
+		end := min(start+catalogEntryInsertBatchSize, len(entries))
+		chunk := entries[start:end]
+
+		placeholders := make([]string, len(chunk))
+		args := make([]any, 0, len(chunk)*4)
+		for i, entry := range chunk {
+			placeholders[i] = "(?, ?, ?, ?)"
+			args = append(args, feedID, entry.Category, entry.Service, entry.CIDR)
+		}
+		query := "INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES " +
+			strings.Join(placeholders, ",")
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func isLegacyOpenCCKFeedCategory(category string) bool {
