@@ -9,6 +9,7 @@ import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
 import { useThemeStore } from '@/admin/stores/theme'
 import { getCurrentLocale } from '@/plugins/i18n'
 import userApi from '@/api/client'
+import { useSequencedRequest } from '@/composables/useSequencedRequest'
 import type { UserDataResponse } from '@/types/user-page'
 
 const { t } = useI18n()
@@ -38,7 +39,7 @@ const checkedServices = ref<Set<string>>(new Set())
 const countData = ref<{ v4: number; v6: number; delta_v4: number; delta_v6: number } | null>(null)
 const countLoading = ref(false)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
-let countRequestSeq = 0
+const countRequest = useSequencedRequest()
 
 // ── Save state ──────────────────────────────────────────────
 const saving = ref(false)
@@ -316,18 +317,18 @@ function debounceCount(): void {
 }
 
 async function fetchCounts(): Promise<void> {
-  const seq = ++countRequestSeq
+  const token = countRequest.next()
   const selections = buildSelectionPayload()
   try {
     const resp = await userApi.post('/user/count-prefixes', selections)
-    if (seq !== countRequestSeq) return // a newer request superseded this one
+    if (!countRequest.isCurrent(token)) return // a newer request superseded this one
     countData.value = resp.data
   } catch (err) {
-    if (seq !== countRequestSeq) return
+    if (!countRequest.isCurrent(token)) return
     handleAuthError(err)
     countData.value = null
   } finally {
-    if (seq === countRequestSeq) countLoading.value = false
+    if (countRequest.isCurrent(token)) countLoading.value = false
   }
 }
 

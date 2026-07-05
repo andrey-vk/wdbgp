@@ -7,6 +7,7 @@ import Button from 'primevue/button'
 import Select from 'primevue/select'
 import apiClient from '@/api/client'
 import { useUIStore } from '@/admin/stores/ui'
+import { useSequencedRequest } from '@/composables/useSequencedRequest'
 import type { UserCatalogResponse } from '@/types/user-selections'
 
 const { t } = useI18n()
@@ -28,7 +29,7 @@ const checkedServices = ref<Set<string>>(new Set())
 const countData = ref<{ v4: number; v6: number; delta_v4: number; delta_v6: number } | null>(null)
 const countLoading = ref(false)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
-let countRequestSeq = 0
+const countRequest = useSequencedRequest()
 
 // ── Save state ──────────────────────────────────────────────
 const saving = ref(false)
@@ -227,21 +228,21 @@ function debounceCount(): void {
 }
 
 async function fetchCounts(): Promise<void> {
-  const seq = ++countRequestSeq
+  const token = countRequest.next()
   const selections = {
     ...buildSelectionPayload(),
     mode_id: selectedModeId.value,
   }
   try {
     const resp = await apiClient.post('/admin/users/' + userId.value + '/count-selections', selections)
-    if (seq !== countRequestSeq) return // a newer request superseded this one
+    if (!countRequest.isCurrent(token)) return // a newer request superseded this one
     countData.value = resp.data
   } catch (err) {
-    if (seq !== countRequestSeq) return
+    if (!countRequest.isCurrent(token)) return
     if (import.meta.env.DEV) console.error('Failed to count selections', err)
     countData.value = null
   } finally {
-    if (seq === countRequestSeq) countLoading.value = false
+    if (countRequest.isCurrent(token)) countLoading.value = false
   }
 }
 
