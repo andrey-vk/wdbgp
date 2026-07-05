@@ -79,3 +79,38 @@ func TestPruneAdapterBackupsSweepsLegacyKeyPrefixedFiles(t *testing.T) {
 		}
 	}
 }
+
+// TestPruneAdapterBackupsIgnoresAllDigitLegacyKey guards against an adapter
+// named entirely with digits (e.g. "42") producing a legacy key that's
+// indistinguishable from a different adapter's numeric ID prefix, which
+// would let pruning one adapter delete an unrelated adapter's live backups.
+func TestPruneAdapterBackupsIgnoresAllDigitLegacyKey(t *testing.T) {
+	dir := t.TempDir()
+	// Adapter B's real, current backups (ID 42).
+	adapterBFiles := []string{
+		"42_r1_20260101T000000Z.js",
+		"42_r2_20260102T000000Z.js",
+		"42_r3_20260103T000000Z.js",
+	}
+	for _, f := range adapterBFiles {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Adapter A is named "42" and has a different ID — pruning for A must
+	// not touch B's files via the coincidental "42_" legacy-prefix match.
+	pruneAdapterBackups(store.FeedAdapter{ID: 99, Name: "42"}, dir, 1)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != len(adapterBFiles) {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Fatalf("adapter B's backups were pruned by an unrelated adapter A named \"42\": remaining = %v", names)
+	}
+}

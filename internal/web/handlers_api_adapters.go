@@ -271,7 +271,11 @@ func backupAdapterSource(adapter store.FeedAdapter, backupDir string, maxCopies 
 // escaping AdapterBackupMax forever. Built-in adapters can never have
 // backups (editing them is blocked in apiAdaptersUpdate), and every
 // non-built-in adapter always got its key auto-generated from name this
-// same way, so this reconstruction is exact, not a guess.
+// same way — but only ever once, at creation. The key was never updated on
+// rename, so this reconstruction from the adapter's current name is only
+// accurate for an adapter that hasn't been renamed since its pre-upgrade
+// backups were written; a renamed adapter's legacy backups are a known,
+// accepted gap rather than something worth persisting extra state to close.
 func legacyAdapterKey(name string) string {
 	return strings.Map(func(r rune) rune {
 		if r >= 'A' && r <= 'Z' {
@@ -282,6 +286,22 @@ func legacyAdapterKey(name string) string {
 		}
 		return '-'
 	}, name)
+}
+
+// isAllDigits reports whether s is non-empty and consists only of ASCII
+// digits — used to keep a legacy name-derived key from ever being mistaken
+// for another adapter's numeric ID prefix (e.g. an adapter literally named
+// "42" must not match adapter ID 42's backup files).
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // backupTimestamp extracts the sortable timestamp suffix from a backup
@@ -302,10 +322,12 @@ func pruneAdapterBackups(adapter store.FeedAdapter, dir string, max int) {
 		return // no entries to prune
 	}
 	idPrefix := strconv.FormatInt(adapter.ID, 10) + "_"
-	legacyPrefix := legacyAdapterKey(adapter.Name) + "_"
+	legacyKey := legacyAdapterKey(adapter.Name)
+	matchLegacy := !isAllDigits(legacyKey) // an all-digits key would be indistinguishable from a numeric ID prefix
+	legacyPrefix := legacyKey + "_"
 	var files []string
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), idPrefix) || strings.HasPrefix(e.Name(), legacyPrefix) {
+		if strings.HasPrefix(e.Name(), idPrefix) || (matchLegacy && strings.HasPrefix(e.Name(), legacyPrefix)) {
 			files = append(files, e.Name())
 		}
 	}
