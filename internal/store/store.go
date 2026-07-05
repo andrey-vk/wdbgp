@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/retry"
 
 	_ "modernc.org/sqlite" // SQLite driver
@@ -34,18 +34,26 @@ type Store struct {
 	DBVersion      int    // current DB schema version (when degraded)
 	ServerVersion  int    // expected server schema version (when degraded)
 	DegradedReason string // why degraded: "no backup found", "auto-restore disabled", etc.
+
+	// builtInMu guards builtInAdapterVersionByID. It's per-Store (not a
+	// package-level global) so that two Store instances in the same process
+	// — every test binary in this package opens several — don't stomp on
+	// each other's built-in adapter IDs, which are only unique within a
+	// single database.
+	builtInMu                 sync.RWMutex
+	builtInAdapterVersionByID map[int64]int
 }
 
 type FeedAdapter struct {
-	ID           int64
-	Key          string
-	Name         string
-	Language     string
-	APIVersion   int
-	Source       string
-	AllowedHosts string
-	Revision     int64
-	BuiltIn      bool
+	ID            int64
+	Name          string
+	Language      string
+	APIVersion    int
+	Source        string
+	Revision      int64
+	BuiltIn       bool
+	ForkedFrom    int64 // built-in adapter ID this adapter was forked from (0 for built-ins and customs)
+	ForkedVersion int64 // version of the built-in at time of fork
 }
 
 const (
@@ -55,16 +63,16 @@ const (
 )
 
 type ServiceKey struct {
-	Category string
-	Service  string
+	Category string `json:"category"`
+	Service  string `json:"service"`
 }
 
 type RouteFilters struct {
-	Allow []string
-	Deny  []string
+	Allow []string `json:"allow"`
+	Deny  []string `json:"deny"`
 }
 
-func Open(path string, cfg config.Config) (*Store, error) {
+func Open(path string, backupEnabled bool, backupDir string, autoRestoreEnabled bool) (*Store, error) {
 	if parent := filepath.Dir(path); parent != "." {
 		if err := os.MkdirAll(parent, 0o755); err != nil { //nolint:gosec // container filesystem, single user
 			return nil, err
@@ -88,7 +96,10 @@ func Open(path string, cfg config.Config) (*Store, error) {
 		}
 		return nil, err
 	}
-	s := &Store{DB: db, dbPath: path, backupEnabled: cfg.BackupEnabled, backupDir: cfg.BackupDir, autoRestore: cfg.AutoRestoreEnabled}
+	s := &Store{
+		DB: db, dbPath: path, backupEnabled: backupEnabled, backupDir: backupDir, autoRestore: autoRestoreEnabled,
+		builtInAdapterVersionByID: make(map[int64]int),
+	}
 	if err := s.Migrate(context.Background()); err != nil {
 		if err := db.Close(); err != nil {
 			log.Printf("WARNING: close: %v", err)
@@ -124,7 +135,7 @@ func (s *Store) readAppliedMigrations(ctx context.Context) ([]int, error) {
 }
 
 func (s *Store) tryRestore(ctx context.Context, applied []int) error {
-	targetVersion := len(migrations)
+	targetVersion := migrations[len(migrations)-1].Version
 	currentVersion := applied[len(applied)-1]
 
 	backupDir := s.backupDir
@@ -161,18 +172,25 @@ func (s *Store) tryRestore(ctx context.Context, applied []int) error {
 			continue
 		}
 		var versions []int
+		corrupted := false
 		for rows.Next() {
 			var v int
 			if err := rows.Scan(&v); err != nil {
-				if err := rows.Close(); err != nil {
-					log.Printf("WARNING: rows close: %v", err)
-				}
-				if err := backupDB.Close(); err != nil {
-					log.Printf("WARNING: backup close: %v", err)
-				}
-				continue
+				// A Scan error here means this backup's migration history is
+				// unreadable/corrupted. rows.Next() returning false right
+				// after (since we stop iterating) looks identical to a
+				// genuinely short migration history, and rows.Err() does not
+				// surface Scan-level errors — so this backup must be
+				// rejected explicitly rather than relying on either of those.
+				log.Printf("WARNING: scan backup version: %v", err)
+				corrupted = true
+				break
 			}
 			versions = append(versions, v)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("WARNING: rows iteration: %v", err)
+			corrupted = true
 		}
 		if err := rows.Close(); err != nil {
 			log.Printf("WARNING: rows close: %v", err)
@@ -180,7 +198,7 @@ func (s *Store) tryRestore(ctx context.Context, applied []int) error {
 		if err := backupDB.Close(); err != nil {
 			log.Printf("WARNING: backup close: %v", err)
 		}
-		if len(versions) == 0 {
+		if corrupted || len(versions) == 0 {
 			continue
 		}
 		maxVersion := versions[len(versions)-1]
@@ -250,20 +268,41 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	if err != nil {
 		return err
 	}
-	for index, version := range applied {
-		expected := index + 1
-		if version != expected {
-			return fmt.Errorf("database migration history has version %d where %d was expected", version, expected)
+	// Validate applied migrations against known migrations.
+	// The applied list may contain versions from old binaries that no
+	// longer have a corresponding migration in the current code.
+	// Skip those (they are idempotent DDL already applied).
+	appliedIdx := 0
+	migIdx := 0
+	for appliedIdx < len(applied) && migIdx < len(migrations) {
+		aVer := applied[appliedIdx]
+		mVer := migrations[migIdx].Version
+		switch {
+		case aVer == mVer:
+			appliedIdx++
+			migIdx++
+		case aVer < mVer:
+			// Extra version from old binary — skip it.
+			appliedIdx++
+		default:
+			return fmt.Errorf("database migration history has version %d where %d was expected", aVer, mVer)
 		}
 	}
-	if len(applied) > len(migrations) {
+	// Build applied set for the migration loop below.
+	appliedSet := make(map[int]bool, len(applied))
+	for _, v := range applied {
+		appliedSet[v] = true
+	}
+	// If there are leftover applied versions that don't match any migration,
+	// the DB was created by a newer binary.
+	if appliedIdx < len(applied) || (len(applied) > 0 && len(migrations) > 0 && applied[len(applied)-1] > migrations[len(migrations)-1].Version) {
 		if s.autoRestore {
 			if err := s.tryRestore(ctx, applied); err != nil {
 				// Auto-restore failed — enter degraded mode so the UI
 				// can show the error with instructions.
 				s.Degraded = true
 				s.DBVersion = applied[len(applied)-1]
-				s.ServerVersion = len(migrations)
+				s.ServerVersion = migrations[len(migrations)-1].Version
 				s.DegradedReason = err.Error()
 				return nil
 			}
@@ -299,7 +338,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			s.Degraded = true
 			s.DegradedReason = "auto-restore disabled (set WDBGP_AUTO_RESTORE_ENABLED=true)"
 			s.DBVersion = applied[len(applied)-1]
-			s.ServerVersion = len(migrations)
+			s.ServerVersion = migrations[len(migrations)-1].Version
 			return nil
 		}
 	}
@@ -307,7 +346,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	// Backup DB before running pending migrations.
 	// Only backup when there are existing applied migrations — fresh
 	// installs have nothing to preserve.
-	if s.backupEnabled && len(applied) > 0 && len(applied) < len(migrations) {
+	if s.backupEnabled && len(applied) > 0 && applied[len(applied)-1] < migrations[len(migrations)-1].Version {
 		if err := os.MkdirAll(s.backupDir, 0755); err != nil { //nolint:gosec // container filesystem, single user
 			return fmt.Errorf("backup: create dir: %w", err)
 		}
@@ -379,7 +418,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	}
 
 	for _, migration := range migrations {
-		if migration.Version <= len(applied) {
+		if appliedSet[migration.Version] {
 			continue
 		}
 		// Run NoTxSQL BEFORE the transaction so that a failure does not
@@ -457,7 +496,7 @@ func (s *Store) Transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 
 func (s *Store) FeedAdapters(ctx context.Context) ([]FeedAdapter, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT id, key, name, language, api_version, source, allowed_hosts, revision
+SELECT id, name, language, api_version, source, revision, COALESCE(forked_from, 0), forked_version, is_builtin
 FROM feed_adapters
 ORDER BY id`)
 	if err != nil {
@@ -471,14 +510,16 @@ ORDER BY id`)
 	var adapters []FeedAdapter
 	for rows.Next() {
 		var adapter FeedAdapter
+		var isBuiltin int
 		if err := rows.Scan(
-			&adapter.ID, &adapter.Key, &adapter.Name, &adapter.Language,
-			&adapter.APIVersion, &adapter.Source, &adapter.AllowedHosts,
-			&adapter.Revision,
+			&adapter.ID, &adapter.Name, &adapter.Language,
+			&adapter.APIVersion, &adapter.Source,
+			&adapter.Revision, &adapter.ForkedFrom, &adapter.ForkedVersion,
+			&isBuiltin,
 		); err != nil {
 			return nil, err
 		}
-		adapter.BuiltIn = IsBuiltInFeedAdapter(adapter.Key)
+		adapter.BuiltIn = isBuiltin == 1
 		adapters = append(adapters, adapter)
 	}
 	return adapters, rows.Err()
@@ -486,15 +527,17 @@ ORDER BY id`)
 
 func (s *Store) FeedAdapter(ctx context.Context, id int64) (FeedAdapter, error) {
 	var adapter FeedAdapter
+	var isBuiltin int
 	err := s.DB.QueryRowContext(ctx, `
-SELECT id, key, name, language, api_version, source, allowed_hosts, revision
+		SELECT id, name, language, api_version, source, revision, COALESCE(forked_from, 0), forked_version, is_builtin
 FROM feed_adapters
 WHERE id = ?`, id).Scan(
-		&adapter.ID, &adapter.Key, &adapter.Name, &adapter.Language,
-		&adapter.APIVersion, &adapter.Source, &adapter.AllowedHosts,
-		&adapter.Revision,
+		&adapter.ID, &adapter.Name, &adapter.Language,
+		&adapter.APIVersion, &adapter.Source,
+		&adapter.Revision, &adapter.ForkedFrom, &adapter.ForkedVersion,
+		&isBuiltin,
 	)
-	adapter.BuiltIn = IsBuiltInFeedAdapter(adapter.Key)
+	adapter.BuiltIn = isBuiltin == 1
 	return adapter, err
 }
 

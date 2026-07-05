@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http"
-	"net/url"
 	"strings"
 
 	"golang.org/x/text/language"
@@ -37,22 +36,6 @@ func translate(lang locale, key string) string {
 		return message
 	}
 	return key
-}
-
-func pluralTranslation(lang locale, count int, oneKey, fewKey, manyKey string) string {
-	key := manyKey
-	if lang == localeRussian {
-		mod10 := count % 10
-		mod100 := count % 100
-		if mod10 == 1 && mod100 != 11 {
-			key = oneKey
-		} else if mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) {
-			key = fewKey
-		}
-	} else if count == 1 {
-		key = oneKey
-	}
-	return translate(lang, key)
 }
 
 func requestLocale(r *http.Request, fallback locale) (locale, bool) {
@@ -93,22 +76,4 @@ func parseLocale(value string) (locale, bool) {
 	default:
 		return "", false
 	}
-}
-
-func languageURL(r *http.Request, lang locale) string {
-	query := cloneQuery(r.URL.Query())
-	query.Set("lang", string(lang))
-	path := r.URL.Path
-	if queryString := query.Encode(); queryString != "" {
-		path += "?" + queryString
-	}
-	return path
-}
-
-func cloneQuery(source url.Values) url.Values {
-	result := make(url.Values, len(source))
-	for key, values := range source {
-		result[key] = append([]string(nil), values...)
-	}
-	return result
 }

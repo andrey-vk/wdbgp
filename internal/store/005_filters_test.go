@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
-
 	_ "modernc.org/sqlite"
 )
 
@@ -82,7 +80,7 @@ INSERT INTO user_networks(user_id, cidr) VALUES (7, '192.168.20.0/24');
 		t.Fatal(err)
 	}
 
-	s, err := Open(path, config.Config{})
+	s, err := Open(path, false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -5,3 +5,7 @@ runtime/
 /wdbgp
 *.test
 coverage.out
+
+webgui/node_modules/
+webgui/dist/
+*.tsbuildinfo

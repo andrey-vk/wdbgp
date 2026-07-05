@@ -111,6 +111,33 @@ func stateKey(addr string, asn uint32) string {
 	return addr + ":" + strconv.Itoa(int(asn))
 }
 
+// nlriRecorder collects NLRI prefixes from a RouteCallback safely across
+// goroutines: the callback runs on the peer's mainLoop goroutine while tests
+// read the accumulated prefixes from the main test goroutine, so a plain
+// captured slice would race.
+type nlriRecorder struct {
+	mu       sync.Mutex
+	prefixes []netip.Prefix
+}
+
+func (r *nlriRecorder) callback(prefixes []netip.Prefix) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prefixes = append(r.prefixes, prefixes...)
+}
+
+func (r *nlriRecorder) snapshot() []netip.Prefix {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]netip.Prefix(nil), r.prefixes...)
+}
+
+func (r *nlriRecorder) len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.prefixes)
+}
+
 // =============================================================================
 // Test 1: Basic session establishment
 // =============================================================================
@@ -330,10 +357,8 @@ func TestRouteAnnouncement(t *testing.T) {
 	}
 
 	// Track received routes on client
-	var receivedNLRI []netip.Prefix
-	cb := func(prefixes []netip.Prefix) {
-		receivedNLRI = append(receivedNLRI, prefixes...)
-	}
+	recorder := &nlriRecorder{}
+	cb := recorder.callback
 
 	speaker, client := startSpeakerAndClient(t, 64512, serverPeer, 65001, cb)
 
@@ -355,20 +380,20 @@ func TestRouteAnnouncement(t *testing.T) {
 	// Wait for the UPDATE to arrive at the client
 	time.Sleep(1 * time.Second)
 
-	if len(receivedNLRI) == 0 {
+	if recorder.len() == 0 {
 		t.Fatal("client did not receive any NLRI")
 	}
 
 	// Check the received NLRI
 	found := false
-	for _, p := range receivedNLRI {
+	for _, p := range recorder.snapshot() {
 		if p.String() == "10.0.0.0/8" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("client NLRI did not contain 10.0.0.0/8: %v", receivedNLRI)
+		t.Fatalf("client NLRI did not contain 10.0.0.0/8: %v", recorder.snapshot())
 	}
 }
 
@@ -383,10 +408,8 @@ func TestRouteWithdrawal(t *testing.T) {
 		ASN:     65001,
 	}
 
-	var receivedNLRI []netip.Prefix
-	cb := func(prefixes []netip.Prefix) {
-		receivedNLRI = append(receivedNLRI, prefixes...)
-	}
+	recorder := &nlriRecorder{}
+	cb := recorder.callback
 
 	speaker, client := startSpeakerAndClient(t, 64512, serverPeer, 65001, cb)
 
@@ -403,7 +426,7 @@ func TestRouteWithdrawal(t *testing.T) {
 	}
 	time.Sleep(500 * time.Millisecond)
 
-	receivedBefore := len(receivedNLRI)
+	receivedBefore := recorder.len()
 
 	// Withdraw the route
 	err = speaker.Withdraw(serverPeer.Address, serverPeer.ASN, []netip.Prefix{prefix})
@@ -416,7 +439,7 @@ func TestRouteWithdrawal(t *testing.T) {
 	// (the withdrawal shows up as additional received NLRI since the callback
 	// is called for the UPDATE message; but withdrawals aren't passed
 	// separately to the callback — we verify the callback was invoked at least once)
-	if len(receivedNLRI) <= receivedBefore {
+	if recorder.len() <= receivedBefore {
 		t.Logf("note: withdrawal message may not trigger NLRI callback (only NLRI are passed)")
 	}
 	// At minimum, the announcement should have been received
@@ -655,6 +678,7 @@ func TestKeepaliveMaintainsSession(t *testing.T) {
 		ASN: 64512, Name: "keepalive-client",
 	}, SpeakerConfig{
 		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
+		HoldTime: 3,
 	}, logger, nil)
 	go client.Run()
 	t.Cleanup(func() { client.Stop() })
@@ -662,8 +686,8 @@ func TestKeepaliveMaintainsSession(t *testing.T) {
 	waitForPeerState(t, client, StateEstablished, 10*time.Second)
 	waitForSpeakerPeerState(t, speaker, stateKey("127.0.0.1", 65001), StateEstablished, 10*time.Second)
 
-	// Wait for at least one keepalive interval (30s) + buffer
-	time.Sleep(35 * time.Second)
+	// Wait for at least one keepalive interval (holdTime/3) + buffer
+	time.Sleep(5 * time.Second)
 
 	// Both sides should still be established
 	if client.State() != StateEstablished {
@@ -883,10 +907,8 @@ func TestRouteAnnouncementIPv6(t *testing.T) {
 		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
 	})
 
-	var receivedNLRI []netip.Prefix
-	cb := func(prefixes []netip.Prefix) {
-		receivedNLRI = append(receivedNLRI, prefixes...)
-	}
+	recorder := &nlriRecorder{}
+	cb := recorder.callback
 
 	client := NewPeer(PeerConfig{
 		ID: 2, Address: netip.MustParseAddr("::1"), Port: port,
@@ -913,19 +935,19 @@ func TestRouteAnnouncementIPv6(t *testing.T) {
 	}
 	time.Sleep(1 * time.Second)
 
-	if len(receivedNLRI) == 0 {
+	if recorder.len() == 0 {
 		t.Fatal("client did not receive any IPv6 NLRI")
 	}
 
 	found := false
-	for _, p := range receivedNLRI {
+	for _, p := range recorder.snapshot() {
 		if p.String() == "fd00::/48" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("client NLRI did not contain fd00::/48: %v", receivedNLRI)
+		t.Fatalf("client NLRI did not contain fd00::/48: %v", recorder.snapshot())
 	}
 }
 
@@ -949,10 +971,8 @@ func TestRouteWithdrawalIPv6(t *testing.T) {
 		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Port: -1},
 	})
 
-	var receivedNLRI []netip.Prefix
-	cb := func(prefixes []netip.Prefix) {
-		receivedNLRI = append(receivedNLRI, prefixes...)
-	}
+	recorder := &nlriRecorder{}
+	cb := recorder.callback
 
 	client := NewPeer(PeerConfig{
 		ID: 2, Address: netip.MustParseAddr("::1"), Port: port,
@@ -975,7 +995,7 @@ func TestRouteWithdrawalIPv6(t *testing.T) {
 	}
 	time.Sleep(500 * time.Millisecond)
 
-	receivedBefore := len(receivedNLRI)
+	receivedBefore := recorder.len()
 	if receivedBefore == 0 {
 		t.Fatal("client never received the IPv6 route announcement")
 	}
@@ -988,7 +1008,7 @@ func TestRouteWithdrawalIPv6(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// At minimum, announcement was received
-	if len(receivedNLRI) <= receivedBefore {
+	if recorder.len() <= receivedBefore {
 		t.Logf("note: withdrawal message may not trigger NLRI callback")
 	}
 }
@@ -1085,10 +1105,8 @@ func TestSessionWith4ByteASN(t *testing.T) {
 		ASN:     65001,
 	}
 
-	var receivedNLRI []netip.Prefix
-	cb := func(prefixes []netip.Prefix) {
-		receivedNLRI = append(receivedNLRI, prefixes...)
-	}
+	recorder := &nlriRecorder{}
+	cb := recorder.callback
 
 	// Speaker ASN = 196608 (4-byte ASN > 65535), client ASN = 65001 (2-byte)
 	speaker, client := startSpeakerAndClient(t, 196608, serverPeer, 65001, cb)
@@ -1110,19 +1128,19 @@ func TestSessionWith4ByteASN(t *testing.T) {
 
 	time.Sleep(1 * time.Second)
 
-	if len(receivedNLRI) == 0 {
+	if recorder.len() == 0 {
 		t.Fatal("client did not receive any NLRI")
 	}
 
 	found := false
-	for _, p := range receivedNLRI {
+	for _, p := range recorder.snapshot() {
 		if p.String() == "10.0.0.0/8" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("client NLRI did not contain 10.0.0.0/8: %v", receivedNLRI)
+		t.Fatalf("client NLRI did not contain 10.0.0.0/8: %v", recorder.snapshot())
 	}
 	t.Logf("4-byte ASN session verified: speaker ASN=%d, client ASN=%d, route delivered",
 		196608, 65001)

@@ -1,8 +1,12 @@
 package web
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
@@ -123,4 +127,60 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		logger := logging.FromContext(ctx)
 		logger.Error("failed to encode status response", "error", err)
 	}
+}
+
+// statusAuthorized checks whether the request is authorized to access /status.
+// Authorization is granted by IP whitelist or Bearer token.
+func (s *Server) statusAuthorized(r *http.Request) bool {
+	cidrs := parseCIDRs(s.settings.StatusAllowed.Get())
+	token := s.settings.StatusToken.Get()
+
+	if len(cidrs) > 0 {
+		clientIP := s.clientIP(r)
+		ip, err := netip.ParseAddr(clientIP)
+		if err == nil {
+			for _, prefix := range cidrs {
+				if prefix.Contains(ip) {
+					return true
+				}
+			}
+		}
+	}
+	if token != "" {
+		auth := r.Header.Get("Authorization")
+		if strings.TrimPrefix(auth, "Bearer ") == token {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) httpError(w http.ResponseWriter, r *http.Request, key string, status int) {
+	lang, _ := requestLocale(r, s.defaultLang)
+	http.Error(w, translate(lang, key), status)
+}
+
+func (s *Server) internalError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, sql.ErrNoRows) {
+		http.NotFound(w, r)
+		return
+	}
+	logger := logging.FromContext(r.Context())
+	logger.Error("request failed", "error", err, "path", r.URL.Path, "method", r.Method)
+	s.httpError(w, r, "error.internal", http.StatusInternalServerError)
+}
+
+// logAdminAction logs security-relevant admin actions
+func (s *Server) logAdminAction(r *http.Request, action, details string) {
+	clientIP := s.clientIP(r)
+	userAgent := r.Header.Get("User-Agent")
+	logger := logging.FromContext(r.Context())
+	logger.Info("admin action",
+		"ip", clientIP,
+		"action", action,
+		"details", details,
+		"user_agent", userAgent,
+		"path", r.URL.Path,
+		"method", r.Method,
+	)
 }

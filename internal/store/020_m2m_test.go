@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
-
 	_ "modernc.org/sqlite"
 )
 
@@ -129,7 +127,7 @@ func TestMigration20Idempotency(t *testing.T) {
 	db.Close() //nolint:errcheck,gosec // test cleanup
 
 	// Now open — this triggers migration 20. It should succeed.
-	s, err := Open(path, config.Config{})
+	s, err := Open(path, false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +298,7 @@ func TestMigration20NoTxSQLFailureRollsBack(t *testing.T) {
 	// part (feed_adapters columns, catalog_mode_feeds table) will succeed,
 	// but the NoTxSQL (users table rebuild) MUST fail because the source
 	// users table is missing the catalog_mode_editable column.
-	s, err := Open(path, config.Config{})
+	s, err := Open(path, false, "", false)
 	if err == nil {
 		defer s.Close()
 		t.Fatal("expected Open to fail because NoTxSQL should fail, but got no error")
@@ -428,7 +426,7 @@ func TestMigration20FeedAdapterUpgrade(t *testing.T) {
 	}
 	db.Close() //nolint:gosec // test cleanup
 
-	s, err := Open(path, config.Config{})
+	s, err := Open(path, false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,7 +554,7 @@ func TestMigration20PreservesAdapterCustomizations(t *testing.T) {
 	db.Close() //nolint:gosec // test cleanup
 
 	// Open triggers migration 20 + seedBuiltInAdapters.
-	s, err := Open(path, config.Config{})
+	s, err := Open(path, false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +562,7 @@ func TestMigration20PreservesAdapterCustomizations(t *testing.T) {
 
 	// Verify the custom source was NOT overwritten by seedBuiltInAdapters.
 	var storedSource string
-	err = s.DB.QueryRow("SELECT source FROM feed_adapters WHERE key = 'canonical-json'").Scan(&storedSource)
+	err = s.DB.QueryRow("SELECT source FROM feed_adapters WHERE name = 'Canonical JSON'").Scan(&storedSource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +572,7 @@ func TestMigration20PreservesAdapterCustomizations(t *testing.T) {
 
 	// Verify is_customized was set to 1 to protect from future overwrites.
 	var isCustomized int
-	err = s.DB.QueryRow("SELECT is_customized FROM feed_adapters WHERE key = 'canonical-json'").Scan(&isCustomized)
+	err = s.DB.QueryRow("SELECT is_customized FROM feed_adapters WHERE name = 'Canonical JSON'").Scan(&isCustomized)
 	if err != nil {
 		t.Fatal(err)
 	}

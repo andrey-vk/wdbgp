@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
-
 	_ "modernc.org/sqlite"
 )
 
@@ -39,7 +37,7 @@ INSERT INTO catalog_entries VALUES
 	}
 	db.Close() //nolint:errcheck,gosec // test cleanup
 
-	s, err := Open(path, config.Config{})
+	s, err := Open(path, false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

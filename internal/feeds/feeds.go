@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/retry"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -66,8 +66,8 @@ var errFeedChanged = errors.New("feed changed during synchronization")
 
 const ipRangesURL = "https://github.com/antonme/ipranges"
 
-func NewSyncer(s *store.Store, cfg config.Config) *Syncer {
-	timeout := cfg.JSTimeout
+func NewSyncer(s *store.Store, st *settings.Settings) *Syncer {
+	timeout := time.Duration(st.JSTimeout.Get()) * time.Second
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
@@ -76,12 +76,12 @@ func NewSyncer(s *store.Store, cfg config.Config) *Syncer {
 		Client:        newHTTPClient(timeout),
 		ScriptTimeout: timeout,
 		Limits: AdapterLimits{
-			MaxSourceBytes:   ifZero(cfg.JSMaxSourceBytes, 1<<20),
-			MaxResponseBytes: ifZero(cfg.JSMaxResponseBytes, 16<<20),
-			MaxTotalBytes:    ifZero(cfg.JSMaxTotalBytes, 64<<20),
-			MaxEntries:       ifZero(cfg.JSMaxEntries, 1_000_000),
-			MaxRequests:      ifZero(cfg.JSMaxRequests, 200),
-			MaxCallStack:     ifZero(cfg.JSMaxCallStack, 1_000),
+			MaxSourceBytes:   ifZero(st.JSMaxSourceBytes.Get(), 1<<20),
+			MaxResponseBytes: ifZero(st.JSMaxResponseBytes.Get(), 16<<20),
+			MaxTotalBytes:    ifZero(st.JSMaxTotalBytes.Get(), 64<<20),
+			MaxEntries:       ifZero(st.JSMaxEntries.Get(), 1_000_000),
+			MaxRequests:      ifZero(st.JSMaxRequests.Get(), 200),
+			MaxCallStack:     ifZero(st.JSMaxCallStack.Get(), 1_000),
 		},
 		feedLocks: make(map[int64]*sync.Mutex),
 	}
@@ -193,7 +193,7 @@ func (s *Syncer) TestAdapter(
 	feed store.Feed,
 	adapter store.FeedAdapter,
 ) ([]Entry, error) {
-	return (adapterRunner{
+	return (feedRunner{
 		client: s.Client, timeout: s.ScriptTimeout, limits: s.Limits,
 	}).run(ctx, feed, adapter)
 }
@@ -242,15 +242,20 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		var currentAdapterRevision int64
 		var currentData string
 		var currentName string
+		var currentAllowedHosts string
+		var currentRestrictHosts bool
 		var enabled bool
 		if err := tx.QueryRowContext(ctx,
-			`SELECT f.url, f.adapter_id, f.enabled, f.data, f.name, a.revision
+			`SELECT f.url, f.adapter_id, f.enabled, f.data, f.name,
+			        f.allowed_hosts, f.restrict_hosts,
+			        a.revision
 			 FROM feeds f
 			 JOIN feed_adapters a ON a.id = f.adapter_id
 			 WHERE f.id = ?`, feed.ID).
 			Scan(
 				&currentURL, &currentAdapterID, &enabled,
 				&currentData, &currentName,
+				&currentAllowedHosts, &currentRestrictHosts,
 				&currentAdapterRevision,
 			); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -263,6 +268,8 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 			currentAdapterRevision != adapter.Revision ||
 			currentData != feed.Data ||
 			currentName != feed.Name ||
+			currentAllowedHosts != feed.AllowedHosts ||
+			currentRestrictHosts != feed.RestrictHosts ||
 			!enabled {
 			return errFeedChanged
 		}

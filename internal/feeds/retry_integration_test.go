@@ -30,11 +30,11 @@ func TestJavaScriptAdapter_HTTPRetry(t *testing.T) {
 		}, nil
 	})}
 
-	entries, err := (adapterRunner{limits: testLimits(), client: client, timeout: 5 * time.Second}).run(
+	entries, err := (feedRunner{limits: testLimits(), client: client, timeout: 5 * time.Second}).run(
 		context.Background(),
 		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed"},
 		store.FeedAdapter{
-			Key: "test", APIVersion: 1, Source: `
+			APIVersion: 1, Source: `
 function sync(feed, api) {
     return [{
         category: "Messengers",

@@ -17,9 +17,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
+
+func testSettings() *settings.Settings {
+	s, _ := settings.New(settings.NewTestStore())
+	return s
+}
 
 func testLimits() AdapterLimits {
 	return AdapterLimits{
@@ -83,11 +88,11 @@ func TestJavaScriptAdapterNormalizesResult(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})}
-	entries, err := (adapterRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
+	entries, err := (feedRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
 		context.Background(),
 		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed"},
 		store.FeedAdapter{
-			Key: "test", APIVersion: 1, Source: `
+			APIVersion: 1, Source: `
 function sync(feed, api) {
     return [{
         category: "Messengers",
@@ -175,11 +180,11 @@ func TestJavaScriptAdapterSRSGet(t *testing.T) {
 		}, nil
 	})}
 
-	entries, err := (adapterRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
+	entries, err := (feedRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
 		context.Background(),
 		store.Feed{ID: 1, Name: "test", URL: "https://example.test/feed.srs"},
 		store.FeedAdapter{
-			Key: "test-srs", APIVersion: 1, Source: `
+			APIVersion: 1, Source: `
 function sync(feed, api) {
     var entries = api.srsGet(feed.url, JSON.stringify({cidrs: true}));
     return entries.map(function(e) {
@@ -209,11 +214,11 @@ func TestJavaScriptAdapterRejectsUnlistedHost(t *testing.T) {
 		t.Fatal("HTTP client must not be called")
 		return nil, nil
 	})}
-	_, err := (adapterRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
+	_, err := (feedRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
 		context.Background(),
-		store.Feed{URL: "https://example.test/feed"},
+		store.Feed{URL: "https://example.test/feed", RestrictHosts: true},
 		store.FeedAdapter{
-			Key: "test", APIVersion: 1,
+			APIVersion: 1,
 			Source: `function sync(feed, api) {
                 api.httpGet("https://other.test/feed");
                 return [];
@@ -226,14 +231,14 @@ func TestJavaScriptAdapterRejectsUnlistedHost(t *testing.T) {
 }
 
 func TestJavaScriptAdapterTimesOut(t *testing.T) {
-	_, err := (adapterRunner{
+	_, err := (feedRunner{
 		limits: testLimits(), client: &http.Client{}, timeout: 10 * time.Millisecond,
 	}).run(
 		context.Background(),
 		store.Feed{URL: "https://example.test/feed"},
 		store.FeedAdapter{
-			Key: "test", APIVersion: 1,
-			Source: `function sync() { while (true) {} }`,
+			APIVersion: 1,
+			Source:     `function sync() { while (true) {} }`,
 		},
 	)
 	if err == nil ||
@@ -250,14 +255,14 @@ func TestJavaScriptAdapterStopsWhenContextIsCanceled(t *testing.T) {
 		cancel()
 	}()
 	started := time.Now()
-	_, err := (adapterRunner{
+	_, err := (feedRunner{
 		limits: testLimits(), client: &http.Client{}, timeout: 5 * time.Second,
 	}).run(
 		ctx,
 		store.Feed{URL: "https://example.test/feed"},
 		store.FeedAdapter{
-			Key: "test", APIVersion: 1,
-			Source: `function sync() { while (true) {} }`,
+			APIVersion: 1,
+			Source:     `function sync() { while (true) {} }`,
 		},
 	)
 	if !errors.Is(err, context.Canceled) {
@@ -287,8 +292,8 @@ func TestAdapterHTTPFollowsValidatedRedirect(t *testing.T) {
 			Body:       io.NopCloser(strings.NewReader("ok")),
 		}, nil
 	})}
-	api, err := newAdapterHTTP(
-		context.Background(), client, "https://example.test/feed", "",
+	api, err := newAdapterRunner(
+		context.Background(), client, "https://example.test/feed", "", true,
 		AdapterLimits{MaxRequests: 200, MaxResponseBytes: 16 << 20, MaxTotalBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
@@ -312,8 +317,8 @@ func TestAdapterHTTPRejectsRedirectToUnlistedHost(t *testing.T) {
 			Body: io.NopCloser(strings.NewReader("")),
 		}, nil
 	})}
-	api, err := newAdapterHTTP(
-		context.Background(), client, "https://example.test/feed", "",
+	api, err := newAdapterRunner(
+		context.Background(), client, "https://example.test/feed", "", true,
 		AdapterLimits{MaxRequests: 200, MaxResponseBytes: 16 << 20, MaxTotalBytes: 64 << 20})
 	if err != nil {
 		t.Fatal(err)
@@ -393,7 +398,7 @@ func TestSyncAllSkipsDisabledFeeds(t *testing.T) {
 		}, nil
 	})}
 
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -401,14 +406,19 @@ func TestSyncAllSkipsDisabledFeeds(t *testing.T) {
 	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", true, 0); err != nil {
+	enabledID, err := db.AddFeed(context.Background(), "enabled", "https://example.test/enabled", 1, true, 0, "", "", true)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", false, 0); err != nil {
+	disabledID, err := db.AddFeed(context.Background(), "disabled", "https://example.test/disabled", 1, false, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(context.Background(), "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?), (1, ?)", enabledID, disabledID); err != nil {
 		t.Fatal(err)
 	}
 
-	syncer := NewSyncer(db, config.Config{})
+	syncer := NewSyncer(db, testSettings())
 	syncer.Client = client
 	if syncErrors := syncer.SyncAll(context.Background()); len(syncErrors) != 0 {
 		t.Fatalf("SyncAll errors = %v", syncErrors)
@@ -434,7 +444,7 @@ WHERE f.name = 'disabled'`).Scan(&disabledEntries); err != nil {
 
 func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,7 +454,11 @@ func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	}
 	const oldURL = "https://example.test/old"
 	const newURL = "https://example.test/new"
-	if err := db.AddFeed(ctx, "custom", oldURL, true, 0); err != nil {
+	feedID, err := db.AddFeed(ctx, "custom", oldURL, 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(ctx, true)
@@ -453,7 +467,7 @@ func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	}
 	feed := feedList[0]
 
-	syncer := NewSyncer(db, config.Config{})
+	syncer := NewSyncer(db, testSettings())
 	syncer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != oldURL {
 			t.Fatalf("download URL = %q, want %q", request.URL, oldURL)
@@ -495,7 +509,7 @@ FROM feeds WHERE id = ?`, feed.ID).Scan(&url, &lastSuccess, &lastError); err != 
 
 func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +517,11 @@ func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AddFeed(ctx, "custom", "https://example.test/feed", true, 0); err != nil {
+	feedID, err := db.AddFeed(ctx, "custom", "https://example.test/feed", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
 		t.Fatal(err)
 	}
 	feedList, err := db.Feeds(ctx, true)
@@ -516,7 +534,7 @@ func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	syncer := NewSyncer(db, config.Config{})
+	syncer := NewSyncer(db, testSettings())
 	syncer.Client = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 		adapter.Name = "changed during sync"
 		if err := db.UpdateFeedAdapter(ctx, adapter); err != nil {
@@ -546,7 +564,7 @@ func TestSyncDiscardsResultWhenAdapterChanges(t *testing.T) {
 
 func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(filepath.Join(t.TempDir(), "ipranges.sqlite3"), config.Config{})
+	db, err := store.Open(filepath.Join(t.TempDir(), "ipranges.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,7 +589,7 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 	if len(feedList) != 1 || feedList[0].URL != ipRangesURL {
 		t.Fatalf("enabled feeds = %#v", feedList)
 	}
-	syncer := NewSyncer(db, config.Config{})
+	syncer := NewSyncer(db, testSettings())
 	syncer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		body := "203.0.113.0/24\n"
 		if strings.Contains(request.URL.Path, "ipv6_merged.txt") {

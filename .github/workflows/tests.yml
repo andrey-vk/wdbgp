@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +12,7 @@ permissions:
 
 jobs:
   unittest:
-    name: Go tests
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
@@ -22,9 +23,30 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: webgui/package-lock.json
 
-      - name: Run tests
-        run: go test ./...
+      - name: Install frontend dependencies
+        run: cd webgui && npm ci
+
+      - name: Build frontend
+        run: cd webgui && npm run build
+
+      - name: Run Vue tests
+        run: cd webgui && npm run test
+
+      - name: Run Go tests
+        run: go test -short ./...
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
 
       - name: Run vet
         run: go vet ./...

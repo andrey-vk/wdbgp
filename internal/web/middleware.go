@@ -1,13 +1,12 @@
 package web
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -15,10 +14,27 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/logging"
 )
 
+// clientIP returns the address the request should be attributed to.
+//
+// When TrustProxyHeaders is on, the reverse proxy is trusted to append the
+// real client address as the last hop in X-Forwarded-For — every entry to
+// its left was supplied by the client (or an untrusted intermediary) and
+// must not be trusted for auth or rate-limit decisions. We scan from the
+// right and return the first well-formed IP we find.
 func (s *Server) clientIP(r *http.Request) string {
-	if s.cfg.TrustProxyHeader {
+	if s.settings.TrustProxyHeaders.Get() {
 		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-			return strings.TrimSpace(strings.SplitN(forwarded, ",", 2)[0])
+			parts := strings.Split(forwarded, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				candidate := strings.TrimSpace(parts[i])
+				if candidate == "" {
+					continue
+				}
+				if _, err := netip.ParseAddr(candidate); err != nil {
+					continue
+				}
+				return candidate
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -28,15 +44,84 @@ func (s *Server) clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// csrfCtxKey is the context key for CSRF tokens.
-type csrfCtxKey struct{}
+// csrfCookieName/csrfHeaderName implement the double-submit-cookie pattern:
+// the cookie is deliberately NOT HttpOnly so the SPA's HTTP client can read
+// it and echo it back as a header. A cross-site attacker can trigger a
+// request with the browser's cookies attached (defeated separately by
+// SameSite=Strict) but cannot read the cookie's value to also set the
+// header, so the two must originate from the same site.
+const (
+	csrfCookieName = "wdbgp_csrf"
+	csrfHeaderName = "X-CSRF-Token"
+)
 
-// rateLimiter implements per-IP rate limiting
+// newCSRFToken returns a fresh random token for the CSRF cookie.
+func newCSRFToken() string {
+	var b [32]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// setCSRFCookie issues a new CSRF cookie, mirroring the lifetime of the
+// session cookie it accompanies.
+func setCSRFCookie(w http.ResponseWriter, secure bool, maxAge int, expires time.Time) {
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime; deliberately not HttpOnly, see csrfCookieName doc
+		Name:     csrfCookieName,
+		Value:    newCSRFToken(),
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   maxAge,
+		Expires:  expires,
+	})
+}
+
+// clearCSRFCookie removes the CSRF cookie, mirroring session logout.
+func clearCSRFCookie(w http.ResponseWriter, secure bool) {
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure determined at runtime
+		Name:     csrfCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
+		Secure:   secure,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1,
+	})
+}
+
+// validCSRFRequest reports whether a mutating request carries a CSRF header
+// that matches its CSRF cookie. Safe methods never mutate state and are
+// exempt.
+func validCSRFRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	cookie, err := r.Cookie(csrfCookieName)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	header := r.Header.Get(csrfHeaderName)
+	if header == "" {
+		return false
+	}
+	return hmac.Equal([]byte(cookie.Value), []byte(header))
+}
+
+// rateLimiter implements per-IP rate limiting.
+//
+// limits only ever grows on its own — entries for IPs that stop making
+// requests must be reclaimed explicitly or the map leaks for the life of the
+// process. allow() amortizes that cleanup: at most once per window, it walks
+// the whole map and drops any IP with no timestamps left inside the window,
+// piggybacking on regular traffic instead of needing a background goroutine.
 type rateLimiter struct {
 	mu          sync.RWMutex
 	limits      map[string][]time.Time
 	window      time.Duration
 	maxRequests int
+	lastSweep   time.Time
 }
 
 func newRateLimiter(window time.Duration, maxRequests int) *rateLimiter {
@@ -53,6 +138,30 @@ func (rl *rateLimiter) SetMax(n int) {
 	rl.maxRequests = n
 }
 
+// sweepLocked removes IPs with no timestamps left inside the window. Callers
+// must hold rl.mu. No-op if less than a full window has passed since the
+// last sweep, so the cost is amortized rather than paid on every request.
+func (rl *rateLimiter) sweepLocked(now time.Time) {
+	if now.Sub(rl.lastSweep) < rl.window {
+		return
+	}
+	rl.lastSweep = now
+
+	cutoff := now.Add(-rl.window)
+	for ip, requests := range rl.limits {
+		stale := true
+		for _, t := range requests {
+			if t.After(cutoff) {
+				stale = false
+				break
+			}
+		}
+		if stale {
+			delete(rl.limits, ip)
+		}
+	}
+}
+
 func (rl *rateLimiter) allow(ip string) bool {
 	// Disable rate limiting if maxRequests <= 0
 	if rl.maxRequests <= 0 {
@@ -62,6 +171,8 @@ func (rl *rateLimiter) allow(ip string) bool {
 	now := time.Now()
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+
+	rl.sweepLocked(now)
 
 	// Clean old entries
 	cutoff := now.Add(-rl.window)
@@ -75,6 +186,7 @@ func (rl *rateLimiter) allow(ip string) bool {
 
 	// Check if allowed
 	if len(valid) >= rl.maxRequests {
+		rl.limits[ip] = valid
 		return false
 	}
 
@@ -84,86 +196,16 @@ func (rl *rateLimiter) allow(ip string) bool {
 	return true
 }
 
-func csrfToken(secret string) string {
-	var nonce [16]byte
-	_, _ = rand.Read(nonce[:])
-	text := hex.EncodeToString(nonce[:])
-	signature := hmac.New(sha256.New, []byte(secret))
-	_, _ = signature.Write([]byte(text))
-	return text + "." + hex.EncodeToString(signature.Sum(nil))
-}
-
-func validCSRFToken(secret, token string) bool {
-	parts := strings.SplitN(token, ".", 2)
-	if len(parts) != 2 {
-		return false
-	}
-	signature, err := hex.DecodeString(parts[1])
-	if err != nil {
-		return false
-	}
-	expected := hmac.New(sha256.New, []byte(secret))
-	_, _ = expected.Write([]byte(parts[0]))
-	return hmac.Equal(signature, expected.Sum(nil))
-}
-
-// csrfProtection adds CSRF tokens to responses and validates them on POST requests
-func csrfProtection(next http.Handler, secret string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Always add CSRF token to context for templates
-		var token string
-		if secret != "" {
-			if secret == "test-secret" {
-				// Generate a dummy token for tests
-				token = "test-csrf-token" //nolint:gosec // test-only dummy token
-			} else {
-				token = csrfToken(secret)
-			}
-		}
-		ctx := context.WithValue(r.Context(), csrfCtxKey{}, token)
-
-		// Skip CSRF validation for test secret or empty secret
-		if secret == "" || secret == "test-secret" {
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-
-		// Skip CSRF validation for safe methods and login endpoint
-		if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" ||
-			r.URL.Path == "/healthz" || r.URL.Path == "/admin/login" || r.URL.Path == "/login" {
-			next.ServeHTTP(w, r.WithContext(ctx))
-			return
-		}
-
-		// For state-changing methods, validate CSRF token
-		if r.Method == "POST" || r.Method == "PUT" || r.Method == "DELETE" || r.Method == "PATCH" {
-			// Parse form if needed to get CSRF token
-			if r.Header.Get("Content-Type") == "application/x-www-form-urlencoded" {
-				r.ParseForm() //nolint:errcheck,gosec // form parsing for CSRF validation, best-effort
-			}
-
-			csrfTokenFromRequest := r.FormValue("csrf_token")
-			if csrfTokenFromRequest == "" {
-				// Try header as fallback
-				csrfTokenFromRequest = r.Header.Get("X-CSRF-Token")
-			}
-
-			if !validCSRFToken(secret, csrfTokenFromRequest) {
-				http.Error(w, "Invalid CSRF token", http.StatusForbidden)
-				return
-			}
-		}
-
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
 // securityHeaders adds security headers to HTTP responses
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Content Security Policy - restrict resource loading
-		// Allow inline styles/scripts for simplicity, plus unpkg CDN for htmx/alpine
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
+		// Content Security Policy - restrict resource loading.
+		// script-src is locked to same-origin build assets only — the SPA has no
+		// inline scripts, no runtime eval, and no CDN dependency.
+		// style-src needs 'unsafe-inline' because PrimeVue's theming
+		// (@primeuix/styled) injects <style> elements at runtime; there's no
+		// static build step that can precompute this away.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'self'")
 
 		// Prevent clickjacking
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -204,8 +246,8 @@ func panicRecovery(next http.Handler) http.Handler {
 // adminRateLimitMiddleware applies rate limiting to admin endpoints
 func (s *Server) adminRateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Only apply to admin paths
-		if strings.HasPrefix(r.URL.Path, "/admin") && r.URL.Path != "/admin/login" && r.URL.Path != "/login" {
+		// Only apply to admin API paths
+		if strings.HasPrefix(r.URL.Path, "/api/admin") && r.URL.Path != "/api/admin/login" && r.URL.Path != "/api/admin/me" && r.URL.Path != "/api/admin/users/statuses" {
 			clientIP := s.clientIP(r)
 
 			if !s.adminLimiter.allow(clientIP) {

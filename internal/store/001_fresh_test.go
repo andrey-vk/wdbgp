@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
-
 	_ "modernc.org/sqlite"
 )
 
@@ -18,8 +16,8 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err := s.DB.QueryRow("SELECT MAX(version) FROM schema_migrations").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != len(migrations) {
-		t.Fatalf("schema version = %d, want %d", version, len(migrations))
+	if version != migrations[len(migrations)-1].Version {
+		t.Fatalf("schema version = %d, want %d", version, migrations[len(migrations)-1].Version)
 	}
 	feeds, err := s.Feeds(context.Background(), false)
 	if err != nil {
@@ -62,10 +60,11 @@ func TestResetBuiltInFeedAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Renaming isn't a valid way to simulate a customization here: the real
+	// API blocks editing built-ins entirely, and identity is now name-based
+	// (see feed_adapters.go), so only the source can change in practice.
 	changed := original
-	changed.Name = "Changed"
 	changed.Source = "function sync() { return []; }\n"
-	changed.AllowedHosts = "example.test"
 	if err := s.UpdateFeedAdapter(ctx, changed); err != nil {
 		t.Fatal(err)
 	}
@@ -78,20 +77,19 @@ func TestResetBuiltInFeedAdapter(t *testing.T) {
 	}
 	if reset.Name != original.Name ||
 		reset.Source != original.Source ||
-		reset.AllowedHosts != original.AllowedHosts ||
 		reset.Revision != original.Revision+2 ||
 		!reset.BuiltIn {
 		t.Fatalf("reset adapter = %#v, original = %#v", reset, original)
 	}
 
-	customID, err := s.AddFeedAdapter(ctx, FeedAdapter{
-		Key: "custom", Name: "Custom",
+	custom, err := s.AddFeedAdapter(ctx, FeedAdapter{
+		Name:   "Custom",
 		Source: "function sync() { return []; }\n",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResetFeedAdapter(ctx, customID); err == nil {
+	if err := s.ResetFeedAdapter(ctx, custom.ID); err == nil {
 		t.Fatal("custom adapter reset succeeded")
 	}
 }
@@ -109,7 +107,7 @@ func TestRejectNewerDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close() //nolint:errcheck,gosec // test cleanup
-	if _, err := Open(path, config.Config{}); err == nil {
+	if _, err := Open(path, false, "", false); err == nil {
 		t.Fatal("Open accepted a newer database schema")
 	}
 }

@@ -30,6 +30,7 @@ type SpeakerConfig struct {
 	RouterID  netip.Addr // IPv4 router ID (e.g., 192.0.2.1)
 	Port      int32
 	LocalAddr netip.Addr // IPv4 local address for NEXT_HOP
+	HoldTime  uint16     // proposed hold time in seconds (0 = default 90)
 }
 
 // PeerConfig describes a configured BGP peer.

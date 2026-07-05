@@ -1,6 +1,7 @@
 package bgp
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -162,10 +163,14 @@ func (p *Peer) connectAndRun() error {
 
 	// Step 1: Send OPEN
 	bgpID := p.spk.RouterID.As4()
+	ht := p.spk.HoldTime
+	if ht == 0 {
+		ht = 90
+	}
 	openOut := &OpenMessage{
 		Version:  4,
 		MyASN32:  p.spk.ASN,
-		HoldTime: 90,
+		HoldTime: ht,
 		BGPID:    bgpID,
 	}
 	// Only include Password in OPEN for loopback connections where TCP MD5
@@ -212,13 +217,17 @@ func (p *Peer) connectAndRun() error {
 	}
 
 	// Negotiate hold time per RFC 4271: use min(local, remote), 0 means disabled.
+	localHold := time.Duration(p.spk.HoldTime) * time.Second
+	if localHold == 0 {
+		localHold = 90 * time.Second
+	}
 	remoteHold := time.Duration(openIn.HoldTime) * time.Second
 	if openIn.HoldTime == 0 { //nolint:gocritic // switch doesn't improve clarity with time.Duration comparisons
 		p.holdTime = 0 // no hold timer
-	} else if remoteHold < 90*time.Second {
+	} else if remoteHold < localHold {
 		p.holdTime = remoteHold
 	} else {
-		p.holdTime = 90 * time.Second
+		p.holdTime = localHold
 	}
 
 	// Track remote IPv6 unicast capability so we skip IPv6 routes
@@ -295,12 +304,17 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 		// Read message (blocking with deadline)
 		msg, err := ReadMessage(conn)
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			// ReadMessage always wraps the underlying error (fmt.Errorf
+			// "...: %w"), so these must unwrap via errors.As/Is — a plain
+			// type assertion or == comparison against the wrapped error
+			// never matches, silently skipping both branches below.
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				// Hold timer expired — tear down session with NOTIFICATION.
 				p.sendNotification(conn, 4, 0, nil) // Hold Timer Expired
 				return fmt.Errorf("hold timer expired")
 			}
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return fmt.Errorf("peer closed connection")
 			}
 			return fmt.Errorf("read: %w", err)
@@ -411,14 +425,18 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	}
 
 	// Send OPEN — hold time negotiation per RFC 4271
-	holdTime := uint16(90)
+	localHold := p.spk.HoldTime
+	if localHold == 0 {
+		localHold = 90
+	}
+	holdTime := localHold
 	if openIn.HoldTime == 0 { //nolint:gocritic // switch doesn't improve clarity with time.Duration comparisons
 		p.holdTime = 0
-	} else if openIn.HoldTime < 90 {
+	} else if openIn.HoldTime < localHold {
 		holdTime = openIn.HoldTime
 		p.holdTime = time.Duration(openIn.HoldTime) * time.Second
 	} else {
-		p.holdTime = 90 * time.Second
+		p.holdTime = time.Duration(localHold) * time.Second
 	}
 	bgpID := p.spk.RouterID.As4()
 	var id [4]byte
@@ -506,6 +524,12 @@ func (p *Peer) sendNotification(conn net.Conn, code, subcode uint8, data []byte)
 		ErrorSubcode: subcode,
 		Data:         data,
 	}
+	// Give the write its own fresh deadline: this is called right after a
+	// read-deadline expiry (e.g. hold timer), so the connection's existing
+	// deadline has, by definition, already passed — without resetting it
+	// here, this Write would immediately fail with the same stale timeout
+	// and the peer would never actually receive the NOTIFICATION.
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
 	if _, err := conn.Write(notif.Serialize()); err != nil {
 		p.logger.Debug("send notification write", "error", err)
 	}

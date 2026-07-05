@@ -10,15 +10,20 @@
 ![Custom BGP](https://img.shields.io/badge/BGP-Custom%20Speaker-blue)
 ![RouterOS](https://img.shields.io/badge/RouterOS-container-blue)
 ![Dual Stack](https://img.shields.io/badge/IP-IPv4%20%2B%20IPv6-blueviolet)
+![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
 
 [Русская версия](README.ru.md)
 
 `wdbgp` downloads categorized IPv4/IPv6 CIDR feeds, builds a service catalog,
 and announces prefixes selected by each user to that user's router over BGP.
 
-It is a single statically linked Go binary containing the HTTP server, SQLite
-storage, and a custom BGP speaker. Routes
-are announced per-peer directly from the in-memory route table.
+It is a single statically linked Go binary containing a Vue 3 SPA admin interface
+with PrimeVue v4 + Tailwind CSS, an HTTP API server, SQLite
+storage, and a custom BGP speaker. The admin UI provides Dashboard, Users, Modes,
+Feeds, Adapters, Settings, and Debug pages. A user-facing page enables catalog
+selection with web authentication. Routes are announced per-peer directly from the
+in-memory route table.
 
 ## Catalog modes
 
@@ -197,8 +202,6 @@ password check. Force `true` only when the admin UI is always served over HTTPS.
 | `WDBGP_ALLOW_DYNAMIC_PEERS` | `false` |
 
 `WDBGP_ADMIN_PASSWORD` and `WDBGP_SESSION_SECRET` are required by `serve`.
-The old `WDBGP_BIRD_LOCAL_ADDRESS` and `WDBGP_BIRD_LOCAL_ADDRESS_V6` names are
-temporarily accepted as compatibility aliases.
 When `WDBGP_BGP_LOCAL_ADDRESS_V6` is empty, IPv6 selections remain stored but
 only IPv4 prefixes are announced.
 
@@ -279,7 +282,12 @@ docker run --rm -v wdbgp-data:/data wh1ted/wdbgp:latest sync
 
 ## Development
 
+The Go build embeds the built frontend (`webgui/dist`) via `go:embed`, so the
+frontend must be built first — `go build`/`go vet`/`go test ./...` fail on a
+fresh checkout otherwise, since `webgui/dist` doesn't exist until it has.
+
 ```sh
+cd webgui && npm install && npm run build && cd ..
 go test ./...
 go vet ./...
 go build ./cmd/wdbgp
@@ -333,5 +341,5 @@ IPv6 address and `WDBGP_BGP_LOCAL_ADDRESS_V6` when using IPv6.
 
 ## Limitations
 
-- Editing BGP peer settings restarts the embedded BGP server; changing a route
-  selection is applied without a restart.
+- Changing a route selection is applied without a restart; enabling/disabling a
+  peer updates the BGP speaker dynamically.

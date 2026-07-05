@@ -9,26 +9,38 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/logging"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
 // Manager manages BGP peers and route announcements using our custom Speaker.
 type Manager struct {
-	cfg         config.Config
+	cfg         *settings.Settings
 	store       *store.Store
 	mu          sync.Mutex
 	speaker     *Speaker
 	installed   map[string]instPrefix // global prefix → signature
 	peerConfigs []store.User          // all configured peers
 	peerRoutes  map[string][]Route    // per-peer last announced routes (keyed by peer address string)
+
+	// Snapshotted at (re)start — these are restart-only settings. The live
+	// BGP session already negotiated with whatever values were current when
+	// it started, so route/community building must keep using that same
+	// snapshot until the session actually restarts (Start or ReloadPeers),
+	// not whatever Settings currently holds.
+	localASN    uint32
+	localAddrV4 netip.Addr
+	localAddrV6 netip.Addr
+	activeDial  bool
+
+	lastErr error // last error from Start/ReloadPeers; nil when speaker is healthy
 }
 
-func NewManager(cfg config.Config, s *store.Store) *Manager {
+func NewManager(s *settings.Settings, db *store.Store) *Manager {
 	return &Manager{
-		cfg:         cfg,
-		store:       s,
+		cfg:         s,
+		store:       db,
 		installed:   map[string]instPrefix{},
 		peerConfigs: []store.User{},
 		peerRoutes:  map[string][]Route{},
@@ -38,14 +50,16 @@ func NewManager(cfg config.Config, s *store.Store) *Manager {
 func (m *Manager) Start(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
 	logger.Info("starting BGP manager",
-		"asn", m.cfg.LocalASN,
-		"router_id", m.cfg.RouterID,
-		"bgp_port", m.cfg.BGPListenPort,
+		"asn", m.cfg.LocalASN.Get(),
+		"router_id", m.cfg.RouterID.Get(),
+		"bgp_port", m.cfg.BGPPort.Get(),
 	)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.startLocked(ctx)
+	err := m.startLocked(ctx)
+	m.lastErr = err
+	return err
 }
 
 func (m *Manager) Stop(ctx context.Context) error {
@@ -54,6 +68,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.lastErr = nil // a deliberate stop isn't a failure state
 	if m.speaker == nil {
 		logger.Debug("BGP speaker already stopped")
 		return nil
@@ -79,6 +94,7 @@ func (m *Manager) ReloadPeers(ctx context.Context) error {
 	savedPeerConfigs := m.peerConfigs
 	if m.speaker != nil {
 		if err := m.speaker.Stop(); err != nil {
+			m.lastErr = err
 			return err
 		}
 	}
@@ -86,32 +102,50 @@ func (m *Manager) ReloadPeers(ctx context.Context) error {
 	m.installed = savedInstalled
 	m.peerConfigs = savedPeerConfigs
 	m.peerRoutes = make(map[string][]Route)
-	return m.startLocked(ctx)
+	err := m.startLocked(ctx)
+	m.lastErr = err
+	return err
+}
+
+// Status reports whether a BGP speaker is currently running, and the error
+// from the last failed Start/ReloadPeers attempt (nil when running is true).
+func (m *Manager) Status() (running bool, lastErr error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.speaker != nil, m.lastErr
 }
 
 func (m *Manager) startLocked(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
 
-	routerID, err := netip.ParseAddr(m.cfg.RouterID)
+	routerID, err := netip.ParseAddr(m.cfg.RouterID.Get())
 	if err != nil {
-		return fmt.Errorf("parse router ID %q: %w", m.cfg.RouterID, err)
+		return fmt.Errorf("parse router ID %q: %w", m.cfg.RouterID.Get(), err)
 	}
-	localAddr, err := netip.ParseAddr(m.cfg.LocalAddressV4)
+	localAddr, err := netip.ParseAddr(m.cfg.LocalAddressV4.Get())
 	if err != nil {
-		return fmt.Errorf("parse local address %q: %w", m.cfg.LocalAddressV4, err)
+		return fmt.Errorf("parse local address %q: %w", m.cfg.LocalAddressV4.Get(), err)
 	}
 	localAddrV6 := netip.Addr{}
-	if m.cfg.LocalAddressV6 != "" {
-		localAddrV6, err = netip.ParseAddr(m.cfg.LocalAddressV6)
+	if m.cfg.LocalAddressV6.Get() != "" {
+		localAddrV6, err = netip.ParseAddr(m.cfg.LocalAddressV6.Get())
 		if err != nil {
-			return fmt.Errorf("parse local IPv6 address %q: %w", m.cfg.LocalAddressV6, err)
+			return fmt.Errorf("parse local IPv6 address %q: %w", m.cfg.LocalAddressV6.Get(), err)
 		}
 	}
 
+	// Snapshot restart-only settings for the lifetime of this speaker (see
+	// the Manager field comments) — everything below and every later
+	// reconcile/peer-config build reads these, not m.cfg directly.
+	m.localASN = m.cfg.LocalASN.Get()
+	m.localAddrV4 = localAddr
+	m.localAddrV6 = localAddrV6
+	m.activeDial = m.cfg.ActiveDial.Get()
+
 	speaker := NewSpeaker(SpeakerConfig{
-		ASN:       m.cfg.LocalASN,
+		ASN:       m.localASN,
 		RouterID:  routerID,
-		Port:      m.cfg.BGPListenPort,
+		Port:      int32(m.cfg.BGPPort.Get()), // uint16 always fits int32
 		LocalAddr: localAddr,
 	}, logger.Logger)
 
@@ -154,7 +188,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		peerConfigs = append(peerConfigs, PeerConfig{
 			ID:        u.ID,
 			Address:   addr,
-			Port:      peerPort(u.PeerIP, m.cfg.ActiveDial && u.ActiveDial),
+			Port:      peerPort(u.PeerIP, m.activeDial && u.ActiveDial),
 			ASN:       u.PeerASN,
 			Password:  u.BGPPassword,
 			Name:      u.Name,
@@ -233,16 +267,41 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 		}
 	}
 	if !found {
-		return fmt.Errorf("peer %s does not exist", user.PeerIP)
+		// Same duplicate-key check AddPeer does: a not-yet-tracked user
+		// (e.g. one being re-enabled) must not be allowed to share an
+		// existing tracked peer's IP+ASN — two logical users would collapse
+		// onto the same physical BGP session, keyed by "IP:ASN" throughout
+		// this manager.
+		for _, u := range m.peerConfigs {
+			if u.PeerIP == user.PeerIP && u.PeerASN == user.PeerASN {
+				if user.PeerIP == "0.0.0.0" || user.PeerIP == "::" {
+					return fmt.Errorf("dynamic peer with ASN %d already exists", user.PeerASN)
+				}
+				return fmt.Errorf("peer %s with ASN %d already exists", user.PeerIP, user.PeerASN)
+			}
+		}
+		m.peerConfigs = append(m.peerConfigs, user)
+		cfgs, err := m.buildPeerConfigs()
+		if err != nil {
+			m.peerConfigs = m.peerConfigs[:len(m.peerConfigs)-1]
+			return err
+		}
+		if err := m.speaker.SetPeers(cfgs); err != nil {
+			m.peerConfigs = m.peerConfigs[:len(m.peerConfigs)-1]
+			return err
+		}
+		return nil
 	}
-	// Clear old peer routes when IP or ASN changed
-	if oldPeerKey != "" {
-		delete(m.peerRoutes, oldPeerKey)
-	}
-	// Clear new peer routes since the peer may have changed
+	// Clear old peer routes if the peer key changed (new IP/ASN), or if
+	// SetPeers will recreate the peer session for another reason — a BGP
+	// password change, the only other condition speaker.SetPeers uses to
+	// decide whether to restart an existing peer. Otherwise the freshly
+	// recreated peer keeps zero announced routes: reconcileLocked compares
+	// against this stale cache, finds no diff, and skips re-announcing
+	// until some unrelated route change happens to produce a real one.
 	peerKey := fmt.Sprintf("%s:%d", user.PeerIP, user.PeerASN)
-	if peerKey != oldPeerKey {
-		delete(m.peerRoutes, peerKey)
+	if oldPeerKey != "" && (oldPeerKey != peerKey || oldUser.BGPPassword != user.BGPPassword) {
+		delete(m.peerRoutes, oldPeerKey)
 	}
 	cfgs, err := m.buildPeerConfigs()
 	if err != nil {
@@ -325,32 +384,21 @@ func (m *Manager) PeerStates(ctx context.Context) (map[string]string, error) {
 // Returns an error if any peer is invalid (e.g., IPv6 peer with no LocalAddressV6).
 func (m *Manager) buildPeerConfigs() ([]PeerConfig, error) {
 	var configs []PeerConfig
-	localAddr, err := netip.ParseAddr(m.cfg.LocalAddressV4)
-	if err != nil {
-		return configs, err
-	}
-	var localAddrV6 netip.Addr
-	if m.cfg.LocalAddressV6 != "" {
-		localAddrV6, err = netip.ParseAddr(m.cfg.LocalAddressV6)
-		if err != nil {
-			return configs, fmt.Errorf("parse local IPv6 address %q: %w", m.cfg.LocalAddressV6, err)
-		}
-	}
 	for _, u := range m.peerConfigs {
 		addr, err := netip.ParseAddr(u.PeerIP)
 		if err != nil {
 			continue
 		}
-		peerLocalAddr := localAddr
-		if addr.Is6() && localAddrV6.IsValid() {
-			peerLocalAddr = localAddrV6
+		peerLocalAddr := m.localAddrV4
+		if addr.Is6() && m.localAddrV6.IsValid() {
+			peerLocalAddr = m.localAddrV6
 		} else if addr.Is6() {
 			return nil, fmt.Errorf("IPv6 peer %s AS%d requires LocalAddressV6 but none configured", u.PeerIP, u.PeerASN)
 		}
 		configs = append(configs, PeerConfig{
 			ID:        u.ID,
 			Address:   addr,
-			Port:      peerPort(u.PeerIP, m.cfg.ActiveDial && u.ActiveDial),
+			Port:      peerPort(u.PeerIP, m.activeDial && u.ActiveDial),
 			ASN:       u.PeerASN,
 			Password:  u.BGPPassword,
 			Name:      u.Name,
@@ -374,7 +422,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("parse desired prefix %q: %w", rawPrefix, err)
 		}
-		if prefix.Addr().Is6() && m.cfg.LocalAddressV6 == "" {
+		if prefix.Addr().Is6() && !m.localAddrV6.IsValid() {
 			delete(desired, rawPrefix)
 		}
 	}

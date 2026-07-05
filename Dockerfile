@@ -1,3 +1,11 @@
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
+
+WORKDIR /src/webgui
+COPY webgui/package.json webgui/package-lock.json ./
+RUN npm ci
+COPY webgui/ ./
+RUN npm run build
+
 FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine3.23 AS build
 
 WORKDIR /src
@@ -5,6 +13,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
+COPY spaembed.go ./
+COPY --from=frontend /src/webgui/dist ./webgui/dist
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT

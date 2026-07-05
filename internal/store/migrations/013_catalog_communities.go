@@ -94,6 +94,12 @@ func genCommunities(tx *sql.Tx, existing map[string]bool, modeID int64) (int, er
 				keyComm["svc:"+category+"|"+service] = community
 			}
 		}
+		if err := commRows.Err(); err != nil {
+			if cerr := commRows.Close(); cerr != nil {
+				log.Printf("WARNING: commRows close: %v", cerr)
+			}
+			return 0, err
+		}
 		if err := commRows.Close(); err != nil {
 			log.Printf("WARNING: commRows close: %v", err)
 		}
@@ -119,6 +125,12 @@ ORDER BY ce.category`, mid)
 				return 0, err
 			}
 			categories = append(categories, cat)
+		}
+		if err := catRows.Err(); err != nil {
+			if cerr := catRows.Close(); cerr != nil {
+				log.Printf("WARNING: catRows close: %v", cerr)
+			}
+			return 0, err
 		}
 		if err := catRows.Close(); err != nil {
 			log.Printf("WARNING: catRows close: %v", err)
@@ -170,6 +182,12 @@ ORDER BY ce.service`, mid, category)
 					return generated, err
 				}
 				services = append(services, svc)
+			}
+			if err := svcRows.Err(); err != nil {
+				if cerr := svcRows.Close(); cerr != nil {
+					log.Printf("WARNING: svcRows close: %v", cerr)
+				}
+				return generated, err
 			}
 			if err := svcRows.Close(); err != nil {
 				log.Printf("WARNING: svcRows close: %v", err)

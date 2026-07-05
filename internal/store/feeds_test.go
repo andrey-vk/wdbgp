@@ -8,10 +8,66 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// TestAddFeedWithModeRollsBackOnModeAssignmentFailure guards against a
+// non-atomic create: AddFeed's transaction only ever inserted the feeds
+// row, so a caller doing the catalog_mode_feeds assignment as a separate,
+// later call could end up with a feed row committed and orphaned (invisible
+// to mode-scoped sync, and a source of duplicate feeds on client retry) if
+// that second insert failed. AddFeedWithMode must do both in one
+// transaction: if the mode assignment fails, the feed row must not exist.
+func TestAddFeedWithModeRollsBackOnModeAssignmentFailure(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// A nonexistent mode ID fails catalog_mode_feeds' own FK constraint —
+	// this must roll back the whole operation, not just fail the second
+	// half of it.
+	const nonexistentModeID = 999999
+	if _, err := s.AddFeedWithMode(ctx, "orphan-candidate", "https://example.test/feed.json", 1, true, 0, "", "", true, nonexistentModeID); err == nil {
+		t.Fatal("expected an error from AddFeedWithMode with a nonexistent mode_id")
+	}
+
+	var count int
+	if err := s.DB.QueryRow("SELECT COUNT(*) FROM feeds WHERE name = 'orphan-candidate'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("feed row exists despite failed mode assignment — got %d, want 0 (atomic rollback)", count)
+	}
+}
+
+// TestAddFeedWithModeAssignsOnSuccess confirms the happy path: a valid mode
+// ID gets the feed assigned in the same call, matching what AddFeed +
+// AddFeedToMode used to require two separate calls for.
+func TestAddFeedWithModeAssignsOnSuccess(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	modeID, err := s.AddCatalogMode(ctx, "add-feed-with-mode-test", "Add Feed With Mode Test", true)
+	if err != nil {
+		t.Fatalf("add mode: %v", err)
+	}
+
+	feedID, err := s.AddFeedWithMode(ctx, "assigned-feed", "https://example.test/feed.json", 1, true, 0, "", "", true, modeID)
+	if err != nil {
+		t.Fatalf("AddFeedWithMode: %v", err)
+	}
+
+	var count int
+	if err := s.DB.QueryRow(
+		"SELECT COUNT(*) FROM catalog_mode_feeds WHERE mode_id = ? AND feed_id = ?", modeID, feedID,
+	).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("catalog_mode_feeds row count = %d, want 1", count)
+	}
+}
+
 func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if err := s.AddFeed(ctx, "custom", "https://example.test/old.json", true, 0); err != nil {
+	if _, err := s.AddFeed(ctx, "custom", "https://example.test/old.json", 1, true, 0, "", "", true); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)

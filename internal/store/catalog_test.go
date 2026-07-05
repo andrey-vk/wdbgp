@@ -124,7 +124,11 @@ func TestUserCannotChangeCatalogModeWithoutPermission(t *testing.T) {
 func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	if err := s.AddFeed(ctx, "custom", "https://example.test/feed.json", true, 0); err != nil {
+	feedID, err := s.AddFeed(ctx, "custom", "https://example.test/feed.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)
@@ -210,10 +214,15 @@ func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 	if _, err := s.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddFeed(ctx, "enabled", "https://example.test/enabled", true, 0); err != nil {
+	enabledFeedID, err := s.AddFeed(ctx, "enabled", "https://example.test/enabled", 1, true, 0, "", "", true)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddFeed(ctx, "disabled", "https://example.test/disabled", false, 0); err != nil {
+	disabledFeedID, err := s.AddFeed(ctx, "disabled", "https://example.test/disabled", 1, false, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?), (1, ?)", enabledFeedID, disabledFeedID); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err := s.Feeds(ctx, false)

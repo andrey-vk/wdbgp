@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/netip"
 	"testing"
 
@@ -75,7 +76,8 @@ func TestDesiredPrefixesSubtractsGlobalDeny(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	userID := addFilteredTestUser(t, s, false)
-	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{Deny: []string{"1.1.1.1/32"}}); err != nil {
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES ('filter_deny', '1.1.1.1/32', datetime('now'))`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,7 +103,8 @@ func TestDesiredPrefixesUsesUserOverride(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	userID := addFilteredTestUser(t, s, true)
-	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{Deny: []string{"1.1.1.1/32"}}); err != nil {
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES ('filter_deny', '1.1.1.1/32', datetime('now'))`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"1.1.0.0/16"}}); err != nil {
@@ -131,7 +134,8 @@ func TestDesiredPrefixesExtendsGlobalFilters(t *testing.T) {
 		RouteFilters{Allow: []string{"1.1.0.0/16"}, Deny: []string{"1.1.1.1/32"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{Deny: []string{"1.1.2.0/24"}}); err != nil {
+	if _, err := s.DB.ExecContext(ctx,
+		`INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES ('filter_deny', '1.1.2.0/24', datetime('now'))`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,9 +175,7 @@ func TestDesiredPrefixesDropsFeedDefaultRoute(t *testing.T) {
 		(1, 'test', 'public', '8.8.8.0/24')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetGlobalRouteFilters(ctx, RouteFilters{}); err != nil {
-		t.Fatal(err)
-	}
+	// Global route filters are empty by default (migration 029 moved them to app_settings).
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return SetUserSelection(ctx, tx, userID, []string{"test"}, nil)
 	}); err != nil {
@@ -189,6 +191,50 @@ func TestDesiredPrefixesDropsFeedDefaultRoute(t *testing.T) {
 	}
 	if users := prefixes["8.8.8.0/24"]; len(users) != 1 || users[0] != userID {
 		t.Fatalf("public prefix users = %v", users)
+	}
+}
+
+func TestDesiredPrefixesClearsRoutesOnModeChange(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Step 1: Create a user in mode 1 (default) with selections
+	userID := addFilteredTestUser(t, s, false)
+
+	// Verify user is in mode 1 with selections → prefixes exist
+	prefixes, _, err := s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prefixes) == 0 {
+		t.Fatal("expected prefixes in mode 1 with selections")
+	}
+
+	// Step 2: Change user to mode 2 (IPRanges is id 2, should already exist)
+	_, err = s.DB.ExecContext(ctx, "UPDATE users SET catalog_mode_id = 2 WHERE id = ?", userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Step 3: DesiredPrefixes should return 0 for this user
+	// (mode 2 has no selections for this user)
+	prefixes, _, err = s.DesiredPrefixes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Find prefixes for this specific user
+	var userPrefixes int
+	for _, users := range prefixes {
+		for _, uid := range users {
+			if uid == userID {
+				userPrefixes++
+			}
+		}
+	}
+
+	if userPrefixes > 0 {
+		t.Errorf("user %d still has %d prefixes after mode change, want 0", userID, userPrefixes)
 	}
 }
 
@@ -216,4 +262,105 @@ func addFilteredTestUser(t *testing.T, s *Store, override bool) int64 {
 
 func prefixContains(parent, child netip.Prefix) bool {
 	return parent.Contains(child.Addr()) && child.Bits() >= parent.Bits()
+}
+
+func TestSplitNewlines(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "empty string",
+			input: "",
+			want:  nil,
+		},
+		{
+			name:  "whitespace only",
+			input: "  \n  \t  ",
+			want:  nil,
+		},
+		{
+			name:  "single line",
+			input: "1.1.1.1/32",
+			want:  []string{"1.1.1.1/32"},
+		},
+		{
+			name:  "multiple lines",
+			input: "1.1.1.1/32\n8.8.8.0/24",
+			want:  []string{"1.1.1.1/32", "8.8.8.0/24"},
+		},
+		{
+			name:  "trims whitespace",
+			input: "  1.1.1.1/32  \n  8.8.8.0/24  ",
+			want:  []string{"1.1.1.1/32", "8.8.8.0/24"},
+		},
+		{
+			name:  "skips empty lines",
+			input: "1.1.1.1/32\n\n8.8.8.0/24\n\n",
+			want:  []string{"1.1.1.1/32", "8.8.8.0/24"},
+		},
+		{
+			name:  "skips comment lines",
+			input: "# this is a comment\n1.1.1.1/32\n# another comment\n8.8.8.0/24\n# trailing",
+			want:  []string{"1.1.1.1/32", "8.8.8.0/24"},
+		},
+		{
+			name:  "skips inline comments and trims",
+			input: "  1.1.1.1/32  # inline comment\n  # just a comment  \n  8.8.8.0/24  ",
+			want:  []string{"1.1.1.1/32  # inline comment", "8.8.8.0/24"},
+		},
+		{
+			name:  "only comments",
+			input: "# line 1\n# line 2",
+			want:  nil,
+		},
+		{
+			name:  "mixed blank and comments",
+			input: "\n# comment\n\n1.1.1.1/32\n\n# another\n\n8.8.8.0/24\n\n",
+			want:  []string{"1.1.1.1/32", "8.8.8.0/24"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitNewlines(tc.input)
+			if tc.want == nil && got != nil {
+				t.Fatalf("got %#v, want nil", got)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d, want %d: got %#v, want %#v", len(got), len(tc.want), got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestRouteFiltersJSONLowercaseKeys guards against RouteFilters marshaling
+// as "Allow"/"Deny" — the user SPA reads userData.filters?.allow/?.deny
+// (lowercase), so an untagged struct silently marshals to keys the frontend
+// never matches and the filter editor always renders empty.
+func TestRouteFiltersJSONLowercaseKeys(t *testing.T) {
+	raw, err := json.Marshal(RouteFilters{Allow: []string{"10.0.0.0/8"}, Deny: []string{"192.168.0.0/16"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decoded["allow"]; !ok {
+		t.Errorf("marshaled JSON = %s, want lowercase \"allow\" key", raw)
+	}
+	if _, ok := decoded["deny"]; !ok {
+		t.Errorf("marshaled JSON = %s, want lowercase \"deny\" key", raw)
+	}
+	if _, ok := decoded["Allow"]; ok {
+		t.Errorf("marshaled JSON = %s, should not have capitalized \"Allow\" key", raw)
+	}
 }

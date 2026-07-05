@@ -73,6 +73,20 @@ func TestApplySupportsIPv6(t *testing.T) {
 	}
 }
 
+func TestApplyDenyBroaderPrefixDifferentBaseAddr(t *testing.T) {
+	// deny = 213.180.192.0/19 covers 213.180.193.0/24 entirely, but their base
+	// addresses differ, so prefix.Contains(denied.Addr()) fails with the old code.
+	got, err := Apply(prefixes("213.180.193.0/24"), Lists{
+		Deny: prefixes("213.180.192.0/19"),
+	}, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("broader deny with different base address not removed: %v", got)
+	}
+}
+
 func TestApplyEnforcesExpansionLimit(t *testing.T) {
 	_, err := Apply(prefixes("::/0"), Lists{Deny: prefixes("2001:db8::1/128")}, 64)
 	if err == nil {

@@ -62,6 +62,9 @@ func TestMigration14AddsWebAuthAndUserCredentials(t *testing.T) {
 		}
 		columns[name] = colType
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	_ = rows.Close() //nolint:errcheck // test cleanup
 
 	if columns["user_id"] != "INTEGER" {
@@ -107,6 +110,9 @@ func TestMigration15AddsAppSettings(t *testing.T) {
 			t.Fatal(err)
 		}
 		columns[name] = colType
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	_ = rows.Close() //nolint:errcheck // test cleanup
 
@@ -412,7 +418,7 @@ func TestUpdateUserWebAuthChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	user.WebAuth = "login"
-	err = s.UpdateUser(ctx, user, false)
+	err = s.UpdateUser(ctx, user)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +433,7 @@ func TestUpdateUserWebAuthChanges(t *testing.T) {
 
 	// Change to both
 	user.WebAuth = "both"
-	err = s.UpdateUser(ctx, user, false)
+	err = s.UpdateUser(ctx, user)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -453,8 +459,12 @@ func TestGetAllSettingsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(settings) != 0 {
-		t.Fatalf("settings = %d entries, want 0", len(settings))
+	// After migration 029, filter_allow and filter_deny are always present (empty).
+	// Other keys should not exist in a fresh DB.
+	for k := range settings {
+		if k != "filter_allow" && k != "filter_deny" {
+			t.Fatalf("unexpected setting key %q in fresh DB", k)
+		}
 	}
 }
 
@@ -474,8 +484,9 @@ func TestGetAllSettingsPopulated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(settings) != 2 {
-		t.Fatalf("settings = %d entries, want 2", len(settings))
+	// filter_allow and filter_deny from migration 029 + our 2 new entries
+	if len(settings) != 4 {
+		t.Fatalf("settings = %d entries, want 4", len(settings))
 	}
 	if settings["theme"] != "dark" {
 		t.Fatalf("theme = %q, want dark", settings["theme"])
@@ -517,8 +528,9 @@ func TestSaveSettingsInsertAndUpdate(t *testing.T) {
 	if settings["key2"] != "value3" {
 		t.Fatalf("key2 = %q, want value3", settings["key2"])
 	}
-	if len(settings) != 2 {
-		t.Fatalf("settings count = %d, want 2", len(settings))
+	// filter_allow and filter_deny from migration 029 + our 2 entries
+	if len(settings) != 4 {
+		t.Fatalf("settings count = %d, want 4", len(settings))
 	}
 }
 
@@ -653,6 +665,33 @@ func TestGenerateCommunitiesFillsMissing(t *testing.T) {
 	}
 }
 
+// TestGenCommunitiesRuntimeRespectsContextCancellation — genCommunitiesRuntime
+// used tx.Query/tx.Exec internally, ignoring the ctx callers pass in. A
+// canceled/expired request context should abort community generation instead
+// of running to completion regardless. Since Store.Transaction's own
+// BeginTx(ctx, ...) would already reject an upfront-canceled context before
+// ever reaching genCommunitiesRuntime, this calls it directly against a
+// separately-started *sql.Tx to isolate what genCommunitiesRuntime itself
+// does with the context it's given.
+func TestGenCommunitiesRuntimeRespectsContextCancellation(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	syncTestData(ctx, t, s)
+
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck // test cleanup
+
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+
+	if _, err := genCommunitiesRuntime(canceledCtx, tx, 1); err == nil {
+		t.Fatal("expected an error from genCommunitiesRuntime with a canceled context, got nil")
+	}
+}
+
 // =============================================================================
 // Prefix counting — additional tests
 // =============================================================================
@@ -706,9 +745,9 @@ func TestCountPrefixesWithExplicitCategoriesAndServices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Clear default filters that deny 2001:db8::/32
-	err = s.SetGlobalRouteFilters(ctx, RouteFilters{})
-	if err != nil {
+	// Clear default route filters — global filters are now in app_settings, empty by default.
+	if _, err := s.DB.ExecContext(ctx,
+		`DELETE FROM app_settings WHERE key = 'filter_allow' OR key = 'filter_deny'`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -873,14 +912,14 @@ func TestDeleteFeedAdapter(t *testing.T) {
 
 	// Add a custom adapter
 	_, err := s.DB.ExecContext(ctx,
-		"INSERT INTO feed_adapters(key, name, source) VALUES ('test-del', 'Test Delete', 'function sync(f,a){return[]}')")
+		"INSERT INTO feed_adapters(name, source) VALUES ('Test Delete', 'function sync(f,a){return[]}')")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Find its ID
 	var id int64
-	err = s.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE key='test-del'").Scan(&id)
+	err = s.DB.QueryRowContext(ctx, "SELECT id FROM feed_adapters WHERE name='Test Delete'").Scan(&id)
 	if err != nil {
 		t.Fatal(err)
 	}

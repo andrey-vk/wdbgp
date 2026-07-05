@@ -66,7 +66,14 @@ func intersect(input, allow []netip.Prefix) []netip.Prefix {
 func subtract(prefix, denied netip.Prefix) []netip.Prefix {
 	prefix = prefix.Masked()
 	denied = denied.Masked()
-	if prefix.Addr().BitLen() != denied.Addr().BitLen() || !prefix.Contains(denied.Addr()) {
+	if prefix.Addr().BitLen() != denied.Addr().BitLen() {
+		return []netip.Prefix{prefix}
+	}
+	// If denied covers the entire prefix and is broader → remove prefix entirely.
+	if denied.Contains(prefix.Addr()) && denied.Bits() <= prefix.Bits() {
+		return nil
+	}
+	if !prefix.Contains(denied.Addr()) {
 		return []netip.Prefix{prefix}
 	}
 	if denied.Bits() <= prefix.Bits() {

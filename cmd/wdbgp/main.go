@@ -7,13 +7,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/bgp"
-	"github.com/andrey-vk/wdbgp/internal/config"
 	"github.com/andrey-vk/wdbgp/internal/feeds"
 	"github.com/andrey-vk/wdbgp/internal/logging"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 	"github.com/andrey-vk/wdbgp/internal/web"
 )
@@ -25,32 +27,54 @@ func main() {
 }
 
 func run() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-
-	// Configure logging based on config
-	logging.Configure(cfg.LogLevel, cfg.LogFormat)
-
 	command := "serve"
 	if len(os.Args) > 1 {
 		command = os.Args[1]
 	}
+
+	// healthcheck doesn't need store or settings — just probes HTTP endpoint
 	if command == "healthcheck" {
-		return healthcheck(cfg)
+		return healthcheck()
 	}
 
-	db, err := store.Open(cfg.DBPath, cfg)
+	// Determine DBPath from env so we can open the store.
+	dbPath := os.Getenv("WDBGP_DB")
+	if dbPath == "" {
+		dbPath = "/data/wdbgp.sqlite3"
+	}
+	// Validated here, before store.Open touches the filesystem — by the
+	// time settings.New() runs (which also validates DBPath), the store
+	// has already been opened once from this same value, so validating
+	// only there would be too late to actually fail fast.
+	if err := settings.ValidateDBPath(dbPath); err != nil {
+		return fmt.Errorf("WDBGP_DB=%q: %w", dbPath, err)
+	}
+
+	// Read backup/env-only settings from env for store.Open.
+	backupEnabled := envBool("WDBGP_BACKUP_ENABLED", true)
+	backupDir := os.Getenv("WDBGP_BACKUP_DIR")
+	if backupDir == "" {
+		backupDir = dbPath[:max(lastSlash(dbPath), 0)]
+		if backupDir == "" {
+			backupDir = "."
+		}
+	}
+	autoRestore := envBool("WDBGP_AUTO_RESTORE_ENABLED", false)
+
+	db, err := store.Open(dbPath, backupEnabled, backupDir, autoRestore)
 	if err != nil {
 		return err
 	}
 	defer db.Close() //nolint:errcheck // process is about to exit, Close is best-effort
 
-	// Apply DB-stored settings (ENV overrides are preserved)
-	if dbSettings, err := db.GetAllSettings(context.Background()); err == nil {
-		cfg.ApplyDBOverrides(dbSettings)
+	// Create settings with the store (loads DB values and merges with env).
+	s, err := settings.New(db)
+	if err != nil {
+		return err
 	}
+
+	// Configure logging based on settings
+	logging.Configure(s.LogLevel.Get(), s.LogFormat.Get())
 
 	switch command {
 	case "migrate", "init":
@@ -59,7 +83,7 @@ func run() error {
 	case "stats":
 		return printStats(context.Background(), db)
 	case "sync":
-		syncer := feeds.NewSyncer(db, cfg)
+		syncer := feeds.NewSyncer(db, s)
 		if syncErrors := syncer.SyncAll(context.Background()); len(syncErrors) > 0 {
 			for _, syncErr := range syncErrors {
 				logging.Error("feed sync error", "error", syncErr)
@@ -68,34 +92,40 @@ func run() error {
 		}
 		return printStats(context.Background(), db)
 	case "serve":
-		return serve(cfg, db)
+		return serve(s, db)
 	default:
 		return fmt.Errorf("unknown command %q; use serve, migrate, sync, stats, or healthcheck", command)
 	}
 }
 
-func serve(cfg config.Config, db *store.Store) error {
+func serve(s *settings.Settings, db *store.Store) error {
 	if db.Degraded {
-		return serveDegraded(cfg, db)
+		return serveDegraded(s, db)
 	}
 
-	if err := cfg.ValidateServe(); err != nil {
-		return err
+	// Require admin secrets before serving
+	if s.AdminPassword.Get() == "" || s.SessionSecret.Get() == "" {
+		return fmt.Errorf("WDBGP_ADMIN_PASSWORD and WDBGP_SESSION_SECRET are required")
 	}
 
 	logging.Info("starting application",
-		"bgp_asn", cfg.LocalASN,
-		"bgp_port", cfg.BGPListenPort,
-		"http_address", cfg.ListenAddress(),
-		"sync_interval", cfg.SyncInterval,
+		"bgp_asn", s.LocalASN.Get(),
+		"bgp_port", s.BGPPort.Get(),
+		"http_address", fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
+		"sync_interval", s.SyncInterval.Get(),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	bgpManager := bgp.NewManager(cfg, db)
+	bgpManager := bgp.NewManager(s, db)
 	if err := bgpManager.Start(ctx); err != nil {
-		return fmt.Errorf("start BGP: %w", err)
+		// Not fatal: the web UI must stay reachable so an admin can see
+		// what's wrong (via the BGP status banner) and fix the setting
+		// without needing shell/redeploy access. bgpManager.Status()
+		// reflects this failure for the rest of the process's life until
+		// a reload succeeds.
+		logging.Error("BGP manager failed to start, continuing with BGP down", "error", err)
 	}
 	defer func() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -105,21 +135,27 @@ func serve(cfg config.Config, db *store.Store) error {
 		}
 	}()
 
-	syncer := feeds.NewSyncer(db, cfg)
-	go syncLoop(ctx, cfg.SyncInterval, syncer, bgpManager)
+	syncer := feeds.NewSyncer(db, s)
+	go syncLoop(ctx, time.Duration(s.SyncInterval.Get())*time.Second, syncer, bgpManager, db, s)
+	go purgeLoop(ctx, time.Hour, db, s)
 
 	httpServer := &http.Server{
-		Addr:              cfg.ListenAddress(),
-		Handler:           web.New(cfg, db, syncer, bgpManager).Handler(),
+		Addr:              fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
+		Handler:           web.New(s, db, syncer, bgpManager).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 	serverErrors := make(chan error, 1)
+	port := fmt.Sprintf("%d", s.Port.Get())
+	if err := os.WriteFile(portFilePath(s.DBPath.Get()), []byte(port), 0600); err != nil {
+		return fmt.Errorf("write port file: %w", err)
+	}
+
 	go func() {
 		logging.Info("HTTP server starting",
-			"address", cfg.ListenAddress(),
-			"bgp_asn", cfg.LocalASN,
-			"bgp_port", cfg.BGPListenPort,
+			"address", fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
+			"bgp_asn", s.LocalASN.Get(),
+			"bgp_port", s.BGPPort.Get(),
 		)
 		serverErrors <- httpServer.ListenAndServe()
 	}()
@@ -139,15 +175,41 @@ func serve(cfg config.Config, db *store.Store) error {
 	return httpServer.Shutdown(shutdownCtx)
 }
 
+// purgeLoop periodically removes old metric snapshots based on metrics_history_days.
+func purgeLoop(ctx context.Context, interval time.Duration, db *store.Store, s *settings.Settings) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !s.MetricsEnabled.Get() {
+				continue
+			}
+			days := s.MetricsHistoryDays.Get()
+			if days <= 0 {
+				days = 14
+			}
+			if err := db.PurgeUserSnapshots(ctx, days); err != nil {
+				logging.Error("metrics purge failed for user snapshots", "error", err)
+			}
+			if err := db.PurgeFeedSnapshots(ctx, days); err != nil {
+				logging.Error("metrics purge failed for feed snapshots", "error", err)
+			}
+		}
+	}
+}
+
 // serveDegraded starts an HTTP server that only shows the DB version mismatch page.
-func serveDegraded(cfg config.Config, db *store.Store) error {
+func serveDegraded(s *settings.Settings, db *store.Store) error {
 	logging.Warn("starting in degraded mode",
 		"db_version", db.DBVersion, "server_version", db.ServerVersion)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	srv := web.New(cfg, db, nil, nil)
+	srv := web.New(s, db, nil, nil)
 	srv.SetDegraded(web.DegradedInfo{
 		CurrentVersion: db.DBVersion,
 		ServerVersion:  db.ServerVersion,
@@ -155,7 +217,7 @@ func serveDegraded(cfg config.Config, db *store.Store) error {
 	})
 
 	httpServer := &http.Server{
-		Addr:              cfg.ListenAddress(),
+		Addr:              fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -163,7 +225,7 @@ func serveDegraded(cfg config.Config, db *store.Store) error {
 	serverErrors := make(chan error, 1)
 	go func() {
 		logging.Info("HTTP server starting in degraded mode",
-			"address", cfg.ListenAddress(),
+			"address", fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
 		)
 		serverErrors <- httpServer.ListenAndServe()
 	}()
@@ -183,7 +245,7 @@ func serveDegraded(cfg config.Config, db *store.Store) error {
 	return httpServer.Shutdown(shutdownCtx)
 }
 
-func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer, manager *bgp.Manager) {
+func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer, manager *bgp.Manager, db *store.Store, s *settings.Settings) {
 	syncNow := func() {
 		logger := logging.FromContext(ctx)
 		logger.Info("starting feed sync")
@@ -203,10 +265,26 @@ func syncLoop(ctx context.Context, interval time.Duration, syncer *feeds.Syncer,
 		} else if ctx.Err() == nil {
 			logger.Info("BGP reconcile completed")
 		}
+
+		db.RecordFeedSnapshot(ctx, s.MetricsEnabled.Get())
+		peerStates, _ := manager.PeerStates(ctx) //nolint:errcheck
+		db.RecordUserSnapshot(ctx, s.MetricsEnabled.Get(), peerStates)
 	}
 	syncNow()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	// sync_interval is saved through the settings API without any restart
+	// requirement, but the ticker was only ever built once at startup from
+	// the interval captured here — a saved change had no runtime effect
+	// until the next process restart. Reset the ticker in place when it
+	// changes, the same way RateLimitLogin/RateLimitAdmin already reload
+	// live (see web.New's OnChange registrations).
+	unsubscribe := s.SyncInterval.OnChange(func(v int) {
+		if v > 0 {
+			ticker.Reset(time.Duration(v) * time.Second)
+		}
+	})
+	defer unsubscribe()
 	for {
 		select {
 		case <-ctx.Done():
@@ -248,21 +326,60 @@ func printStats(ctx context.Context, db *store.Store) error {
 			"name", feed.Name,
 			"status", status,
 			"enabled", feed.Enabled,
-			"mode_id", feed.ModeID,
 		)
 	}
 	return nil
 }
 
-func healthcheck(cfg config.Config) error {
+func healthcheck() error {
+	dbPath := os.Getenv("WDBGP_DB")
+	if dbPath == "" {
+		dbPath = "/data/wdbgp.sqlite3"
+	}
+	port, err := os.ReadFile(portFilePath(dbPath))
+	if err != nil {
+		return fmt.Errorf("read port file: %w", err)
+	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.Port))
+	resp, err := client.Get("http://127.0.0.1:" + string(port) + "/healthz")
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close() //nolint:errcheck // health check response body, no data to read
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("health endpoint returned %s", response.Status)
+	defer resp.Body.Close() //nolint:errcheck // process exits immediately after, Close is best-effort
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("health endpoint returned %s", resp.Status)
 	}
 	return nil
+}
+
+func envBool(name string, fallback bool) bool {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func lastSlash(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '/' {
+			return i
+		}
+	}
+	return -1
+}
+
+// portFilePath returns where the HTTP listen port is recorded so that a
+// separate `wdbgp healthcheck` invocation can find it. It lives next to the
+// database rather than in the shared /tmp, since /tmp isn't necessarily
+// exclusive to this process (gosec G303).
+func portFilePath(dbPath string) string {
+	return filepath.Join(filepath.Dir(dbPath), "wdbgp-port")
 }

@@ -10,13 +10,47 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andrey-vk/wdbgp/internal/config"
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
+func testSettings(t *testing.T, fields map[string]string) *settings.Settings {
+	t.Helper()
+	s, err := settings.New(settings.NewTestStoreWith(fields))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// newTestManager builds a Manager with its restart-only-setting snapshot
+// (localASN/localAddrV4/localAddrV6) populated to match cfg, mirroring what
+// startLocked() does — without actually starting a BGP speaker/listener.
+// For tests that exercise buildRoute()/buildPeerConfigs() directly.
+func newTestManager(t *testing.T, fields map[string]string, db *store.Store) *Manager {
+	t.Helper()
+	cfg := testSettings(t, fields)
+	m := NewManager(cfg, db)
+	m.localASN = uint32(cfg.LocalASN.Get()) //nolint:gosec // test value, always in range
+	m.activeDial = cfg.ActiveDial.Get()
+	addr, err := netip.ParseAddr(cfg.LocalAddressV4.Get())
+	if err != nil {
+		t.Fatalf("invalid local_address_v4 in test fields: %v", err)
+	}
+	m.localAddrV4 = addr
+	if v6 := cfg.LocalAddressV6.Get(); v6 != "" {
+		addr6, err := netip.ParseAddr(v6)
+		if err != nil {
+			t.Fatalf("invalid local_address_v6 in test fields: %v", err)
+		}
+		m.localAddrV6 = addr6
+	}
+	return m
+}
+
 func TestBuildRouteCarriesCommunities(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
+	manager := newTestManager(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
 	}, nil)
 	prefix := netip.MustParsePrefix("149.154.160.0/20")
 	comms := map[string]uint32{"testcat": 10000, "testcat|testsvc": 10001}
@@ -61,8 +95,8 @@ func TestBuildRouteCarriesCommunities(t *testing.T) {
 }
 
 func TestBuildRouteHonorsUserNextHop(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
+	manager := newTestManager(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
 	}, nil)
 
 	// IPv4 prefix with user.NextHop override
@@ -99,26 +133,72 @@ func TestBuildRouteHonorsUserNextHop(t *testing.T) {
 }
 
 func TestManagerStartsWithoutPeers(t *testing.T) {
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.2",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.2",
+	}), s)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if running, lastErr := manager.Status(); !running || lastErr != nil {
+		t.Fatalf("Status() = (%v, %v), want (true, nil) after successful Start", running, lastErr)
+	}
 	if err := manager.Stop(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if running, lastErr := manager.Status(); running || lastErr != nil {
+		t.Fatalf("Status() = (%v, %v), want (false, nil) after Stop", running, lastErr)
+	}
+}
+
+func TestManagerStatusReportsStartFailure(t *testing.T) {
+	ctx := context.Background()
+	s1, err := store.Open(filepath.Join(t.TempDir(), "bgp1.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s1.Close()
+	s2, err := store.Open(filepath.Join(t.TempDir(), "bgp2.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	// Two managers configured to bind the same BGP port — the second Start
+	// deterministically fails with "address already in use", a real,
+	// environment-independent failure (unlike, say, an invalid router_id,
+	// which settings validation now rejects before it ever reaches here).
+	fields := map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "18179",
+		"local_address_v4": "192.0.2.2",
+	}
+	manager1 := NewManager(testSettings(t, fields), s1)
+	if err := manager1.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager1.Stop(ctx)
+
+	manager2 := NewManager(testSettings(t, fields), s2)
+	if err := manager2.Start(ctx); err == nil {
+		t.Fatal("expected Start to fail on a port already in use")
+	}
+	running, lastErr := manager2.Status()
+	if running {
+		t.Fatal("Status() reports running=true after a failed Start")
+	}
+	if lastErr == nil {
+		t.Fatal("Status() lastErr is nil after a failed Start")
 	}
 }
 
 func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,10 +222,10 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.1",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.1",
+	}), s)
 	if err := manager.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -167,8 +247,8 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 // =============================================================================
 
 func TestBuildRouteHasUserCommunityButNotOtherUser(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1",
+	manager := newTestManager(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1",
 	}, nil)
 	prefix := netip.MustParsePrefix("8.8.8.0/24")
 	comms := map[string]uint32{"cat": 10000, "cat|svc": 10001}
@@ -204,8 +284,8 @@ func TestBuildRouteHasUserCommunityButNotOtherUser(t *testing.T) {
 }
 
 func TestBuildRouteIncludesCategoryAndServiceCommunities(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1",
+	manager := newTestManager(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1",
 	}, nil)
 	prefix := netip.MustParsePrefix("149.154.160.0/20")
 	comms := map[string]uint32{"Messengers": 20000, "Messengers|Telegram": 20001}
@@ -237,8 +317,8 @@ func TestBuildRouteIncludesCategoryAndServiceCommunities(t *testing.T) {
 }
 
 func TestBuildRouteSkipsCommunityForUnknownCategory(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1",
+	manager := newTestManager(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1",
 	}, nil)
 	prefix := netip.MustParsePrefix("1.1.1.0/24")
 	// Category "Unknown" has no community in the map
@@ -260,8 +340,8 @@ func TestBuildRouteSkipsCommunityForUnknownCategory(t *testing.T) {
 }
 
 func TestBuildRouteIPv6NoPanic(t *testing.T) {
-	manager := NewManager(config.Config{
-		LocalASN: 64512, LocalAddressV4: "172.16.0.1", LocalAddressV6: "fd00::1",
+	manager := newTestManager(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
 	}, nil)
 	prefix := netip.MustParsePrefix("2001:db8::/32")
 	comms := map[string]uint32{"cat": 10000}
@@ -305,7 +385,7 @@ func TestBuildRouteIPv6NoPanic(t *testing.T) {
 
 func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,10 +421,10 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.1",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.1",
+	}), s)
 	if err := manager.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -376,9 +456,101 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	}
 }
 
+func TestReconcileClearsRoutesOnModeChange(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	userID, err := s.AddUser(ctx, store.User{
+		Name: "modeswitch", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
+		(feed_id, category, service, cidr) VALUES
+		(1, 'video', 'youtube', '8.8.8.0/24'),
+		(1, 'video', 'youtube', '8.8.4.0/24'),
+		(1, 'chat', 'telegram', '149.154.160.0/20')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, userID, []string{"video"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.1",
+	}), s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Verify routes were announced.
+	manager.mu.Lock()
+	routes := manager.peerRoutes["192.0.2.2:65001"]
+	manager.mu.Unlock()
+	if len(routes) == 0 {
+		t.Fatal("expected routes after initial reconcile, got none")
+	}
+
+	// Change user to mode 2 (IPRanges, disabled by default).
+	// Enable it first so the disabled filter doesn't hide the bug:
+	// UpdatePeer clears peerRoutes, so Reconcile sees nil vs empty
+	// and never withdraws old routes from the speaker.
+	_, err = s.DB.ExecContext(ctx, "UPDATE catalog_modes SET enabled = 1 WHERE id = 2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.DB.ExecContext(ctx, "UPDATE users SET catalog_mode_id = 2 WHERE id = ?", userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fetch updated user from store.
+	users, err := s.Users(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updatedUser store.User
+	for _, u := range users {
+		if u.ID == userID {
+			updatedUser = u
+			break
+		}
+	}
+
+	// Update peer in manager and reconcile.
+	if err := manager.UpdatePeer(ctx, updatedUser); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify routes were cleared — check speaker's peer routes (the wire),
+	// not manager's peerRoutes cache which UpdatePeer already emptied.
+	manager.speaker.mu.Lock()
+	speakerPeer := manager.speaker.peers["192.0.2.2:65001"]
+	manager.speaker.mu.Unlock()
+	if speakerPeer != nil {
+		speakerPeer.mu.Lock()
+		routes = speakerPeer.routes
+		speakerPeer.mu.Unlock()
+	}
+	if len(routes) != 0 {
+		t.Errorf("peer still has %d routes on speaker after mode change, want 0", len(routes))
+	}
+}
+
 func TestDeletePeerHandlesSameIPDifferentASN(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,10 +571,10 @@ func TestDeletePeerHandlesSameIPDifferentASN(t *testing.T) {
 	}
 	_ = userBID // used later in verification
 
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.1",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.1",
+	}), s)
 	if err := manager.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -454,6 +626,116 @@ func TestDeletePeerHandlesSameIPDifferentASN(t *testing.T) {
 	}
 }
 
+// TestUpdatePeerClearsRoutesOnPasswordChange guards against a stale
+// peerRoutes cache after a peer session gets recreated for a reason other
+// than an IP/ASN change. speaker.SetPeers recreates a same-key peer when
+// its BGP password changes; if the manager's route cache isn't cleared too,
+// reconcileLocked compares against the stale cache, finds no diff, and
+// never re-announces routes to the freshly recreated (routeless) peer.
+func TestUpdatePeerClearsRoutesOnPasswordChange(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// 0.0.0.0 (dynamic/passive-only peer, see TestDynamicPeerIsPassiveOnly)
+	// is deliberately excluded from applyListenerMD5's setsockopt calls
+	// (pc.Address.IsUnspecified()), so a password change here exercises
+	// speaker.SetPeers' recreation logic without touching TCP_MD5SIG —
+	// not every CI/sandbox kernel supports that socket option, and this
+	// test only cares about the peerRoutes cache, not MD5 itself.
+	userID, err := s.AddUser(ctx, store.User{
+		Name: "user", PeerIP: "0.0.0.0", PeerASN: 65001, Enabled: true, BGPPassword: "old-pass",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.1",
+	}), s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// Start() already loaded the peer from the DB.
+
+	// Simulate a prior successful reconcile having announced routes.
+	manager.mu.Lock()
+	manager.peerRoutes["0.0.0.0:65001"] = []Route{{Prefix: netip.MustParsePrefix("8.8.8.0/24")}}
+	manager.mu.Unlock()
+
+	// Same IP/ASN, only the BGP password changes — SetPeers recreates the
+	// peer session, so the stale cache must be cleared.
+	if err := manager.UpdatePeer(ctx, store.User{
+		ID: userID, Name: "user", PeerIP: "0.0.0.0", PeerASN: 65001, Enabled: true, BGPPassword: "new-pass",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if _, ok := manager.peerRoutes["0.0.0.0:65001"]; ok {
+		t.Fatal("peerRoutes should have been cleared after a password change recreated the peer session")
+	}
+}
+
+// TestUpdatePeerRejectsDuplicatePeerIPASNOnFirstTrack guards UpdatePeer's
+// "not yet tracked" branch (a user ID the manager hasn't seen before —
+// e.g. a peer being re-enabled after being disabled) against appending a
+// peer that duplicates an existing tracked peer's IP+ASN. AddPeer already
+// rejects this; UpdatePeer's equivalent branch didn't.
+func TestUpdatePeerRejectsDuplicatePeerIPASNOnFirstTrack(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	userAID, err := s.AddUser(ctx, store.User{
+		Name: "userA", PeerIP: "192.0.2.9", PeerASN: 65009, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.1",
+	}), s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	// userAID is now tracked in peerConfigs (loaded by Start). A different
+	// user ID sharing the same PeerIP+PeerASN, not yet tracked, must be
+	// rejected the same way AddPeer would reject it.
+	err = manager.UpdatePeer(ctx, store.User{
+		ID: userAID + 1000, Name: "userB-duplicate", PeerIP: "192.0.2.9", PeerASN: 65009, Enabled: true,
+	})
+	if err == nil {
+		t.Fatal("expected UpdatePeer to reject a not-yet-tracked peer duplicating an existing peer's IP+ASN")
+	}
+
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	count := 0
+	for _, u := range manager.peerConfigs {
+		if u.PeerIP == "192.0.2.9" && u.PeerASN == 65009 {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("peerConfigs has %d entries for 192.0.2.9:65009, want 1 (no duplicate appended)", count)
+	}
+}
+
 func routePrefixStrings(routes []Route) []string {
 	var out []string
 	for _, r := range routes {
@@ -476,7 +758,7 @@ func assertPrefixes(t *testing.T, got, want []string) {
 
 func TestDynamicPeerIsPassiveOnly(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), config.Config{})
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -494,10 +776,10 @@ func TestDynamicPeerIsPassiveOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	manager := NewManager(config.Config{
-		LocalASN: 64512, RouterID: "192.0.2.1", BGPListenPort: -1,
-		LocalAddressV4: "192.0.2.1",
-	}, s)
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.1",
+	}), s)
 	if err := manager.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -523,5 +805,71 @@ func TestDynamicPeerIsPassiveOnly(t *testing.T) {
 	state := p.State()
 	if state == StateEstablished || state == StateOpenSent || state == StateOpenConfirm {
 		t.Fatalf("dynamic peer should not actively connect, state=%s", state)
+	}
+}
+
+// TestActiveDialSnapshotSurvivesLiveSettingChange guards against a bug where
+// AddPeer/UpdatePeer/DeletePeer (via buildPeerConfigs) read active_dial live
+// from Settings instead of the snapshot taken at (re)start — like the other
+// restart-only settings (localASN, localAddrV4/V6), an admin toggling
+// active_dial while the speaker is already running must not affect peers
+// added/updated before the next explicit reload.
+func TestActiveDialSnapshotSurvivesLiveSettingChange(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	cfg := testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1180",
+		"local_address_v4": "192.0.2.1", "active_dial": "true",
+	})
+	manager := NewManager(cfg, s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	if !manager.activeDial {
+		t.Fatal("snapshot activeDial should be true right after Start with active_dial=true")
+	}
+
+	// Flip the live setting off — must not affect the already-running
+	// speaker's snapshot.
+	if err := cfg.ActiveDial.Set(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if manager.activeDial != true {
+		t.Fatalf("manager.activeDial = %v after live setting change, want unchanged true (snapshot)", manager.activeDial)
+	}
+
+	// AddPeer for a new user with ActiveDial=true must still get an
+	// actively-dialing port (Port=0), based on the snapshot taken at Start —
+	// not the now-false live setting.
+	userID, err := s.AddUser(ctx, store.User{
+		Name: "active-dial-user", PeerIP: "192.0.2.50", PeerASN: 65010,
+		Enabled: true, ActiveDial: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := s.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.AddPeer(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.speaker.mu.Lock()
+	p, ok := manager.speaker.peers["192.0.2.50:65010"]
+	manager.speaker.mu.Unlock()
+	if !ok {
+		t.Fatal("added peer not found in speaker peers")
+	}
+	if got := p.PeerConfig().Port; got != 0 {
+		t.Errorf("Port = %d after AddPeer with live active_dial=false, want 0 (snapshot active_dial=true must still apply)", got)
 	}
 }

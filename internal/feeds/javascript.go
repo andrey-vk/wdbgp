@@ -19,7 +19,7 @@ import (
 	"github.com/dop251/goja"
 )
 
-type adapterRunner struct {
+type feedRunner struct {
 	client  *http.Client
 	timeout time.Duration
 	limits  AdapterLimits
@@ -44,7 +44,7 @@ func FormatAdapterError(err error) string {
 	return err.Error()
 }
 
-func (r adapterRunner) run(
+func (r feedRunner) run(
 	ctx context.Context,
 	feed store.Feed,
 	adapter store.FeedAdapter,
@@ -65,7 +65,7 @@ func (r adapterRunner) run(
 	vm := goja.New()
 	vm.SetFieldNameMapper(goja.TagFieldNameMapper("json", true))
 	vm.SetMaxCallStackSize(r.limits.MaxCallStack)
-	program, err := goja.Compile(adapter.Key+".js", adapter.Source, true)
+	program, err := goja.Compile(fmt.Sprintf("adapter-%d.js", adapter.ID), adapter.Source, true)
 	if err != nil {
 		return nil, fmt.Errorf("compile adapter: %w", err)
 	}
@@ -86,7 +86,7 @@ func (r adapterRunner) run(
 		return nil, fmt.Errorf("adapter must define function sync(feed, api)")
 	}
 
-	httpAPI, err := newAdapterHTTP(runCtx, r.client, feed.URL, adapter.AllowedHosts, r.limits)
+	httpAPI, err := newAdapterRunner(runCtx, r.client, feed.URL, feed.AllowedHosts, feed.RestrictHosts, r.limits)
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +94,7 @@ func (r adapterRunner) run(
 	if err := api.Set("httpGet", func(call goja.FunctionCall) goja.Value {
 		body, requestErr := httpAPI.get(call.Argument(0).String())
 		if requestErr != nil {
+			// Panic propagates to JavaScript as a catchable exception — documented goja interop pattern.
 			panic(vm.NewGoError(requestErr))
 		}
 		return vm.ToValue(body)
@@ -108,10 +109,12 @@ func (r adapterRunner) run(
 		}
 		body, requestErr := httpAPI.getBytes(rawURL)
 		if requestErr != nil {
+			// Panic propagates to JavaScript as a catchable exception — documented goja interop pattern.
 			panic(vm.NewGoError(requestErr))
 		}
 		entries, parseErr := ParseSRS(runCtx, body, cfgJSON)
 		if parseErr != nil {
+			// Panic propagates to JavaScript as a catchable exception — documented goja interop pattern.
 			panic(vm.NewGoError(parseErr))
 		}
 		return vm.ToValue(entries)
@@ -183,7 +186,7 @@ func normalizeCanonical(rawEntries []canonicalEntry, maxEntries int) ([]Entry, e
 	return deduplicate(entries), nil
 }
 
-type adapterHTTP struct {
+type adapterRunner struct {
 	ctx          context.Context
 	client       *http.Client
 	allowedHosts map[string]bool
@@ -192,16 +195,22 @@ type adapterHTTP struct {
 	totalBytes   int64
 }
 
-func newAdapterHTTP(
+func newAdapterRunner(
 	ctx context.Context,
 	client *http.Client,
 	feedURL string,
 	additionalHosts string,
+	restrictHosts bool,
 	limits AdapterLimits,
-) (*adapterHTTP, error) {
+) (*adapterRunner, error) {
 	parsedFeedURL, err := url.Parse(feedURL)
 	if err != nil || parsedFeedURL.Hostname() == "" {
 		return nil, fmt.Errorf("invalid feed URL")
+	}
+	if !restrictHosts {
+		return &adapterRunner{
+			ctx: ctx, client: client, allowedHosts: nil, limits: limits,
+		}, nil
 	}
 	allowed := map[string]bool{strings.ToLower(parsedFeedURL.Hostname()): true}
 	for _, host := range strings.FieldsFunc(additionalHosts, func(r rune) bool {
@@ -209,12 +218,12 @@ func newAdapterHTTP(
 	}) {
 		allowed[strings.ToLower(strings.TrimSpace(host))] = true
 	}
-	return &adapterHTTP{
+	return &adapterRunner{
 		ctx: ctx, client: client, allowedHosts: allowed, limits: limits,
 	}, nil
 }
 
-func (a *adapterHTTP) get(rawURL string) (string, error) {
+func (a *adapterRunner) get(rawURL string) (string, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Hostname() == "" ||
 		(parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -243,7 +252,7 @@ func (a *adapterHTTP) get(rawURL string) (string, error) {
 	return string(result), nil
 }
 
-func (a *adapterHTTP) getBytes(rawURL string) ([]byte, error) {
+func (a *adapterRunner) getBytes(rawURL string) ([]byte, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Hostname() == "" ||
 		(parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -270,7 +279,7 @@ func (a *adapterHTTP) getBytes(rawURL string) ([]byte, error) {
 	return result, nil
 }
 
-func (a *adapterHTTP) doHTTPRequest(parsed *url.URL) ([]byte, error) {
+func (a *adapterRunner) doHTTPRequest(parsed *url.URL) ([]byte, error) {
 	if a.requests >= a.limits.MaxRequests {
 		return nil, fmt.Errorf("adapter exceeded %d HTTP requests", a.limits.MaxRequests)
 	}
@@ -330,9 +339,9 @@ func (a *adapterHTTP) doHTTPRequest(parsed *url.URL) ([]byte, error) {
 	return body, nil
 }
 
-func (a *adapterHTTP) validateURL(parsed *url.URL) error {
+func (a *adapterRunner) validateURL(parsed *url.URL) error {
 	host := strings.ToLower(parsed.Hostname())
-	if !a.allowedHosts[host] {
+	if a.allowedHosts != nil && !a.allowedHosts[host] {
 		return fmt.Errorf("adapter HTTP host %q is not allowed", host)
 	}
 	if address, err := netip.ParseAddr(host); err == nil {
@@ -360,7 +369,7 @@ func (a *adapterHTTP) validateURL(parsed *url.URL) error {
 	return a.reserveRequest()
 }
 
-func (a *adapterHTTP) reserveRequest() error {
+func (a *adapterRunner) reserveRequest() error {
 	if a.requests >= a.limits.MaxRequests {
 		return fmt.Errorf("adapter exceeded %d HTTP requests", a.limits.MaxRequests)
 	}
