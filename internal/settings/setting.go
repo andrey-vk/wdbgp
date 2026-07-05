@@ -213,11 +213,18 @@ func (s *complexSetting[T]) Get() T {
 	return s.value
 }
 
+// envOnlyError reports that a setting has no dbKey — it's env-only by
+// design (see the dbKey="" convention documented on Settings) — and so can
+// never be written through Set/Reset regardless of caller.
+func envOnlyError(envVar string) error {
+	return fmt.Errorf("settings: %s is env-only and cannot be set or reset through this interface", envVar)
+}
+
 // Validate reports whether v would be accepted by Set, without persisting
 // or mutating anything.
 func (s *simpleSetting[T]) Validate(v T) error {
 	if s.dbKey == "" {
-		return fmt.Errorf("settings: %s is env-only and cannot be set or reset through this interface", s.envVar)
+		return envOnlyError(s.envVar)
 	}
 	if s.envVar != "" && os.Getenv(s.envVar) != "" {
 		return fmt.Errorf("settings: cannot set %s, overridden by %s", s.dbKey, s.envVar)
@@ -266,7 +273,7 @@ func (s *simpleSetting[T]) Set(ctx context.Context, v T) error {
 // or mutating anything.
 func (s *complexSetting[T]) Validate(v string) error {
 	if s.dbKey == "" {
-		return fmt.Errorf("settings: %s is env-only and cannot be set or reset through this interface", s.envVar)
+		return envOnlyError(s.envVar)
 	}
 	if s.envVar != "" && os.Getenv(s.envVar) != "" {
 		return fmt.Errorf("settings: cannot set %s, overridden by %s", s.dbKey, s.envVar)
@@ -308,7 +315,7 @@ func (s *complexSetting[T]) Set(ctx context.Context, v string) error {
 // Reset deletes the stored database value and reverts to the default.
 func (s *simpleSetting[T]) Reset(ctx context.Context) error {
 	if s.dbKey == "" {
-		return fmt.Errorf("settings: %s is env-only and cannot be set or reset through this interface", s.envVar)
+		return envOnlyError(s.envVar)
 	}
 	if s.envVar != "" && os.Getenv(s.envVar) != "" {
 		return fmt.Errorf("settings: cannot reset %s, overridden by %s", s.dbKey, s.envVar)
@@ -330,7 +337,7 @@ func (s *simpleSetting[T]) Reset(ctx context.Context) error {
 // Reset deletes the stored database value and reverts to parse(defaultJSON).
 func (s *complexSetting[T]) Reset(ctx context.Context) error {
 	if s.dbKey == "" {
-		return fmt.Errorf("settings: %s is env-only and cannot be set or reset through this interface", s.envVar)
+		return envOnlyError(s.envVar)
 	}
 	if s.envVar != "" && os.Getenv(s.envVar) != "" {
 		return fmt.Errorf("settings: cannot reset %s, overridden by %s", s.dbKey, s.envVar)
