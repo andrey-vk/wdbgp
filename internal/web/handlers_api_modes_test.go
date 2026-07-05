@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
 // =============================================================================
@@ -324,9 +326,9 @@ func TestModeCommunities(t *testing.T) {
 	}
 
 	// --- Insert catalog entry so GenerateCommunities has data to work with ---
-	_, err = st.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-		feedID, "test-category", "test-service", "10.0.0.0/8")
+	err = st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "test-category", Service: "test-service", CIDR: "10.0.0.0/8"},
+	})
 	if err != nil {
 		t.Fatalf("insert catalog entry: %v", err)
 	}
@@ -521,14 +523,10 @@ func TestModeCommunitiesGroupAutoValueMatchesGeneration(t *testing.T) {
 		t.Fatalf("assign feed to mode: %v", err)
 	}
 	// Two categories, alphabetically ordered, so groupIndex 0 and 1 both get checked.
-	if _, err := st.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-		feedID, "a-category", "svc", "10.0.0.0/8"); err != nil {
-		t.Fatalf("insert catalog entry: %v", err)
-	}
-	if _, err := st.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-		feedID, "b-category", "svc", "10.1.0.0/16"); err != nil {
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "a-category", Service: "svc", CIDR: "10.0.0.0/8"},
+		{Category: "b-category", Service: "svc", CIDR: "10.1.0.0/16"},
+	}); err != nil {
 		t.Fatalf("insert catalog entry: %v", err)
 	}
 

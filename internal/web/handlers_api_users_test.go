@@ -1401,14 +1401,14 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 	}
 
 	// 4. Create catalog entries: feed1 has "Cat1::Svc1", feed2 has "Cat2::Svc2"
-	if _, err := st.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-		f1ID, "Cat1", "Svc1", "10.0.0.0/8"); err != nil {
+	if err := st.InsertCatalogEntries(ctx, f1ID, []store.CatalogEntry{
+		{Category: "Cat1", Service: "Svc1", CIDR: "10.0.0.0/8"},
+	}); err != nil {
 		t.Fatalf("insert entry f1: %v", err)
 	}
-	if _, err := st.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-		f2ID, "Cat2", "Svc2", "192.168.0.0/16"); err != nil {
+	if err := st.InsertCatalogEntries(ctx, f2ID, []store.CatalogEntry{
+		{Category: "Cat2", Service: "Svc2", CIDR: "192.168.0.0/16"},
+	}); err != nil {
 		t.Fatalf("insert entry f2: %v", err)
 	}
 

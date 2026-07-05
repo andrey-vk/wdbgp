@@ -183,7 +183,7 @@ func (s *Store) RecordFeedSnapshot(ctx context.Context, metricsEnabled bool) {
 	for _, f := range feeds {
 		var count int
 		if err := s.DB.QueryRowContext(ctx,
-			"SELECT COUNT(DISTINCT cidr) FROM catalog_entries WHERE feed_id = ?", f.ID).Scan(&count); err == nil && count > 0 {
+			"SELECT COUNT(DISTINCT prefix_id) FROM catalog_entries WHERE feed_id = ?", f.ID).Scan(&count); err == nil && count > 0 {
 			counts[f.ID] = count
 		}
 	}

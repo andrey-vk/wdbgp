@@ -422,6 +422,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if _, err := backupDB.Exec("DELETE FROM catalog_entries"); err != nil {
 			log.Printf("WARNING: backup cleanup DELETE: %v", err)
 		}
+		// The prefixes dictionary (schema >= 32) is recreatable too; on
+		// older-format DBs the table doesn't exist yet.
+		var hasPrefixes int
+		if err := backupDB.QueryRow(
+			"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='prefixes'").Scan(&hasPrefixes); err != nil {
+			log.Printf("WARNING: backup cleanup prefixes check: %v", err)
+		} else if hasPrefixes > 0 {
+			if _, err := backupDB.Exec("DELETE FROM prefixes"); err != nil {
+				log.Printf("WARNING: backup cleanup DELETE prefixes: %v", err)
+			}
+		}
 		if _, err := backupDB.Exec("VACUUM"); err != nil {
 			log.Printf("WARNING: backup cleanup VACUUM: %v", err)
 		}
@@ -558,8 +569,9 @@ WHERE id = ?`, id).Scan(
 
 func (s *Store) Stats(ctx context.Context) (int, int, int, error) {
 	var categories, services, entries int
-	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(DISTINCT category),
-		COUNT(DISTINCT service), COUNT(DISTINCT cidr) FROM catalog_entries`).
+	err := s.DB.QueryRowContext(ctx, `
+SELECT COUNT(DISTINCT sv.category_id), COUNT(DISTINCT ce.service_id), COUNT(DISTINCT ce.prefix_id)
+FROM catalog_entries ce JOIN services sv ON sv.id = ce.service_id`).
 		Scan(&categories, &services, &entries)
 	return categories, services, entries, err
 }

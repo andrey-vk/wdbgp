@@ -728,11 +728,11 @@ func TestCountPrefixesWithExplicitCategoriesAndServices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'CountA', 'Svc1', '1.1.1.0/24'),
-		(?, 'CountA', 'Svc1', '2.2.2.0/24'),
-		(?, 'CountB', 'Svc2', '2001:db8::/48')`,
-		feedID, feedID, feedID)
+	err = s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "CountA", Service: "Svc1", CIDR: "1.1.1.0/24"},
+		{Category: "CountA", Service: "Svc1", CIDR: "2.2.2.0/24"},
+		{Category: "CountB", Service: "Svc2", CIDR: "2001:db8::/48"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -805,12 +805,12 @@ func TestCategoryPrefixCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'CatA', 'S1', '4.4.4.0/24'),
-		(?, 'CatA', 'S2', '5.5.5.0/24'),
-		(?, 'CatA', 'S1', '2001:100::/48'),
-		(?, 'CatB', 'S3', '6.6.6.0/24')`,
-		feedID, feedID, feedID, feedID)
+	err = s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "CatA", Service: "S1", CIDR: "4.4.4.0/24"},
+		{Category: "CatA", Service: "S2", CIDR: "5.5.5.0/24"},
+		{Category: "CatA", Service: "S1", CIDR: "2001:100::/48"},
+		{Category: "CatB", Service: "S3", CIDR: "6.6.6.0/24"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -841,11 +841,11 @@ func TestPrefixCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'Perf', 'A', '7.7.7.0/24'),
-		(?, 'Perf', 'A', '8.8.8.0/24'),
-		(?, 'Perf', 'B', '2001:200::/48')`,
-		feedID, feedID, feedID)
+	err = s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "Perf", Service: "A", CIDR: "7.7.7.0/24"},
+		{Category: "Perf", Service: "A", CIDR: "8.8.8.0/24"},
+		{Category: "Perf", Service: "B", CIDR: "2001:200::/48"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,10 +882,10 @@ func syncTestData(ctx context.Context, t *testing.T, s *Store) {
 		t.Fatal(err)
 	}
 	if count == 0 {
-		_, err = s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-			(?, 'CommunityTest', 'Svc1', '99.99.99.0/24'),
-			(?, 'CommunityTest', 'Svc2', '88.88.88.0/24')`,
-			feedID, feedID)
+		err = s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+			{Category: "CommunityTest", Service: "Svc1", CIDR: "99.99.99.0/24"},
+			{Category: "CommunityTest", Service: "Svc2", CIDR: "88.88.88.0/24"},
+		})
 		if err != nil {
 			t.Fatal(err)
 		}

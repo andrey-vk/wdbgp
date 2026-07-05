@@ -273,10 +273,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 			!enabled {
 			return errFeedChanged
 		}
-		if _, err := tx.ExecContext(ctx, "DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
-			return err
-		}
-		if err := insertCatalogEntries(ctx, tx, feed.ID, entries); err != nil {
+		if err := store.ReplaceCatalogEntries(ctx, tx, feed.ID, toCatalogEntries(entries)); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx,
@@ -289,6 +286,13 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	}
 	if err != nil {
 		return adapter.Revision, err
+	}
+	// A resync replaces the feed's entries wholesale, so prefixes that
+	// dropped out of the feed may no longer be referenced by anything.
+	if pruned, pruneErr := s.Store.PruneOrphanPrefixes(ctx); pruneErr != nil {
+		logger.Warn("failed to prune orphan prefixes after sync", "feed_id", feed.ID, "error", pruneErr)
+	} else if pruned > 0 {
+		logger.Debug("pruned orphan prefixes", "feed", feed.Name, "count", pruned)
 	}
 	// Generate communities for newly added categories/services across ALL modes the feed belongs to.
 	modeIDs, modeErr := s.Store.FeedModes(ctx, feed.ID)
@@ -304,31 +308,19 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	return adapter.Revision, nil
 }
 
-// catalogEntryInsertBatchSize caps rows per multi-row INSERT. 500 rows x 4
-// bound params = 2000, safely under modernc.org/sqlite's compiled-in
-// SQLITE_MAX_VARIABLE_NUMBER (32766). A single large feed (e.g. ipranges,
-// 100k+ CIDRs) previously took one round-trip per row; batching cuts that
-// by ~500x.
-const catalogEntryInsertBatchSize = 500
-
-func insertCatalogEntries(ctx context.Context, tx *sql.Tx, feedID int64, entries []Entry) error {
-	for start := 0; start < len(entries); start += catalogEntryInsertBatchSize {
-		end := min(start+catalogEntryInsertBatchSize, len(entries))
-		chunk := entries[start:end]
-
-		placeholders := make([]string, len(chunk))
-		args := make([]any, 0, len(chunk)*4)
-		for i, entry := range chunk {
-			placeholders[i] = "(?, ?, ?, ?)"
-			args = append(args, feedID, entry.Category, entry.Service, entry.CIDR)
-		}
-		query := "INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES " +
-			strings.Join(placeholders, ",")
-		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
-			return err
+// toCatalogEntries converts adapter entries to the store's external
+// catalog-entry form; the store resolves names and CIDRs onto its
+// dictionary tables internally (batched, see store.ReplaceCatalogEntries).
+func toCatalogEntries(entries []Entry) []store.CatalogEntry {
+	result := make([]store.CatalogEntry, len(entries))
+	for i, entry := range entries {
+		result[i] = store.CatalogEntry{
+			Category: entry.Category,
+			Service:  entry.Service,
+			CIDR:     entry.CIDR,
 		}
 	}
-	return nil
+	return result
 }
 
 func isLegacyOpenCCKFeedCategory(category string) bool {

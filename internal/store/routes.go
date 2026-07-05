@@ -33,13 +33,16 @@ type userRoute struct {
 func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, map[string]PrefixRouteInfo, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 -- Simpler UNION-based approach without CTEs
-SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
-       ce.category, ce.service, cmf.mode_id
+SELECT DISTINCT p.ip, p.bits, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
+       c.name, sv.name, cmf.mode_id
 FROM users u
 JOIN catalog_mode_feeds cmf ON cmf.mode_id = u.catalog_mode_id
 JOIN feeds f ON f.id = cmf.feed_id
-JOIN catalog_modes m ON m.id = cmf.mode_id  
+JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
+JOIN services sv ON sv.id = ce.service_id
+JOIN categories c ON c.id = sv.category_id
+JOIN prefixes p ON p.id = ce.prefix_id
 WHERE u.enabled = 1
   AND f.enabled = 1
   AND m.enabled = 1
@@ -47,16 +50,19 @@ WHERE u.enabled = 1
       SELECT 1 FROM selected_categories sc
       WHERE sc.user_id = u.id
         AND sc.mode_id = u.catalog_mode_id
-        AND sc.category = ce.category
+        AND sc.category_id = sv.category_id
   )
 UNION
-SELECT DISTINCT ce.cidr, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
-       ce.category, ce.service, cmf.mode_id
+SELECT DISTINCT p.ip, p.bits, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
+       c.name, sv.name, cmf.mode_id
 FROM users u
 JOIN catalog_mode_feeds cmf ON cmf.mode_id = u.catalog_mode_id
 JOIN feeds f ON f.id = cmf.feed_id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
+JOIN services sv ON sv.id = ce.service_id
+JOIN categories c ON c.id = sv.category_id
+JOIN prefixes p ON p.id = ce.prefix_id
 WHERE u.enabled = 1
   AND f.enabled = 1
   AND m.enabled = 1
@@ -64,10 +70,9 @@ WHERE u.enabled = 1
       SELECT 1 FROM selected_services ss
       WHERE ss.user_id = u.id
         AND ss.mode_id = u.catalog_mode_id
-        AND ss.category = ce.category
-        AND ss.service = ce.service
+        AND ss.service_id = ce.service_id
   )
-ORDER BY 1, 2`)
+ORDER BY 1, 2, 3`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -82,18 +87,19 @@ ORDER BY 1, 2`)
 	}
 	selected := map[int64]*selectedUser{}
 	for rows.Next() {
-		var rawPrefix string
+		var ip []byte
+		var bits int
 		var userID int64
 		var filterMode string
 		var override bool
 		var category, service string
 		var modeID int64
-		if err := rows.Scan(&rawPrefix, &userID, &filterMode, &override, &category, &service, &modeID); err != nil {
+		if err := rows.Scan(&ip, &bits, &userID, &filterMode, &override, &category, &service, &modeID); err != nil {
 			return nil, nil, err
 		}
-		prefix, err := netip.ParsePrefix(rawPrefix)
+		prefix, err := DecodePrefix(ip, bits)
 		if err != nil {
-			return nil, nil, fmt.Errorf("parse selected prefix %q: %w", rawPrefix, err)
+			return nil, nil, fmt.Errorf("decode selected prefix: %w", err)
 		}
 		// A feed-provided default route is never a useful service route.
 		if prefix.Bits() == 0 {
@@ -105,7 +111,7 @@ ORDER BY 1, 2`)
 			selected[userID] = user
 		}
 		user.routes = append(user.routes, userRoute{
-			prefix:   prefix.Masked(),
+			prefix:   prefix,
 			modeID:   modeID,
 			category: category,
 			service:  service,

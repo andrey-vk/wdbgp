@@ -261,9 +261,11 @@ func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
 		if _, err := tx.ExecContext(ctx, `
 DELETE FROM selected_categories
 WHERE NOT EXISTS (
-    SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
+    SELECT 1 FROM catalog_entries ce
+    JOIN services sv ON sv.id = ce.service_id
+    JOIN feeds f ON f.id = ce.feed_id
     JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-    WHERE ce.category = selected_categories.category
+    WHERE sv.category_id = selected_categories.category_id
       AND cmf.mode_id = selected_categories.mode_id
 )`); err != nil {
 			return err
@@ -273,8 +275,7 @@ DELETE FROM selected_services
 WHERE NOT EXISTS (
     SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
     JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-    WHERE ce.category = selected_services.category
-      AND ce.service = selected_services.service
+    WHERE ce.service_id = selected_services.service_id
       AND cmf.mode_id = selected_services.mode_id
 )`)
 		return err

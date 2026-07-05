@@ -373,33 +373,13 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 
 	err := s.store.Transaction(ctx, func(tx *sql.Tx) error {
 		for _, c := range body.Categories {
-			if c.Checked {
-				if _, err := tx.ExecContext(ctx,
-					"INSERT OR IGNORE INTO selected_categories(user_id, mode_id, category) VALUES (?, ?, ?)",
-					user.ID, user.CatalogModeID, c.Category); err != nil {
-					return err
-				}
-			} else {
-				if _, err := tx.ExecContext(ctx,
-					"DELETE FROM selected_categories WHERE user_id = ? AND mode_id = ? AND category = ?",
-					user.ID, user.CatalogModeID, c.Category); err != nil {
-					return err
-				}
+			if err := store.ToggleSelectedCategory(ctx, tx, user.ID, user.CatalogModeID, c.Category, c.Checked); err != nil {
+				return err
 			}
 		}
-		for _, s := range body.Services {
-			if s.Checked {
-				if _, err := tx.ExecContext(ctx,
-					"INSERT OR IGNORE INTO selected_services(user_id, mode_id, category, service) VALUES (?, ?, ?, ?)",
-					user.ID, user.CatalogModeID, s.Category, s.Service); err != nil {
-					return err
-				}
-			} else {
-				if _, err := tx.ExecContext(ctx,
-					"DELETE FROM selected_services WHERE user_id = ? AND mode_id = ? AND category = ? AND service = ?",
-					user.ID, user.CatalogModeID, s.Category, s.Service); err != nil {
-					return err
-				}
+		for _, svc := range body.Services {
+			if err := store.ToggleSelectedService(ctx, tx, user.ID, user.CatalogModeID, svc.Category, svc.Service, svc.Checked); err != nil {
+				return err
 			}
 		}
 		return nil

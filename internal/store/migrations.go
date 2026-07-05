@@ -44,4 +44,5 @@ var migrations = []Migration{
 	{29, "move route filters to app_settings", m.V029, nil},
 	{30, "delete overlapping user networks between active users", m.V030, nil},
 	{31, "drop key from feed_adapters", m.V031, m.V031NoTxSQL},
+	{32, "normalize catalog to numeric keys and BLOB prefixes", m.V032, m.V032NoTxSQL},
 }

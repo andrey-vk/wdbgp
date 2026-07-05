@@ -425,8 +425,10 @@ func (s *Store) UserModeSelection(
 ) (map[string]bool, map[ServiceKey]bool, error) {
 	categories := map[string]bool{}
 	services := map[ServiceKey]bool{}
-	rows, err := s.DB.QueryContext(ctx,
-		"SELECT category FROM selected_categories WHERE user_id = ? AND mode_id = ?", userID, modeID)
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT c.name FROM selected_categories sc
+JOIN categories c ON c.id = sc.category_id
+WHERE sc.user_id = ? AND sc.mode_id = ?`, userID, modeID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -439,8 +441,11 @@ func (s *Store) UserModeSelection(
 		categories[category] = true
 	}
 	_ = rows.Close() //nolint:errcheck
-	rows, err = s.DB.QueryContext(ctx,
-		"SELECT category, service FROM selected_services WHERE user_id = ? AND mode_id = ?", userID, modeID)
+	rows, err = s.DB.QueryContext(ctx, `
+SELECT c.name, sv.name FROM selected_services ss
+JOIN services sv ON sv.id = ss.service_id
+JOIN categories c ON c.id = sv.category_id
+WHERE ss.user_id = ? AND ss.mode_id = ?`, userID, modeID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -485,9 +490,13 @@ func SetUserModeSelection(
 	}
 	sort.Strings(categories)
 	for _, category := range categories {
+		categoryID, err := EnsureCategoryID(ctx, tx, category)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO selected_categories(user_id, mode_id, category) VALUES (?, ?, ?)",
-			userID, modeID, category); err != nil {
+			"INSERT INTO selected_categories(user_id, mode_id, category_id) VALUES (?, ?, ?)",
+			userID, modeID, categoryID); err != nil {
 			return err
 		}
 	}
@@ -498,13 +507,60 @@ func SetUserModeSelection(
 		return services[i].Category < services[j].Category
 	})
 	for _, service := range services {
+		serviceID, err := EnsureServiceID(ctx, tx, service.Category, service.Service)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO selected_services(user_id, mode_id, category, service) VALUES (?, ?, ?, ?)",
-			userID, modeID, service.Category, service.Service); err != nil {
+			"INSERT INTO selected_services(user_id, mode_id, service_id) VALUES (?, ?, ?)",
+			userID, modeID, serviceID); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// ToggleSelectedCategory adds or removes a single category selection.
+func ToggleSelectedCategory(ctx context.Context, tx *sql.Tx, userID, modeID int64, category string, checked bool) error {
+	if checked {
+		categoryID, err := EnsureCategoryID(ctx, tx, category)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx,
+			"INSERT OR IGNORE INTO selected_categories(user_id, mode_id, category_id) VALUES (?, ?, ?)",
+			userID, modeID, categoryID)
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+DELETE FROM selected_categories
+WHERE user_id = ? AND mode_id = ?
+  AND category_id = (SELECT id FROM categories WHERE name = ?)`,
+		userID, modeID, category)
+	return err
+}
+
+// ToggleSelectedService adds or removes a single service selection.
+func ToggleSelectedService(ctx context.Context, tx *sql.Tx, userID, modeID int64, category, service string, checked bool) error {
+	if checked {
+		serviceID, err := EnsureServiceID(ctx, tx, category, service)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx,
+			"INSERT OR IGNORE INTO selected_services(user_id, mode_id, service_id) VALUES (?, ?, ?)",
+			userID, modeID, serviceID)
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `
+DELETE FROM selected_services
+WHERE user_id = ? AND mode_id = ?
+  AND service_id = (
+      SELECT s.id FROM services s
+      JOIN categories c ON c.id = s.category_id
+      WHERE c.name = ? AND s.name = ?)`,
+		userID, modeID, category, service)
+	return err
 }
 
 func SetVisibleUserSelection(
@@ -547,22 +603,25 @@ func SetVisibleUserModeSelection(
 // across a visible-selection overwrite rather than dropped.
 func hiddenSelectedCategories(ctx context.Context, tx *sql.Tx, userID, modeID int64) (categories []string, err error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT sc.category
+SELECT c.name
 FROM selected_categories sc
+JOIN categories c ON c.id = sc.category_id
 WHERE sc.user_id = ? AND sc.mode_id = ?
   AND EXISTS (
       SELECT 1
       FROM catalog_entries ce
+      JOIN services sv ON sv.id = ce.service_id
       JOIN feeds f ON f.id = ce.feed_id
       JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-      WHERE ce.category = sc.category AND cmf.mode_id = sc.mode_id AND f.enabled = 0
+      WHERE sv.category_id = sc.category_id AND cmf.mode_id = sc.mode_id AND f.enabled = 0
   )
   AND NOT EXISTS (
       SELECT 1
       FROM catalog_entries ce
+      JOIN services sv ON sv.id = ce.service_id
       JOIN feeds f ON f.id = ce.feed_id
       JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-      WHERE ce.category = sc.category AND cmf.mode_id = sc.mode_id AND f.enabled = 1
+      WHERE sv.category_id = sc.category_id AND cmf.mode_id = sc.mode_id AND f.enabled = 1
   )`, userID, modeID)
 	if err != nil {
 		return nil, err
@@ -589,16 +648,17 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
 // counterpart — see its doc comment.
 func hiddenSelectedServices(ctx context.Context, tx *sql.Tx, userID, modeID int64) (services []ServiceKey, err error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT ss.category, ss.service
+SELECT c.name, sv.name
 FROM selected_services ss
+JOIN services sv ON sv.id = ss.service_id
+JOIN categories c ON c.id = sv.category_id
 WHERE ss.user_id = ? AND ss.mode_id = ?
   AND EXISTS (
       SELECT 1
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
       JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-      WHERE ce.category = ss.category
-        AND ce.service = ss.service
+      WHERE ce.service_id = ss.service_id
         AND cmf.mode_id = ss.mode_id
         AND f.enabled = 0
   )
@@ -607,8 +667,7 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
       FROM catalog_entries ce
       JOIN feeds f ON f.id = ce.feed_id
       JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-      WHERE ce.category = ss.category
-        AND ce.service = ss.service
+      WHERE ce.service_id = ss.service_id
         AND cmf.mode_id = ss.mode_id
         AND f.enabled = 1
   )`, userID, modeID)

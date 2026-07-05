@@ -497,10 +497,14 @@ func TestUserSaveSelectionsPreservesHidden(t *testing.T) {
 	userID := userResp.ID
 
 	// --- Step 5: insert catalog entries for both feeds ---
-	if _, err := st.DB.ExecContext(ctx, `INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'Cat1', 'Svc1', '10.0.0.0/24'),
-		(?, 'Cat2', 'Svc2', '10.1.0.0/24')`,
-		f1ID, f2ID); err != nil {
+	if err := st.InsertCatalogEntries(ctx, f1ID, []store.CatalogEntry{
+		{Category: "Cat1", Service: "Svc1", CIDR: "10.0.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert catalog entries: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, f2ID, []store.CatalogEntry{
+		{Category: "Cat2", Service: "Svc2", CIDR: "10.1.0.0/24"},
+	}); err != nil {
 		t.Fatalf("insert catalog entries: %v", err)
 	}
 

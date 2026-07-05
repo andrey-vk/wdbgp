@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
 // =============================================================================
@@ -59,7 +61,9 @@ func TestDebugCIDRValid(t *testing.T) {
 	}
 
 	// Insert a catalog entry matching 10.0.0.0/8
-	if _, err := st.DB.ExecContext(ctx, "INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, 'Test', 'Debug', '10.0.0.0/8')", feedID); err != nil {
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "Test", Service: "Debug", CIDR: "10.0.0.0/8"},
+	}); err != nil {
 		t.Fatalf("setup catalog entry: %v", err)
 	}
 
