@@ -26,11 +26,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `seedBuiltInAdapters` checks column existence at startup for databases that predate fork-column migrations.
 - Admin rate limiter excludes `/api/admin/me` and `/api/admin/users/statuses` — lightweight auth and polling endpoints.
 - **Static analysis**: zero `golangci-lint` warnings (43 issues resolved), zero ESLint warnings. All error paths checked, logged, or returned.
+- **`feed_adapters.key` column removed** (migration 31): adapters are now identified by `name` + `is_builtin` instead of a separate slug column. Adapter backup filenames switched from `{key}_...` to `{id}_...`.
 
 ### Fixed
 - Admin session cookie `Expires` incorrectly set to current time when `SessionMaxAge=0`, causing cookie to be deleted immediately.
 - Route filter deny list: broader prefix (e.g. `/19`) covering narrower prefix (`/24`) with different base address was not properly excluded.
 - BGP `UpdatePeer` now re-adds the peer when it is not found in the speaker (fixes enable/disable toggle leaving stale state).
+- Settings with no database key (env-only settings like `Port`, `Host`, `DBPath`) could be silently written to a shared empty-key slot; `Set`/`Reset` now reject this explicitly.
+- Debounced prefix-count fetching (user and admin selection pages) could show stale counts when an older request's response arrived after a newer one.
+- Admin pages (Users, Feeds, Adapters, Modes, Debug, Communities) now show a reload prompt instead of an infinite spinner, or a misleading "nothing configured" empty state, when the initial page load fails.
+- Any admin API call returning 401 now redirects to the login page immediately, instead of only some endpoints handling session expiry.
+- Migration 31 (drop `feed_adapters.key`) could leave the database permanently unable to start if the process crashed mid-migration.
+- Adapter backup file rotation could miss backups written before the key-to-id filename switch, or (in a narrow edge case) delete an unrelated adapter's backups.
 
 ## [0.14.0-alpha] — 2026-06-20
 
