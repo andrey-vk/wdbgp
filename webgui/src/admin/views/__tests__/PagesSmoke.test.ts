@@ -294,4 +294,23 @@ describe('Pages show a reload fallback when the initial load fails', () => {
   it('AdaptersPage', () => expectErrorFallback('@/admin/views/AdaptersPage.vue', '/admin/adapters'))
   it('ModesPage', () => expectErrorFallback('@/admin/views/ModesPage.vue', '/admin/modes'))
   it('DebugPage', () => expectErrorFallback('@/admin/views/DebugPage.vue', '/admin/modes'))
+
+  // CommunitiesPage's initial fetch is /admin/modes/:id, not a fixed URL
+  // matched by expectErrorFallback's exact-match mock, so it gets its own
+  // assertion. It also must NOT show "no communities configured" (the
+  // empty-communities state) on a load failure — that's the actual bug:
+  // a failed load looked identical to a mode that legitimately has none.
+  it('CommunitiesPage', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/modes/1') return Promise.reject(new Error('network error'))
+      return Promise.resolve({ data: {} })
+    })
+    const CommunitiesPage = (await import('@/admin/views/CommunitiesPage.vue')).default
+    const wrapper = mount(CommunitiesPage, {
+      global: { stubs: stubPrimeVueComponents() },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(wrapper.text()).toContain('error.generic_title')
+    expect(wrapper.text()).not.toContain('communities.none')
+  })
 })

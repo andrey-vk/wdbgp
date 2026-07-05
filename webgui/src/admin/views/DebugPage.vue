@@ -7,6 +7,7 @@ import Select from 'primevue/select'
 import Button from 'primevue/button'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
+import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
 
 const { t } = useI18n()
 
@@ -40,16 +41,16 @@ const modes = ref<Mode[]>([])
 const loading = ref(false)
 const result = ref<DebugResult | null>(null)
 const error = ref('')
-const modesLoadError = ref(false)
+// Not bound to a spinner in the template — this page has no loading state
+// for the initial modes fetch, only for the analyze action (`loading` above).
+const { loadError: modesLoadError, run: runModesLoad } = useAsyncPageLoad()
 
 onMounted(async () => {
-  try {
+  await runModesLoad(async () => {
     const resp = await apiClient.get('/admin/modes')
     modes.value = resp.data.modes
     if (modes.value.length > 0) modeId.value = modes.value[0].id
-  } catch {
-    modesLoadError.value = true
-  }
+  })
 })
 
 async function analyze() {

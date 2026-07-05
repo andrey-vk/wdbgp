@@ -14,6 +14,7 @@ import Tag from 'primevue/tag'
 import Checkbox from 'primevue/checkbox'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
+import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
 
 interface FeedItem {
   id: number; name: string; url: string; enabled: boolean; adapter_name: string
@@ -23,12 +24,11 @@ const { t } = useI18n()
 const router = useRouter()
 const confirmDialog = useConfirm()
 const toast = useToast()
+const { loading, loadError, run } = useAsyncPageLoad()
 
 const modes = ref<Mode[]>([])
 const selected = ref<Mode | null>(null)
 const form = ref({ name: '', enabled: true })
-const loading = ref(true)
-const loadError = ref(false)
 const saving = ref(false)
 const editMode = ref(false)
 
@@ -40,15 +40,11 @@ const loadingFeeds = ref(false)
 const savingFeeds = ref(false)
 
 onMounted(async () => {
-  try {
+  await run(async () => {
     const resp = await apiClient.get<ModesListResponse>('/admin/modes')
     modes.value = resp.data.modes
     modes.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-  } catch {
-    loadError.value = true
-  } finally {
-    loading.value = false
-  }
+  })
 })
 
 function selectMode(mode: Mode) {

@@ -20,18 +20,18 @@ import Button from 'primevue/button'
 import Tag from 'primevue/tag'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
+import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
 
 const { t } = useI18n()
 const router = useRouter()
 const confirmDialog = useConfirm()
 const toast = useToast()
+const { loading, loadError, run } = useAsyncPageLoad()
 
 const users = ref<User[]>([])
 const modes = ref<Mode[]>([])
 const credentials = ref<Credential[]>([])
 const selected = ref<User | null>(null)
-const loading = ref(true)
-const loadError = ref(false)
 const saving = ref(false)
 const credSaving = ref(false)
 const editMode = ref(false)
@@ -122,7 +122,7 @@ const filterModeSelect = computed({
 })
 
 onMounted(async () => {
-  try {
+  const ok = await run(async () => {
     const [usersResp, modesResp, settingsResp] = await Promise.all([
       apiClient.get<UsersListResponse>('/admin/users'),
       apiClient.get<ModesListResponse>('/admin/modes'),
@@ -141,12 +141,8 @@ onMounted(async () => {
     // new peers to follow suit.
     const ad = settingsResp.data.active_dial
     defaultActiveDial.value = ad.value ?? ad.default_value
-  } catch {
-    loadError.value = true
-    return
-  } finally {
-    loading.value = false
-  }
+  })
+  if (!ok) return
 
   // Restore user selection from UI store (e.g., when returning from selections page)
   const uiStore = useUIStore()

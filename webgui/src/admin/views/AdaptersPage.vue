@@ -13,28 +13,24 @@ import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
+import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
 
 const { t } = useI18n()
 const confirmDialog = useConfirm()
 const toast = useToast()
+const { loading, loadError, run } = useAsyncPageLoad()
 const adapters = ref<Adapter[]>([])
 const selected = ref<Adapter | null>(null)
 const form = ref({ name: '', source: '' })
-const loading = ref(true)
-const loadError = ref(false)
 const saving = ref(false)
 const editMode = ref(false)
 
 onMounted(async () => {
-  try {
+  await run(async () => {
     const resp = await apiClient.get<AdaptersListResponse>('/admin/adapters')
     adapters.value = resp.data.adapters
     adapters.value.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-  } catch {
-    loadError.value = true
-  } finally {
-    loading.value = false
-  }
+  })
 })
 
 function selectAdapter(adapter: Adapter) {

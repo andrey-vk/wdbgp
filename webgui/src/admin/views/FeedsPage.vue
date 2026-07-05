@@ -18,6 +18,7 @@ import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
+import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
 
 interface Feed extends ApiFeed {
   adapter_name?: string
@@ -34,6 +35,7 @@ interface ModeOption {
 const { t } = useI18n()
 const confirmDialog = useConfirm()
 const toast = useToast()
+const { loading, loadError, run } = useAsyncPageLoad()
 const feeds = ref<Feed[]>([])
 const adapters = ref<AdapterOption[]>([])
 const modes = ref<ModeOption[]>([])
@@ -49,14 +51,12 @@ const form = ref({
   sync_interval: 0,
   mode_id: 0,
 })
-const loading = ref(true)
-const loadError = ref(false)
 const saving = ref(false)
 const syncing = ref(false)
 const editMode = ref(false)
 
 onMounted(async () => {
-  try {
+  await run(async () => {
     const [feedsResp, adaptersResp] = await Promise.all([
       apiClient.get('/admin/feeds'),
       apiClient.get<AdaptersListResponse>('/admin/adapters'),
@@ -65,11 +65,7 @@ onMounted(async () => {
     feeds.value.sort((a, b) => (a.name || a.url || '').localeCompare(b.name || b.url || ''))
     adapters.value = adaptersResp.data.adapters.map((a) => ({ id: a.id, name: a.name }))
     fetchModes()
-  } catch {
-    loadError.value = true
-  } finally {
-    loading.value = false
-  }
+  })
 })
 
 async function fetchModes() {

@@ -7,6 +7,8 @@ import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
 import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
+import ErrorPage from '@/components/ErrorPage.vue'
+import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
 
 interface CommunityItem {
   category: string; service: string; community: number; auto_community: number
@@ -30,6 +32,12 @@ const originalValues = ref<Map<string, number>>(new Map())
 const loading = ref(true)
 const saving = ref(false)
 const isDirty = ref(false)
+// loadData() also runs after save/reset, where a failure is reported by
+// that action's own toast, not this page-level fallback — so only the
+// composable's error-catching (loadError, run) is used here, wrapping just
+// the initial onMounted call; loadData() keeps managing `loading` itself
+// since it must also toggle it for those other two call sites.
+const { loadError, run } = useAsyncPageLoad()
 
 interface CategoryGroup {
   category: string
@@ -100,7 +108,7 @@ onBeforeUnmount(() => {
 
 onMounted(async () => {
   window.addEventListener('beforeunload', handleBeforeUnload)
-  await loadData()
+  await run(loadData)
 })
 
 async function loadData() {
@@ -200,6 +208,7 @@ function handleReset() {
       <div v-if="loading" class="flex justify-center py-4">
         <i class="pi pi-spin pi-spinner text-2xl" />
       </div>
+      <ErrorPage v-else-if="loadError" />
       <div v-else-if="communities.length === 0" class="py-8 text-center text-gray-500 dark:text-gray-400">
         <p>{{ t('communities.none') }}</p>
       </div>
