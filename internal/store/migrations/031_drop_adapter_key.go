@@ -35,7 +35,31 @@ func V031(ctx context.Context, tx *sql.Tx) error {
 // a crash between CREATE and DROP doesn't fail on "table already exists",
 // and INSERT ... WHERE NOT EXISTS so that retry doesn't duplicate rows into
 // the survivor from the killed run.
+//
+// feed_adapters not existing at all is its own case, checked first: DROP
+// TABLE and the RENAME are separate autocommitting statements, so a crash
+// between them leaves feed_adapters_new fully populated but no table named
+// feed_adapters — pragma_table_info on a nonexistent table returns zero
+// rows (not an error), which would otherwise be indistinguishable from "key
+// already dropped, nothing to do" and let the caller mark this migration
+// applied despite the rename never having finished.
 func V031NoTxSQL(ctx context.Context, db *sql.DB) error {
+	var feedAdaptersExists int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='feed_adapters'",
+	).Scan(&feedAdaptersExists); err != nil {
+		return err
+	}
+	if feedAdaptersExists == 0 {
+		_, err := db.ExecContext(ctx, `
+PRAGMA foreign_keys = OFF;
+ALTER TABLE feed_adapters_new RENAME TO feed_adapters;
+CREATE INDEX IF NOT EXISTS idx_feed_adapters_builtin ON feed_adapters(is_builtin);
+PRAGMA foreign_keys = ON;
+`)
+		return err
+	}
+
 	var hasKey int
 	if err := db.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM pragma_table_info('feed_adapters') WHERE name='key'",

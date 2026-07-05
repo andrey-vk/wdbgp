@@ -147,3 +147,85 @@ FROM feed_adapters;
 		t.Fatalf("feed_adapters row count = %d, want 2 (retry must not duplicate rows)", count)
 	}
 }
+
+// TestMigration31IdempotentAfterCrashBetweenDropAndRename simulates a process
+// kill after DROP TABLE feed_adapters succeeded but before the RENAME
+// committed: feed_adapters doesn't exist at all, only the fully-populated
+// feed_adapters_new does. V031NoTxSQL must finish the rename rather than
+// treating the missing key column as "already migrated" and returning nil
+// without ever restoring the feed_adapters table.
+func TestMigration31IdempotentAfterCrashBetweenDropAndRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "m31-crash-post-drop.sqlite3")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := preMigration31Schema(db); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the killed run's state: feed_adapters_new fully populated,
+	// feed_adapters already dropped (not just about to be).
+	if _, err := db.Exec(`
+CREATE TABLE feed_adapters_new (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    language TEXT NOT NULL DEFAULT 'javascript'
+        CHECK (language = 'javascript'),
+    api_version INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL DEFAULT 1,
+    builtin_version INTEGER NOT NULL DEFAULT 0,
+    is_customized INTEGER NOT NULL DEFAULT 0,
+    forked_from INTEGER DEFAULT NULL,
+    forked_version INTEGER NOT NULL DEFAULT 0,
+    is_builtin INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO feed_adapters_new (id, name, language, api_version, source, revision, builtin_version, is_customized, forked_from, forked_version, is_builtin)
+SELECT id, name, language, api_version, source, revision, builtin_version, is_customized, forked_from, forked_version, is_builtin
+FROM feed_adapters;
+DROP TABLE feed_adapters;
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.V031NoTxSQL(context.Background(), db); err != nil {
+		t.Fatalf("V031NoTxSQL should finish the rename on retry, got: %v", err)
+	}
+
+	var tableExists int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='feed_adapters'").Scan(&tableExists); err != nil {
+		t.Fatal(err)
+	}
+	if tableExists == 0 {
+		t.Fatal("feed_adapters must exist after retry — it must not be left permanently missing")
+	}
+
+	var newTableCount int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='feed_adapters_new'").Scan(&newTableCount); err != nil {
+		t.Fatal(err)
+	}
+	if newTableCount != 0 {
+		t.Fatal("feed_adapters_new should have been renamed away, not left behind")
+	}
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM feed_adapters").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("feed_adapters row count = %d, want 2", count)
+	}
+
+	var indexCount int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_feed_adapters_builtin'").Scan(&indexCount); err != nil {
+		t.Fatal(err)
+	}
+	if indexCount == 0 {
+		t.Fatal("idx_feed_adapters_builtin should have been recreated on the renamed table")
+	}
+}
