@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0-alpha] — 2026-07-05
+
 ### Added
 - **Vue 3 SPA** with PrimeVue v4 + Tailwind CSS: multi-page Vite build serving admin (`/admin`) and user (`/`) interfaces.
 - **Admin pages**: Dashboard with metrics charts (user/feed history), Users, Modes, Feeds, Adapters, Settings, Debug with CIDR diagnostics.
@@ -38,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Any admin API call returning 401 now redirects to the login page immediately, instead of only some endpoints handling session expiry.
 - Migration 31 (drop `feed_adapters.key`) could leave the database permanently unable to start if the process crashed mid-migration.
 - Adapter backup file rotation could miss backups written before the key-to-id filename switch, or (in a narrow edge case) delete an unrelated adapter's backups.
+- **Slow feed sync blocking the whole app** (#24): large feeds (e.g. `ipranges`, 100k+ CIDRs) inserted catalog entries one row per round-trip inside a single transaction, and the main database allowed only one connection total — so a multi-minute sync queued every other request (dashboard, login, any DB-touching page) behind it. Catalog inserts are now batched (500 rows per statement), and the connection pool raised from 1 to 4 so WAL mode's reader/writer concurrency is actually usable.
 
 ## [0.14.0-alpha] — 2026-06-20
 
