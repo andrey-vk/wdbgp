@@ -10,7 +10,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function login(password: string): Promise<string | null> {
     try {
-      const response = await apiClient.post('/admin/login', { password })
+      const response = await apiClient.post('/admin/login', { password }, { skipAuthRedirect: true })
       if (response.data.ok) {
         isAuthenticated.value = true
         return null // success, no error
@@ -34,7 +34,7 @@ export const useAuthStore = defineStore('auth', () => {
     isChecking.value = true
     _checkPromise = (async () => {
       try {
-        const response = await apiClient.get('/admin/me')
+        const response = await apiClient.get('/admin/me', { skipAuthRedirect: true })
         isAuthenticated.value = response.data.authenticated === true
         return isAuthenticated.value
       } catch {
@@ -50,7 +50,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function logout(): Promise<void> {
     try {
-      await apiClient.post('/admin/logout')
+      await apiClient.post('/admin/logout', undefined, { skipAuthRedirect: true })
     } catch {
       // ignore logout errors
     }

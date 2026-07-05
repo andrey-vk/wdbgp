@@ -27,16 +27,16 @@ describe('apiClient 401 redirect interceptor', () => {
     expect(window.location.href).toBe('/admin/auth/login')
   })
 
-  it('does not redirect for /admin/me — its 401 is the expected "not logged in" signal the session probe itself handles', async () => {
+  it('does not redirect when the request opts out via skipAuthRedirect', async () => {
     apiClient.defaults.adapter = mockAdapterFor(401)
-    await apiClient.get('/admin/me').catch(() => {})
+    await apiClient.get('/admin/me', { skipAuthRedirect: true }).catch(() => {})
     expect(window.location.href).toBe('')
   })
 
-  it('does not redirect for /admin/login — a failed login attempt must stay on the form with its own error message', async () => {
+  it('redirects even for /admin/me or /admin/login URLs if the caller does not opt out — this is a per-request flag, not a URL exemption list', async () => {
     apiClient.defaults.adapter = mockAdapterFor(401)
-    await apiClient.post('/admin/login', { password: 'wrong' }).catch(() => {})
-    expect(window.location.href).toBe('')
+    await apiClient.get('/admin/me').catch(() => {})
+    expect(window.location.href).toBe('/admin/auth/login')
   })
 
   it('does not redirect for /user/ endpoints — a regular user session expiring must not send them to the admin login', async () => {
