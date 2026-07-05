@@ -24,6 +24,19 @@ import (
 
 var ErrDBTooNew = errors.New("database schema is newer than this server version")
 
+// mainDBMaxOpenConns caps concurrent connections to the main database.
+// WAL mode (enabled below) allows one writer alongside many concurrent
+// readers, but that concurrency was wasted at MaxOpenConns(1): every
+// request — sync writes, admin reads, user reads — serialized behind
+// Go's connection pool onto the single connection, so a large feed sync
+// (e.g. ipranges, 100k+ CIDRs) holding a write transaction for minutes
+// blocked every other request in the app for that whole time. busy_timeout
+// (below) plus Store.Transaction's retry-on-busy wrapper already handle
+// writer/writer contention, so raising this just lets WAL's reader/writer
+// concurrency actually get used. Backup-DB connections (separate,
+// short-lived handles to a different file) are intentionally left at 1.
+const mainDBMaxOpenConns = 4
+
 type Store struct {
 	DB             *sql.DB
 	dbPath         string // DB file path for backup
@@ -82,7 +95,8 @@ func Open(path string, backupEnabled bool, backupDir string, autoRestoreEnabled 
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
+	db.SetMaxOpenConns(mainDBMaxOpenConns)
+	db.SetMaxIdleConns(mainDBMaxOpenConns)
 	if _, err := db.Exec(`
 		PRAGMA foreign_keys = ON;
 		PRAGMA journal_mode = WAL;
@@ -314,7 +328,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			if err != nil {
 				return fmt.Errorf("reopen after restore: %w", err)
 			}
-			db.SetMaxOpenConns(1)
+			db.SetMaxOpenConns(mainDBMaxOpenConns)
+			db.SetMaxIdleConns(mainDBMaxOpenConns)
 			if _, err := db.Exec(`
 				PRAGMA foreign_keys = ON;
 				PRAGMA journal_mode = WAL;
