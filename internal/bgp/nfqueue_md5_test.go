@@ -84,7 +84,13 @@ func TestDynamicMD5QueueDecideFixedPeerBypassesMatch(t *testing.T) {
 
 func TestDynamicMD5QueueDecideDynamicPeerMatch(t *testing.T) {
 	q := newTestDynamicMD5Queue(t)
-	srcIP := [4]byte{198, 51, 100, 9}
+	// Loopback source: install() calls the real setsockopt(TCP_MD5SIG) via
+	// addListenerMD5Key, which setTCPMD5OnFd no-ops for loopback addresses
+	// (see md5.go) — real kernel TCP MD5 support is inconsistent across
+	// environments (WSL2, CI runners), so a non-loopback address here would
+	// make this test's outcome depend on host kernel support rather than
+	// decide()'s own matching logic.
+	srcIP := [4]byte{127, 0, 0, 2}
 	dstIP := [4]byte{192, 0, 2, 2}
 	password := "dyn-secret"
 	q.SetPeers([]PeerConfig{{Address: netip.IPv4Unspecified(), Password: password}})
