@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0-alpha] — 2026-07-06
+
 ### Changed
 - **Database schema refactor: normalized dictionaries, binary IP storage, numeric keys** (migrations 32–35). A 100k-entry catalog database shrinks ~3.7× (15.1 MB → 4.1 MB):
   - New `categories`, `services`, and `prefixes` dictionary tables. `catalog_entries` becomes `(feed_id, service_id, prefix_id)` WITHOUT ROWID — category/service/CIDR text is no longer duplicated on every row and across three indexes. CIDRs are stored once as masked 4/16-byte binary addresses, shared across feeds; orphaned prefixes are pruned after each sync.
