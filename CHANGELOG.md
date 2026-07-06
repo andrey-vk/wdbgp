@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New setting `WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM` (default 0) selects the NFQUEUE number; a matching redirect rule for the BGP port must exist in the process's own network namespace. `EnsureDynamicMD5NFQueueRule` installs it automatically at startup, entirely in Go over netlink (`github.com/google/nftables`) — no `nft`/`iptables` binary or shell needed, so the container image doesn't need one either. RouterOS containers need `/container/set 0 user=0:0` (root) for this to work.
   - Off by default: existing dynamic-peer deployments keep today's ASN-only identification until explicitly opted in. If the feature is enabled but its NFQUEUE prerequisites aren't met on the host (unsupported kernel/arch), it logs and falls back to the same ASN-only behavior rather than failing to start.
 
+### Fixed
+- **Fixed (non-loopback) BGP peers with a password could get their connection torn down right after a successful, correctly-authenticated TCP handshake**: `AcceptWithOpen` redundantly re-set the TCP MD5 key on the already-accepted socket, even though the kernel already verified the signature during the handshake using the key `applyListenerMD5` installed on the listener, and automatically carries that key over to the accepted socket. On some kernels this redundant `setsockopt` call itself fails (`invalid argument`), and the failure was treated as fatal — closing a connection that had already proven its signature was correct. Removed the redundant call; loopback peers are unaffected (TCP MD5 was never enforceable there, so they already relied solely on the OPEN message's password field, which still applies).
+
 ## [0.16.0-alpha] — 2026-07-06
 
 ### Changed
