@@ -14,7 +14,9 @@ import (
 func TestMigration14AddsWebAuthAndUserCredentials(t *testing.T) {
 	s := openTestStore(t)
 
-	// Verify web_auth column exists with default 'network'
+	// Verify web_auth column exists. Migration 14 added it as TEXT
+	// DEFAULT 'network'; migration 33 converted it to the INTEGER enum
+	// (0 = network), so the fresh-DB shape asserted here is the latter.
 	var colType, colDefault string
 	var colNullable int
 	err := s.DB.QueryRow(`SELECT type, "notnull", dflt_value FROM pragma_table_info('users') WHERE name = 'web_auth'`).
@@ -22,8 +24,8 @@ func TestMigration14AddsWebAuthAndUserCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal("web_auth column missing:", err)
 	}
-	if colType != "TEXT" || colNullable != 1 || colDefault != "'network'" {
-		t.Fatalf("web_auth: type=%s null=%d default=%s, want TEXT/1/'network'", colType, colNullable, colDefault)
+	if colType != "INTEGER" || colNullable != 1 || colDefault != "0" {
+		t.Fatalf("web_auth: type=%s null=%d default=%s, want INTEGER/1/0", colType, colNullable, colDefault)
 	}
 
 	// Add a user and verify web_auth default is 'network'
@@ -122,8 +124,10 @@ func TestMigration15AddsAppSettings(t *testing.T) {
 	if columns["value"] != "TEXT" {
 		t.Fatalf("app_settings.value type = %s, want TEXT", columns["value"])
 	}
-	if columns["updated_at"] != "TEXT" {
-		t.Fatalf("app_settings.updated_at type = %s, want TEXT", columns["updated_at"])
+	// Migration 15 created updated_at as TEXT; migration 34 converted it to
+	// Unix epoch INTEGER, which is the fresh-DB shape asserted here.
+	if columns["updated_at"] != "INTEGER" {
+		t.Fatalf("app_settings.updated_at type = %s, want INTEGER", columns["updated_at"])
 	}
 }
 
@@ -728,11 +732,11 @@ func TestCountPrefixesWithExplicitCategoriesAndServices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'CountA', 'Svc1', '1.1.1.0/24'),
-		(?, 'CountA', 'Svc1', '2.2.2.0/24'),
-		(?, 'CountB', 'Svc2', '2001:db8::/48')`,
-		feedID, feedID, feedID)
+	err = s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "CountA", Service: "Svc1", CIDR: "1.1.1.0/24"},
+		{Category: "CountA", Service: "Svc1", CIDR: "2.2.2.0/24"},
+		{Category: "CountB", Service: "Svc2", CIDR: "2001:db8::/48"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -805,12 +809,12 @@ func TestCategoryPrefixCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'CatA', 'S1', '4.4.4.0/24'),
-		(?, 'CatA', 'S2', '5.5.5.0/24'),
-		(?, 'CatA', 'S1', '2001:100::/48'),
-		(?, 'CatB', 'S3', '6.6.6.0/24')`,
-		feedID, feedID, feedID, feedID)
+	err = s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "CatA", Service: "S1", CIDR: "4.4.4.0/24"},
+		{Category: "CatA", Service: "S2", CIDR: "5.5.5.0/24"},
+		{Category: "CatA", Service: "S1", CIDR: "2001:100::/48"},
+		{Category: "CatB", Service: "S3", CIDR: "6.6.6.0/24"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -841,11 +845,11 @@ func TestPrefixCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'Perf', 'A', '7.7.7.0/24'),
-		(?, 'Perf', 'A', '8.8.8.0/24'),
-		(?, 'Perf', 'B', '2001:200::/48')`,
-		feedID, feedID, feedID)
+	err = s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "Perf", Service: "A", CIDR: "7.7.7.0/24"},
+		{Category: "Perf", Service: "A", CIDR: "8.8.8.0/24"},
+		{Category: "Perf", Service: "B", CIDR: "2001:200::/48"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,10 +886,10 @@ func syncTestData(ctx context.Context, t *testing.T, s *Store) {
 		t.Fatal(err)
 	}
 	if count == 0 {
-		_, err = s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-			(?, 'CommunityTest', 'Svc1', '99.99.99.0/24'),
-			(?, 'CommunityTest', 'Svc2', '88.88.88.0/24')`,
-			feedID, feedID)
+		err = s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+			{Category: "CommunityTest", Service: "Svc1", CIDR: "99.99.99.0/24"},
+			{Category: "CommunityTest", Service: "Svc2", CIDR: "88.88.88.0/24"},
+		})
 		if err != nil {
 			t.Fatal(err)
 		}

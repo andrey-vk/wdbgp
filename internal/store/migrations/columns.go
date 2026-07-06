@@ -1,9 +1,28 @@
 package migrations
 
 import (
+	"context"
 	"database/sql"
 	"log"
 )
+
+// dbTableExists reports whether a table exists, for NoTxSQL migrations
+// that need to detect which step of an interrupted rebuild to resume from.
+func dbTableExists(ctx context.Context, db *sql.DB, table string) (bool, error) {
+	var n int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&n)
+	return n > 0, err
+}
+
+// dbTableHasColumn reports whether a column exists on a table. A missing
+// table yields false, not an error (pragma_table_info returns no rows).
+func dbTableHasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	var n int
+	err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?", table, column).Scan(&n)
+	return n > 0, err
+}
 
 // existingColumns returns the set of column names currently present on
 // table, via the pragma_table_info table-valued function. Migrations that

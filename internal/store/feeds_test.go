@@ -43,7 +43,7 @@ func TestAddFeedWithModeAssignsOnSuccess(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	modeID, err := s.AddCatalogMode(ctx, "add-feed-with-mode-test", "Add Feed With Mode Test", true)
+	modeID, err := s.AddCatalogMode(ctx, "Add Feed With Mode Test", true)
 	if err != nil {
 		t.Fatalf("add mode: %v", err)
 	}
@@ -75,10 +75,13 @@ func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 		t.Fatal(err)
 	}
 	feed := feeds[len(feeds)-1]
-	if _, err := s.DB.Exec(`
-UPDATE feeds SET last_success = 'now', last_error = 'old error' WHERE id = ?;
-INSERT INTO catalog_entries(feed_id, category, service, cidr)
-VALUES (?, 'Custom', 'Example', '8.8.8.0/24')`, feed.ID, feed.ID); err != nil {
+	if _, err := s.DB.Exec(
+		"UPDATE feeds SET last_success = 1751000000, last_error = 'old error' WHERE id = ?", feed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertCatalogEntries(ctx, feed.ID, []CatalogEntry{
+		{Category: "Custom", Service: "Example", CIDR: "8.8.8.0/24"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -93,7 +96,7 @@ VALUES (?, 'Custom', 'Example', '8.8.8.0/24')`, feed.ID, feed.ID); err != nil {
 	}
 	updated := feeds[len(feeds)-1]
 	if updated.Name != feed.Name || updated.URL != feed.URL ||
-		updated.LastSuccess != "" || updated.LastError != "" {
+		updated.LastSuccess != 0 || updated.LastError != "" {
 		t.Fatalf("updated feed = %#v", updated)
 	}
 	var entries int
@@ -105,8 +108,9 @@ VALUES (?, 'Custom', 'Example', '8.8.8.0/24')`, feed.ID, feed.ID); err != nil {
 		t.Fatalf("entries after URL change = %d, want 0", entries)
 	}
 
-	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr)
-		VALUES (?, 'Custom', 'Example', '8.8.8.0/24')`, feed.ID); err != nil {
+	if err := s.InsertCatalogEntries(ctx, feed.ID, []CatalogEntry{
+		{Category: "Custom", Service: "Example", CIDR: "8.8.8.0/24"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	userID, err := s.AddUser(ctx, User{

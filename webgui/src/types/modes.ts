@@ -1,6 +1,5 @@
 export interface Mode {
   id: number
-  key: string
   name: string
   enabled: boolean
   feed_count: number

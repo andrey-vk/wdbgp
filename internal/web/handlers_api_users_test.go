@@ -457,7 +457,7 @@ func TestUsersCreateRejectsDisabledCatalogModeID(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	disabledModeID, err := st.AddCatalogMode(ctx, "disabled-create-mode", "Disabled Create Mode", false)
+	disabledModeID, err := st.AddCatalogMode(ctx, "Disabled Create Mode", false)
 	if err != nil {
 		t.Fatalf("add disabled mode: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestUsersUpdateRejectsDisabledCatalogModeID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	disabledModeID, err := st.AddCatalogMode(ctx, "disabled-update-mode", "Disabled Update Mode", false)
+	disabledModeID, err := st.AddCatalogMode(ctx, "Disabled Update Mode", false)
 	if err != nil {
 		t.Fatalf("add disabled mode: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestUsersUpdateWithoutModeChangeSucceedsEvenIfCurrentModeDisabled(t *testin
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	modeID, err := st.AddCatalogMode(ctx, "soon-disabled-user-mode", "Soon Disabled", true)
+	modeID, err := st.AddCatalogMode(ctx, "Soon Disabled", true)
 	if err != nil {
 		t.Fatalf("add mode: %v", err)
 	}
@@ -1374,7 +1374,7 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Create a catalog mode (id > 3 so it's custom)
-	modeID, err := st.AddCatalogMode(ctx, "test-mode", "Test Mode", true)
+	modeID, err := st.AddCatalogMode(ctx, "Test Mode", true)
 	if err != nil {
 		t.Fatalf("add mode: %v", err)
 	}
@@ -1401,14 +1401,14 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 	}
 
 	// 4. Create catalog entries: feed1 has "Cat1::Svc1", feed2 has "Cat2::Svc2"
-	if _, err := st.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-		f1ID, "Cat1", "Svc1", "10.0.0.0/8"); err != nil {
+	if err := st.InsertCatalogEntries(ctx, f1ID, []store.CatalogEntry{
+		{Category: "Cat1", Service: "Svc1", CIDR: "10.0.0.0/8"},
+	}); err != nil {
 		t.Fatalf("insert entry f1: %v", err)
 	}
-	if _, err := st.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-		f2ID, "Cat2", "Svc2", "192.168.0.0/16"); err != nil {
+	if err := st.InsertCatalogEntries(ctx, f2ID, []store.CatalogEntry{
+		{Category: "Cat2", Service: "Svc2", CIDR: "192.168.0.0/16"},
+	}); err != nil {
 		t.Fatalf("insert entry f2: %v", err)
 	}
 
@@ -1486,11 +1486,11 @@ func TestAdminSaveSelectionsUpdatesUserCatalogMode(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	oldModeID, err := st.AddCatalogMode(ctx, "old-mode", "Old Mode", true)
+	oldModeID, err := st.AddCatalogMode(ctx, "Old Mode", true)
 	if err != nil {
 		t.Fatalf("add old mode: %v", err)
 	}
-	newModeID, err := st.AddCatalogMode(ctx, "new-mode", "New Mode", true)
+	newModeID, err := st.AddCatalogMode(ctx, "New Mode", true)
 	if err != nil {
 		t.Fatalf("add new mode: %v", err)
 	}
@@ -1534,11 +1534,11 @@ func TestAdminSaveSelectionsRejectsDisabledMode(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	oldModeID, err := st.AddCatalogMode(ctx, "old-mode2", "Old Mode 2", true)
+	oldModeID, err := st.AddCatalogMode(ctx, "Old Mode 2", true)
 	if err != nil {
 		t.Fatalf("add old mode: %v", err)
 	}
-	disabledModeID, err := st.AddCatalogMode(ctx, "disabled-mode", "Disabled Mode", false)
+	disabledModeID, err := st.AddCatalogMode(ctx, "Disabled Mode", false)
 	if err != nil {
 		t.Fatalf("add disabled mode: %v", err)
 	}
@@ -1587,7 +1587,7 @@ func TestAdminSaveSelectionsWithoutModeChangeSucceedsEvenIfCurrentModeDisabled(t
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	modeID, err := st.AddCatalogMode(ctx, "soon-disabled-mode", "Soon Disabled Mode", true)
+	modeID, err := st.AddCatalogMode(ctx, "Soon Disabled Mode", true)
 	if err != nil {
 		t.Fatalf("add mode: %v", err)
 	}
@@ -2001,7 +2001,6 @@ func TestCreateUserRejectsOverlapWithActiveUser(t *testing.T) {
 
 func TestCreateUserIgnoresOverlapWithLoginModeUser(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
-	ctx := context.Background()
 
 	loginBody := `{"name":"login-user","peer_ip":"10.0.93.1","peer_asn":65092,"web_auth":"login","enabled":true}`
 	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(loginBody))
@@ -2019,9 +2018,7 @@ func TestCreateUserIgnoresOverlapWithLoginModeUser(t *testing.T) {
 	// simulating data left over from before it switched to login mode) —
 	// must not affect the create below at all, even though it overlaps
 	// with what network-user is about to claim.
-	if _, err := st.DB.ExecContext(ctx, "INSERT INTO user_networks(user_id, cidr) VALUES (?, ?)", loginUser.ID, "10.5.0.128/25"); err != nil {
-		t.Fatal(err)
-	}
+	insertStaleNetwork(t, st, loginUser.ID, "10.5.0.128/25")
 
 	networkBody := `{"name":"network-user","peer_ip":"10.0.93.2","peer_asn":65093,"networks":["10.5.0.0/24"],"web_auth":"network","enabled":true}`
 	req = httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(networkBody))
@@ -2030,6 +2027,21 @@ func TestCreateUserIgnoresOverlapWithLoginModeUser(t *testing.T) {
 	srv.apiUsersCreate(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create network-user: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// insertStaleNetwork stores a network row directly (bypassing the API and
+// store validation) in the post-33 binary shape, to simulate data left
+// over from before a user switched to login mode.
+func insertStaleNetwork(t *testing.T, st *store.Store, userID int64, cidr string) {
+	t.Helper()
+	ip, bits, err := store.EncodePrefixString(cidr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(
+		"INSERT INTO user_networks(user_id, ip, bits) VALUES (?, ?, ?)", userID, ip, bits); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -2057,9 +2069,7 @@ func TestUpdateUserRejectsReactivatingConflictingNetworks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB.Exec("INSERT INTO user_networks(user_id, cidr) VALUES (?, ?)", dormantID, "10.0.0.128/25"); err != nil {
-		t.Fatal(err)
-	}
+	insertStaleNetwork(t, st, dormantID, "10.0.0.128/25")
 
 	// Switching dormant-user back to network mode, without touching
 	// networks at all, must be rejected — its now-active networks conflict.
@@ -2096,9 +2106,7 @@ func TestUpdateUserAllowsReactivatingNonConflictingNetworks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB.Exec("INSERT INTO user_networks(user_id, cidr) VALUES (?, ?)", dormantID, "10.0.7.0/24"); err != nil {
-		t.Fatal(err)
-	}
+	insertStaleNetwork(t, st, dormantID, "10.0.7.0/24")
 
 	switchBody := `{"web_auth":"network"}`
 	req := httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(dormantID, 10), strings.NewReader(switchBody))

@@ -107,7 +107,7 @@ func (s *Server) apiDashboard(w http.ResponseWriter, r *http.Request) {
 	feedCounts, _ := s.store.ModeFeedCounts(ctx) //nolint:errcheck // best-effort lookup for display
 	modeItems := make([]modeJSON, len(modes))
 	for i, m := range modes {
-		modeItems[i] = modeJSON{ID: m.ID, Key: m.Key, Name: m.Name, Enabled: m.Enabled, FeedCount: feedCounts[m.ID]}
+		modeItems[i] = modeJSON{ID: m.ID, Name: m.Name, Enabled: m.Enabled, FeedCount: feedCounts[m.ID]}
 	}
 
 	// History

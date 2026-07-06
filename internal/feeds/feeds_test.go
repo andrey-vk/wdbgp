@@ -6,10 +6,8 @@ import (
 	"bytes"
 	"compress/zlib"
 	"context"
-	"database/sql"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -490,14 +488,15 @@ func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	if syncErrors := syncer.SyncAll(ctx); len(syncErrors) != 0 {
 		t.Fatalf("SyncAll errors = %v", syncErrors)
 	}
-	var url, lastSuccess, lastError string
+	var url, lastError string
+	var lastSuccess int64
 	if err := db.DB.QueryRow(`
-SELECT url, COALESCE(last_success, ''), COALESCE(last_error, '')
+SELECT url, COALESCE(last_success, 0), COALESCE(last_error, '')
 FROM feeds WHERE id = ?`, feed.ID).Scan(&url, &lastSuccess, &lastError); err != nil {
 		t.Fatal(err)
 	}
-	if url != newURL || lastSuccess != "" || lastError != "" {
-		t.Fatalf("feed state = url %q success %q error %q", url, lastSuccess, lastError)
+	if url != newURL || lastSuccess != 0 || lastError != "" {
+		t.Fatalf("feed state = url %q success %d error %q", url, lastSuccess, lastError)
 	}
 	var entries int
 	if err := db.DB.QueryRow("SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feed.ID).
@@ -615,13 +614,23 @@ func TestSyncIPRangesFeedStoresModeCatalog(t *testing.T) {
 		len(catalog["Platforms"]) == 0 {
 		t.Fatalf("IPRanges catalog = %#v", catalog)
 	}
+	v4IP, v4Bits, err := store.EncodePrefixString("203.0.113.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v6IP, v6Bits, err := store.EncodePrefixString("2001:db8::/32")
+	if err != nil {
+		t.Fatal(err)
+	}
 	var wrongModeEntries int
 	if err := db.DB.QueryRow(`
 SELECT COUNT(*)
-FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
+FROM catalog_entries ce
+JOIN feeds f ON f.id = ce.feed_id
+JOIN prefixes p ON p.id = ce.prefix_id
 WHERE f.id NOT IN (SELECT feed_id FROM catalog_mode_feeds WHERE mode_id = ?)
-  AND ce.cidr IN ('203.0.113.0/24', '2001:db8::/32')`,
-		store.IPRangesCatalogModeID).Scan(&wrongModeEntries); err != nil {
+  AND (p.ip, p.bits) IN (VALUES (?, ?), (?, ?))`,
+		store.IPRangesCatalogModeID, v4IP, v4Bits, v6IP, v6Bits).Scan(&wrongModeEntries); err != nil {
 		t.Fatal(err)
 	}
 	if wrongModeEntries != 0 {
@@ -635,59 +644,6 @@ func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error)
 	return fn(request)
 }
 
-// TestInsertCatalogEntriesBatchBoundaries covers counts at, just under, and
-// just over catalogEntryInsertBatchSize, since an off-by-one in the chunk
-// loop would only surface right at those boundaries — a small feed's test
-// wouldn't catch it.
-func TestInsertCatalogEntriesBatchBoundaries(t *testing.T) {
-	for _, count := range []int{0, 1, catalogEntryInsertBatchSize - 1, catalogEntryInsertBatchSize, catalogEntryInsertBatchSize + 1, catalogEntryInsertBatchSize*2 + 7} {
-		t.Run(fmt.Sprintf("count=%d", count), func(t *testing.T) {
-			db, err := store.Open(filepath.Join(t.TempDir(), "batch.sqlite3"), false, "", false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-
-			feedList, err := db.Feeds(context.Background(), false)
-			if err != nil || len(feedList) == 0 {
-				t.Fatalf("expected at least one seeded feed, feeds=%v err=%v", feedList, err)
-			}
-			feedID := feedList[0].ID
-
-			entries := make([]Entry, count)
-			for i := range entries {
-				entries[i] = Entry{
-					Category: "cat",
-					Service:  "svc",
-					CIDR:     fmt.Sprintf("10.%d.%d.0/24", i/256, i%256),
-				}
-			}
-
-			if err := db.Transaction(context.Background(), func(tx *sql.Tx) error {
-				return insertCatalogEntries(context.Background(), tx, feedID, entries)
-			}); err != nil {
-				t.Fatalf("insertCatalogEntries failed for count=%d: %v", count, err)
-			}
-
-			var got int
-			if err := db.DB.QueryRow("SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feedID).Scan(&got); err != nil {
-				t.Fatal(err)
-			}
-			if got != count {
-				t.Fatalf("catalog_entries count = %d, want %d", got, count)
-			}
-
-			if count > 0 {
-				var cidr string
-				if err := db.DB.QueryRow(
-					"SELECT cidr FROM catalog_entries WHERE feed_id = ? AND category = 'cat' AND service = 'svc' ORDER BY cidr LIMIT 1",
-					feedID).Scan(&cidr); err != nil {
-					t.Fatal(err)
-				}
-				if cidr == "" {
-					t.Fatal("expected a non-empty cidr to have been inserted")
-				}
-			}
-		})
-	}
-}
+// Batch-boundary coverage for catalog entry insertion lives with the
+// implementation now: see store.ReplaceCatalogEntries and its tests in
+// internal/store/dictionaries_test.go.

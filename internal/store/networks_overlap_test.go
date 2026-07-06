@@ -2,10 +2,26 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// insertRawNetwork inserts a network row directly, bypassing
+// replaceNetworks' normalization/validation — for simulating stale or
+// vestigial data (e.g. a login-mode user's leftover networks).
+func insertRawNetwork(t *testing.T, db *sql.DB, userID int64, cidr string) {
+	t.Helper()
+	ip, bits, err := EncodePrefixString(cidr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(
+		"INSERT INTO user_networks(user_id, ip, bits) VALUES (?, ?, ?)", userID, ip, bits); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestActiveNetworksOverlapDetectsConflict(t *testing.T) {
 	ctx := context.Background()

@@ -15,7 +15,7 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(modes) != 3 || modes[0].Key != "opencck" || modes[1].Key != "ipranges" || modes[2].Key != "singbox-srs" {
+	if len(modes) != 3 || modes[0].Name != "OpenCCK" || modes[1].Name != "IPRanges" || modes[2].Name != "sing-box SRS" {
 		t.Fatalf("catalog modes = %#v", modes)
 	}
 	ipranges := modes[1]
@@ -33,10 +33,14 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 		Scan(&ipRangesFeedID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'Open', 'Wide', '8.8.0.0/16'),
-		(?, 'Precise', 'Narrow', '8.8.8.0/24')`,
-		openCCKFeedID, ipRangesFeedID); err != nil {
+	if err := s.InsertCatalogEntries(ctx, openCCKFeedID, []CatalogEntry{
+		{Category: "Open", Service: "Wide", CIDR: "8.8.0.0/16"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertCatalogEntries(ctx, ipRangesFeedID, []CatalogEntry{
+		{Category: "Precise", Service: "Narrow", CIDR: "8.8.8.0/24"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	userID, err := s.AddUser(ctx, User{
@@ -136,8 +140,9 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	feed := feeds[len(feeds)-1]
-	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr)
-		VALUES (?, 'Custom', 'Example', '8.8.8.0/24')`, feed.ID); err != nil {
+	if err := s.InsertCatalogEntries(ctx, feed.ID, []CatalogEntry{
+		{Category: "Custom", Service: "Example", CIDR: "8.8.8.0/24"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	userID, err := s.AddUser(ctx, User{
@@ -238,14 +243,18 @@ func TestSetVisibleUserSelectionPreservesDisabledOnlySelections(t *testing.T) {
 			disabledID = feed.ID
 		}
 	}
-	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'Visible', 'Keep', '8.8.8.0/24'),
-		(?, 'Visible', 'Remove', '8.8.4.0/24'),
-		(?, 'Shared', 'Service', '9.9.9.0/24'),
-		(?, 'HiddenCategory', 'Any', '1.1.1.0/24'),
-		(?, 'HiddenServices', 'Hidden', '1.0.0.0/24'),
-		(?, 'Shared', 'Service', '2.2.2.0/24')`,
-		enabledID, enabledID, enabledID, disabledID, disabledID, disabledID); err != nil {
+	if err := s.InsertCatalogEntries(ctx, enabledID, []CatalogEntry{
+		{Category: "Visible", Service: "Keep", CIDR: "8.8.8.0/24"},
+		{Category: "Visible", Service: "Remove", CIDR: "8.8.4.0/24"},
+		{Category: "Shared", Service: "Service", CIDR: "9.9.9.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertCatalogEntries(ctx, disabledID, []CatalogEntry{
+		{Category: "HiddenCategory", Service: "Any", CIDR: "1.1.1.0/24"},
+		{Category: "HiddenServices", Service: "Hidden", CIDR: "1.0.0.0/24"},
+		{Category: "Shared", Service: "Service", CIDR: "2.2.2.0/24"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	userID, err := s.AddUser(ctx, User{
@@ -305,11 +314,11 @@ func TestCountSelectionPrefixes(t *testing.T) {
 	}
 
 	// Insert catalog entries with both IPv4 and IPv6 prefixes
-	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'CountTest', 'ServiceA', '8.8.8.0/24'),
-		(?, 'CountTest', 'ServiceA', '2a01::/32'),
-		(?, 'CountTest', 'ServiceB', '37.228.0.0/24')`,
-		feedID, feedID, feedID); err != nil {
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "CountTest", Service: "ServiceA", CIDR: "8.8.8.0/24"},
+		{Category: "CountTest", Service: "ServiceA", CIDR: "2a01::/32"},
+		{Category: "CountTest", Service: "ServiceB", CIDR: "37.228.0.0/24"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 

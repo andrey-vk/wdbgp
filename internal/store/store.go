@@ -422,6 +422,17 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if _, err := backupDB.Exec("DELETE FROM catalog_entries"); err != nil {
 			log.Printf("WARNING: backup cleanup DELETE: %v", err)
 		}
+		// The prefixes dictionary (schema >= 32) is recreatable too; on
+		// older-format DBs the table doesn't exist yet.
+		var hasPrefixes int
+		if err := backupDB.QueryRow(
+			"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='prefixes'").Scan(&hasPrefixes); err != nil {
+			log.Printf("WARNING: backup cleanup prefixes check: %v", err)
+		} else if hasPrefixes > 0 {
+			if _, err := backupDB.Exec("DELETE FROM prefixes"); err != nil {
+				log.Printf("WARNING: backup cleanup DELETE prefixes: %v", err)
+			}
+		}
 		if _, err := backupDB.Exec("VACUUM"); err != nil {
 			log.Printf("WARNING: backup cleanup VACUUM: %v", err)
 		}
@@ -432,10 +443,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		log.Printf("DB backup saved to %s", backupPath)
 	}
 
+	migrationsRan := false
 	for _, migration := range migrations {
 		if appliedSet[migration.Version] {
 			continue
 		}
+		migrationsRan = true
 		// Run NoTxSQL BEFORE the transaction so that a failure does not
 		// leave the DB in a partial state with the version already committed.
 		// NoTxSQL must be idempotent so it is safe to re-run on retry.
@@ -477,6 +490,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		`CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id)`,
 	); err != nil {
 		return fmt.Errorf("users enabled+catalog_mode index: %w", err)
+	}
+	// Table-rebuild migrations leave their freed pages inside the file —
+	// without a VACUUM the file never shrinks. Only worth it right after
+	// migrations actually ran; best-effort, boot must not fail over it.
+	if migrationsRan {
+		if _, err := s.DB.ExecContext(ctx, "VACUUM"); err != nil {
+			log.Printf("WARNING: post-migration VACUUM: %v", err)
+		}
 	}
 	return s.seedBuiltInAdapters(ctx)
 }
@@ -558,8 +579,9 @@ WHERE id = ?`, id).Scan(
 
 func (s *Store) Stats(ctx context.Context) (int, int, int, error) {
 	var categories, services, entries int
-	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(DISTINCT category),
-		COUNT(DISTINCT service), COUNT(DISTINCT cidr) FROM catalog_entries`).
+	err := s.DB.QueryRowContext(ctx, `
+SELECT COUNT(DISTINCT sv.category_id), COUNT(DISTINCT ce.service_id), COUNT(DISTINCT ce.prefix_id)
+FROM catalog_entries ce JOIN services sv ON sv.id = ce.service_id`).
 		Scan(&categories, &services, &entries)
 	return categories, services, entries, err
 }

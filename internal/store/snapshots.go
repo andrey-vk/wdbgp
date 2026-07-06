@@ -2,9 +2,10 @@ package store
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"log"
+	"maps"
 	"time"
 )
 
@@ -63,38 +64,80 @@ const feedSnapshotMinInterval = 300 * time.Second
 // If the last row is within the interval and values changed, it updates the row in place.
 // If the last row is older than the interval, a new row is inserted.
 // If values are unchanged, the call is a no-op.
+// Counts live in feed_snapshot_counts, one row per (snapshot, feed).
 func (s *Store) SaveFeedSnapshot(ctx context.Context, prefixes map[int64]int) error {
-	j, err := json.Marshal(prefixes)
-	if err != nil {
-		return fmt.Errorf("marshal feed prefixes: %w", err)
-	}
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		var lastID int64
+		var lastRecordedAtUnix int64
+		row := tx.QueryRowContext(ctx,
+			"SELECT id, recorded_at FROM feed_snapshots ORDER BY recorded_at DESC LIMIT 1")
+		hasLast := row.Scan(&lastID, &lastRecordedAtUnix) == nil
 
-	var lastID int64
-	var lastRecordedAtUnix int64
-	var lastJSON string
-	row := s.DB.QueryRowContext(ctx,
-		"SELECT id, recorded_at, prefixes FROM feed_snapshots ORDER BY recorded_at DESC LIMIT 1")
-	hasLast := row.Scan(&lastID, &lastRecordedAtUnix, &lastJSON) == nil
-
-	if hasLast {
-		// Unchanged — skip
-		if lastJSON == string(j) {
-			return nil
+		if hasLast {
+			lastCounts, err := feedSnapshotCounts(ctx, tx, lastID)
+			if err != nil {
+				return err
+			}
+			// Unchanged — skip
+			if maps.Equal(lastCounts, prefixes) {
+				return nil
+			}
+			// Last row is within rate-limit window — update in place
+			lastTime := time.Unix(lastRecordedAtUnix, 0).UTC()
+			if time.Since(lastTime) < feedSnapshotMinInterval {
+				if _, err := tx.ExecContext(ctx,
+					"DELETE FROM feed_snapshot_counts WHERE snapshot_id = ?", lastID); err != nil {
+					return err
+				}
+				return insertFeedSnapshotCounts(ctx, tx, lastID, prefixes)
+			}
 		}
-		// Last row is within rate-limit window — update in place
-		lastTime := time.Unix(lastRecordedAtUnix, 0).UTC()
-		if time.Since(lastTime) < feedSnapshotMinInterval {
-			_, err := s.DB.ExecContext(ctx,
-				"UPDATE feed_snapshots SET prefixes=? WHERE id=?",
-				string(j), lastID)
+		// Insert new row
+		result, err := tx.ExecContext(ctx,
+			"INSERT INTO feed_snapshots(recorded_at) VALUES (?)", time.Now().UTC().Unix())
+		if err != nil {
+			return err
+		}
+		snapshotID, err := result.LastInsertId()
+		if err != nil {
+			return err
+		}
+		return insertFeedSnapshotCounts(ctx, tx, snapshotID, prefixes)
+	})
+}
+
+func feedSnapshotCounts(ctx context.Context, tx *sql.Tx, snapshotID int64) (map[int64]int, error) {
+	rows, err := tx.QueryContext(ctx,
+		"SELECT feed_id, prefix_count FROM feed_snapshot_counts WHERE snapshot_id = ?", snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("WARNING: rows close: %v", err)
+		}
+	}()
+	counts := map[int64]int{}
+	for rows.Next() {
+		var feedID int64
+		var count int
+		if err := rows.Scan(&feedID, &count); err != nil {
+			return nil, err
+		}
+		counts[feedID] = count
+	}
+	return counts, rows.Err()
+}
+
+func insertFeedSnapshotCounts(ctx context.Context, tx *sql.Tx, snapshotID int64, prefixes map[int64]int) error {
+	for feedID, count := range prefixes {
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO feed_snapshot_counts(snapshot_id, feed_id, prefix_count) VALUES (?, ?, ?)",
+			snapshotID, feedID, count); err != nil {
 			return err
 		}
 	}
-	// Insert new row
-	_, err = s.DB.ExecContext(ctx,
-		"INSERT INTO feed_snapshots(recorded_at, prefixes) VALUES (?, ?)",
-		time.Now().UTC().Unix(), string(j))
-	return err
+	return nil
 }
 
 // GetUserSnapshots returns user metrics for the last N days.
@@ -127,9 +170,12 @@ func (s *Store) GetUserSnapshots(ctx context.Context, days int) ([]UserSnapshot,
 // GetFeedSnapshots returns feed prefix counts for the last N days.
 func (s *Store) GetFeedSnapshots(ctx context.Context, days int) ([]FeedSnapshot, error) {
 	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Unix()
-	rows, err := s.DB.QueryContext(ctx,
-		"SELECT recorded_at, prefixes FROM feed_snapshots WHERE recorded_at >= ? ORDER BY recorded_at",
-		cutoff)
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT fs.id, fs.recorded_at, fsc.feed_id, fsc.prefix_count
+FROM feed_snapshots fs
+JOIN feed_snapshot_counts fsc ON fsc.snapshot_id = fs.id
+WHERE fs.recorded_at >= ?
+ORDER BY fs.recorded_at, fs.id`, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -139,18 +185,23 @@ func (s *Store) GetFeedSnapshots(ctx context.Context, days int) ([]FeedSnapshot,
 		}
 	}()
 	var snapshots []FeedSnapshot
+	lastID := int64(-1)
 	for rows.Next() {
-		var fs FeedSnapshot
-		var unix int64
-		var j string
-		if err := rows.Scan(&unix, &j); err != nil {
+		var id, unix, feedID int64
+		var count int
+		if err := rows.Scan(&id, &unix, &feedID, &count); err != nil {
 			return nil, err
 		}
-		fs.RecordedAt = time.Unix(unix, 0).UTC()
-		if err := json.Unmarshal([]byte(j), &fs.Prefixes); err != nil {
-			return nil, fmt.Errorf("unmarshal feed snapshot prefixes: %w", err)
+		// Rows are ordered by snapshot, so each snapshot's rows are
+		// contiguous — a new snapshot starts whenever the id changes.
+		if id != lastID {
+			snapshots = append(snapshots, FeedSnapshot{
+				RecordedAt: time.Unix(unix, 0).UTC(),
+				Prefixes:   map[int64]int{},
+			})
+			lastID = id
 		}
-		snapshots = append(snapshots, fs)
+		snapshots[len(snapshots)-1].Prefixes[feedID] = count
 	}
 	return snapshots, rows.Err()
 }
@@ -183,7 +234,7 @@ func (s *Store) RecordFeedSnapshot(ctx context.Context, metricsEnabled bool) {
 	for _, f := range feeds {
 		var count int
 		if err := s.DB.QueryRowContext(ctx,
-			"SELECT COUNT(DISTINCT cidr) FROM catalog_entries WHERE feed_id = ?", f.ID).Scan(&count); err == nil && count > 0 {
+			"SELECT COUNT(DISTINCT prefix_id) FROM catalog_entries WHERE feed_id = ?", f.ID).Scan(&count); err == nil && count > 0 {
 			counts[f.ID] = count
 		}
 	}
@@ -221,7 +272,24 @@ func (s *Store) RecordUserSnapshot(ctx context.Context, metricsEnabled bool, pee
 // keeping the newest record just outside the window.
 func (s *Store) PurgeFeedSnapshots(ctx context.Context, days int) error {
 	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Unix()
-	_, err := s.DB.ExecContext(ctx, `
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		// Child rows first — explicit rather than relying on the FK
+		// cascade, so the purge works the same regardless of the
+		// connection's foreign_keys pragma.
+		if _, err := tx.ExecContext(ctx, `
+		DELETE FROM feed_snapshot_counts
+		WHERE snapshot_id IN (
+		    SELECT id FROM feed_snapshots
+		    WHERE recorded_at < ?
+		      AND id NOT IN (
+		          SELECT id FROM feed_snapshots
+		          WHERE recorded_at < ?
+		          ORDER BY recorded_at DESC LIMIT 1
+		      )
+		)`, cutoff, cutoff); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `
 		DELETE FROM feed_snapshots
 		WHERE recorded_at < ?
 		  AND id NOT IN (
@@ -229,5 +297,6 @@ func (s *Store) PurgeFeedSnapshots(ctx context.Context, days int) error {
 		      WHERE recorded_at < ?
 		      ORDER BY recorded_at DESC LIMIT 1
 		  )`, cutoff, cutoff)
-	return err
+		return err
+	})
 }

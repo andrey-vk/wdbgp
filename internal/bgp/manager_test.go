@@ -210,10 +210,10 @@ func TestReconcileSkipsIPv6WithoutLocalAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
-		(feed_id, category, service, cidr) VALUES
-		(1, 'test', 'dual-stack', '8.8.8.0/24'),
-		(1, 'test', 'dual-stack', '2606:4700::/32')`); err != nil {
+	if err := s.InsertCatalogEntries(ctx, 1, []store.CatalogEntry{
+		{Category: "test", Service: "dual-stack", CIDR: "8.8.8.0/24"},
+		{Category: "test", Service: "dual-stack", CIDR: "2606:4700::/32"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
@@ -404,11 +404,11 @@ func TestReconcileAssignsRoutesPerPeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
-		(feed_id, category, service, cidr) VALUES
-		(1, 'video', 'youtube', '8.8.8.0/24'),
-		(1, 'video', 'youtube', '8.8.4.0/24'),
-		(1, 'chat', 'telegram', '149.154.160.0/20')`); err != nil {
+	if err := s.InsertCatalogEntries(ctx, 1, []store.CatalogEntry{
+		{Category: "video", Service: "youtube", CIDR: "8.8.8.0/24"},
+		{Category: "video", Service: "youtube", CIDR: "8.8.4.0/24"},
+		{Category: "chat", Service: "telegram", CIDR: "149.154.160.0/20"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
@@ -469,11 +469,11 @@ func TestReconcileClearsRoutesOnModeChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries
-		(feed_id, category, service, cidr) VALUES
-		(1, 'video', 'youtube', '8.8.8.0/24'),
-		(1, 'video', 'youtube', '8.8.4.0/24'),
-		(1, 'chat', 'telegram', '149.154.160.0/20')`); err != nil {
+	if err := s.InsertCatalogEntries(ctx, 1, []store.CatalogEntry{
+		{Category: "video", Service: "youtube", CIDR: "8.8.8.0/24"},
+		{Category: "video", Service: "youtube", CIDR: "8.8.4.0/24"},
+		{Category: "chat", Service: "telegram", CIDR: "149.154.160.0/20"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {

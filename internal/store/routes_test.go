@@ -20,10 +20,11 @@ func TestDesiredPrefixesForCategoryAndService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(1, 'Messengers', 'Telegram', '149.154.160.0/20'),
-		(1, 'Messengers', 'Signal', '76.223.92.0/24'),
-		(1, 'AI', 'Copilot', '140.82.112.0/20')`)
+	err = s.InsertCatalogEntries(ctx, 1, []CatalogEntry{
+		{Category: "Messengers", Service: "Telegram", CIDR: "149.154.160.0/20"},
+		{Category: "Messengers", Service: "Signal", CIDR: "76.223.92.0/24"},
+		{Category: "AI", Service: "Copilot", CIDR: "140.82.112.0/20"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,9 +58,10 @@ func TestDesiredPrefixesEmptyWithoutSelection(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(1, 'Messengers', 'Telegram', '149.154.160.0/20'),
-		(1, 'AI', 'Copilot', '140.82.112.0/20')`); err != nil {
+	if err := s.InsertCatalogEntries(ctx, 1, []CatalogEntry{
+		{Category: "Messengers", Service: "Telegram", CIDR: "149.154.160.0/20"},
+		{Category: "AI", Service: "Copilot", CIDR: "140.82.112.0/20"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -170,9 +172,10 @@ func TestDesiredPrefixesDropsFeedDefaultRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(1, 'test', 'default', '0.0.0.0/0'),
-		(1, 'test', 'public', '8.8.8.0/24')`); err != nil {
+	if err := s.InsertCatalogEntries(ctx, 1, []CatalogEntry{
+		{Category: "test", Service: "default", CIDR: "0.0.0.0/0"},
+		{Category: "test", Service: "public", CIDR: "8.8.8.0/24"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	// Global route filters are empty by default (migration 029 moved them to app_settings).
@@ -248,8 +251,9 @@ func addFilteredTestUser(t *testing.T, s *Store, override bool) int64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.DB.Exec(`INSERT INTO catalog_entries(feed_id, category, service, cidr)
-		VALUES (1, 'test', 'wide', '1.0.0.0/8')`); err != nil {
+	if err := s.InsertCatalogEntries(ctx, 1, []CatalogEntry{
+		{Category: "test", Service: "wide", CIDR: "1.0.0.0/8"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {

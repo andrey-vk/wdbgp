@@ -10,13 +10,12 @@ import (
 // CatalogMode represents a catalog mode (OpenCCK, IPRanges, sing-box SRS, etc.).
 type CatalogMode struct {
 	ID      int64  `json:"id"`
-	Key     string `json:"key"`
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
 }
 
 func (s *Store) CatalogModes(ctx context.Context, enabledOnly bool) ([]CatalogMode, error) {
-	query := "SELECT id, key, name, enabled FROM catalog_modes"
+	query := "SELECT id, name, enabled FROM catalog_modes"
 	if enabledOnly {
 		query += " WHERE enabled = 1"
 	}
@@ -33,7 +32,7 @@ func (s *Store) CatalogModes(ctx context.Context, enabledOnly bool) ([]CatalogMo
 	var modes []CatalogMode
 	for rows.Next() {
 		var mode CatalogMode
-		if err := rows.Scan(&mode.ID, &mode.Key, &mode.Name, &mode.Enabled); err != nil {
+		if err := rows.Scan(&mode.ID, &mode.Name, &mode.Enabled); err != nil {
 			return nil, err
 		}
 		modes = append(modes, mode)
@@ -44,8 +43,8 @@ func (s *Store) CatalogModes(ctx context.Context, enabledOnly bool) ([]CatalogMo
 func (s *Store) CatalogMode(ctx context.Context, id int64) (CatalogMode, error) {
 	var mode CatalogMode
 	err := s.DB.QueryRowContext(ctx,
-		"SELECT id, key, name, enabled FROM catalog_modes WHERE id = ?", id).
-		Scan(&mode.ID, &mode.Key, &mode.Name, &mode.Enabled)
+		"SELECT id, name, enabled FROM catalog_modes WHERE id = ?", id).
+		Scan(&mode.ID, &mode.Name, &mode.Enabled)
 	return mode, err
 }
 
@@ -64,10 +63,10 @@ func (s *Store) UpdateCatalogMode(ctx context.Context, mode CatalogMode) error {
 	return nil
 }
 
-func (s *Store) AddCatalogMode(ctx context.Context, key, name string, enabled bool) (int64, error) {
+func (s *Store) AddCatalogMode(ctx context.Context, name string, enabled bool) (int64, error) {
 	result, err := s.DB.ExecContext(ctx,
-		"INSERT INTO catalog_modes(key, name, enabled) VALUES (?, ?, ?)",
-		key, name, enabled)
+		"INSERT INTO catalog_modes(name, enabled) VALUES (?, ?)",
+		name, enabled)
 	if err != nil {
 		return 0, err
 	}
@@ -127,7 +126,7 @@ SELECT f.id, f.name, f.url, f.adapter_id, f.enabled,
        COALESCE(f.sync_interval, 0),
        COALESCE(f.data, ''),
        f.allowed_hosts, f.restrict_hosts,
-       COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
+       COALESCE(f.last_success, 0), COALESCE(f.last_error, '')
 FROM feeds f
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 WHERE cmf.mode_id = ?

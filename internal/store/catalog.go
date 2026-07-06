@@ -24,12 +24,14 @@ func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisable
 		includeDisabledInt = 1
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT DISTINCT ce.category, ce.service
+SELECT DISTINCT c.name, sv.name
 FROM catalog_entries ce
+JOIN services sv ON sv.id = ce.service_id
+JOIN categories c ON c.id = sv.category_id
 JOIN feeds f ON f.id = ce.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 WHERE (f.enabled = 1 OR ? = 1) AND cmf.mode_id = ?
-ORDER BY ce.category, ce.service`, includeDisabledInt, modeID)
+ORDER BY c.name, sv.name`, includeDisabledInt, modeID)
 	if err != nil {
 		return nil, err
 	}
@@ -51,13 +53,16 @@ ORDER BY ce.category, ce.service`, includeDisabledInt, modeID)
 
 func (s *Store) EnabledCatalogPrefixes(ctx context.Context, modeID int64) ([]CatalogPrefix, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT DISTINCT ce.category, ce.service, ce.cidr
+SELECT DISTINCT c.name, sv.name, p.ip, p.bits
 FROM catalog_entries ce
+JOIN services sv ON sv.id = ce.service_id
+JOIN categories c ON c.id = sv.category_id
+JOIN prefixes p ON p.id = ce.prefix_id
 JOIN feeds f ON f.id = ce.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 WHERE f.enabled = 1 AND m.enabled = 1 AND cmf.mode_id = ?
-ORDER BY ce.category, ce.service, ce.cidr`, modeID)
+ORDER BY c.name, sv.name, p.ip, p.bits`, modeID)
 	if err != nil {
 		return nil, err
 	}
@@ -69,9 +74,16 @@ ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 	var prefixes []CatalogPrefix
 	for rows.Next() {
 		var prefix CatalogPrefix
-		if err := rows.Scan(&prefix.Category, &prefix.Service, &prefix.CIDR); err != nil {
+		var ip []byte
+		var bits int
+		if err := rows.Scan(&prefix.Category, &prefix.Service, &ip, &bits); err != nil {
 			return nil, err
 		}
+		decoded, err := DecodePrefix(ip, bits)
+		if err != nil {
+			return nil, err
+		}
+		prefix.CIDR = decoded.String()
 		prefixes = append(prefixes, prefix)
 	}
 	return prefixes, rows.Err()
@@ -80,12 +92,15 @@ ORDER BY ce.category, ce.service, ce.cidr`, modeID)
 // CategoryPrefixCounts returns the number of distinct IPv4 and IPv6 CIDRs per category.
 func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (v4 map[string]int, v6 map[string]int, err error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT ce.category, ce.cidr
-FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
+SELECT c.name, length(p.ip), COUNT(DISTINCT ce.prefix_id)
+FROM catalog_entries ce
+JOIN services sv ON sv.id = ce.service_id
+JOIN categories c ON c.id = sv.category_id
+JOIN prefixes p ON p.id = ce.prefix_id
+JOIN feeds f ON f.id = ce.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 WHERE cmf.mode_id = ? AND f.enabled = 1
-GROUP BY ce.category, ce.cidr
-ORDER BY ce.category`, modeID)
+GROUP BY c.name, length(p.ip)`, modeID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -96,27 +111,16 @@ ORDER BY ce.category`, modeID)
 	}()
 	v4 = map[string]int{}
 	v6 = map[string]int{}
-	seen := map[string]map[netip.Prefix]struct{}{}
 	for rows.Next() {
-		var category, rawCIDR string
-		if err := rows.Scan(&category, &rawCIDR); err != nil {
+		var category string
+		var ipLen, count int
+		if err := rows.Scan(&category, &ipLen, &count); err != nil {
 			return nil, nil, err
 		}
-		prefix, err := netip.ParsePrefix(rawCIDR)
-		if err != nil {
-			continue
-		}
-		if seen[category] == nil {
-			seen[category] = map[netip.Prefix]struct{}{}
-		}
-		if _, ok := seen[category][prefix]; ok {
-			continue
-		}
-		seen[category][prefix] = struct{}{}
-		if prefix.Addr().Is6() {
-			v6[category]++
+		if ipLen == 16 {
+			v6[category] += count
 		} else {
-			v4[category]++
+			v4[category] += count
 		}
 	}
 	return v4, v6, rows.Err()
@@ -125,13 +129,15 @@ ORDER BY ce.category`, modeID)
 // PrefixCounts returns the number of distinct IPv4 and IPv6 CIDR prefixes for each service in each category.
 func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (v4 map[string]map[string]int, v6 map[string]map[string]int, err error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT ce.category, ce.service, ce.cidr
+SELECT c.name, sv.name, length(p.ip), COUNT(DISTINCT ce.prefix_id)
 FROM catalog_entries ce
+JOIN services sv ON sv.id = ce.service_id
+JOIN categories c ON c.id = sv.category_id
+JOIN prefixes p ON p.id = ce.prefix_id
 JOIN feeds f ON f.id = ce.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 WHERE cmf.mode_id = ? AND f.enabled = 1
-GROUP BY ce.category, ce.service, ce.cidr
-ORDER BY ce.category, ce.service`, modeID)
+GROUP BY c.name, sv.name, length(p.ip)`, modeID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -142,32 +148,24 @@ ORDER BY ce.category, ce.service`, modeID)
 	}()
 	v4 = map[string]map[string]int{}
 	v6 = map[string]map[string]int{}
-	ens := ensureCount
 	for rows.Next() {
-		var category, service, rawCIDR string
-		if err := rows.Scan(&category, &service, &rawCIDR); err != nil {
+		var category, service string
+		var ipLen, count int
+		if err := rows.Scan(&category, &service, &ipLen, &count); err != nil {
 			return nil, nil, err
 		}
-		prefix, err := netip.ParsePrefix(rawCIDR)
-		if err != nil {
-			continue
+		target := &v4
+		if ipLen == 16 {
+			target = &v6
 		}
-		if prefix.Addr().Is6() {
-			ens(&v6, category, service)
-		} else {
-			ens(&v4, category, service)
+		cat, ok := (*target)[category]
+		if !ok {
+			cat = map[string]int{}
+			(*target)[category] = cat
 		}
+		cat[service] += count
 	}
 	return v4, v6, rows.Err()
-}
-
-func ensureCount(m *map[string]map[string]int, category, service string) {
-	cat, ok := (*m)[category]
-	if !ok {
-		cat = map[string]int{}
-		(*m)[category] = cat
-	}
-	cat[service]++
 }
 
 // CountPrefixes returns the number of unique IPv4 and IPv6 prefixes that would be
@@ -175,16 +173,14 @@ func ensureCount(m *map[string]map[string]int, category, service string) {
 // applying the user's route filters. It does NOT read selected_categories or
 // selected_services from the DB — use the passed-in slices instead.
 func (s *Store) CountPrefixes(ctx context.Context, modeID int64, categories []string, services []ServiceKey, userID int64) (v4, v6 int, err error) {
-	var filterMode string
-	var filterOverride bool
+	var filterModeInt int
 	err = s.DB.QueryRowContext(ctx,
-		`SELECT COALESCE(filter_mode, ''), filter_override_enabled
-		 FROM users WHERE id = ?`, userID).
-		Scan(&filterMode, &filterOverride)
+		"SELECT filter_mode FROM users WHERE id = ?", userID).
+		Scan(&filterModeInt)
 	if err != nil {
 		return 0, 0, err
 	}
-	filterMode = normalizeFilterMode(filterMode, filterOverride)
+	filterMode := filterModeFromInt(filterModeInt)
 
 	if len(categories) == 0 && len(services) == 0 {
 		return 0, 0, nil
@@ -203,15 +199,18 @@ func (s *Store) CountPrefixes(ctx context.Context, modeID int64, categories []st
 			args = append(args, cat)
 		}
 		queryParts = append(queryParts, fmt.Sprintf(`
-SELECT DISTINCT ce.cidr
+SELECT DISTINCT p.ip, p.bits
 FROM feeds f
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
+JOIN services sv ON sv.id = ce.service_id
+JOIN categories c ON c.id = sv.category_id
+JOIN prefixes p ON p.id = ce.prefix_id
 WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
-  AND ce.category IN (%s)`, strings.Join(placeholders, ", ")))
+  AND c.name IN (%s)`, strings.Join(placeholders, ", ")))
 	}
 
 	if len(services) > 0 {
@@ -221,91 +220,31 @@ WHERE cmf.mode_id = ?1
 			args = append(args, svc.Category, svc.Service)
 		}
 		queryParts = append(queryParts, fmt.Sprintf(`
-SELECT DISTINCT ce.cidr
+SELECT DISTINCT p.ip, p.bits
 FROM feeds f
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
+JOIN services sv ON sv.id = ce.service_id
+JOIN categories c ON c.id = sv.category_id
+JOIN prefixes p ON p.id = ce.prefix_id
 WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
-  AND (ce.category, ce.service) IN (%s)`, strings.Join(pairs, ", ")))
+  AND (c.name, sv.name) IN (%s)`, strings.Join(pairs, ", ")))
 	}
 
 	query := strings.Join(queryParts, " UNION ")
 
-	rows, err := s.DB.QueryContext(ctx, query, args...)
+	prefixes, err := s.queryPrefixes(ctx, query, args...)
 	if err != nil {
 		return 0, 0, err
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			log.Printf("WARNING: rows close: %v", err)
-		}
-	}()
-
-	seen := make(map[netip.Prefix]struct{})
-	for rows.Next() {
-		var rawPrefix string
-		if err := rows.Scan(&rawPrefix); err != nil {
-			return 0, 0, err
-		}
-		prefix, err := netip.ParsePrefix(rawPrefix)
-		if err != nil {
-			return 0, 0, fmt.Errorf("parse prefix %q: %w", rawPrefix, err)
-		}
-		if prefix.Bits() == 0 {
-			continue
-		}
-		seen[prefix.Masked()] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, 0, err
-	}
-
-	if len(seen) == 0 {
+	if len(prefixes) == 0 {
 		return 0, 0, nil
 	}
 
-	prefixes := make([]netip.Prefix, 0, len(seen))
-	for p := range seen {
-		prefixes = append(prefixes, p)
-	}
-
-	// Apply the same filter logic as CountSelectionPrefixes
-	userFilters, err := s.UserRouteFilters(ctx, userID)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	globalFilters, err := s.GlobalRouteFilters(ctx)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	var effectiveFilters RouteFilters
-	switch filterMode {
-	case FilterModeOverride:
-		effectiveFilters = userFilters
-	case FilterModeExtend:
-		effectiveFilters = mergeRouteFilters(globalFilters, userFilters)
-	default:
-		effectiveFilters = globalFilters
-	}
-
-	filtered, err := applyRouteFiltersToPrefixes(prefixes, effectiveFilters)
-	if err != nil {
-		return 0, 0, fmt.Errorf("filter routes for user %d: %w", userID, err)
-	}
-
-	for _, pfx := range filtered {
-		if pfx.Addr().Is6() {
-			v6++
-		} else {
-			v4++
-		}
-	}
-	return v4, v6, nil
+	return s.countFilteredPrefixes(ctx, userID, filterMode, prefixes)
 }
 
 // CountSelectionPrefixes returns the number of unique IPv4 and IPv6 prefixes that
@@ -315,23 +254,23 @@ WHERE cmf.mode_id = ?1
 // to the filter mode.
 func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64) (v4, v6 int, err error) {
 	var catalogModeID int64
-	var filterMode string
-	var filterOverride bool
+	var filterModeInt int
 	err = s.DB.QueryRowContext(ctx,
-		`SELECT catalog_mode_id, COALESCE(filter_mode, ''), filter_override_enabled
-		 FROM users WHERE id = ?`, userID).
-		Scan(&catalogModeID, &filterMode, &filterOverride)
+		"SELECT catalog_mode_id, filter_mode FROM users WHERE id = ?", userID).
+		Scan(&catalogModeID, &filterModeInt)
 	if err != nil {
 		return 0, 0, err
 	}
-	filterMode = normalizeFilterMode(filterMode, filterOverride)
+	filterMode := filterModeFromInt(filterModeInt)
 
-	rows, err := s.DB.QueryContext(ctx, `
-SELECT DISTINCT ce.cidr
+	prefixes, err := s.queryPrefixes(ctx, `
+SELECT DISTINCT p.ip, p.bits
 FROM feeds f
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
+JOIN services sv ON sv.id = ce.service_id
+JOIN prefixes p ON p.id = ce.prefix_id
 WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
@@ -339,14 +278,15 @@ WHERE cmf.mode_id = ?1
       SELECT 1 FROM selected_categories sc
       WHERE sc.user_id = ?2
         AND sc.mode_id = ?1
-        AND sc.category = ce.category
+        AND sc.category_id = sv.category_id
   )
 UNION
-SELECT DISTINCT ce.cidr
+SELECT DISTINCT p.ip, p.bits
 FROM feeds f
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 JOIN catalog_modes m ON m.id = cmf.mode_id
 JOIN catalog_entries ce ON ce.feed_id = f.id
+JOIN prefixes p ON p.id = ce.prefix_id
 WHERE cmf.mode_id = ?1
   AND f.enabled = 1
   AND m.enabled = 1
@@ -354,11 +294,25 @@ WHERE cmf.mode_id = ?1
       SELECT 1 FROM selected_services ss
       WHERE ss.user_id = ?2
         AND ss.mode_id = ?1
-        AND ss.category = ce.category
-        AND ss.service = ce.service
+        AND ss.service_id = ce.service_id
   )`, catalogModeID, userID)
 	if err != nil {
 		return 0, 0, err
+	}
+	if len(prefixes) == 0 {
+		return 0, 0, nil
+	}
+
+	return s.countFilteredPrefixes(ctx, userID, filterMode, prefixes)
+}
+
+// queryPrefixes runs a query returning (ip BLOB, bits) rows and decodes
+// them, skipping default routes (a feed-provided default route is never a
+// useful service route).
+func (s *Store) queryPrefixes(ctx context.Context, query string, args ...any) ([]netip.Prefix, error) {
+	rows, err := s.DB.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -366,34 +320,28 @@ WHERE cmf.mode_id = ?1
 		}
 	}()
 
-	seen := make(map[netip.Prefix]struct{})
+	var prefixes []netip.Prefix
 	for rows.Next() {
-		var rawPrefix string
-		if err := rows.Scan(&rawPrefix); err != nil {
-			return 0, 0, err
+		var ip []byte
+		var bits int
+		if err := rows.Scan(&ip, &bits); err != nil {
+			return nil, err
 		}
-		prefix, err := netip.ParsePrefix(rawPrefix)
+		prefix, err := DecodePrefix(ip, bits)
 		if err != nil {
-			return 0, 0, fmt.Errorf("parse prefix %q: %w", rawPrefix, err)
+			return nil, err
 		}
 		if prefix.Bits() == 0 {
 			continue
 		}
-		seen[prefix.Masked()] = struct{}{}
+		prefixes = append(prefixes, prefix)
 	}
-	if err := rows.Err(); err != nil {
-		return 0, 0, err
-	}
+	return prefixes, rows.Err()
+}
 
-	if len(seen) == 0 {
-		return 0, 0, nil
-	}
-
-	prefixes := make([]netip.Prefix, 0, len(seen))
-	for p := range seen {
-		prefixes = append(prefixes, p)
-	}
-
+// countFilteredPrefixes applies the user's effective route filters to the
+// prefixes and counts the IPv4/IPv6 survivors.
+func (s *Store) countFilteredPrefixes(ctx context.Context, userID int64, filterMode string, prefixes []netip.Prefix) (v4, v6 int, err error) {
 	userFilters, err := s.UserRouteFilters(ctx, userID)
 	if err != nil {
 		return 0, 0, err

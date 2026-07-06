@@ -18,7 +18,7 @@ type Feed struct {
 	Data          string // JSON parameterization for adapters
 	AllowedHosts  string
 	RestrictHosts bool
-	LastSuccess   string
+	LastSuccess   int64 // Unix epoch seconds; 0 = never synced
 	LastError     string
 }
 
@@ -28,7 +28,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	                 COALESCE(f.sync_interval, 0),
 	                 COALESCE(f.data, ''),
 	                 f.allowed_hosts, f.restrict_hosts,
-	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
+	                 COALESCE(f.last_success, 0), COALESCE(f.last_error, '')
 	          FROM feeds f
 	          JOIN feed_adapters a ON a.id = f.adapter_id`
 	if enabledOnly {
@@ -70,7 +70,7 @@ SELECT id, name, url,
        COALESCE(sync_interval, 0),
        COALESCE(data, ''),
        allowed_hosts, restrict_hosts,
-       COALESCE(last_success, ''), COALESCE(last_error, '')
+       COALESCE(last_success, 0), COALESCE(last_error, '')
 FROM feeds
 WHERE id = ?`, id).Scan(
 		&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
@@ -261,9 +261,11 @@ func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
 		if _, err := tx.ExecContext(ctx, `
 DELETE FROM selected_categories
 WHERE NOT EXISTS (
-    SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
+    SELECT 1 FROM catalog_entries ce
+    JOIN services sv ON sv.id = ce.service_id
+    JOIN feeds f ON f.id = ce.feed_id
     JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-    WHERE ce.category = selected_categories.category
+    WHERE sv.category_id = selected_categories.category_id
       AND cmf.mode_id = selected_categories.mode_id
 )`); err != nil {
 			return err
@@ -273,8 +275,7 @@ DELETE FROM selected_services
 WHERE NOT EXISTS (
     SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
     JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-    WHERE ce.category = selected_services.category
-      AND ce.service = selected_services.service
+    WHERE ce.service_id = selected_services.service_id
       AND cmf.mode_id = selected_services.mode_id
 )`)
 		return err

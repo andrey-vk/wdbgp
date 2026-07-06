@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
 // =============================================================================
@@ -37,19 +39,16 @@ func TestModesList(t *testing.T) {
 		t.Fatalf("modes count = %d, want at least 3", len(resp.Modes))
 	}
 
-	// Verify built-in modes have correct ids and keys
+	// Verify built-in modes have correct ids and names
 	expected := map[int64]string{
-		1: "opencck",
-		2: "ipranges",
-		3: "singbox-srs",
+		1: "OpenCCK",
+		2: "IPRanges",
+		3: "sing-box SRS",
 	}
 	for _, m := range resp.Modes {
 		if m.ID >= 1 && m.ID <= 3 {
-			if m.Key != expected[m.ID] {
-				t.Errorf("mode id=%d: key = %q, want %q", m.ID, m.Key, expected[m.ID])
-			}
-			if m.Name == "" {
-				t.Errorf("mode id=%d: name is empty", m.ID)
+			if m.Name != expected[m.ID] {
+				t.Errorf("mode id=%d: name = %q, want %q", m.ID, m.Name, expected[m.ID])
 			}
 			// feed_count may be 0 for new DB
 		}
@@ -82,9 +81,6 @@ func TestModesCRUD(t *testing.T) {
 	}
 	if created.Name != "Custom Mode" {
 		t.Fatalf("name = %q, want Custom Mode", created.Name)
-	}
-	if created.Key != "custom-mode" {
-		t.Fatalf("key = %q, want custom-mode", created.Key)
 	}
 	if !created.Enabled {
 		t.Fatal("enabled should be true")
@@ -324,9 +320,9 @@ func TestModeCommunities(t *testing.T) {
 	}
 
 	// --- Insert catalog entry so GenerateCommunities has data to work with ---
-	_, err = st.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-		feedID, "test-category", "test-service", "10.0.0.0/8")
+	err = st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "test-category", Service: "test-service", CIDR: "10.0.0.0/8"},
+	})
 	if err != nil {
 		t.Fatalf("insert catalog entry: %v", err)
 	}
@@ -521,14 +517,10 @@ func TestModeCommunitiesGroupAutoValueMatchesGeneration(t *testing.T) {
 		t.Fatalf("assign feed to mode: %v", err)
 	}
 	// Two categories, alphabetically ordered, so groupIndex 0 and 1 both get checked.
-	if _, err := st.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-		feedID, "a-category", "svc", "10.0.0.0/8"); err != nil {
-		t.Fatalf("insert catalog entry: %v", err)
-	}
-	if _, err := st.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES (?, ?, ?, ?)",
-		feedID, "b-category", "svc", "10.1.0.0/16"); err != nil {
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "a-category", Service: "svc", CIDR: "10.0.0.0/8"},
+		{Category: "b-category", Service: "svc", CIDR: "10.1.0.0/16"},
+	}); err != nil {
 		t.Fatalf("insert catalog entry: %v", err)
 	}
 

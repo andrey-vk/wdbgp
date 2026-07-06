@@ -26,13 +26,13 @@ func TestGenerateCommunitiesHandlesMultiServiceCategoriesAndIsIdempotent(t *test
 		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
 		t.Fatalf("assign feed to mode: %v", err)
 	}
-	if _, err := s.DB.ExecContext(ctx, `INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES
-		(?, 'cat-a', 'svc-1', '10.0.0.0/24'),
-		(?, 'cat-a', 'svc-2', '10.0.1.0/24'),
-		(?, 'cat-a', 'svc-3', '10.0.2.0/24'),
-		(?, 'cat-b', 'svc-1', '10.1.0.0/24'),
-		(?, 'cat-b', 'svc-2', '10.1.1.0/24')`,
-		feedID, feedID, feedID, feedID, feedID); err != nil {
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "cat-a", Service: "svc-1", CIDR: "10.0.0.0/24"},
+		{Category: "cat-a", Service: "svc-2", CIDR: "10.0.1.0/24"},
+		{Category: "cat-a", Service: "svc-3", CIDR: "10.0.2.0/24"},
+		{Category: "cat-b", Service: "svc-1", CIDR: "10.1.0.0/24"},
+		{Category: "cat-b", Service: "svc-2", CIDR: "10.1.1.0/24"},
+	}); err != nil {
 		t.Fatalf("insert catalog entries: %v", err)
 	}
 

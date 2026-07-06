@@ -218,12 +218,14 @@ func TestRecordFeedSnapshotEnabled(t *testing.T) {
 		"INSERT INTO feeds(name, url, adapter_id, enabled) VALUES ('test', 'http://test', (SELECT id FROM feed_adapters LIMIT 1), 1)"); err != nil {
 		t.Fatalf("insert feed: %v", err)
 	}
-	if _, err := s.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES ((SELECT id FROM feeds LIMIT 1), 'cat', 'svc', '10.0.0.0/8')"); err != nil {
-		t.Fatalf("insert entry: %v", err)
+	var snapshotFeedID int64
+	if err := s.DB.QueryRowContext(ctx, "SELECT id FROM feeds LIMIT 1").Scan(&snapshotFeedID); err != nil {
+		t.Fatalf("feed id: %v", err)
 	}
-	if _, err := s.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES ((SELECT id FROM feeds LIMIT 1), 'cat', 'svc2', '192.168.0.0/16')"); err != nil {
+	if err := s.InsertCatalogEntries(ctx, snapshotFeedID, []CatalogEntry{
+		{Category: "cat", Service: "svc", CIDR: "10.0.0.0/8"},
+		{Category: "cat", Service: "svc2", CIDR: "192.168.0.0/16"},
+	}); err != nil {
 		t.Fatalf("insert entry: %v", err)
 	}
 
@@ -255,8 +257,13 @@ func TestRecordFeedSnapshotDisabled(t *testing.T) {
 		"INSERT INTO feeds(name, url, adapter_id, enabled) VALUES ('test', 'http://test', (SELECT id FROM feed_adapters LIMIT 1), 1)"); err != nil {
 		t.Fatalf("insert feed: %v", err)
 	}
-	if _, err := s.DB.ExecContext(ctx,
-		"INSERT INTO catalog_entries(feed_id, category, service, cidr) VALUES ((SELECT id FROM feeds LIMIT 1), 'cat', 'svc', '10.0.0.0/8')"); err != nil {
+	var snapshotFeedID int64
+	if err := s.DB.QueryRowContext(ctx, "SELECT id FROM feeds LIMIT 1").Scan(&snapshotFeedID); err != nil {
+		t.Fatalf("feed id: %v", err)
+	}
+	if err := s.InsertCatalogEntries(ctx, snapshotFeedID, []CatalogEntry{
+		{Category: "cat", Service: "svc", CIDR: "10.0.0.0/8"},
+	}); err != nil {
 		t.Fatalf("insert entry: %v", err)
 	}
 

@@ -70,14 +70,13 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 			"url":     feed.URL,
 		}
 
-		if feed.LastSuccess != "" {
-			if t, err := time.Parse(time.RFC3339, feed.LastSuccess); err == nil {
-				status["last_success"] = t
-				if lastSyncTime == nil || t.After(*lastSyncTime) {
-					lastSyncTime = &t
-				}
-				successfulSyncs++
+		if feed.LastSuccess > 0 {
+			t := time.Unix(feed.LastSuccess, 0).UTC()
+			status["last_success"] = t
+			if lastSyncTime == nil || t.After(*lastSyncTime) {
+				lastSyncTime = &t
 			}
+			successfulSyncs++
 		}
 
 		if feed.LastError != "" {

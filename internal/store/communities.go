@@ -46,9 +46,14 @@ func AutoGroupCommunity(groupIndex int) uint32 {
 
 // GetCommunities returns all communities for a mode.
 // Map key: category for groups, "category|service" for services.
+// service_id = 0 marks a category-wide (group-level) community.
 func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]uint32, error) {
-	rows, err := s.DB.QueryContext(ctx,
-		"SELECT category, service, community FROM catalog_communities WHERE mode_id = ? ORDER BY category, service",
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT c.name, COALESCE(sv.name, ''), cc.community
+FROM catalog_communities cc
+JOIN categories c ON c.id = cc.category_id
+LEFT JOIN services sv ON sv.id = cc.service_id
+WHERE cc.mode_id = ? ORDER BY c.name, sv.name`,
 		modeID)
 	if err != nil {
 		return nil, err
@@ -76,33 +81,63 @@ func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]ui
 
 // SetCommunity upserts a community. service="" means group-level.
 func (s *Store) SetCommunity(ctx context.Context, modeID int64, category, service string, community uint32) error {
-	// Check for duplicate community value
-	var existing int
-	err := s.DB.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM catalog_communities
-		WHERE mode_id = ? AND community = ? AND NOT (category = ? AND service = ?)`,
-		modeID, community, category, service).Scan(&existing)
-	if err != nil {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		categoryID, serviceID, err := resolveCommunityKey(ctx, tx, category, service)
+		if err != nil {
+			return err
+		}
+		// Check for duplicate community value
+		var existing int
+		err = tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM catalog_communities
+			WHERE mode_id = ? AND community = ? AND NOT (category_id = ? AND service_id = ?)`,
+			modeID, community, categoryID, serviceID).Scan(&existing)
+		if err != nil {
+			return err
+		}
+		if existing > 0 {
+			return fmt.Errorf("community %d is already used by another category or service in this mode", community)
+		}
+		// Upsert
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO catalog_communities(mode_id, category_id, service_id, community) VALUES (?, ?, ?, ?)
+ON CONFLICT(mode_id, category_id, service_id) DO UPDATE SET community = excluded.community`,
+			modeID, categoryID, serviceID, community)
 		return err
-	}
-	if existing > 0 {
-		return fmt.Errorf("community %d is already used by another category or service in this mode", community)
-	}
-	// Upsert
-	_, err = s.DB.ExecContext(ctx,
-		`INSERT INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)
-ON CONFLICT(mode_id, category, service) DO UPDATE SET community = excluded.community`,
-		modeID, category, service, community)
-	return err
+	})
 }
 
 // DeleteCommunity removes a manual community override.
 // After deletion, GenerateCommunities fills the auto value.
 func (s *Store) DeleteCommunity(ctx context.Context, modeID int64, category, service string) error {
-	_, err := s.DB.ExecContext(ctx,
-		`DELETE FROM catalog_communities WHERE mode_id = ? AND category = ? AND service = ?`,
-		modeID, category, service)
-	return err
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		categoryID, serviceID, err := resolveCommunityKey(ctx, tx, category, service)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx,
+			`DELETE FROM catalog_communities WHERE mode_id = ? AND category_id = ? AND service_id = ?`,
+			modeID, categoryID, serviceID)
+		return err
+	})
+}
+
+// resolveCommunityKey maps a (category, service) name pair to dictionary
+// ids, creating dictionary rows as needed. service="" resolves to the
+// group-level sentinel service_id 0.
+func resolveCommunityKey(ctx context.Context, tx *sql.Tx, category, service string) (categoryID, serviceID int64, err error) {
+	categoryID, err = EnsureCategoryID(ctx, tx, category)
+	if err != nil {
+		return 0, 0, err
+	}
+	if service == "" {
+		return categoryID, 0, nil
+	}
+	serviceID, err = EnsureServiceID(ctx, tx, category, service)
+	if err != nil {
+		return 0, 0, err
+	}
+	return categoryID, serviceID, nil
 }
 
 // GenerateCommunities fills missing communities for all categories/services in a mode.
@@ -153,8 +188,12 @@ func genCommunitiesRuntime(ctx context.Context, tx *sql.Tx, modeID int64) (int, 
 
 	generated := 0
 	for _, mid := range modeIDs {
-		commRows, err := tx.QueryContext(ctx,
-			"SELECT category, service, community FROM catalog_communities WHERE mode_id = ? ORDER BY community",
+		commRows, err := tx.QueryContext(ctx, `
+SELECT c.name, COALESCE(sv.name, ''), cc.community
+FROM catalog_communities cc
+JOIN categories c ON c.id = cc.category_id
+LEFT JOIN services sv ON sv.id = cc.service_id
+WHERE cc.mode_id = ? ORDER BY cc.community`,
 			mid)
 		if err != nil {
 			return 0, err
@@ -192,12 +231,14 @@ func genCommunitiesRuntime(ctx context.Context, tx *sql.Tx, modeID int64) (int, 
 		// service query — the per-category query was an N+1: one extra
 		// round trip for every category in the mode.
 		entryRows, err := tx.QueryContext(ctx, `
-SELECT DISTINCT ce.category, ce.service
+SELECT DISTINCT c.name, sv.name
 FROM catalog_entries ce
+JOIN services sv ON sv.id = ce.service_id
+JOIN categories c ON c.id = sv.category_id
 JOIN feeds f ON f.id = ce.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 WHERE cmf.mode_id = ?
-ORDER BY ce.category, ce.service`, mid)
+ORDER BY c.name, sv.name`, mid)
 		if err != nil {
 			return 0, err
 		}
@@ -237,9 +278,13 @@ ORDER BY ce.category, ce.service`, mid)
 			groupCommunity, ok := keyComm[groupKey]
 			if !ok {
 				groupCommunity = findFirstFree(uint32((groupIndex+1)*10000), used)
+				categoryID, err := EnsureCategoryID(ctx, tx, category)
+				if err != nil {
+					return generated, err
+				}
 				if _, err := tx.ExecContext(ctx,
-					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, '', ?)",
-					mid, category, groupCommunity); err != nil {
+					"INSERT OR IGNORE INTO catalog_communities(mode_id, category_id, service_id, community) VALUES (?, ?, 0, ?)",
+					mid, categoryID, groupCommunity); err != nil {
 					return generated, err
 				}
 				used[groupCommunity] = true
@@ -253,9 +298,17 @@ ORDER BY ce.category, ce.service`, mid)
 				}
 				svcCommunity := findFirstFree(groupCommunity+1, used)
 
+				categoryID, err := EnsureCategoryID(ctx, tx, category)
+				if err != nil {
+					return generated, err
+				}
+				serviceID, err := EnsureServiceID(ctx, tx, category, service)
+				if err != nil {
+					return generated, err
+				}
 				if _, err := tx.ExecContext(ctx,
-					"INSERT OR IGNORE INTO catalog_communities(mode_id, category, service, community) VALUES (?, ?, ?, ?)",
-					mid, category, service, svcCommunity); err != nil {
+					"INSERT OR IGNORE INTO catalog_communities(mode_id, category_id, service_id, community) VALUES (?, ?, ?, ?)",
+					mid, categoryID, serviceID, svcCommunity); err != nil {
 					return generated, err
 				}
 				used[svcCommunity] = true

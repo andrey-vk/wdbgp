@@ -14,7 +14,6 @@ import (
 
 type modeJSON struct {
 	ID        int64  `json:"id"`
-	Key       string `json:"key"`
 	Name      string `json:"name"`
 	Enabled   bool   `json:"enabled"`
 	FeedCount int    `json:"feed_count"`
@@ -49,7 +48,6 @@ func (s *Server) apiModesList(w http.ResponseWriter, r *http.Request) {
 	for i, m := range modes {
 		result[i] = modeJSON{
 			ID:        m.ID,
-			Key:       m.Key,
 			Name:      m.Name,
 			Enabled:   m.Enabled,
 			FeedCount: feedCounts[m.ID],
@@ -90,7 +88,6 @@ func (s *Server) apiModesGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode": modeJSON{
 			ID:        mode.ID,
-			Key:       mode.Key,
 			Name:      mode.Name,
 			Enabled:   mode.Enabled,
 			FeedCount: feedCounts[mode.ID],
@@ -103,7 +100,6 @@ func (s *Server) apiModesGet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiModesCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name    string `json:"name"`
-		Key     string `json:"key"`
 		Enabled bool   `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -115,11 +111,7 @@ func (s *Server) apiModesCreate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Mode name is required"})
 		return
 	}
-	key := strings.TrimSpace(body.Key)
-	if key == "" {
-		key = strings.ToLower(strings.ReplaceAll(body.Name, " ", "-"))
-	}
-	id, err := s.store.AddCatalogMode(r.Context(), key, body.Name, body.Enabled)
+	id, err := s.store.AddCatalogMode(r.Context(), body.Name, body.Enabled)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
@@ -127,7 +119,6 @@ func (s *Server) apiModesCreate(w http.ResponseWriter, r *http.Request) {
 	mode, _ := s.store.CatalogMode(r.Context(), id) //nolint:errcheck // just created, must exist
 	writeJSON(w, http.StatusCreated, modeJSON{
 		ID:        mode.ID,
-		Key:       mode.Key,
 		Name:      mode.Name,
 		Enabled:   mode.Enabled,
 		FeedCount: 0,
@@ -188,7 +179,6 @@ func (s *Server) apiModesUpdate(w http.ResponseWriter, r *http.Request) {
 	feedCounts, _ := s.store.ModeFeedCounts(r.Context()) //nolint:errcheck // best-effort lookup for display
 	writeJSON(w, http.StatusOK, modeJSON{
 		ID:        mode.ID,
-		Key:       mode.Key,
 		Name:      mode.Name,
 		Enabled:   mode.Enabled,
 		FeedCount: feedCounts[mode.ID],
