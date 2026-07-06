@@ -882,6 +882,40 @@ func TestRateLimitValidation(t *testing.T) {
 	}
 }
 
+// TestNewSettings_StaleDBValueFallsBackToDefault guards against a real
+// startup crash: a DB row for rate_limit_login=0 (e.g. from before
+// validateRateLimit required a positive value, or written some other way
+// that predates the current validator) parses fine as an int but fails
+// validation. Before this test existed, that failure aborted New() itself —
+// every future restart, including the one an admin would need to fix it
+// through the running app — leaving no way to recover short of editing the
+// DB file directly. A stale/invalid DB value must fall back to the default
+// instead, the same way a DB value that fails to even parse already does.
+func TestNewSettings_StaleDBValueFallsBackToDefault(t *testing.T) {
+	store := newMockStore()
+	store.settings["rate_limit_login"] = "0"
+	s, err := New(store)
+	if err != nil {
+		t.Fatalf("New() should not fail on a stale invalid DB value, got: %v", err)
+	}
+	if got, want := s.RateLimitLogin.Get(), 5; got != want {
+		t.Errorf("RateLimitLogin = %d, want %d (default, falling back from invalid DB value)", got, want)
+	}
+}
+
+// TestNewSettings_InvalidEnvRateLimitStillFails guards the other half of the
+// same fallback logic: only a DB-sourced invalid value degrades gracefully.
+// An operator-supplied env var that's out of range must still fail startup
+// loudly — unlike a stale DB row, there's no silent, safe substitute for a
+// value someone explicitly configured just now.
+func TestNewSettings_InvalidEnvRateLimitStillFails(t *testing.T) {
+	t.Setenv("WDBGP_RATE_LIMIT_LOGIN", "0")
+	store := newMockStore()
+	if _, err := New(store); err == nil {
+		t.Fatal("expected New() to fail for an out-of-range env var value")
+	}
+}
+
 // TestSessionMaxAgeValidation guards against session_max_age being settable
 // to an absurdly large value (sessions that never meaningfully expire) or a
 // tiny nonzero one (sessions expiring almost immediately, which looks like

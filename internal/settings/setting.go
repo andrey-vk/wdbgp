@@ -112,23 +112,37 @@ func newSimple[T any](defaultVal T, dbKey, envVar string, parse func(string) (T,
 
 	// Fall back to DB value (pre-loaded by caller to avoid N per-field queries),
 	// only if the env var didn't already win.
+	fromDB := false
 	if envSource == "" {
 		if dbStr, ok := dbSettings[dbKey]; ok {
 			if val, parseErr := parse(dbStr); parseErr == nil {
 				s.value = val
+				fromDB = true
 			}
 			// Invalid DB value is silently ignored — value stays at default.
 		}
 	}
 
-	// Validate the effective value, whichever source it came from.
+	// Validate the effective value, whichever source it came from. A stored
+	// DB value that fails validation (e.g. left over from before a validator
+	// was tightened, or from a version that allowed a value this one
+	// doesn't) falls back to the default rather than taking the whole
+	// process down on every future restart — the same treatment as a DB
+	// value that fails to even parse, just above. An env var or the
+	// hardcoded default failing validation is still a hard error: an
+	// operator-supplied env var must fail loudly, and a hardcoded default
+	// failing its own validator is a bug in this file, not a stale DB row.
 	if s.validate != nil {
 		if err := s.validate(s.value); err != nil {
-			source := envSource
-			if source == "" {
-				source = "default"
+			if fromDB {
+				s.value = defaultVal
+			} else {
+				source := envSource
+				if source == "" {
+					source = "default"
+				}
+				return nil, fmt.Errorf("settings: invalid value for %s (%s): %w", dbKey, source, err)
 			}
-			return nil, fmt.Errorf("settings: invalid value for %s (%s): %w", dbKey, source, err)
 		}
 	}
 
@@ -166,6 +180,7 @@ func newComplex[T any](defaultJSON string, dbKey, envVar string, parse func(stri
 		}
 	}
 
+	fromDB := false
 	if envSource == "" {
 		// Fall back to DB value (pre-loaded by caller).
 		useDefault := true
@@ -173,6 +188,7 @@ func newComplex[T any](defaultJSON string, dbKey, envVar string, parse func(stri
 			if val, parseErr := parse(dbStr); parseErr == nil {
 				s.value = val
 				useDefault = false
+				fromDB = true
 			}
 			// Invalid DB value -> fall back to parsed default.
 		}
@@ -185,14 +201,25 @@ func newComplex[T any](defaultJSON string, dbKey, envVar string, parse func(stri
 		}
 	}
 
-	// Validate the effective value, whichever source it came from.
+	// Validate the effective value, whichever source it came from. A
+	// stored DB value that fails validation falls back to the parsed
+	// default rather than taking the whole process down — see the
+	// matching comment in newSimple.
 	if validate != nil {
 		if err := validate(s.value); err != nil {
-			source := envSource
-			if source == "" {
-				source = "default"
+			if fromDB {
+				val, parseErr := parse(defaultJSON)
+				if parseErr != nil {
+					return nil, fmt.Errorf("settings: default value %q for %s does not parse: %w", defaultJSON, dbKey, parseErr)
+				}
+				s.value = val
+			} else {
+				source := envSource
+				if source == "" {
+					source = "default"
+				}
+				return nil, fmt.Errorf("settings: invalid value for %s (%s): %w", dbKey, source, err)
 			}
-			return nil, fmt.Errorf("settings: invalid value for %s (%s): %w", dbKey, source, err)
 		}
 	}
 

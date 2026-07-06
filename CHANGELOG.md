@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Startup crash on a stale/invalid rate-limit setting**: a DB-stored value that parses fine but fails validation (e.g. `rate_limit_login=0`, left over from before `validateRateLimit` required a positive value) aborted `settings.New()` entirely, crashing the whole app on every future restart with no way to fix it short of editing the database file directly. Such a value now falls back to the setting's default, the same treatment a DB value that fails to even parse already got. An out-of-range env var still fails startup loudly, since that's an operator error happening right now, not a stale row from an old version.
+
 ## [0.16.0-alpha] — 2026-07-06
 
 ### Changed
