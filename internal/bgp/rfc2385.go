@@ -50,7 +50,8 @@ func (s *tcpSegment) digest(password string) [16]byte {
 	// RFC 2385 mandates MD5 for the TCP signature itself; this reproduces
 	// the wire protocol's required digest to compare against, not a
 	// password storage/verification hash.
-	h.Write([]byte(password)) // codeql[go/weak-sensitive-data-hashing]
+	// codeql[go/weak-sensitive-data-hashing]
+	h.Write([]byte(password))
 	var sum [16]byte
 	copy(sum[:], h.Sum(nil))
 	return sum
