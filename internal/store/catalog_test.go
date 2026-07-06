@@ -15,7 +15,7 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(modes) != 3 || modes[0].Key != "opencck" || modes[1].Key != "ipranges" || modes[2].Key != "singbox-srs" {
+	if len(modes) != 3 || modes[0].Name != "OpenCCK" || modes[1].Name != "IPRanges" || modes[2].Name != "sing-box SRS" {
 		t.Fatalf("catalog modes = %#v", modes)
 	}
 	ipranges := modes[1]

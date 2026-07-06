@@ -39,19 +39,16 @@ func TestModesList(t *testing.T) {
 		t.Fatalf("modes count = %d, want at least 3", len(resp.Modes))
 	}
 
-	// Verify built-in modes have correct ids and keys
+	// Verify built-in modes have correct ids and names
 	expected := map[int64]string{
-		1: "opencck",
-		2: "ipranges",
-		3: "singbox-srs",
+		1: "OpenCCK",
+		2: "IPRanges",
+		3: "sing-box SRS",
 	}
 	for _, m := range resp.Modes {
 		if m.ID >= 1 && m.ID <= 3 {
-			if m.Key != expected[m.ID] {
-				t.Errorf("mode id=%d: key = %q, want %q", m.ID, m.Key, expected[m.ID])
-			}
-			if m.Name == "" {
-				t.Errorf("mode id=%d: name is empty", m.ID)
+			if m.Name != expected[m.ID] {
+				t.Errorf("mode id=%d: name = %q, want %q", m.ID, m.Name, expected[m.ID])
 			}
 			// feed_count may be 0 for new DB
 		}
@@ -84,9 +81,6 @@ func TestModesCRUD(t *testing.T) {
 	}
 	if created.Name != "Custom Mode" {
 		t.Fatalf("name = %q, want Custom Mode", created.Name)
-	}
-	if created.Key != "custom-mode" {
-		t.Fatalf("key = %q, want custom-mode", created.Key)
 	}
 	if !created.Enabled {
 		t.Fatal("enabled should be true")

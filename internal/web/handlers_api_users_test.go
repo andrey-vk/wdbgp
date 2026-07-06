@@ -457,7 +457,7 @@ func TestUsersCreateRejectsDisabledCatalogModeID(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	disabledModeID, err := st.AddCatalogMode(ctx, "disabled-create-mode", "Disabled Create Mode", false)
+	disabledModeID, err := st.AddCatalogMode(ctx, "Disabled Create Mode", false)
 	if err != nil {
 		t.Fatalf("add disabled mode: %v", err)
 	}
@@ -491,7 +491,7 @@ func TestUsersUpdateRejectsDisabledCatalogModeID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	disabledModeID, err := st.AddCatalogMode(ctx, "disabled-update-mode", "Disabled Update Mode", false)
+	disabledModeID, err := st.AddCatalogMode(ctx, "Disabled Update Mode", false)
 	if err != nil {
 		t.Fatalf("add disabled mode: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestUsersUpdateWithoutModeChangeSucceedsEvenIfCurrentModeDisabled(t *testin
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	modeID, err := st.AddCatalogMode(ctx, "soon-disabled-user-mode", "Soon Disabled", true)
+	modeID, err := st.AddCatalogMode(ctx, "Soon Disabled", true)
 	if err != nil {
 		t.Fatalf("add mode: %v", err)
 	}
@@ -1374,7 +1374,7 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Create a catalog mode (id > 3 so it's custom)
-	modeID, err := st.AddCatalogMode(ctx, "test-mode", "Test Mode", true)
+	modeID, err := st.AddCatalogMode(ctx, "Test Mode", true)
 	if err != nil {
 		t.Fatalf("add mode: %v", err)
 	}
@@ -1486,11 +1486,11 @@ func TestAdminSaveSelectionsUpdatesUserCatalogMode(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	oldModeID, err := st.AddCatalogMode(ctx, "old-mode", "Old Mode", true)
+	oldModeID, err := st.AddCatalogMode(ctx, "Old Mode", true)
 	if err != nil {
 		t.Fatalf("add old mode: %v", err)
 	}
-	newModeID, err := st.AddCatalogMode(ctx, "new-mode", "New Mode", true)
+	newModeID, err := st.AddCatalogMode(ctx, "New Mode", true)
 	if err != nil {
 		t.Fatalf("add new mode: %v", err)
 	}
@@ -1534,11 +1534,11 @@ func TestAdminSaveSelectionsRejectsDisabledMode(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	oldModeID, err := st.AddCatalogMode(ctx, "old-mode2", "Old Mode 2", true)
+	oldModeID, err := st.AddCatalogMode(ctx, "Old Mode 2", true)
 	if err != nil {
 		t.Fatalf("add old mode: %v", err)
 	}
-	disabledModeID, err := st.AddCatalogMode(ctx, "disabled-mode", "Disabled Mode", false)
+	disabledModeID, err := st.AddCatalogMode(ctx, "Disabled Mode", false)
 	if err != nil {
 		t.Fatalf("add disabled mode: %v", err)
 	}
@@ -1587,7 +1587,7 @@ func TestAdminSaveSelectionsWithoutModeChangeSucceedsEvenIfCurrentModeDisabled(t
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
-	modeID, err := st.AddCatalogMode(ctx, "soon-disabled-mode", "Soon Disabled Mode", true)
+	modeID, err := st.AddCatalogMode(ctx, "Soon Disabled Mode", true)
 	if err != nil {
 		t.Fatalf("add mode: %v", err)
 	}

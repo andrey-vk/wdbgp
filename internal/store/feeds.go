@@ -18,7 +18,7 @@ type Feed struct {
 	Data          string // JSON parameterization for adapters
 	AllowedHosts  string
 	RestrictHosts bool
-	LastSuccess   string
+	LastSuccess   int64 // Unix epoch seconds; 0 = never synced
 	LastError     string
 }
 
@@ -28,7 +28,7 @@ func (s *Store) Feeds(ctx context.Context, enabledOnly bool) ([]Feed, error) {
 	                 COALESCE(f.sync_interval, 0),
 	                 COALESCE(f.data, ''),
 	                 f.allowed_hosts, f.restrict_hosts,
-	                 COALESCE(f.last_success, ''), COALESCE(f.last_error, '')
+	                 COALESCE(f.last_success, 0), COALESCE(f.last_error, '')
 	          FROM feeds f
 	          JOIN feed_adapters a ON a.id = f.adapter_id`
 	if enabledOnly {
@@ -70,7 +70,7 @@ SELECT id, name, url,
        COALESCE(sync_interval, 0),
        COALESCE(data, ''),
        allowed_hosts, restrict_hosts,
-       COALESCE(last_success, ''), COALESCE(last_error, '')
+       COALESCE(last_success, 0), COALESCE(last_error, '')
 FROM feeds
 WHERE id = ?`, id).Scan(
 		&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/store"
@@ -26,12 +27,18 @@ type feedJSON struct {
 }
 
 func feedToJSON(f store.Feed) feedJSON {
+	// last_success is stored as Unix epoch seconds (schema >= 34); the
+	// JSON API keeps the RFC3339 string shape the frontend renders.
+	lastSuccess := ""
+	if f.LastSuccess > 0 {
+		lastSuccess = time.Unix(f.LastSuccess, 0).UTC().Format(time.RFC3339)
+	}
 	return feedJSON{
 		ID: f.ID, Name: f.Name, URL: f.URL, Enabled: f.Enabled,
 		SyncInterval: int64(f.SyncInterval), Data: f.Data,
 		AdapterID:    f.AdapterID,
 		AllowedHosts: f.AllowedHosts, RestrictHosts: f.RestrictHosts,
-		LastSuccess: f.LastSuccess, LastError: f.LastError,
+		LastSuccess: lastSuccess, LastError: f.LastError,
 	}
 }
 

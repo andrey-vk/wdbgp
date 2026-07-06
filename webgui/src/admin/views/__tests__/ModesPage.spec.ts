@@ -96,7 +96,7 @@ describe('ModesPage', () => {
 
     mockPost.mockImplementation((url: string) => {
       if (url === '/admin/modes') {
-        return Promise.resolve({ data: { id: 42, key: 'new-mode', name: 'new-mode', enabled: true, feed_count: 0 } })
+        return Promise.resolve({ data: { id: 42, name: 'new-mode', enabled: true, feed_count: 0 } })
       }
       return Promise.resolve({ data: {} })
     })
@@ -111,7 +111,7 @@ describe('ModesPage', () => {
     // mode so the sidebar doesn't leave it invisible.
     mockGet.mockImplementation((url: string) => {
       if (url === '/admin/modes') {
-        return Promise.resolve({ data: { modes: [{ id: 42, key: 'new-mode', name: 'new-mode', enabled: true, feed_count: 0 }] } })
+        return Promise.resolve({ data: { modes: [{ id: 42, name: 'new-mode', enabled: true, feed_count: 0 }] } })
       }
       if (url === '/admin/modes/42/feeds') {
         return Promise.resolve({ data: { feeds: [] } })

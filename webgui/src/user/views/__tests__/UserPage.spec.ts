@@ -84,8 +84,8 @@ describe('UserPage', () => {
       prefix_counts: { v4: {}, v6: {} },
       filters: { allow: [], deny: [] },
       modes: [
-        { id: 1, key: 'a', name: 'Mode A', enabled: true, feed_count: 0 },
-        { id: 2, key: 'b', name: 'Mode B', enabled: true, feed_count: 0 },
+        { id: 1, name: 'Mode A', enabled: true, feed_count: 0 },
+        { id: 2, name: 'Mode B', enabled: true, feed_count: 0 },
       ],
     }
     mockGet.mockResolvedValue({ data: userData })

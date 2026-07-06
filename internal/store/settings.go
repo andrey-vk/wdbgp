@@ -41,7 +41,7 @@ func (s *Store) SaveSettings(ctx context.Context, settings map[string]string) er
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		for key, value := range settings {
 			if _, err := tx.ExecContext(ctx,
-				"INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES (?, ?, datetime('now'))",
+				"INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES (?, ?, unixepoch())",
 				key, value); err != nil {
 				return err
 			}
@@ -59,7 +59,7 @@ func (s *Store) DeleteSetting(ctx context.Context, key string) error {
 // SaveSetting upserts a single setting key-value pair.
 func (s *Store) SaveSetting(ctx context.Context, key, value string) error {
 	_, err := s.DB.ExecContext(ctx,
-		"INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES (?, ?, datetime('now'))",
+		"INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES (?, ?, unixepoch())",
 		key, value)
 	return err
 }

@@ -124,8 +124,10 @@ func TestMigration15AddsAppSettings(t *testing.T) {
 	if columns["value"] != "TEXT" {
 		t.Fatalf("app_settings.value type = %s, want TEXT", columns["value"])
 	}
-	if columns["updated_at"] != "TEXT" {
-		t.Fatalf("app_settings.updated_at type = %s, want TEXT", columns["updated_at"])
+	// Migration 15 created updated_at as TEXT; migration 34 converted it to
+	// Unix epoch INTEGER, which is the fresh-DB shape asserted here.
+	if columns["updated_at"] != "INTEGER" {
+		t.Fatalf("app_settings.updated_at type = %s, want INTEGER", columns["updated_at"])
 	}
 }
 

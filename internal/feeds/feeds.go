@@ -278,7 +278,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		}
 		_, err = tx.ExecContext(ctx,
 			"UPDATE feeds SET last_success = ?, last_error = NULL WHERE id = ? AND url = ? AND enabled = 1",
-			time.Now().UTC().Format(time.RFC3339Nano), feed.ID, feed.URL)
+			time.Now().Unix(), feed.ID, feed.URL)
 		return err
 	})
 	if errors.Is(err, errFeedChanged) {

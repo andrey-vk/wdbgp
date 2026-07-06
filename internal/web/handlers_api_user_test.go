@@ -277,7 +277,7 @@ func TestUserSwitchModeSurfacesReconcileFailure(t *testing.T) {
 	srv, st, fake := setupUserTestServer(t)
 	ctx := context.Background()
 
-	newModeID, err := st.AddCatalogMode(ctx, "new-mode", "New Mode", true)
+	newModeID, err := st.AddCatalogMode(ctx, "New Mode", true)
 	if err != nil {
 		t.Fatalf("add mode: %v", err)
 	}

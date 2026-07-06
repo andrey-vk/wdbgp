@@ -315,9 +315,9 @@ func printStats(ctx context.Context, db *store.Store) error {
 	}
 
 	for _, feed := range feedList {
-		status := feed.LastSuccess
-		if status == "" {
-			status = "never"
+		status := "never"
+		if feed.LastSuccess > 0 {
+			status = time.Unix(feed.LastSuccess, 0).UTC().Format(time.RFC3339)
 		}
 		if feed.LastError != "" {
 			status = "error: " + feed.LastError

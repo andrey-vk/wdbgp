@@ -43,7 +43,7 @@ func TestAddFeedWithModeAssignsOnSuccess(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	modeID, err := s.AddCatalogMode(ctx, "add-feed-with-mode-test", "Add Feed With Mode Test", true)
+	modeID, err := s.AddCatalogMode(ctx, "Add Feed With Mode Test", true)
 	if err != nil {
 		t.Fatalf("add mode: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 	}
 	feed := feeds[len(feeds)-1]
 	if _, err := s.DB.Exec(
-		"UPDATE feeds SET last_success = 'now', last_error = 'old error' WHERE id = ?", feed.ID); err != nil {
+		"UPDATE feeds SET last_success = 1751000000, last_error = 'old error' WHERE id = ?", feed.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.InsertCatalogEntries(ctx, feed.ID, []CatalogEntry{
@@ -96,7 +96,7 @@ func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 	}
 	updated := feeds[len(feeds)-1]
 	if updated.Name != feed.Name || updated.URL != feed.URL ||
-		updated.LastSuccess != "" || updated.LastError != "" {
+		updated.LastSuccess != 0 || updated.LastError != "" {
 		t.Fatalf("updated feed = %#v", updated)
 	}
 	var entries int

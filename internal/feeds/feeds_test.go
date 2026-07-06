@@ -488,14 +488,15 @@ func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	if syncErrors := syncer.SyncAll(ctx); len(syncErrors) != 0 {
 		t.Fatalf("SyncAll errors = %v", syncErrors)
 	}
-	var url, lastSuccess, lastError string
+	var url, lastError string
+	var lastSuccess int64
 	if err := db.DB.QueryRow(`
-SELECT url, COALESCE(last_success, ''), COALESCE(last_error, '')
+SELECT url, COALESCE(last_success, 0), COALESCE(last_error, '')
 FROM feeds WHERE id = ?`, feed.ID).Scan(&url, &lastSuccess, &lastError); err != nil {
 		t.Fatal(err)
 	}
-	if url != newURL || lastSuccess != "" || lastError != "" {
-		t.Fatalf("feed state = url %q success %q error %q", url, lastSuccess, lastError)
+	if url != newURL || lastSuccess != 0 || lastError != "" {
+		t.Fatalf("feed state = url %q success %d error %q", url, lastSuccess, lastError)
 	}
 	var entries int
 	if err := db.DB.QueryRow("SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feed.ID).

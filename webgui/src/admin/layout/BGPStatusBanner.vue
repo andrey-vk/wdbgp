@@ -50,7 +50,9 @@ async function apply() {
         <div
           v-if="status.lastError"
           class="text-sm opacity-90"
-        >{{ status.lastError }}</div>
+        >
+          {{ status.lastError }}
+        </div>
       </div>
       <Button
         :label="t('bgp_status.retry')"
