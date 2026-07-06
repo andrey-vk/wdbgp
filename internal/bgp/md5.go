@@ -91,6 +91,51 @@ func applyListenerMD5(listener net.Listener, peers []PeerConfig) error {
 	return firstErr
 }
 
+// addListenerMD5Key installs a TCP MD5 key on the listener socket for a
+// single remote address, without touching keys for any other address. Used
+// by the dynamic-peer MD5 matcher once a SYN's signature has been verified
+// against a configured password (see nfqueue_md5.go) — unlike
+// applyListenerMD5, the address isn't known ahead of time from PeerConfig.
+func addListenerMD5Key(listener net.Listener, addr netip.Addr, password string) error {
+	sc, ok := listener.(syscall.Conn)
+	if !ok {
+		return fmt.Errorf("tcp md5: listener is not syscall.Conn")
+	}
+	rawConn, err := sc.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("tcp md5: listener syscall conn: %w", err)
+	}
+	var setErr error
+	ctrlErr := rawConn.Control(func(fd uintptr) {
+		setErr = setTCPMD5OnFd(int(fd), addr, password)
+	})
+	if ctrlErr != nil {
+		return fmt.Errorf("tcp md5: listener control: %w", ctrlErr)
+	}
+	return setErr
+}
+
+// removeListenerMD5Key removes a single-address TCP MD5 key previously
+// installed via addListenerMD5Key.
+func removeListenerMD5Key(listener net.Listener, addr netip.Addr) error {
+	sc, ok := listener.(syscall.Conn)
+	if !ok {
+		return nil // not a syscall.Conn, nothing to clear
+	}
+	rawConn, err := sc.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var clearErr error
+	ctrlErr := rawConn.Control(func(fd uintptr) {
+		clearErr = clearTCPMD5OnFd(int(fd), addr)
+	})
+	if ctrlErr != nil {
+		return ctrlErr
+	}
+	return clearErr
+}
+
 // clearTCPMD5OnFd removes a TCP MD5 signature for the given address from a
 // socket. On Linux, calling SetsockoptTCPMD5Sig with a zero-length key
 // deletes the MD5 entry from the kernel's key database.

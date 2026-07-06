@@ -143,10 +143,12 @@ func (m *Manager) startLocked(ctx context.Context) error {
 	m.activeDial = m.cfg.ActiveDial.Get()
 
 	speaker := NewSpeaker(SpeakerConfig{
-		ASN:       m.localASN,
-		RouterID:  routerID,
-		Port:      int32(m.cfg.BGPPort.Get()), // uint16 always fits int32
-		LocalAddr: localAddr,
+		ASN:                    m.localASN,
+		RouterID:               routerID,
+		Port:                   int32(m.cfg.BGPPort.Get()), // uint16 always fits int32
+		LocalAddr:              localAddr,
+		DynamicPeerMD5Match:    m.cfg.DynamicPeerMD5Match.Get(),
+		DynamicPeerMD5QueueNum: m.cfg.DynamicPeerMD5QueueNum.Get(),
 	}, logger.Logger)
 
 	if err := speaker.Start(ctx); err != nil {

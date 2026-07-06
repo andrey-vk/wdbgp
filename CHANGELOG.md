@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Dynamic-peer BGP MD5 authentication via NFQUEUE signature matching**, opt-in (`WDBGP_DYNAMIC_PEER_MD5_MATCH`, default off). Dynamic peers (`0.0.0.0`/`::`) previously had no way to authenticate at all — the kernel's `TCP_MD5SIG` needs a specific remote address ahead of time, which a wildcard peer doesn't have, so identification was ASN-only. This adds a real cryptographic check for RouterOS 7.21+ containers on x86/ARM64 (ARM32 lacks the required kernel modules): an NFQUEUE consumer intercepts inbound SYNs to the BGP port, bruteforce-matches the RFC 2385 signature against configured dynamic-peer passwords, and either installs a real per-source-IP `TCP_MD5SIG` key on the listener (match) or drops the SYN outright (no match). Fixed-peer traffic bypasses this entirely — it's already protected by the existing kernel-level per-address key.
+  - New setting `WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM` (default 0) selects the NFQUEUE number; a matching redirect rule for the BGP port must exist in the process's own network namespace. `EnsureDynamicMD5NFQueueRule` installs it automatically at startup, entirely in Go over netlink (`github.com/google/nftables`) — no `nft`/`iptables` binary or shell needed, so the container image doesn't need one either. RouterOS containers need `/container/set 0 user=0:0` (root) for this to work.
+  - Off by default: existing dynamic-peer deployments keep today's ASN-only identification until explicitly opted in. If the feature is enabled but its NFQUEUE prerequisites aren't met on the host (unsupported kernel/arch), it logs and falls back to the same ASN-only behavior rather than failing to start.
+
 ## [0.16.0-alpha] — 2026-07-06
 
 ### Changed

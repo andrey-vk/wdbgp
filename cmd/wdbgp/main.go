@@ -118,6 +118,21 @@ func serve(s *settings.Settings, db *store.Store) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// Install the NFQUEUE redirect rule once per process, before the BGP
+	// speaker starts consuming that queue. Not tied to bgpManager.Start —
+	// that can re-run on every settings reload, and re-adding the same
+	// nftables rule on every reload would be wasteful (EnsureDynamicMD5NFQueueRule
+	// itself is idempotent, but there's no reason to pay the netlink round
+	// trip on every reload when the rule never changes after boot).
+	if s.DynamicPeerMD5Match.Get() {
+		if err := bgp.EnsureDynamicMD5NFQueueRule(s.BGPPort.Get(), s.DynamicPeerMD5QueueNum.Get()); err != nil {
+			// Not fatal: dynamic peers fall back to ASN-only identification,
+			// same as when the feature is off, and the failure is visible
+			// in logs immediately rather than only on first connection.
+			logging.Error("failed to install dynamic-peer MD5 NFQUEUE rule, falling back to ASN-only dynamic peer identification", "error", err)
+		}
+	}
+
 	bgpManager := bgp.NewManager(s, db)
 	if err := bgpManager.Start(ctx); err != nil {
 		// Not fatal: the web UI must stay reachable so an admin can see

@@ -403,9 +403,17 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	remoteIP := remoteAddr.Addr()
 	if p.cfg.Password != "" {
 		if p.cfg.Address.IsUnspecified() && !remoteIP.IsLoopback() {
-			// Dynamic peer on non-loopback: cannot authenticate.
-			// TCP MD5 cannot be preinstalled for wildcard addresses,
-			// and OPEN password is not validated. Accept silently.
+			// Dynamic peer on non-loopback: the listener can't preinstall a
+			// TCP MD5 key for a wildcard address, and OPEN password isn't
+			// validated here — so this accept is unauthenticated by itself.
+			// When dynamic-peer MD5 matching is enabled (nfqueue_md5.go),
+			// enforcement already happened earlier: an NFQUEUE consumer
+			// bruteforce-matches the SYN's RFC 2385 signature against
+			// configured dynamic-peer passwords and drops the packet
+			// outright on no match, so a connection only reaches this point
+			// at all if it already proved a password (or the feature is off
+			// / its NFQUEUE prerequisites aren't met on this host, in which
+			// case this remains ASN-only identification, same as before).
 		} else if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
 			p.logger.Error("accept: tcp md5 set failed", "error", err)
 			if err := conn.Close(); err != nil {
