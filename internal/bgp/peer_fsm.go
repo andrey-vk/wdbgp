@@ -394,34 +394,30 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	}
 
 	// Password authentication:
-	//   - TCP MD5 (RFC 2385) is the primary mechanism, set on the socket.
-	//   - If TCP MD5 is not available (e.g., loopback), validate via the
-	//     Password field in the OPEN message as a fallback.
-	//   - Dynamic peers (0.0.0.0) on non-loopback cannot use MD5 at the
-	//     handshake level (listener can't preinstall keys for 0.0.0.0).
+	//   - TCP MD5 (RFC 2385) is the primary mechanism. For a non-loopback
+	//     peer, it's already enforced by the kernel during the handshake
+	//     using the key applyListenerMD5 installed on the listener before
+	//     Accept — the kernel copies that key into this accepted socket
+	//     automatically as part of completing the handshake, so reaching
+	//     this point already proves the signature matched. There is
+	//     nothing left to set here; a prior attempt to redundantly re-set
+	//     the same key on the already-accepted socket could itself fail
+	//     (observed: setsockopt EINVAL on some kernels) and would
+	//     needlessly tear down an already-authenticated connection.
+	//   - TCP MD5 is not enforceable on loopback (many kernels, including
+	//     WSL2, don't support it there) or for dynamic (0.0.0.0) peers on
+	//     non-loopback (the listener can't preinstall a key for a wildcard
+	//     address). Loopback validates the Password field in the OPEN
+	//     message instead; non-loopback dynamic peers are unauthenticated
+	//     here.
 	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String()) //nolint:errcheck // always valid from kernel accept()
 	remoteIP := remoteAddr.Addr()
-	if p.cfg.Password != "" {
-		if p.cfg.Address.IsUnspecified() && !remoteIP.IsLoopback() {
-			// Dynamic peer on non-loopback: cannot authenticate.
-			// TCP MD5 cannot be preinstalled for wildcard addresses,
-			// and OPEN password is not validated. Accept silently.
-		} else if err := setTCPMD5OnConn(conn, remoteIP, p.cfg.Password); err != nil {
-			p.logger.Error("accept: tcp md5 set failed", "error", err)
-			if err := conn.Close(); err != nil {
-				p.logger.Debug("close connection", "error", err)
-			}
-			return
+	if p.cfg.Password != "" && remoteIP.IsLoopback() && openIn.Password != p.cfg.Password {
+		p.sendNotification(conn, 5, 0, nil)
+		if err := conn.Close(); err != nil {
+			p.logger.Debug("close connection", "error", err)
 		}
-		// Fallback: validate password from OPEN message when TCP MD5
-		// is skipped (e.g., on loopback where MD5 is not enforced).
-		if remoteIP.IsLoopback() && openIn.Password != p.cfg.Password {
-			p.sendNotification(conn, 5, 0, nil)
-			if err := conn.Close(); err != nil {
-				p.logger.Debug("close connection", "error", err)
-			}
-			return
-		}
+		return
 	}
 
 	// Send OPEN — hold time negotiation per RFC 4271
