@@ -45,6 +45,16 @@ func DecodePrefix(ip []byte, bits int) (netip.Prefix, error) {
 	return prefix, nil
 }
 
+// EncodeAddrString parses and encodes a textual address in one step, for
+// use as a query argument against BLOB address columns.
+func EncodeAddrString(value string) ([]byte, error) {
+	addr, err := netip.ParseAddr(value)
+	if err != nil {
+		return nil, err
+	}
+	return addr.AsSlice(), nil
+}
+
 // EncodePrefixString parses and encodes a textual CIDR in one step.
 func EncodePrefixString(cidr string) (ip []byte, bits int, err error) {
 	prefix, err := netip.ParsePrefix(cidr)

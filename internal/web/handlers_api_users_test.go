@@ -2001,7 +2001,6 @@ func TestCreateUserRejectsOverlapWithActiveUser(t *testing.T) {
 
 func TestCreateUserIgnoresOverlapWithLoginModeUser(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
-	ctx := context.Background()
 
 	loginBody := `{"name":"login-user","peer_ip":"10.0.93.1","peer_asn":65092,"web_auth":"login","enabled":true}`
 	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(loginBody))
@@ -2019,9 +2018,7 @@ func TestCreateUserIgnoresOverlapWithLoginModeUser(t *testing.T) {
 	// simulating data left over from before it switched to login mode) —
 	// must not affect the create below at all, even though it overlaps
 	// with what network-user is about to claim.
-	if _, err := st.DB.ExecContext(ctx, "INSERT INTO user_networks(user_id, cidr) VALUES (?, ?)", loginUser.ID, "10.5.0.128/25"); err != nil {
-		t.Fatal(err)
-	}
+	insertStaleNetwork(t, st, loginUser.ID, "10.5.0.128/25")
 
 	networkBody := `{"name":"network-user","peer_ip":"10.0.93.2","peer_asn":65093,"networks":["10.5.0.0/24"],"web_auth":"network","enabled":true}`
 	req = httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(networkBody))
@@ -2030,6 +2027,21 @@ func TestCreateUserIgnoresOverlapWithLoginModeUser(t *testing.T) {
 	srv.apiUsersCreate(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create network-user: status = %d, want 201, body=%s", w.Code, w.Body.String())
+	}
+}
+
+// insertStaleNetwork stores a network row directly (bypassing the API and
+// store validation) in the post-33 binary shape, to simulate data left
+// over from before a user switched to login mode.
+func insertStaleNetwork(t *testing.T, st *store.Store, userID int64, cidr string) {
+	t.Helper()
+	ip, bits, err := store.EncodePrefixString(cidr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(
+		"INSERT INTO user_networks(user_id, ip, bits) VALUES (?, ?, ?)", userID, ip, bits); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -2057,9 +2069,7 @@ func TestUpdateUserRejectsReactivatingConflictingNetworks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB.Exec("INSERT INTO user_networks(user_id, cidr) VALUES (?, ?)", dormantID, "10.0.0.128/25"); err != nil {
-		t.Fatal(err)
-	}
+	insertStaleNetwork(t, st, dormantID, "10.0.0.128/25")
 
 	// Switching dormant-user back to network mode, without touching
 	// networks at all, must be rejected — its now-active networks conflict.
@@ -2096,9 +2106,7 @@ func TestUpdateUserAllowsReactivatingNonConflictingNetworks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB.Exec("INSERT INTO user_networks(user_id, cidr) VALUES (?, ?)", dormantID, "10.0.7.0/24"); err != nil {
-		t.Fatal(err)
-	}
+	insertStaleNetwork(t, st, dormantID, "10.0.7.0/24")
 
 	switchBody := `{"web_auth":"network"}`
 	req := httptest.NewRequest("PUT", "/api/admin/users/"+strconv.FormatInt(dormantID, 10), strings.NewReader(switchBody))

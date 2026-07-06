@@ -14,7 +14,9 @@ import (
 func TestMigration14AddsWebAuthAndUserCredentials(t *testing.T) {
 	s := openTestStore(t)
 
-	// Verify web_auth column exists with default 'network'
+	// Verify web_auth column exists. Migration 14 added it as TEXT
+	// DEFAULT 'network'; migration 33 converted it to the INTEGER enum
+	// (0 = network), so the fresh-DB shape asserted here is the latter.
 	var colType, colDefault string
 	var colNullable int
 	err := s.DB.QueryRow(`SELECT type, "notnull", dflt_value FROM pragma_table_info('users') WHERE name = 'web_auth'`).
@@ -22,8 +24,8 @@ func TestMigration14AddsWebAuthAndUserCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal("web_auth column missing:", err)
 	}
-	if colType != "TEXT" || colNullable != 1 || colDefault != "'network'" {
-		t.Fatalf("web_auth: type=%s null=%d default=%s, want TEXT/1/'network'", colType, colNullable, colDefault)
+	if colType != "INTEGER" || colNullable != 1 || colDefault != "0" {
+		t.Fatalf("web_auth: type=%s null=%d default=%s, want INTEGER/1/0", colType, colNullable, colDefault)
 	}
 
 	// Add a user and verify web_auth default is 'network'

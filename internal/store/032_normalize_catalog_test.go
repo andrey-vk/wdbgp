@@ -22,43 +22,7 @@ func buildVersion31DB(t *testing.T) string {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`
-CREATE TABLE schema_migrations (
-    version INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    applied_at TEXT NOT NULL
-)`); err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	for _, migration := range migrations {
-		if migration.Version >= 32 {
-			break
-		}
-		// Mirror store.go's migration runner: NoTxSQL first, then Func.
-		if migration.NoTxSQL != nil {
-			if err := migration.NoTxSQL(ctx, db); err != nil {
-				t.Fatalf("migration %d NoTxSQL: %v", migration.Version, err)
-			}
-		}
-		tx, err := db.Begin()
-		if err != nil {
-			t.Fatalf("begin tx for migration %d: %v", migration.Version, err)
-		}
-		if err := migration.Func(ctx, tx); err != nil {
-			tx.Rollback() //nolint:errcheck,gosec // test cleanup
-			t.Fatalf("apply migration %d: %v", migration.Version, err)
-		}
-		if _, err := tx.Exec(
-			"INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, 'now')",
-			migration.Version, migration.Name); err != nil {
-			tx.Rollback() //nolint:errcheck,gosec // test cleanup
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-	}
+	replayMigrationsBefore(t, db, 32)
 	if _, err := db.Exec(`
 INSERT INTO users(id, name, peer_ip, peer_asn, catalog_mode_id)
 VALUES (7, 'existing', '172.16.0.2', 65007, 1);

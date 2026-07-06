@@ -42,14 +42,123 @@ type UserCredential struct {
 	PasswordHash string
 }
 
-func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
-	query := `SELECT id, name, peer_ip, peer_asn, COALESCE(next_hop, ''),
+// users.filter_mode and users.web_auth are INTEGER enums in the database
+// (schema >= 33); the Go API keeps the string forms. The mappings below
+// are the single source of truth for both directions (migration 33
+// mirrors them for its one-time conversion).
+
+func filterModeToInt(mode string) int {
+	switch mode {
+	case FilterModeExtend:
+		return 1
+	case FilterModeOverride:
+		return 2
+	default:
+		return 0
+	}
+}
+
+func filterModeFromInt(value int) string {
+	switch value {
+	case 1:
+		return FilterModeExtend
+	case 2:
+		return FilterModeOverride
+	default:
+		return FilterModeGlobal
+	}
+}
+
+func webAuthToInt(mode string) int {
+	switch mode {
+	case "login":
+		return 1
+	case "both":
+		return 2
+	case "any":
+		return 3
+	default: // "network"
+		return 0
+	}
+}
+
+func webAuthFromInt(value int) string {
+	switch value {
+	case 1:
+		return "login"
+	case 2:
+		return "both"
+	case 3:
+		return "any"
+	default:
+		return "network"
+	}
+}
+
+// decodeStoredAddr renders a stored address BLOB as text; nil (SQL NULL)
+// becomes "".
+func decodeStoredAddr(ip []byte) (string, error) {
+	if len(ip) == 0 {
+		return "", nil
+	}
+	addr, err := DecodeAddr(ip)
+	if err != nil {
+		return "", err
+	}
+	return addr.String(), nil
+}
+
+// encodeAddrArg converts a textual IP to its stored BLOB form for use as a
+// query argument.
+func encodeAddrArg(value string) ([]byte, error) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(value))
+	if err != nil {
+		return nil, err
+	}
+	return addr.AsSlice(), nil
+}
+
+// scanUserRow decodes one users row shared by Users and User; the query
+// must select the columns in userSelectColumns order.
+const userSelectColumns = `id, name, peer_ip, peer_asn, next_hop,
 	                 COALESCE(bgp_password, ''), selection_locked, enabled,
-	                 filter_override_enabled, COALESCE(filter_mode, ''), filter_editable,
+	                 filter_mode, filter_editable,
 	                 catalog_mode_id, catalog_mode_editable,
 	                 COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), ''),
-	                 active_dial, web_auth
-	          FROM users`
+	                 active_dial, web_auth`
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanUserRow(row rowScanner) (User, error) {
+	var user User
+	var peerIP, nextHop []byte
+	var filterMode, webAuth int
+	if err := row.Scan(
+		&user.ID, &user.Name, &peerIP, &user.PeerASN, &nextHop,
+		&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
+		&filterMode, &user.FilterEditable,
+		&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName,
+		&user.ActiveDial, &webAuth,
+	); err != nil {
+		return User{}, err
+	}
+	var err error
+	if user.PeerIP, err = decodeStoredAddr(peerIP); err != nil {
+		return User{}, fmt.Errorf("user %d peer_ip: %w", user.ID, err)
+	}
+	if user.NextHop, err = decodeStoredAddr(nextHop); err != nil {
+		return User{}, fmt.Errorf("user %d next_hop: %w", user.ID, err)
+	}
+	user.FilterMode = filterModeFromInt(filterMode)
+	user.FilterOverride = user.FilterMode != FilterModeGlobal
+	user.WebAuth = webAuthFromInt(webAuth)
+	return user, nil
+}
+
+func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
+	query := "SELECT " + userSelectColumns + " FROM users"
 	if enabledOnly {
 		query += " WHERE enabled = 1"
 	}
@@ -62,17 +171,10 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 	defer func() { _ = rows.Close() }()
 	var users []User
 	for rows.Next() {
-		var user User
-		if err := rows.Scan(
-			&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
-			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
-			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
-			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName,
-			&user.ActiveDial, &user.WebAuth,
-		); err != nil {
+		user, err := scanUserRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		user.FilterMode = normalizeFilterMode(user.FilterMode, user.FilterOverride)
 		users = append(users, user)
 	}
 	if err := rows.Err(); err != nil {
@@ -91,29 +193,18 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 }
 
 func (s *Store) User(ctx context.Context, id int64) (User, error) {
-	var user User
-	err := s.DB.QueryRowContext(ctx, `SELECT id, name, peer_ip, peer_asn, COALESCE(next_hop, ''),
-		COALESCE(bgp_password, ''), selection_locked, enabled,
-		filter_override_enabled, COALESCE(filter_mode, ''), filter_editable,
-		catalog_mode_id, catalog_mode_editable,
-		COALESCE((SELECT name FROM catalog_modes WHERE id = users.catalog_mode_id), ''),
-		active_dial, web_auth
-		FROM users WHERE id = ?`, id).
-		Scan(&user.ID, &user.Name, &user.PeerIP, &user.PeerASN, &user.NextHop,
-			&user.BGPPassword, &user.SelectionLocked, &user.Enabled,
-			&user.FilterOverride, &user.FilterMode, &user.FilterEditable,
-			&user.CatalogModeID, &user.CatalogEditable, &user.CatalogModeName,
-			&user.ActiveDial, &user.WebAuth)
+	user, err := scanUserRow(s.DB.QueryRowContext(ctx,
+		"SELECT "+userSelectColumns+" FROM users WHERE id = ?", id))
 	if err != nil {
 		return User{}, err
 	}
-	user.FilterMode = normalizeFilterMode(user.FilterMode, user.FilterOverride)
 	user.Networks, err = s.UserNetworks(ctx, id)
 	return user, err
 }
 
 func (s *Store) UserNetworks(ctx context.Context, userID int64) ([]string, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT cidr FROM user_networks WHERE user_id = ? ORDER BY cidr", userID)
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT ip, bits FROM user_networks WHERE user_id = ? ORDER BY ip, bits", userID)
 	if err != nil {
 		return nil, err
 	}
@@ -121,11 +212,16 @@ func (s *Store) UserNetworks(ctx context.Context, userID int64) ([]string, error
 	defer func() { _ = rows.Close() }()
 	var networks []string
 	for rows.Next() {
-		var network string
-		if err := rows.Scan(&network); err != nil {
+		var ip []byte
+		var bits int
+		if err := rows.Scan(&ip, &bits); err != nil {
 			return nil, err
 		}
-		networks = append(networks, network)
+		prefix, err := DecodePrefix(ip, bits)
+		if err != nil {
+			return nil, err
+		}
+		networks = append(networks, prefix.String())
 	}
 	return networks, rows.Err()
 }
@@ -181,7 +277,7 @@ func (s *Store) ActiveNetworksOverlap(ctx context.Context, candidates []string, 
 	}
 
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT un.cidr, u.name
+		SELECT un.ip, un.bits, u.name
 		FROM user_networks un
 		JOIN users u ON u.id = un.user_id
 		WHERE u.web_auth IN (`+activeWebAuthModesSQL+`) AND u.enabled = 1 AND un.user_id != ?
@@ -196,11 +292,13 @@ func (s *Store) ActiveNetworksOverlap(ctx context.Context, candidates []string, 
 	}()
 
 	for rows.Next() {
-		var cidr, name string
-		if err := rows.Scan(&cidr, &name); err != nil {
+		var ip []byte
+		var bits int
+		var name string
+		if err := rows.Scan(&ip, &bits, &name); err != nil {
 			return err
 		}
-		otherPrefix, err := netip.ParsePrefix(cidr)
+		otherPrefix, err := DecodePrefix(ip, bits)
 		if err != nil {
 			continue
 		}
@@ -213,13 +311,13 @@ func (s *Store) ActiveNetworksOverlap(ctx context.Context, candidates []string, 
 	return rows.Err()
 }
 
-// activeWebAuthModesSQL lists the web_auth values that use IP-based user
-// resolution — everything except "login". A user's networks only matter
-// for UserByIP / cross-user overlap validation while their current mode is
-// one of these; a "login"-mode user's networks are stale/vestigial (left
-// over from a previous mode) and must be invisible to both. Fixed, literal
-// values — safe to inline directly, no user input involved.
-const activeWebAuthModesSQL = "'network', 'both', 'any'"
+// activeWebAuthModesSQL lists the web_auth enum values that use IP-based
+// user resolution — everything except login (1). A user's networks only
+// matter for UserByIP / cross-user overlap validation while their current
+// mode is one of these; a login-mode user's networks are stale/vestigial
+// (left over from a previous mode) and must be invisible to both. Fixed,
+// literal values — safe to inline directly, no user input involved.
+const activeWebAuthModesSQL = "0, 2, 3" // network, both, any
 
 func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 	ip, err := netip.ParseAddr(address)
@@ -227,7 +325,7 @@ func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 		return User{}, err
 	}
 	rows, err := s.DB.QueryContext(ctx, `
-		SELECT un.user_id, un.cidr
+		SELECT un.user_id, un.ip, un.bits
 		FROM user_networks un
 		JOIN users u ON u.id = un.user_id
 		WHERE u.web_auth IN (`+activeWebAuthModesSQL+`) AND u.enabled = 1
@@ -240,11 +338,12 @@ func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 	bestBits, bestID := -1, int64(0)
 	for rows.Next() {
 		var userID int64
-		var cidr string
-		if err := rows.Scan(&userID, &cidr); err != nil {
+		var netIP []byte
+		var bits int
+		if err := rows.Scan(&userID, &netIP, &bits); err != nil {
 			return User{}, err
 		}
-		prefix, err := netip.ParsePrefix(cidr)
+		prefix, err := DecodePrefix(netIP, bits)
 		if err == nil && prefix.Contains(ip) && prefix.Bits() > bestBits {
 			bestBits, bestID = prefix.Bits(), userID
 		}
@@ -274,16 +373,20 @@ func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 	if user.WebAuth == "" {
 		user.WebAuth = "network"
 	}
-	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+	peerIP, nextHop, err := encodeUserAddrs(user)
+	if err != nil {
+		return 0, err
+	}
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, `INSERT INTO users
 			(name, peer_ip, peer_asn, next_hop, bgp_password, selection_locked, enabled,
-			 filter_override_enabled, filter_mode, filter_editable,
+			 filter_mode, filter_editable,
 			 catalog_mode_id, catalog_mode_editable, active_dial, web_auth)
-			VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			user.Name, user.PeerIP, user.PeerASN, user.NextHop, user.BGPPassword,
-			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
+			VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?)`,
+			user.Name, peerIP, user.PeerASN, nextHop, user.BGPPassword,
+			user.SelectionLocked, user.Enabled, filterModeToInt(filterMode),
 			user.FilterEditable, user.CatalogModeID, user.CatalogEditable,
-			user.ActiveDial, user.WebAuth)
+			user.ActiveDial, webAuthToInt(user.WebAuth))
 		if err != nil {
 			return err
 		}
@@ -296,23 +399,44 @@ func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 	return id, err
 }
 
+// encodeUserAddrs converts a user's textual peer_ip/next_hop to their
+// stored BLOB forms; an empty next_hop becomes nil (SQL NULL).
+func encodeUserAddrs(user User) (peerIP []byte, nextHop any, err error) {
+	peerIP, err = encodeAddrArg(user.PeerIP)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid peer IP %q: %w", user.PeerIP, err)
+	}
+	if user.NextHop != "" {
+		encoded, err := encodeAddrArg(user.NextHop)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid next hop %q: %w", user.NextHop, err)
+		}
+		nextHop = encoded
+	}
+	return peerIP, nextHop, nil
+}
+
 func (s *Store) UpdateUser(ctx context.Context, user User) error {
 	filterMode := normalizeFilterMode(user.FilterMode, user.FilterOverride)
 	if user.CatalogModeID == 0 {
 		user.CatalogModeID = DefaultCatalogModeID
 	}
+	if user.WebAuth == "" {
+		user.WebAuth = "network"
+	}
+	peerIP, nextHop, err := encodeUserAddrs(user)
+	if err != nil {
+		return err
+	}
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
-		if user.WebAuth == "" {
-			user.WebAuth = "network"
-		}
 		result, err := tx.ExecContext(ctx, `UPDATE users SET name=?, peer_ip=?, peer_asn=?,
-			next_hop=NULLIF(?, ''), bgp_password=?, selection_locked=?, enabled=?,
-			filter_override_enabled=?, filter_mode=?, filter_editable=?,
+			next_hop=?, bgp_password=?, selection_locked=?, enabled=?,
+			filter_mode=?, filter_editable=?,
 			catalog_mode_id=?, catalog_mode_editable=?, active_dial=?, web_auth=? WHERE id=?`,
-			user.Name, user.PeerIP, user.PeerASN, user.NextHop, user.BGPPassword,
-			user.SelectionLocked, user.Enabled, filterMode != FilterModeGlobal, filterMode,
+			user.Name, peerIP, user.PeerASN, nextHop, user.BGPPassword,
+			user.SelectionLocked, user.Enabled, filterModeToInt(filterMode),
 			user.FilterEditable, user.CatalogModeID, user.CatalogEditable,
-			user.ActiveDial, user.WebAuth, user.ID)
+			user.ActiveDial, webAuthToInt(user.WebAuth), user.ID)
 		if err != nil {
 			return err
 		}
@@ -343,8 +467,12 @@ func replaceNetworks(ctx context.Context, tx *sql.Tx, userID int64, networks []s
 		return err
 	}
 	for _, network := range networks {
+		ip, bits, err := EncodePrefixString(network)
+		if err != nil {
+			return fmt.Errorf("invalid network %q: %w", network, err)
+		}
 		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO user_networks(user_id, cidr) VALUES (?, ?)", userID, network); err != nil {
+			"INSERT INTO user_networks(user_id, ip, bits) VALUES (?, ?, ?)", userID, ip, bits); err != nil {
 			return err
 		}
 	}

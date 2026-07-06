@@ -14,11 +14,17 @@ import (
 // Step B: Dynamic peers (0.0.0.0 or ::) require globally unique ASN
 // Step C: Shared IP + different ASN → password required when RequirePasswordForNonUniqueIP is ON
 func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, skipUserID int64) error {
+	// peer_ip is stored as a BLOB (schema >= 33), so comparisons need the
+	// encoded form, not the string.
+	peerIP, err := store.EncodeAddrString(user.PeerIP)
+	if err != nil {
+		return fmt.Errorf("invalid peer IP %q: %w", user.PeerIP, err)
+	}
 	var existingID int64
 	var existingName string
-	err := s.store.DB.QueryRowContext(ctx,
+	err = s.store.DB.QueryRowContext(ctx,
 		"SELECT id, name FROM users WHERE peer_ip = ? AND peer_asn = ? AND id != ?",
-		user.PeerIP, user.PeerASN, skipUserID).Scan(&existingID, &existingName)
+		peerIP, user.PeerASN, skipUserID).Scan(&existingID, &existingName)
 	if err == nil {
 		return fmt.Errorf("peer %s with ASN %d already exists as user %s", user.PeerIP, user.PeerASN, existingName)
 	}
@@ -45,7 +51,7 @@ func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, sk
 	var sharedCount int
 	err = s.store.DB.QueryRowContext(ctx,
 		"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ?",
-		user.PeerIP, skipUserID).Scan(&sharedCount)
+		peerIP, skipUserID).Scan(&sharedCount)
 	if err != nil {
 		return fmt.Errorf("failed to check shared IP peers: %w", err)
 	}
@@ -58,7 +64,7 @@ func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, sk
 			var pwLessCount int
 			err = s.store.DB.QueryRowContext(ctx,
 				"SELECT COUNT(*) FROM users WHERE peer_ip = ? AND id != ? AND (bgp_password = '' OR bgp_password IS NULL)",
-				user.PeerIP, skipUserID).Scan(&pwLessCount)
+				peerIP, skipUserID).Scan(&pwLessCount)
 			if err != nil {
 				return fmt.Errorf("failed to check shared IP passwords: %w", err)
 			}
@@ -70,7 +76,7 @@ func (s *Server) validatePeerUniqueness(ctx context.Context, user store.User, sk
 		var existingPwd string
 		err = s.store.DB.QueryRowContext(ctx,
 			"SELECT DISTINCT bgp_password FROM users WHERE peer_ip = ? AND id != ? AND bgp_password != ''",
-			user.PeerIP, skipUserID).Scan(&existingPwd)
+			peerIP, skipUserID).Scan(&existingPwd)
 		if err != nil && err != sql.ErrNoRows {
 			return fmt.Errorf("failed to check shared IP passwords: %w", err)
 		}

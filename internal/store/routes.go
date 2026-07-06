@@ -33,7 +33,7 @@ type userRoute struct {
 func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, map[string]PrefixRouteInfo, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 -- Simpler UNION-based approach without CTEs
-SELECT DISTINCT p.ip, p.bits, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
+SELECT DISTINCT p.ip, p.bits, u.id, u.filter_mode,
        c.name, sv.name, cmf.mode_id
 FROM users u
 JOIN catalog_mode_feeds cmf ON cmf.mode_id = u.catalog_mode_id
@@ -53,7 +53,7 @@ WHERE u.enabled = 1
         AND sc.category_id = sv.category_id
   )
 UNION
-SELECT DISTINCT p.ip, p.bits, u.id, COALESCE(u.filter_mode, ''), u.filter_override_enabled,
+SELECT DISTINCT p.ip, p.bits, u.id, u.filter_mode,
        c.name, sv.name, cmf.mode_id
 FROM users u
 JOIN catalog_mode_feeds cmf ON cmf.mode_id = u.catalog_mode_id
@@ -90,11 +90,10 @@ ORDER BY 1, 2, 3`)
 		var ip []byte
 		var bits int
 		var userID int64
-		var filterMode string
-		var override bool
+		var filterMode int
 		var category, service string
 		var modeID int64
-		if err := rows.Scan(&ip, &bits, &userID, &filterMode, &override, &category, &service, &modeID); err != nil {
+		if err := rows.Scan(&ip, &bits, &userID, &filterMode, &category, &service, &modeID); err != nil {
 			return nil, nil, err
 		}
 		prefix, err := DecodePrefix(ip, bits)
@@ -107,7 +106,7 @@ ORDER BY 1, 2, 3`)
 		}
 		user := selected[userID]
 		if user == nil {
-			user = &selectedUser{filterMode: normalizeFilterMode(filterMode, override)}
+			user = &selectedUser{filterMode: filterModeFromInt(filterMode)}
 			selected[userID] = user
 		}
 		user.routes = append(user.routes, userRoute{
@@ -285,15 +284,21 @@ func splitNewlines(value string) []string {
 	return result
 }
 
+// user_route_filters.action enum values (schema >= 33).
+const (
+	routeFilterActionAllow = 0
+	routeFilterActionDeny  = 1
+)
+
 func (s *Store) UserRouteFilters(ctx context.Context, userID int64) (RouteFilters, error) {
 	return readRouteFilters(ctx, s.DB,
-		"SELECT action, cidr FROM user_route_filters WHERE user_id = ? ORDER BY action, cidr", userID)
+		"SELECT action, ip, bits FROM user_route_filters WHERE user_id = ? ORDER BY action, ip, bits", userID)
 }
 
 // allUserRouteFilters fetches all user route filters in a single query
 func (s *Store) allUserRouteFilters(ctx context.Context) (map[int64]RouteFilters, error) {
 	rows, err := s.DB.QueryContext(ctx,
-		"SELECT user_id, action, cidr FROM user_route_filters ORDER BY user_id, action, cidr")
+		"SELECT user_id, action, ip, bits FROM user_route_filters ORDER BY user_id, action, ip, bits")
 	if err != nil {
 		return nil, err
 	}
@@ -306,15 +311,21 @@ func (s *Store) allUserRouteFilters(ctx context.Context) (map[int64]RouteFilters
 	filtersMap := make(map[int64]RouteFilters)
 	for rows.Next() {
 		var userID int64
-		var action, cidr string
-		if err := rows.Scan(&userID, &action, &cidr); err != nil {
+		var action int
+		var ip []byte
+		var bits int
+		if err := rows.Scan(&userID, &action, &ip, &bits); err != nil {
+			return nil, err
+		}
+		prefix, err := DecodePrefix(ip, bits)
+		if err != nil {
 			return nil, err
 		}
 		filters := filtersMap[userID]
-		if action == "allow" {
-			filters.Allow = append(filters.Allow, cidr)
+		if action == routeFilterActionAllow {
+			filters.Allow = append(filters.Allow, prefix.String())
 		} else {
-			filters.Deny = append(filters.Deny, cidr)
+			filters.Deny = append(filters.Deny, prefix.String())
 		}
 		filtersMap[userID] = filters
 	}
@@ -355,8 +366,8 @@ func (s *Store) SetUserRouteFilterConfig(ctx context.Context, userID int64, mode
 			return err
 		}
 		result, err := tx.ExecContext(ctx,
-			"UPDATE users SET filter_override_enabled = ?, filter_mode = ? WHERE id = ?",
-			mode != FilterModeGlobal, mode, userID)
+			"UPDATE users SET filter_mode = ? WHERE id = ?",
+			filterModeToInt(mode), userID)
 		if err != nil {
 			return err
 		}
@@ -375,7 +386,7 @@ func (s *Store) SetUserFilterOverride(ctx context.Context, userID int64, enabled
 		mode = FilterModeOverride
 	}
 	result, err := s.DB.ExecContext(ctx,
-		"UPDATE users SET filter_override_enabled = ?, filter_mode = ? WHERE id = ?", enabled, mode, userID)
+		"UPDATE users SET filter_mode = ? WHERE id = ?", filterModeToInt(mode), userID)
 	if err != nil {
 		return err
 	}
@@ -440,14 +451,20 @@ func readRouteFilters(ctx context.Context, db queryer, query string, args ...any
 	}()
 	var filters RouteFilters
 	for rows.Next() {
-		var action, cidr string
-		if err := rows.Scan(&action, &cidr); err != nil {
+		var action int
+		var ip []byte
+		var bits int
+		if err := rows.Scan(&action, &ip, &bits); err != nil {
 			return RouteFilters{}, err
 		}
-		if action == "allow" {
-			filters.Allow = append(filters.Allow, cidr)
+		prefix, err := DecodePrefix(ip, bits)
+		if err != nil {
+			return RouteFilters{}, err
+		}
+		if action == routeFilterActionAllow {
+			filters.Allow = append(filters.Allow, prefix.String())
 		} else {
-			filters.Deny = append(filters.Deny, cidr)
+			filters.Deny = append(filters.Deny, prefix.String())
 		}
 	}
 	return filters, rows.Err()
@@ -459,16 +476,20 @@ func insertRouteFilters(ctx context.Context, tx *sql.Tx, userID int64, filters R
 		return err
 	}
 	for _, item := range []struct {
-		action string
+		action int
 		cidrs  []string
 	}{
-		{"allow", normalized.Allow},
-		{"deny", normalized.Deny},
+		{routeFilterActionAllow, normalized.Allow},
+		{routeFilterActionDeny, normalized.Deny},
 	} {
 		for _, cidr := range item.cidrs {
+			ip, bits, err := EncodePrefixString(cidr)
+			if err != nil {
+				return fmt.Errorf("invalid route filter %q: %w", cidr, err)
+			}
 			if _, err := tx.ExecContext(ctx,
-				"INSERT INTO user_route_filters(user_id, action, cidr) VALUES (?, ?, ?)",
-				userID, item.action, cidr); err != nil {
+				"INSERT INTO user_route_filters(user_id, action, ip, bits) VALUES (?, ?, ?, ?)",
+				userID, item.action, ip, bits); err != nil {
 				return err
 			}
 		}

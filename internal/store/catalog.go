@@ -173,16 +173,14 @@ GROUP BY c.name, sv.name, length(p.ip)`, modeID)
 // applying the user's route filters. It does NOT read selected_categories or
 // selected_services from the DB — use the passed-in slices instead.
 func (s *Store) CountPrefixes(ctx context.Context, modeID int64, categories []string, services []ServiceKey, userID int64) (v4, v6 int, err error) {
-	var filterMode string
-	var filterOverride bool
+	var filterModeInt int
 	err = s.DB.QueryRowContext(ctx,
-		`SELECT COALESCE(filter_mode, ''), filter_override_enabled
-		 FROM users WHERE id = ?`, userID).
-		Scan(&filterMode, &filterOverride)
+		"SELECT filter_mode FROM users WHERE id = ?", userID).
+		Scan(&filterModeInt)
 	if err != nil {
 		return 0, 0, err
 	}
-	filterMode = normalizeFilterMode(filterMode, filterOverride)
+	filterMode := filterModeFromInt(filterModeInt)
 
 	if len(categories) == 0 && len(services) == 0 {
 		return 0, 0, nil
@@ -256,16 +254,14 @@ WHERE cmf.mode_id = ?1
 // to the filter mode.
 func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64) (v4, v6 int, err error) {
 	var catalogModeID int64
-	var filterMode string
-	var filterOverride bool
+	var filterModeInt int
 	err = s.DB.QueryRowContext(ctx,
-		`SELECT catalog_mode_id, COALESCE(filter_mode, ''), filter_override_enabled
-		 FROM users WHERE id = ?`, userID).
-		Scan(&catalogModeID, &filterMode, &filterOverride)
+		"SELECT catalog_mode_id, filter_mode FROM users WHERE id = ?", userID).
+		Scan(&catalogModeID, &filterModeInt)
 	if err != nil {
 		return 0, 0, err
 	}
-	filterMode = normalizeFilterMode(filterMode, filterOverride)
+	filterMode := filterModeFromInt(filterModeInt)
 
 	prefixes, err := s.queryPrefixes(ctx, `
 SELECT DISTINCT p.ip, p.bits
