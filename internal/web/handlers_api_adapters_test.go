@@ -46,7 +46,7 @@ func TestPruneAdapterBackupsSweepsLegacyKeyPrefixedFiles(t *testing.T) {
 		"5_r4_20260104T000000Z.js",
 	}
 	for _, f := range append(append([]string{}, legacy...), current...) {
-		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -93,7 +93,7 @@ func TestPruneAdapterBackupsIgnoresAllDigitLegacyKey(t *testing.T) {
 		"42_r3_20260103T000000Z.js",
 	}
 	for _, f := range adapterBFiles {
-		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}

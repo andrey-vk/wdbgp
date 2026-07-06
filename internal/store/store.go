@@ -443,10 +443,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		log.Printf("DB backup saved to %s", backupPath)
 	}
 
+	migrationsRan := false
 	for _, migration := range migrations {
 		if appliedSet[migration.Version] {
 			continue
 		}
+		migrationsRan = true
 		// Run NoTxSQL BEFORE the transaction so that a failure does not
 		// leave the DB in a partial state with the version already committed.
 		// NoTxSQL must be idempotent so it is safe to re-run on retry.
@@ -488,6 +490,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		`CREATE INDEX IF NOT EXISTS idx_users_enabled_catalog_mode ON users(enabled, catalog_mode_id)`,
 	); err != nil {
 		return fmt.Errorf("users enabled+catalog_mode index: %w", err)
+	}
+	// Table-rebuild migrations leave their freed pages inside the file —
+	// without a VACUUM the file never shrinks. Only worth it right after
+	// migrations actually ran; best-effort, boot must not fail over it.
+	if migrationsRan {
+		if _, err := s.DB.ExecContext(ctx, "VACUUM"); err != nil {
+			log.Printf("WARNING: post-migration VACUUM: %v", err)
+		}
 	}
 	return s.seedBuiltInAdapters(ctx)
 }

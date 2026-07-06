@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Database schema refactor: normalized dictionaries, binary IP storage, numeric keys** (migrations 32–35). A 100k-entry catalog database shrinks ~3.7× (15.1 MB → 4.1 MB):
+  - New `categories`, `services`, and `prefixes` dictionary tables. `catalog_entries` becomes `(feed_id, service_id, prefix_id)` WITHOUT ROWID — category/service/CIDR text is no longer duplicated on every row and across three indexes. CIDRs are stored once as masked 4/16-byte binary addresses, shared across feeds; orphaned prefixes are pruned after each sync.
+  - User selections and communities are remapped to numeric ids and survive the upgrade. Catalog entry data itself is dropped by the migration and repopulated by the startup feed sync (announced routes reappear once the first sync completes).
+  - `users.peer_ip`/`next_hop` stored as binary addresses; `filter_mode`/`web_auth` as integer enums; the legacy `filter_override_enabled` column is gone (it always mirrored `filter_mode`). `user_networks` and `user_route_filters` store binary prefixes with an integer allow/deny action.
+  - `feeds.last_success` and `app_settings.updated_at` are Unix epoch integers now; the JSON API still serves RFC3339 strings.
+  - `feed_snapshots.prefixes` JSON replaced by a `feed_snapshot_counts` child table — no JSON encode/decode on the metrics path.
+  - The database file is VACUUMed after migrations run, so the space freed by the rebuilds is actually returned.
+- **`catalog_modes.key` column removed** (same rationale as `feed_adapters.key` in 0.15.0): modes are identified by id, `name` is already unique. The mode create API no longer accepts a `key` and mode JSON no longer carries one.
+
 ## [0.15.0-alpha] — 2026-07-05
 
 ### Added
