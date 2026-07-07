@@ -65,10 +65,10 @@ export const sections: SettingsSection[] = [
     name: 'settings.section_admin_access',
     fields: {
       admin_password:     { label: 'settings.admin_password',      hint: 'settings.admin_password_hint',      type: 'password', envVar: 'WDBGP_ADMIN_PASSWORD' },
-      admin_cookie_secure: { label: 'settings.admin_cookie_secure', hint: 'settings.admin_cookie_secure_hint', type: 'select',
-        options: { auto: 'settings.auto', true: 'settings.true', false: 'settings.false' }, envVar: 'WDBGP_ADMIN_COOKIE_SECURE' },
       session_secret:     { label: 'settings.session_secret',      hint: 'settings.session_secret_hint',      type: 'password', envVar: 'WDBGP_SESSION_SECRET' },
       session_max_age:    { label: 'settings.session_max_age',     hint: 'settings.session_max_age_hint',     type: 'number', envVar: 'WDBGP_SESSION_MAX_AGE' },
+      admin_cookie_secure: { label: 'settings.admin_cookie_secure', hint: 'settings.admin_cookie_secure_hint', type: 'select',
+        options: { auto: 'settings.auto', true: 'settings.true', false: 'settings.false' }, envVar: 'WDBGP_ADMIN_COOKIE_SECURE' },
     },
   },
   {
@@ -79,12 +79,25 @@ export const sections: SettingsSection[] = [
     },
   },
   {
-    name: 'settings.section_localization',
+    // BGP identity/wiring only — every field here requires a restart.
+    // Peer connection behavior/policy lives in section_bgp_peers below.
+    name: 'settings.section_bgp',
     fields: {
-      default_language: { label: 'settings.default_language', hint: 'settings.default_language_hint', type: 'select',
-        options: { en: 'language.english', ru: 'language.russian' }, envVar: 'WDBGP_DEFAULT_LANGUAGE' },
-      default_web_auth: { label: 'settings.default_web_auth',    hint: 'settings.default_web_auth_hint',    type: 'select',
-        options: { network: 'users.web_auth_network', login: 'users.web_auth_login', both: 'users.web_auth_both', any: 'users.web_auth_any' }, envVar: 'WDBGP_DEFAULT_WEB_AUTH' },
+      local_asn:         { label: 'settings.local_asn',         hint: 'settings.local_asn_hint',         type: 'number', restart: true, envVar: 'WDBGP_LOCAL_ASN' },
+      router_id:         { label: 'settings.router_id',         hint: 'settings.router_id_hint',         type: 'string', restart: true, envVar: 'WDBGP_ROUTER_ID' },
+      bgp_port:          { label: 'settings.bgp_port',          hint: 'settings.bgp_port_hint',          type: 'number', restart: true, envVar: 'WDBGP_BGP_PORT' },
+      local_address_v4:  { label: 'settings.local_address_v4',  hint: 'settings.local_address_v4_hint',  type: 'string', restart: true, envVar: 'WDBGP_BGP_LOCAL_ADDRESS' },
+      local_address_v6:  { label: 'settings.local_address_v6',  hint: 'settings.local_address_v6_hint',  type: 'string', restart: true, envVar: 'WDBGP_BGP_LOCAL_ADDRESS_V6' },
+    },
+  },
+  {
+    name: 'settings.section_bgp_peers',
+    fields: {
+      active_dial:                    { label: 'settings.active_dial',                      hint: 'settings.active_dial_hint',                      type: 'bool', restart: true, envVar: 'WDBGP_ACTIVE_DIAL' },
+      allow_dynamic_peers:            { label: 'settings.allow_dynamic_peers',              hint: 'settings.allow_dynamic_peers_hint',              type: 'bool', envVar: 'WDBGP_ALLOW_DYNAMIC_PEERS' },
+      dynamic_peer_md5_match:         { label: 'settings.dynamic_peer_md5_match',           hint: 'settings.dynamic_peer_md5_match_hint',           type: 'bool', restart: true, envVar: 'WDBGP_DYNAMIC_PEER_MD5_MATCH' },
+      dynamic_peer_md5_queue_num:     { label: 'settings.dynamic_peer_md5_queue_num',       hint: 'settings.dynamic_peer_md5_queue_num_hint',       type: 'number', restart: true, envVar: 'WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM' },
+      require_password_for_non_unique_ip: { label: 'settings.require_password_for_non_unique_ip', hint: 'settings.require_password_for_non_unique_ip_hint', type: 'bool', envVar: 'WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP' },
     },
   },
   {
@@ -92,21 +105,15 @@ export const sections: SettingsSection[] = [
     fields: {
       security_headers:    { label: 'settings.security_headers',    hint: 'settings.security_headers_hint',    type: 'bool', envVar: 'WDBGP_SECURITY_HEADERS' },
       trust_proxy_headers: { label: 'settings.trust_proxy_headers', hint: 'settings.trust_proxy_headers_hint', type: 'bool', envVar: 'WDBGP_TRUST_PROXY_HEADERS' },
+      default_web_auth:    { label: 'settings.default_web_auth',    hint: 'settings.default_web_auth_hint',    type: 'select',
+        options: { network: 'users.web_auth_network', login: 'users.web_auth_login', both: 'users.web_auth_both', any: 'users.web_auth_any' }, envVar: 'WDBGP_DEFAULT_WEB_AUTH' },
     },
   },
   {
-    name: 'settings.section_bgp',
+    name: 'settings.section_localization',
     fields: {
-      local_asn:                      { label: 'settings.local_asn',                        hint: 'settings.local_asn_hint',                        type: 'number', restart: true, envVar: 'WDBGP_LOCAL_ASN' },
-      router_id:                      { label: 'settings.router_id',                        hint: 'settings.router_id_hint',                        type: 'string', restart: true, envVar: 'WDBGP_ROUTER_ID' },
-      bgp_port:                       { label: 'settings.bgp_port',                         hint: 'settings.bgp_port_hint',                         type: 'number', restart: true, envVar: 'WDBGP_BGP_PORT' },
-      local_address_v4:               { label: 'settings.local_address_v4',                 hint: 'settings.local_address_v4_hint',                 type: 'string', restart: true, envVar: 'WDBGP_BGP_LOCAL_ADDRESS' },
-      local_address_v6:               { label: 'settings.local_address_v6',                 hint: 'settings.local_address_v6_hint',                 type: 'string', restart: true, envVar: 'WDBGP_BGP_LOCAL_ADDRESS_V6' },
-      active_dial:                    { label: 'settings.active_dial',                      hint: 'settings.active_dial_hint',                      type: 'bool', restart: true, envVar: 'WDBGP_ACTIVE_DIAL' },
-      allow_dynamic_peers:            { label: 'settings.allow_dynamic_peers',              hint: 'settings.allow_dynamic_peers_hint',              type: 'bool', envVar: 'WDBGP_ALLOW_DYNAMIC_PEERS' },
-      dynamic_peer_md5_match:         { label: 'settings.dynamic_peer_md5_match',           hint: 'settings.dynamic_peer_md5_match_hint',           type: 'bool', restart: true, envVar: 'WDBGP_DYNAMIC_PEER_MD5_MATCH' },
-      dynamic_peer_md5_queue_num:     { label: 'settings.dynamic_peer_md5_queue_num',       hint: 'settings.dynamic_peer_md5_queue_num_hint',       type: 'number', restart: true, envVar: 'WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM' },
-      require_password_for_non_unique_ip: { label: 'settings.require_password_for_non_unique_ip', hint: 'settings.require_password_for_non_unique_ip_hint', type: 'bool', envVar: 'WDBGP_REQUIRE_PASSWORD_FOR_NON_UNIQUE_IP' },
+      default_language: { label: 'settings.default_language', hint: 'settings.default_language_hint', type: 'select',
+        options: { en: 'language.english', ru: 'language.russian' }, envVar: 'WDBGP_DEFAULT_LANGUAGE' },
     },
   },
   {
@@ -149,9 +156,22 @@ export const sections: SettingsSection[] = [
     },
   },
   {
+    // The database file and its own backup/restore — one subsystem.
+    // Feed-adapter source backups are a different subsystem, see
+    // section_adapter_backup below.
     name: 'settings.section_database',
     fields: {
-      db_path: { label: 'settings.db_path', hint: 'settings.db_path_hint', type: 'string', readonly: true, envVar: 'WDBGP_DB' },
+      db_path:              { label: 'settings.db_path',              hint: 'settings.db_path_hint',              type: 'string', readonly: true, envVar: 'WDBGP_DB' },
+      backup_enabled:       { label: 'settings.backup_enabled',        hint: 'settings.backup_enabled_hint',        type: 'bool', readonly: true, envVar: 'WDBGP_BACKUP_ENABLED' },
+      backup_dir:           { label: 'settings.backup_dir',            hint: 'settings.backup_dir_hint',            type: 'string', readonly: true, envVar: 'WDBGP_BACKUP_DIR' },
+      auto_restore_enabled: { label: 'settings.auto_restore_enabled',  hint: 'settings.auto_restore_enabled_hint',  type: 'bool', readonly: true, envVar: 'WDBGP_AUTO_RESTORE_ENABLED' },
+    },
+  },
+  {
+    name: 'settings.section_adapter_backup',
+    fields: {
+      adapter_backup_dir: { label: 'settings.adapter_backup_dir', hint: 'settings.adapter_backup_dir_hint', type: 'string', envVar: 'WDBGP_ADAPTER_BACKUP_DIR' },
+      adapter_backup_max: { label: 'settings.adapter_backup_max', hint: 'settings.adapter_backup_max_hint', type: 'number', envVar: 'WDBGP_ADAPTER_BACKUP_MAX' },
     },
   },
   {
@@ -168,16 +188,6 @@ export const sections: SettingsSection[] = [
         options: { DEBUG: 'DEBUG', INFO: 'INFO', WARN: 'WARN', ERROR: 'ERROR', FATAL: 'FATAL', PANIC: 'PANIC' }, envVar: 'WDBGP_LOG_LEVEL' },
       log_format: { label: 'settings.log_format', hint: 'settings.log_format_hint', type: 'select',
         options: { text: 'text', json: 'json' }, envVar: 'WDBGP_LOG_FORMAT' },
-    },
-  },
-  {
-    name: 'settings.section_backup',
-    fields: {
-      backup_enabled:       { label: 'settings.backup_enabled',        hint: 'settings.backup_enabled_hint',        type: 'bool', readonly: true, envVar: 'WDBGP_BACKUP_ENABLED' },
-      backup_dir:           { label: 'settings.backup_dir',            hint: 'settings.backup_dir_hint',            type: 'string', readonly: true, envVar: 'WDBGP_BACKUP_DIR' },
-      auto_restore_enabled: { label: 'settings.auto_restore_enabled',  hint: 'settings.auto_restore_enabled_hint',  type: 'bool', readonly: true, envVar: 'WDBGP_AUTO_RESTORE_ENABLED' },
-      adapter_backup_dir:   { label: 'settings.adapter_backup_dir',    hint: 'settings.adapter_backup_dir_hint',    type: 'string', envVar: 'WDBGP_ADAPTER_BACKUP_DIR' },
-      adapter_backup_max:   { label: 'settings.adapter_backup_max',    hint: 'settings.adapter_backup_max_hint',    type: 'number', envVar: 'WDBGP_ADAPTER_BACKUP_MAX' },
     },
   },
 ]
