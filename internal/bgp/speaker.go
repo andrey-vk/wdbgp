@@ -71,10 +71,31 @@ func NewSpeaker(cfg SpeakerConfig, logger *slog.Logger) *Speaker {
 // If Port is -1, no TCP listener is started (used for testing without BGP).
 func (s *Speaker) Start(ctx context.Context) error {
 	if s.cfg.Port >= 0 {
+		// Dynamic-peer MD5 is fail-closed: the admin asked for MD5-verified
+		// dynamic peers, so if the redirect rule or its queue consumer can't
+		// run, refuse to run BGP at all rather than silently accepting
+		// unauthenticated dynamic peers. The rule and the consumer live and
+		// die together — the rule has no bypass flag, so a rule without a
+		// consumer would drop every inbound BGP SYN, fixed peers included.
+		//
+		// The rule goes in BEFORE the listener exists: the kernel completes
+		// handshakes into the listen backlog from the moment listen()
+		// returns, so installing the rule any later leaves a window where a
+		// dynamic peer's un-verified SYN is already accepted. With this
+		// order a SYN either arrives pre-listener (refused, no connection)
+		// or passes through the queue. Between rule install and consumer
+		// start, SYNs are dropped — fail-closed, never fail-open.
+		if s.cfg.DynamicPeerMD5Match {
+			if err := EnsureDynamicMD5NFQueueRule(uint16(s.cfg.Port), s.cfg.DynamicPeerMD5QueueNum); err != nil { //nolint:gosec // BGP port fits uint16
+				return fmt.Errorf("dynamic peer MD5 nfqueue rule: %w", err)
+			}
+		}
+
 		addr := fmt.Sprintf(":%d", s.cfg.Port)
 		var lc net.ListenConfig
 		l, err := lc.Listen(ctx, "tcp", addr)
 		if err != nil {
+			s.removeDynamicMD5Rule()
 			return fmt.Errorf("bgp listen %s: %w", addr, err)
 		}
 		s.listener = l
@@ -82,38 +103,26 @@ func (s *Speaker) Start(ctx context.Context) error {
 		// Set TCP MD5 on listener BEFORE accepting connections so the
 		// kernel enforces MD5 during the TCP handshake (RFC 2385).
 		if err := applyListenerMD5(s.listener, s.peerConfigs); err != nil {
-			if cerr := s.listener.Close(); cerr != nil {
-				log.Printf("DEBUG: close listener: %v", cerr)
-			}
-			s.listener = nil
+			s.abortStart()
 			return fmt.Errorf("tcp md5 on listener failed: %w", err)
 		}
 
 		ctx, s.cancel = context.WithCancel(ctx)
-		go s.acceptLoop(ctx)
 
-		// Dynamic-peer MD5 is fail-closed: the admin asked for MD5-verified
-		// dynamic peers, so if the redirect rule or its queue consumer can't
-		// run, refuse to run BGP at all rather than silently accepting
-		// unauthenticated dynamic peers. The rule and the consumer live and
-		// die together — the rule has no bypass flag, so a rule without a
-		// consumer would drop every inbound BGP SYN, fixed peers included.
+		// The consumer must be attached before the accept loop runs so no
+		// connection is ever handed to the BGP FSM without its SYN having
+		// been verified (or bypassed as a known fixed peer).
 		if s.cfg.DynamicPeerMD5Match {
-			if err := EnsureDynamicMD5NFQueueRule(uint16(s.cfg.Port), s.cfg.DynamicPeerMD5QueueNum); err != nil { //nolint:gosec // BGP port fits uint16
-				s.abortStart()
-				return fmt.Errorf("dynamic peer MD5 nfqueue rule: %w", err)
-			}
 			dq, err := startDynamicMD5Queue(ctx, s.listener, s.cfg.DynamicPeerMD5QueueNum, uint16(s.cfg.Port), s.logger) //nolint:gosec // BGP port fits uint16
 			if err != nil {
-				if rerr := RemoveDynamicMD5NFQueueRule(); rerr != nil {
-					s.logger.Error("remove dynamic MD5 nfqueue rule after failed queue start", "error", rerr)
-				}
 				s.abortStart()
 				return err
 			}
 			dq.SetPeers(s.peerConfigs)
 			s.dynMD5 = dq
 		}
+
+		go s.acceptLoop(ctx)
 	}
 
 	s.started.Store(true)
@@ -121,8 +130,20 @@ func (s *Speaker) Start(ctx context.Context) error {
 	return nil
 }
 
-// abortStart unwinds a partially-started listener (accept loop already
-// running) when a later Start step fails.
+// removeDynamicMD5Rule removes the NFQUEUE redirect rule if this speaker's
+// config would have installed one, logging rather than failing — it runs on
+// unwind paths where a more important error is already being returned.
+func (s *Speaker) removeDynamicMD5Rule() {
+	if !s.cfg.DynamicPeerMD5Match {
+		return
+	}
+	if err := RemoveDynamicMD5NFQueueRule(); err != nil {
+		s.logger.Error("remove dynamic MD5 nfqueue rule", "error", err)
+	}
+}
+
+// abortStart unwinds a partially-started speaker (rule installed, listener
+// open, accept loop not yet running) when a later Start step fails.
 func (s *Speaker) abortStart() {
 	if s.cancel != nil {
 		s.cancel()
@@ -134,6 +155,7 @@ func (s *Speaker) abortStart() {
 		}
 		s.listener = nil
 	}
+	s.removeDynamicMD5Rule()
 }
 
 // Stop shuts down the speaker.
@@ -149,9 +171,7 @@ func (s *Speaker) Stop() error {
 		s.dynMD5 = nil
 		// The redirect rule must not outlive its consumer — without one it
 		// drops every inbound BGP SYN (no bypass flag, deliberately).
-		if err := RemoveDynamicMD5NFQueueRule(); err != nil {
-			s.logger.Error("remove dynamic MD5 nfqueue rule", "error", err)
-		}
+		s.removeDynamicMD5Rule()
 	}
 	if s.listener != nil {
 		if err := s.listener.Close(); err != nil {
