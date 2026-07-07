@@ -130,6 +130,22 @@ immediately where possible; BGP and network settings require a restart.
 
 The global route allow/deny filters are on the same page.
 
+## Dynamic peer MD5 authentication
+
+Dynamic peers (`peer_ip` = `0.0.0.0`/`::`) are normally identified by ASN
+alone — kernel `TCP_MD5SIG` needs a specific address ahead of time, which a
+wildcard peer doesn't have. `WDBGP_DYNAMIC_PEER_MD5_MATCH` (default `false`)
+closes that gap: an NFQUEUE consumer bruteforce-matches a real TCP MD5
+(RFC 2385) signature on inbound SYNs against configured dynamic-peer
+passwords, authenticating them cryptographically instead of by ASN alone.
+Requires `CAP_NET_ADMIN` and a Linux kernel with `nfnetlink_queue` support;
+no `nft`/`iptables` binary is needed anywhere — the redirect rule is
+installed automatically, entirely over netlink.
+
+See [Dynamic Peer BGP MD5 Authentication](docs/dynamic-peer-md5.md) for
+requirements, systemd/Docker examples for running outside a RouterOS
+container, and troubleshooting.
+
 ## Run
 
 ```sh
@@ -200,6 +216,8 @@ password check. Force `true` only when the admin UI is always served over HTTPS.
 | `WDBGP_BACKUP_DIR` | `<db_dir>` |
 | `WDBGP_AUTO_RESTORE_ENABLED` | `false` |
 | `WDBGP_ALLOW_DYNAMIC_PEERS` | `false` |
+| `WDBGP_DYNAMIC_PEER_MD5_MATCH` | `false` |
+| `WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM` | `0` |
 
 `WDBGP_ADMIN_PASSWORD` and `WDBGP_SESSION_SECRET` are required by `serve`.
 When `WDBGP_BGP_LOCAL_ADDRESS_V6` is empty, IPv6 selections remain stored but
@@ -261,6 +279,8 @@ All values are validated on startup with helpful error messages. If not specifie
 | `WDBGP_JS_MAX_ENTRIES` | Integer ≥1; max CIDR entries an adapter can produce (default 1 000 000) |
 | `WDBGP_JS_MAX_REQUESTS` | Integer ≥1; max HTTP requests per adapter run (default 200) |
 | `WDBGP_JS_MAX_CALL_STACK` | Integer ≥1; max JavaScript call stack depth (default 1000) |
+| `WDBGP_DYNAMIC_PEER_MD5_MATCH` | Boolean; enables NFQUEUE-based MD5 signature matching for dynamic peers (default false, see [docs/dynamic-peer-md5.md](docs/dynamic-peer-md5.md)) |
+| `WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM` | Integer 0–65535; NFQUEUE number (default 0) |
 
 The application provides a `/status` endpoint for operational visibility, returning basic health and version information in JSON format.
 
@@ -338,6 +358,12 @@ RouterOS:
 Allow HTTP port 8080 from user networks, TCP/179 between the container and BGP
 peers, and forwarding for the received destination prefixes. Add a container
 IPv6 address and `WDBGP_BGP_LOCAL_ADDRESS_V6` when using IPv6.
+
+For cryptographic authentication of dynamic peers on RouterOS 7.21+ (x86/ARM64)
+containers, add `/container/envs/add list=wdbgp key=WDBGP_DYNAMIC_PEER_MD5_MATCH value="1"`
+and set `/container/set [find name=wdbgp] user=0:0` — the container manages
+its own NFQUEUE/nftables setup, but needs to run as root to do so. See
+[Dynamic Peer BGP MD5 Authentication](docs/dynamic-peer-md5.md).
 
 ## Limitations
 

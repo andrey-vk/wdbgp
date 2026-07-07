@@ -34,6 +34,8 @@ export const settingsSchema = z.object({
   db_path: settingStringSchema,
   default_language: settingStringSchema,
   default_web_auth: settingStringSchema,
+  dynamic_peer_md5_match: settingBoolSchema,
+  dynamic_peer_md5_queue_num: settingIntSchema,
   filter_allow: settingStringSchema,
   filter_deny: settingStringSchema,
   host: settingStringSchema,

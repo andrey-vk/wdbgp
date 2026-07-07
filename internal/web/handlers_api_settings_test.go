@@ -136,6 +136,57 @@ func TestAPISettingsPut_TypedInt(t *testing.T) {
 	}
 }
 
+// TestAPISettingsPut_DynamicPeerMD5Match guards the setSetting/validateSettingKey/
+// resetSetting wiring for the two dynamic-peer MD5 matching settings — a typo'd
+// case string would silently fall through to "unknown setting" and this is the
+// only place that dispatch is exercised end to end via the actual HTTP handler.
+func TestAPISettingsPut_DynamicPeerMD5Match(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	server := New(st, nil, nil, nil)
+
+	body := `{"dynamic_peer_md5_match": true, "dynamic_peer_md5_queue_num": 7}`
+	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminCookie(st))
+	addCSRF(req)
+	w := httptest.NewRecorder()
+	server.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if !st.DynamicPeerMD5Match.Get() {
+		t.Error("dynamic_peer_md5_match should be true after PUT")
+	}
+	if st.DynamicPeerMD5QueueNum.Get() != 7 {
+		t.Errorf("dynamic_peer_md5_queue_num = %d, want 7", st.DynamicPeerMD5QueueNum.Get())
+	}
+
+	// Reset both back to defaults.
+	resetBody := `{"dynamic_peer_md5_match": null, "dynamic_peer_md5_queue_num": null}`
+	req = httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(resetBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(adminCookie(st))
+	addCSRF(req)
+	w = httptest.NewRecorder()
+	server.handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if st.DynamicPeerMD5Match.Get() {
+		t.Error("dynamic_peer_md5_match should be false after reset")
+	}
+	if st.DynamicPeerMD5QueueNum.Get() != 0 {
+		t.Errorf("dynamic_peer_md5_queue_num = %d, want 0 after reset", st.DynamicPeerMD5QueueNum.Get())
+	}
+}
+
 // TestAPISettingsPut_HostPortDBPathAreReadOnly verifies host/port/db_path
 // and backup_enabled/backup_dir/auto_restore_enabled can no longer be
 // changed via the API — they're all env-only. host/port/db_path always

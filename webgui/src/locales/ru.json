@@ -81,6 +81,8 @@
   "settings.host": "HTTP хост",
   "settings.port": "HTTP порт",
   "settings.allow_dynamic_peers": "Разрешить динамические пиры",
+  "settings.dynamic_peer_md5_match": "MD5-проверка динамических пиров",
+  "settings.dynamic_peer_md5_queue_num": "Номер NFQUEUE для динамических пиров",
   "settings.auto_restore_enabled": "Автовосстановление из бэкапа",
   "settings.adapter_backup_dir": "Папка бэкапов адаптеров",
   "settings.adapter_backup_max": "Макс. копий на адаптер",
@@ -163,6 +165,8 @@
   "settings.active_dial": "Активный дозвон",
   "settings.active_dial_hint": "Сервер инициирует BGP-соединения к пирам. Выключите для пассивного режима.",
   "settings.allow_dynamic_peers_hint": "Принимать BGP-соединения с любых IP-адресов (0.0.0.0/0 и ::/0).",
+  "settings.dynamic_peer_md5_match_hint": "Аутентифицировать динамических пиров по реальной TCP MD5 подписи через NFQUEUE, а не только по ASN. Требует соответствующей настройки ядра/NFQUEUE вне приложения (см. руководство по настройке MD5 для динамических пиров); применяется после перезапуска.",
+  "settings.dynamic_peer_md5_queue_num_hint": "Номер NFQUEUE, который использует внешнее правило перенаправления и который слушает этот процесс. Должен совпадать с номером очереди в правиле. Применяется после перезапуска.",
   "settings.require_password_for_non_unique_ip": "Требовать пароль на общем IP",
   "settings.require_password_for_non_unique_ip_hint": "Принудительно требовать BGP MD5 пароль, если несколько пиров используют один IP с разными ASN.",
 
