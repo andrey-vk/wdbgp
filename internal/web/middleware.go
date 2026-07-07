@@ -44,6 +44,23 @@ func (s *Server) clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// limitRequestBody caps every request body with http.MaxBytesReader so a
+// handler's json.NewDecoder(r.Body) can never be fed an unbounded stream.
+// The cap follows the largest legitimate payload — an adapter save, whose
+// JavaScript source may be up to JSMaxSourceBytes before JSON string
+// escaping (worst case 6× for exotic characters, plus envelope slack) —
+// with a floor of 1 MiB for everything else.
+func (s *Server) limitRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := int64(s.settings.JSMaxSourceBytes.Get())*6 + 64<<10
+		if limit < 1<<20 {
+			limit = 1 << 20
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		next.ServeHTTP(w, r)
+	})
+}
+
 // csrfCookieName/csrfHeaderName implement the double-submit-cookie pattern:
 // the cookie is deliberately NOT HttpOnly so the SPA's HTTP client can read
 // it and echo it back as a header. A cross-site attacker can trigger a

@@ -64,9 +64,10 @@ BGP section — either way, changing them requires a restart to take effect):
 | `WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM` | `0` | The NFQUEUE number this process binds to. Only matters if something else on the same host also uses NFQUEUE and needs a different number to avoid colliding. |
 
 Everything else — creating the nftables table/chain/rule that redirects BGP
-SYNs into that queue — happens automatically at startup
-(`EnsureDynamicMD5NFQueueRule`, called once before the BGP speaker starts).
-There is no manual rule to write.
+SYNs into that queue — happens automatically: the BGP speaker installs the
+rule together with the NFQUEUE consumer when it starts, and removes both
+when it stops (including on "Apply BGP" from the admin UI). There is no
+manual rule to write.
 
 ## Running as a systemd service (bare metal or VM)
 
@@ -107,10 +108,12 @@ docker run --rm \
   wh1ted/wdbgp:alpha
 ```
 
-Without `--cap-add=NET_ADMIN`, `EnsureDynamicMD5NFQueueRule` and the NFQUEUE
-consumer both fail at startup — logged, but the process continues serving
-BGP with dynamic peers falling back to ASN-only identification, same as if
-the feature were disabled outright.
+Without `--cap-add=NET_ADMIN`, the nftables rule and the NFQUEUE consumer
+can't start. This is fail-closed: since MD5 verification was requested but
+can't be enforced, the BGP speaker refuses to start at all (the error shows
+up in the log and in the admin UI's BGP status banner) rather than silently
+accepting unauthenticated dynamic peers. The web UI stays reachable so the
+setting can be fixed.
 
 ## Coexisting with your own firewall rules
 

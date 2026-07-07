@@ -34,8 +34,9 @@ type SpeakerConfig struct {
 	HoldTime  uint16     // proposed hold time in seconds (0 = default 90)
 
 	// DynamicPeerMD5Match enables NFQUEUE-based RFC 2385 signature matching
-	// for dynamic (0.0.0.0/::) peers (see nfqueue_md5.go). Requires the
-	// container's own NFQUEUE redirect rule to already be installed.
+	// for dynamic (0.0.0.0/::) peers (see nfqueue_md5.go). Speaker.Start
+	// installs the NFQUEUE redirect rule and its consumer together, and
+	// fails (fail-closed) if either can't run.
 	DynamicPeerMD5Match    bool
 	DynamicPeerMD5QueueNum uint16
 }
@@ -91,20 +92,48 @@ func (s *Speaker) Start(ctx context.Context) error {
 		ctx, s.cancel = context.WithCancel(ctx)
 		go s.acceptLoop(ctx)
 
+		// Dynamic-peer MD5 is fail-closed: the admin asked for MD5-verified
+		// dynamic peers, so if the redirect rule or its queue consumer can't
+		// run, refuse to run BGP at all rather than silently accepting
+		// unauthenticated dynamic peers. The rule and the consumer live and
+		// die together — the rule has no bypass flag, so a rule without a
+		// consumer would drop every inbound BGP SYN, fixed peers included.
 		if s.cfg.DynamicPeerMD5Match {
+			if err := EnsureDynamicMD5NFQueueRule(uint16(s.cfg.Port), s.cfg.DynamicPeerMD5QueueNum); err != nil { //nolint:gosec // BGP port fits uint16
+				s.abortStart()
+				return fmt.Errorf("dynamic peer MD5 nfqueue rule: %w", err)
+			}
 			dq, err := startDynamicMD5Queue(ctx, s.listener, s.cfg.DynamicPeerMD5QueueNum, uint16(s.cfg.Port), s.logger) //nolint:gosec // BGP port fits uint16
 			if err != nil {
-				s.logger.Error("dynamic peer MD5 queue failed to start, dynamic peers fall back to ASN-only identification", "error", err)
-			} else {
-				dq.SetPeers(s.peerConfigs)
-				s.dynMD5 = dq
+				if rerr := RemoveDynamicMD5NFQueueRule(); rerr != nil {
+					s.logger.Error("remove dynamic MD5 nfqueue rule after failed queue start", "error", rerr)
+				}
+				s.abortStart()
+				return err
 			}
+			dq.SetPeers(s.peerConfigs)
+			s.dynMD5 = dq
 		}
 	}
 
 	s.started.Store(true)
 	s.logger.Info("BGP speaker started", "port", s.cfg.Port)
 	return nil
+}
+
+// abortStart unwinds a partially-started listener (accept loop already
+// running) when a later Start step fails.
+func (s *Speaker) abortStart() {
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+	if s.listener != nil {
+		if err := s.listener.Close(); err != nil {
+			log.Printf("DEBUG: close listener: %v", err)
+		}
+		s.listener = nil
+	}
 }
 
 // Stop shuts down the speaker.
@@ -118,6 +147,11 @@ func (s *Speaker) Stop() error {
 			log.Printf("DEBUG: close dynamic md5 queue: %v", err)
 		}
 		s.dynMD5 = nil
+		// The redirect rule must not outlive its consumer — without one it
+		// drops every inbound BGP SYN (no bypass flag, deliberately).
+		if err := RemoveDynamicMD5NFQueueRule(); err != nil {
+			s.logger.Error("remove dynamic MD5 nfqueue rule", "error", err)
+		}
 	}
 	if s.listener != nil {
 		if err := s.listener.Close(); err != nil {
@@ -167,8 +201,12 @@ func (s *Speaker) SetPeers(peers []PeerConfig) error {
 	// Start new peers or update existing
 	for key, pc := range newSet {
 		if existing, ok := s.peers[key]; ok {
-			// Peer exists — check if config changed
-			if existing.PeerConfig().ASN != pc.ASN || existing.PeerConfig().Password != pc.Password {
+			// Peer exists — restart it if any connection-relevant field
+			// changed. Port encodes active-dial vs passive-only (see
+			// peerPort), so a per-user active_dial toggle lands here too.
+			old := existing.PeerConfig()
+			if old.ASN != pc.ASN || old.Password != pc.Password ||
+				old.Port != pc.Port || old.LocalAddr != pc.LocalAddr {
 				existing.Stop()
 				delete(s.peers, key)
 			} else {

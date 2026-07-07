@@ -125,6 +125,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 
 	// Build middleware chain
 	handler := http.Handler(mux)
+	handler = server.limitRequestBody(handler)
 	handler = panicRecovery(handler)
 	if st.SecurityHeaders.Get() {
 		handler = securityHeaders(handler)
@@ -160,6 +161,11 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	// it never calls SetPeers, so an already-connected peer keeps its old
 	// dial mode until the speaker actually reloads.
 	st.ActiveDial.OnChange(func(bool) { markBGPRestartPending() })
+	// The dynamic-MD5 NFQUEUE rule and consumer are started/stopped with the
+	// speaker (Speaker.Start/Stop), so these two also only take effect on a
+	// speaker restart.
+	st.DynamicPeerMD5Match.OnChange(func(bool) { markBGPRestartPending() })
+	st.DynamicPeerMD5QueueNum.OnChange(func(uint16) { markBGPRestartPending() })
 
 	return server
 }

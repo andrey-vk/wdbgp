@@ -362,6 +362,55 @@ func TestPublicDialContextTriesAllPublicAddresses(t *testing.T) {
 	}
 }
 
+func TestIsPublicAddressRejectsNonGlobalRanges(t *testing.T) {
+	blocked := []string{
+		// stdlib-covered basics
+		"127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.1.1",
+		"0.0.0.0", "224.0.0.1", "::1", "fe80::1", "fc00::1", "ff02::1", "::",
+		// IANA special-purpose ranges the stdlib predicates miss
+		"0.255.255.255",     // 0.0.0.0/8
+		"100.64.0.1",        // CGNAT
+		"100.127.255.254",   // CGNAT upper edge
+		"192.0.0.8",         // IETF protocol assignments
+		"192.0.2.55",        // TEST-NET-1
+		"192.88.99.1",       // 6to4 relay anycast
+		"198.18.0.1",        // benchmarking
+		"198.19.255.255",    // benchmarking upper half
+		"198.51.100.7",      // TEST-NET-2
+		"203.0.113.99",      // TEST-NET-3
+		"240.0.0.1",         // reserved
+		"255.255.255.255",   // broadcast
+		"::ffff:10.0.0.1",   // IPv4-mapped private
+		"::ffff:100.64.0.1", // IPv4-mapped CGNAT
+		"64:ff9b:1::1",      // local-use NAT64
+		"64:ff9b::a00:1",    // NAT64 embedding 10.0.0.1
+		"100::1",            // discard-only
+		"2001::1",           // TEREDO
+		"2001:2::1",         // benchmarking
+		"2001:db8::1",       // documentation
+		"2002::1",           // 6to4
+		"3fff::1",           // documentation (RFC 9637)
+		"5f00::1",           // SRv6 SIDs
+	}
+	for _, raw := range blocked {
+		if isPublicAddress(netip.MustParseAddr(raw)) {
+			t.Errorf("isPublicAddress(%s) = true, want false", raw)
+		}
+	}
+
+	allowed := []string{
+		"8.8.8.8", "1.1.1.1", "203.0.112.255", "198.20.0.1",
+		"2001:4860:4860::8888", "2620:fe::fe",
+		"::ffff:8.8.8.8",   // IPv4-mapped public
+		"64:ff9b::808:808", // NAT64 embedding 8.8.8.8 (legit DNS64 synthesis)
+	}
+	for _, raw := range allowed {
+		if !isPublicAddress(netip.MustParseAddr(raw)) {
+			t.Errorf("isPublicAddress(%s) = false, want true", raw)
+		}
+	}
+}
+
 func TestPublicDialContextAllowsConfiguredProxy(t *testing.T) {
 	clientSide, serverSide := net.Pipe()
 	defer serverSide.Close()

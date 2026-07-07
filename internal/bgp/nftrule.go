@@ -1,6 +1,7 @@
 package bgp
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/google/nftables"
@@ -22,9 +23,14 @@ const nftDynamicMD5Table = "wdbgp_dynamic_md5"
 // no nft/iptables binary or shell needed, so the container image doesn't
 // need to bundle one either.
 //
+// The rule has no bypass flag, so while it is installed every matched SYN
+// with no queue consumer attached is dropped by the kernel — fail-closed.
+// Speaker.Start/Stop pair the rule's lifetime with the consumer's for
+// exactly that reason; never leave this rule behind without one.
+//
 // Idempotent: any previous incarnation of the table is dropped first, so
-// calling this again (e.g. on process restart) never accumulates duplicate
-// rules. Call once at process startup, not on every settings reload.
+// calling this again (e.g. on speaker reload) never accumulates duplicate
+// rules.
 func EnsureDynamicMD5NFQueueRule(bgpPort, queueNum uint16) error {
 	conn, err := nftables.New()
 	if err != nil {
@@ -68,6 +74,27 @@ func EnsureDynamicMD5NFQueueRule(bgpPort, queueNum uint16) error {
 
 	if err := conn.Flush(); err != nil {
 		return fmt.Errorf("nftables: flush: %w", err)
+	}
+	return nil
+}
+
+// RemoveDynamicMD5NFQueueRule drops this process's dynamic-MD5 nftables
+// table (and with it the NFQUEUE redirect rule). A missing table is not an
+// error — the common case is cleaning up when the feature is disabled and
+// nothing was ever installed. In a host network namespace the table
+// survives process death, so this must run whenever the queue consumer
+// goes away: a leftover no-consumer rule black-holes every inbound BGP SYN.
+func RemoveDynamicMD5NFQueueRule() error {
+	conn, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("nftables: connect: %w", err)
+	}
+	conn.DelTable(&nftables.Table{Family: nftables.TableFamilyINet, Name: nftDynamicMD5Table})
+	if err := conn.Flush(); err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return fmt.Errorf("nftables: delete table: %w", err)
 	}
 	return nil
 }

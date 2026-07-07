@@ -457,12 +457,61 @@ func hasPublicAddress(addresses []netip.Addr) bool {
 	return false
 }
 
+// nonGlobalPrefixes are the IANA special-purpose ranges that are not
+// globally reachable but slip past the stdlib's boolean predicates
+// (IsPrivate, IsLoopback, …): CGNAT, benchmarking, documentation, reserved,
+// NAT64/discard-only and friends. Addresses are checked after Unmap(), so
+// IPv4 entries also cover their ::ffff:0:0/96 mapped forms.
+var nonGlobalPrefixes = []netip.Prefix{
+	// IPv4 (per iana-ipv4-special-registry)
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network"
+	netip.MustParsePrefix("100.64.0.0/10"),   // CGNAT (RFC 6598)
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // TEST-NET-1
+	netip.MustParsePrefix("192.88.99.0/24"),  // deprecated 6to4 relay anycast
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking (RFC 2544)
+	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2
+	netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved, incl. 255.255.255.255
+	// IPv6 (per iana-ipv6-special-registry)
+	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64
+	netip.MustParsePrefix("100::/64"),       // discard-only
+	netip.MustParsePrefix("2001::/23"),      // IETF: TEREDO, ORCHID, benchmarking
+	netip.MustParsePrefix("2001:db8::/32"),  // documentation
+	netip.MustParsePrefix("2002::/16"),      // 6to4
+	netip.MustParsePrefix("3fff::/20"),      // documentation (RFC 9637)
+	netip.MustParsePrefix("5f00::/16"),      // SRv6 SIDs (RFC 9602)
+}
+
+// wellKnownNAT64 is the RFC 6052 NAT64 translation prefix. DNS64 synthesizes
+// these on legitimate IPv6-only networks, so it can't be denied outright —
+// instead the IPv4 address embedded in the low 32 bits is validated, closing
+// the hole where 64:ff9b::<internal-v4> would reach private IPv4 space
+// through the site's NAT64 gateway.
+var wellKnownNAT64 = netip.MustParsePrefix("64:ff9b::/96")
+
 func isPublicAddress(address netip.Addr) bool {
-	return address.IsValid() &&
-		!address.IsLoopback() &&
-		!address.IsPrivate() &&
-		!address.IsLinkLocalUnicast() &&
-		!address.IsLinkLocalMulticast() &&
-		!address.IsMulticast() &&
-		!address.IsUnspecified()
+	if !address.IsValid() {
+		return false
+	}
+	address = address.Unmap()
+	if address.IsLoopback() ||
+		address.IsPrivate() ||
+		address.IsLinkLocalUnicast() ||
+		address.IsLinkLocalMulticast() ||
+		address.IsMulticast() ||
+		address.IsUnspecified() {
+		return false
+	}
+	for _, prefix := range nonGlobalPrefixes {
+		if prefix.Contains(address) {
+			return false
+		}
+	}
+	if wellKnownNAT64.Contains(address) {
+		raw := address.As16()
+		embedded := netip.AddrFrom4([4]byte(raw[12:16]))
+		return isPublicAddress(embedded)
+	}
+	return true
 }

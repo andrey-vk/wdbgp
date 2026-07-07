@@ -51,7 +51,7 @@ export const defaults: Record<string, string> = {
   rate_limit_login: '5',
   require_password_for_non_unique_ip: 'true',
   router_id: '192.0.2.1',
-  security_headers: 'false',
+  security_headers: 'true',
   session_max_age: '28800',
   session_secret: '',
   status_allowed: '',

@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -86,6 +88,51 @@ func TestClientIP(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================================================
+// TestLimitRequestBody — every JSON handler decodes r.Body without its own
+// cap, so the middleware must bound it: an unauthenticated client could
+// otherwise stream an arbitrarily large body into json.Decode.
+// =============================================================================
+
+func TestLimitRequestBody(t *testing.T) {
+	s := testSettings()
+	server := &Server{settings: s}
+
+	var readErr error
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.Copy(io.Discard, r.Body)
+	})
+	handler := server.limitRequestBody(inner)
+
+	limit := int64(s.JSMaxSourceBytes.Get())*6 + 64<<10
+
+	// A body just under the limit reads fully.
+	readErr = nil
+	req := httptest.NewRequest("POST", "/api/user/login", io.LimitReader(neverEnding('a'), limit))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	if readErr != nil {
+		t.Fatalf("body at limit: read error = %v, want nil", readErr)
+	}
+
+	// One byte over must fail with MaxBytesError.
+	readErr = nil
+	req = httptest.NewRequest("POST", "/api/user/login", io.LimitReader(neverEnding('a'), limit+1))
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	var maxErr *http.MaxBytesError
+	if !errors.As(readErr, &maxErr) {
+		t.Fatalf("body over limit: read error = %v, want *http.MaxBytesError", readErr)
+	}
+}
+
+type neverEnding byte
+
+func (b neverEnding) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(b)
+	}
+	return len(p), nil
 }
 
 // =============================================================================
