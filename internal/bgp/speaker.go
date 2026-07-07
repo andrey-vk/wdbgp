@@ -22,6 +22,7 @@ type Speaker struct {
 	peerConfigs []PeerConfig     // configured peers (from DB)
 	started     atomic.Bool
 	cancel      context.CancelFunc
+	dynMD5      *dynamicMD5Queue // non-nil when dynamic-peer MD5 matching is enabled and running
 }
 
 // SpeakerConfig holds BGP speaker configuration.
@@ -31,6 +32,12 @@ type SpeakerConfig struct {
 	Port      int32
 	LocalAddr netip.Addr // IPv4 local address for NEXT_HOP
 	HoldTime  uint16     // proposed hold time in seconds (0 = default 90)
+
+	// DynamicPeerMD5Match enables NFQUEUE-based RFC 2385 signature matching
+	// for dynamic (0.0.0.0/::) peers (see nfqueue_md5.go). Requires the
+	// container's own NFQUEUE redirect rule to already be installed.
+	DynamicPeerMD5Match    bool
+	DynamicPeerMD5QueueNum uint16
 }
 
 // PeerConfig describes a configured BGP peer.
@@ -83,6 +90,16 @@ func (s *Speaker) Start(ctx context.Context) error {
 
 		ctx, s.cancel = context.WithCancel(ctx)
 		go s.acceptLoop(ctx)
+
+		if s.cfg.DynamicPeerMD5Match {
+			dq, err := startDynamicMD5Queue(ctx, s.listener, s.cfg.DynamicPeerMD5QueueNum, uint16(s.cfg.Port), s.logger) //nolint:gosec // BGP port fits uint16
+			if err != nil {
+				s.logger.Error("dynamic peer MD5 queue failed to start, dynamic peers fall back to ASN-only identification", "error", err)
+			} else {
+				dq.SetPeers(s.peerConfigs)
+				s.dynMD5 = dq
+			}
+		}
 	}
 
 	s.started.Store(true)
@@ -95,6 +112,12 @@ func (s *Speaker) Stop() error {
 	s.started.Store(false)
 	if s.cancel != nil {
 		s.cancel()
+	}
+	if s.dynMD5 != nil {
+		if err := s.dynMD5.Close(); err != nil {
+			log.Printf("DEBUG: close dynamic md5 queue: %v", err)
+		}
+		s.dynMD5 = nil
 	}
 	if s.listener != nil {
 		if err := s.listener.Close(); err != nil {
@@ -159,6 +182,10 @@ func (s *Speaker) SetPeers(peers []PeerConfig) error {
 	}
 
 	s.peerConfigs = peers
+
+	if s.dynMD5 != nil {
+		s.dynMD5.SetPeers(peers)
+	}
 
 	// Clear old MD5 keys only for addresses no longer in the new set.
 	// Keys for surviving peers were already re-applied above.

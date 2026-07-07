@@ -111,6 +111,10 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 		return callStringSetting(ctx, s.settings.DefaultLanguage, raw)
 	case "default_web_auth":
 		return callStringSetting(ctx, s.settings.DefaultWebAuth, raw)
+	case "dynamic_peer_md5_match":
+		return callBoolSetting(ctx, s.settings.DynamicPeerMD5Match, raw)
+	case "dynamic_peer_md5_queue_num":
+		return callUint16Setting(ctx, s.settings.DynamicPeerMD5QueueNum, raw)
 	case "filter_allow":
 		return callStringSetting(ctx, s.settings.FilterAllow, raw)
 	case "filter_deny":
@@ -232,6 +236,16 @@ func (s *Server) validateSettingKey(key string, raw json.RawMessage) error {
 			return nil
 		}
 		return callStringValidate(s.settings.DefaultWebAuth, raw)
+	case "dynamic_peer_md5_match":
+		if isReset {
+			return nil
+		}
+		return callBoolValidate(s.settings.DynamicPeerMD5Match, raw)
+	case "dynamic_peer_md5_queue_num":
+		if isReset {
+			return nil
+		}
+		return callUint16Validate(s.settings.DynamicPeerMD5QueueNum, raw)
 	case "filter_allow":
 		if isReset {
 			return nil
@@ -429,6 +443,10 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 		return s.settings.DefaultLanguage.Reset(ctx)
 	case "default_web_auth":
 		return s.settings.DefaultWebAuth.Reset(ctx)
+	case "dynamic_peer_md5_match":
+		return s.settings.DynamicPeerMD5Match.Reset(ctx)
+	case "dynamic_peer_md5_queue_num":
+		return s.settings.DynamicPeerMD5QueueNum.Reset(ctx)
 	case "filter_allow":
 		return s.settings.FilterAllow.Reset(ctx)
 	case "filter_deny":

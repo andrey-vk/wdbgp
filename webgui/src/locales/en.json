@@ -82,6 +82,8 @@
   "settings.host": "HTTP host",
   "settings.port": "HTTP port",
   "settings.allow_dynamic_peers": "Allow dynamic peers",
+  "settings.dynamic_peer_md5_match": "Dynamic peer MD5 matching",
+  "settings.dynamic_peer_md5_queue_num": "Dynamic peer MD5 NFQUEUE number",
   "settings.auto_restore_enabled": "Auto-restore from backup",
   "settings.adapter_backup_dir": "Adapter backup directory",
   "settings.adapter_backup_max": "Max backup copies per adapter",
@@ -164,6 +166,8 @@
   "settings.active_dial": "Active dial",
   "settings.active_dial_hint": "Server initiates BGP connections to peers (active dialing). Turn off for passive-only mode.",
   "settings.allow_dynamic_peers_hint": "Accept BGP connections from any IP (0.0.0.0/0 and ::/0).",
+  "settings.dynamic_peer_md5_match_hint": "Authenticate dynamic peers by matching a real TCP MD5 signature via NFQUEUE, instead of ASN only. Requires a matching kernel/NFQUEUE setup outside this app (see the dynamic peer MD5 setup guide); takes effect on restart.",
+  "settings.dynamic_peer_md5_queue_num_hint": "NFQUEUE number the external redirect rule feeds and this process consumes. Must match the rule's queue number. Takes effect on restart.",
   "settings.require_password_for_non_unique_ip": "Require password on shared IP",
   "settings.require_password_for_non_unique_ip_hint": "Force BGP MD5 password when multiple peers share the same IP address with different ASNs.",
 

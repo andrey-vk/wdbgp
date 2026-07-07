@@ -133,6 +133,22 @@ private, loopback, link-local, documentation, benchmark, multicast и reserved-�
 
 Глобальные списки фильтрации маршрутов также находятся на этой странице.
 
+## MD5-аутентификация динамических пиров
+
+Динамические пиры (`peer_ip` = `0.0.0.0`/`::`) обычно определяются только по
+ASN — ядерному `TCP_MD5SIG` нужен конкретный адрес, заданный заранее,
+которого у wildcard-пира нет. `WDBGP_DYNAMIC_PEER_MD5_MATCH` (по умолчанию
+`false`) закрывает этот пробел: NFQUEUE-обработчик проверяет перебором
+настоящую TCP MD5 (RFC 2385) подпись входящих SYN-пакетов против паролей
+настроенных динамических пиров, аутентифицируя их криптографически, а не
+только по ASN. Требует `CAP_NET_ADMIN` и ядро Linux с поддержкой
+`nfnetlink_queue`; бинарник `nft`/`iptables` нигде не нужен — правило
+перенаправления устанавливается автоматически, полностью через netlink.
+
+См. [MD5-аутентификация динамических BGP-пиров](docs/dynamic-peer-md5.ru.md) —
+требования, примеры systemd/Docker для запуска вне контейнера RouterOS, и
+диагностика.
+
 ## Запуск
 
 ```sh
@@ -200,6 +216,8 @@ cookie и после правильного пароля снова переки
 | `WDBGP_BACKUP_DIR` | `<db_dir>` |
 | `WDBGP_AUTO_RESTORE_ENABLED` | `false` |
 | `WDBGP_ALLOW_DYNAMIC_PEERS` | `false` |
+| `WDBGP_DYNAMIC_PEER_MD5_MATCH` | `false` |
+| `WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM` | `0` |
 
 `WDBGP_ADMIN_PASSWORD` и `WDBGP_SESSION_SECRET` обязательны для `serve`.
 Если `WDBGP_BGP_LOCAL_ADDRESS_V6` не задан, IPv6-выбор сохраняется в базе, но
@@ -260,6 +278,8 @@ BGP и синхронизация не запускаются.
 | `WDBGP_JS_MAX_ENTRIES` | Целое число ≥1; макс. CIDR-записей на выходе адаптера (по умолчанию 1 000 000) |
 | `WDBGP_JS_MAX_REQUESTS` | Целое число ≥1; макс. HTTP-запросов за запуск адаптера (по умолчанию 200) |
 | `WDBGP_JS_MAX_CALL_STACK` | Целое число ≥1; макс. глубина call stack JavaScript (по умолчанию 1000) |
+| `WDBGP_DYNAMIC_PEER_MD5_MATCH` | Логическое; включает MD5-проверку подписи динамических пиров через NFQUEUE (по умолчанию false, см. [docs/dynamic-peer-md5.ru.md](docs/dynamic-peer-md5.ru.md)) |
+| `WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM` | Целое число 0–65535; номер NFQUEUE (по умолчанию 0) |
 
 Приложение предоставляет эндпоинт `/status` для мониторинга состояния, возвращающий базовую информацию о работоспособности и версии в формате JSON.
 
@@ -320,6 +340,14 @@ docker build -t wdbgp:latest .
 TCP/179 между контейнером и BGP peers, а также forwarding к полученным
 destination-префиксам. Для IPv6 добавьте адрес контейнера и
 `WDBGP_BGP_LOCAL_ADDRESS_V6`.
+
+Для криптографической аутентификации динамических пиров на контейнерах
+RouterOS 7.21+ (x86/ARM64) добавьте
+`/container/envs/add list=wdbgp key=WDBGP_DYNAMIC_PEER_MD5_MATCH value="1"`
+и установите `/container/set [find name=wdbgp] user=0:0` — контейнер сам
+управляет своей настройкой NFQUEUE/nftables, но для этого ему нужно
+работать от root. См.
+[MD5-аутентификация динамических BGP-пиров](docs/dynamic-peer-md5.ru.md).
 
 ## Ограничения
 

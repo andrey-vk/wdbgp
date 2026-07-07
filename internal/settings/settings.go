@@ -25,6 +25,8 @@ type Settings struct {
 	DBPath                        Setting[string, string]
 	DefaultLanguage               Setting[string, string]
 	DefaultWebAuth                Setting[string, string]
+	DynamicPeerMD5Match           Setting[bool, bool]
+	DynamicPeerMD5QueueNum        Setting[uint16, uint16]
 	FilterAllow                   Setting[string, string] // global route allow filters
 	FilterDeny                    Setting[string, string] // global route deny filters
 	Host                          Setting[string, string]
@@ -71,6 +73,8 @@ type SettingsJSON struct {
 	DBPath                        SettingJSON[string] `json:"db_path"`
 	DefaultLanguage               SettingJSON[string] `json:"default_language"`
 	DefaultWebAuth                SettingJSON[string] `json:"default_web_auth"`
+	DynamicPeerMD5Match           SettingJSON[bool]   `json:"dynamic_peer_md5_match"`
+	DynamicPeerMD5QueueNum        SettingJSON[uint16] `json:"dynamic_peer_md5_queue_num"`
 	FilterAllow                   SettingJSON[string] `json:"filter_allow"`
 	FilterDeny                    SettingJSON[string] `json:"filter_deny"`
 	Host                          SettingJSON[string] `json:"host"`
@@ -354,6 +358,28 @@ func New(store Store) (*Settings, error) {
 		return nil, err
 	}
 
+	// DynamicPeerMD5Match: default off. Authenticates dynamic (0.0.0.0/::)
+	// BGP peers by bruteforce-matching a real TCP MD5 (RFC 2385) signature
+	// on the inbound SYN against configured dynamic-peer passwords, via an
+	// NFQUEUE consumer (see internal/bgp/nfqueue_md5.go). Requires the
+	// process's own container to have installed the matching NFQUEUE
+	// redirect rule — see the container entrypoint — and a Linux kernel
+	// with nfnetlink_queue support (RouterOS 7.21+ containers on x86/ARM64;
+	// not available on ARM32). Off by default so existing dynamic-peer
+	// deployments (ASN-only identification) are unaffected until an admin
+	// explicitly opts in.
+	s.DynamicPeerMD5Match, err = newSimple(false, "dynamic_peer_md5_match", "WDBGP_DYNAMIC_PEER_MD5_MATCH", parseBool, nil, store, dbSettings)
+	if err != nil {
+		return nil, err
+	}
+
+	// DynamicPeerMD5QueueNum: NFQUEUE number the redirect rule feeds and
+	// this process's consumer binds to. 0 (kernel default queue) is valid.
+	s.DynamicPeerMD5QueueNum, err = newSimple[uint16](0, "dynamic_peer_md5_queue_num", "WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM", parseUint16, nil, store, dbSettings)
+	if err != nil {
+		return nil, err
+	}
+
 	// ActiveDial: defaults to false. Was true early on; that turned out to be
 	// the wrong default for an alpha product, so it changed — deliberately
 	// not backfilled the way the per-user active_dial column is (migration
@@ -426,6 +452,8 @@ func (s *Settings) JSON(ctx context.Context) SettingsJSON {
 		DBPath:                        s.DBPath.JSON(dbSettings),
 		DefaultLanguage:               s.DefaultLanguage.JSON(dbSettings),
 		DefaultWebAuth:                s.DefaultWebAuth.JSON(dbSettings),
+		DynamicPeerMD5Match:           s.DynamicPeerMD5Match.JSON(dbSettings),
+		DynamicPeerMD5QueueNum:        s.DynamicPeerMD5QueueNum.JSON(dbSettings),
 		FilterAllow:                   s.FilterAllow.JSON(dbSettings),
 		FilterDeny:                    s.FilterDeny.JSON(dbSettings),
 		Host:                          s.Host.JSON(dbSettings),
