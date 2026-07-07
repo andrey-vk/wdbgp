@@ -475,7 +475,7 @@ var nonGlobalPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("240.0.0.0/4"),     // reserved, incl. 255.255.255.255
 	// IPv6 (per iana-ipv6-special-registry)
 	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64
-	netip.MustParsePrefix("100::/64"),       // discard-only
+	netip.MustParsePrefix("100::/63"),       // discard-only (100::/64) + dummy prefix (100:0:0:1::/64)
 	netip.MustParsePrefix("2001::/23"),      // IETF: TEREDO, ORCHID, benchmarking
 	netip.MustParsePrefix("2001:db8::/32"),  // documentation
 	netip.MustParsePrefix("2002::/16"),      // 6to4

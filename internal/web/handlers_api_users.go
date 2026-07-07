@@ -225,6 +225,7 @@ func (s *Server) apiUsersGet(w http.ResponseWriter, r *http.Request) {
 
 // apiUsersCreate handles POST /api/admin/users.
 func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	var body struct {
 		Name            string   `json:"name"`
 		PeerIP          string   `json:"peer_ip"`
@@ -450,6 +451,7 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 
 // apiUsersUpdate handles PUT /api/admin/users/{id}.
 func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid user ID"})
@@ -750,6 +752,7 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 
 // apiUsersDelete handles DELETE /api/admin/users/{id}.
 func (s *Server) apiUsersDelete(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid user ID"})
@@ -998,6 +1001,7 @@ func (s *Server) apiAdminUserCatalog(w http.ResponseWriter, r *http.Request) {
 // apiAdminUserSaveSelections handles PUT /api/admin/users/{id}/selections.
 // Saves category/service selections for any user (admin-only), bypassing selection_locked.
 func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid user ID"})

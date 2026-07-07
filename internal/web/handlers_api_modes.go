@@ -127,6 +127,7 @@ func (s *Server) apiModesCreate(w http.ResponseWriter, r *http.Request) {
 
 // apiModesUpdate handles PUT /api/admin/modes/{id}.
 func (s *Server) apiModesUpdate(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
@@ -187,6 +188,7 @@ func (s *Server) apiModesUpdate(w http.ResponseWriter, r *http.Request) {
 
 // apiModesDelete handles DELETE /api/admin/modes/{id}.
 func (s *Server) apiModesDelete(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
@@ -242,6 +244,7 @@ func (s *Server) apiModeFeedsGet(w http.ResponseWriter, r *http.Request) {
 
 // apiModeFeedsSet handles PUT /api/admin/modes/{id}/feeds.
 func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	modeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
@@ -392,6 +395,7 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 
 // apiModeCommunitiesPut handles PUT /api/admin/modes/{id}/communities.
 func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	modeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
@@ -453,6 +457,7 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 
 // apiModeCommunitiesReset handles POST /api/admin/modes/{id}/communities/reset.
 func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	modeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
@@ -481,6 +486,7 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 
 // apiModeCommunitiesGenerate handles POST /api/admin/modes/{id}/communities/generate.
 func (s *Server) apiModeCommunitiesGenerate(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	modeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})

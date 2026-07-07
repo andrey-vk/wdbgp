@@ -108,23 +108,38 @@ func TestLimitRequestBody(t *testing.T) {
 	})
 	handler := server.limitRequestBody(inner)
 
-	limit := int64(s.JSMaxSourceBytes.Get())*6 + 64<<10
-
-	// A body just under the limit reads fully.
-	readErr = nil
-	req := httptest.NewRequest("POST", "/api/user/login", io.LimitReader(neverEnding('a'), limit))
-	handler.ServeHTTP(httptest.NewRecorder(), req)
-	if readErr != nil {
-		t.Fatalf("body at limit: read error = %v, want nil", readErr)
+	adapterLimit := int64(s.JSMaxSourceBytes.Get())*6 + 64<<10
+	cases := []struct {
+		name  string
+		path  string
+		limit int64
+	}{
+		{"default routes get 1MiB", "/api/user/login", 1 << 20},
+		{"adapter routes scale with js_max_source", "/api/admin/adapters/7", adapterLimit},
+		{"user selections get the large cap", "/api/user/selections", selectionBodyLimit},
+		{"user count gets the large cap", "/api/user/count-prefixes", selectionBodyLimit},
+		{"admin selections get the large cap", "/api/admin/users/12/selections", selectionBodyLimit},
+		{"admin count gets the large cap", "/api/admin/users/12/count-selections", selectionBodyLimit},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A body exactly at the limit reads fully.
+			readErr = nil
+			req := httptest.NewRequest("POST", tc.path, io.LimitReader(neverEnding('a'), tc.limit))
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+			if readErr != nil {
+				t.Fatalf("body at limit: read error = %v, want nil", readErr)
+			}
 
-	// One byte over must fail with MaxBytesError.
-	readErr = nil
-	req = httptest.NewRequest("POST", "/api/user/login", io.LimitReader(neverEnding('a'), limit+1))
-	handler.ServeHTTP(httptest.NewRecorder(), req)
-	var maxErr *http.MaxBytesError
-	if !errors.As(readErr, &maxErr) {
-		t.Fatalf("body over limit: read error = %v, want *http.MaxBytesError", readErr)
+			// One byte over must fail with MaxBytesError.
+			readErr = nil
+			req = httptest.NewRequest("POST", tc.path, io.LimitReader(neverEnding('a'), tc.limit+1))
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+			var maxErr *http.MaxBytesError
+			if !errors.As(readErr, &maxErr) {
+				t.Fatalf("body over limit: read error = %v, want *http.MaxBytesError", readErr)
+			}
+		})
 	}
 }
 

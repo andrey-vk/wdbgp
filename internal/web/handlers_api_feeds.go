@@ -143,6 +143,7 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed ID"})
@@ -212,6 +213,7 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiFeedsDelete(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed ID"})

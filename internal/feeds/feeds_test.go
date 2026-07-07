@@ -368,29 +368,31 @@ func TestIsPublicAddressRejectsNonGlobalRanges(t *testing.T) {
 		"127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.1.1",
 		"0.0.0.0", "224.0.0.1", "::1", "fe80::1", "fc00::1", "ff02::1", "::",
 		// IANA special-purpose ranges the stdlib predicates miss
-		"0.255.255.255",     // 0.0.0.0/8
-		"100.64.0.1",        // CGNAT
-		"100.127.255.254",   // CGNAT upper edge
-		"192.0.0.8",         // IETF protocol assignments
-		"192.0.2.55",        // TEST-NET-1
-		"192.88.99.1",       // 6to4 relay anycast
-		"198.18.0.1",        // benchmarking
-		"198.19.255.255",    // benchmarking upper half
-		"198.51.100.7",      // TEST-NET-2
-		"203.0.113.99",      // TEST-NET-3
-		"240.0.0.1",         // reserved
-		"255.255.255.255",   // broadcast
-		"::ffff:10.0.0.1",   // IPv4-mapped private
-		"::ffff:100.64.0.1", // IPv4-mapped CGNAT
-		"64:ff9b:1::1",      // local-use NAT64
-		"64:ff9b::a00:1",    // NAT64 embedding 10.0.0.1
-		"100::1",            // discard-only
-		"2001::1",           // TEREDO
-		"2001:2::1",         // benchmarking
-		"2001:db8::1",       // documentation
-		"2002::1",           // 6to4
-		"3fff::1",           // documentation (RFC 9637)
-		"5f00::1",           // SRv6 SIDs
+		"0.255.255.255",                 // 0.0.0.0/8
+		"100.64.0.1",                    // CGNAT
+		"100.127.255.254",               // CGNAT upper edge
+		"192.0.0.8",                     // IETF protocol assignments
+		"192.0.2.55",                    // TEST-NET-1
+		"192.88.99.1",                   // 6to4 relay anycast
+		"198.18.0.1",                    // benchmarking
+		"198.19.255.255",                // benchmarking upper half
+		"198.51.100.7",                  // TEST-NET-2
+		"203.0.113.99",                  // TEST-NET-3
+		"240.0.0.1",                     // reserved
+		"255.255.255.255",               // broadcast
+		"::ffff:10.0.0.1",               // IPv4-mapped private
+		"::ffff:100.64.0.1",             // IPv4-mapped CGNAT
+		"64:ff9b:1::1",                  // local-use NAT64
+		"64:ff9b::a00:1",                // NAT64 embedding 10.0.0.1
+		"100::1",                        // discard-only
+		"100:0:0:1::1",                  // dummy prefix (non-global)
+		"100:0:0:1:ffff:ffff:ffff:ffff", // dummy prefix upper edge
+		"2001::1",                       // TEREDO
+		"2001:2::1",                     // benchmarking
+		"2001:db8::1",                   // documentation
+		"2002::1",                       // 6to4
+		"3fff::1",                       // documentation (RFC 9637)
+		"5f00::1",                       // SRv6 SIDs
 	}
 	for _, raw := range blocked {
 		if isPublicAddress(netip.MustParseAddr(raw)) {
@@ -410,6 +412,7 @@ func TestIsPublicAddressRejectsNonGlobalRanges(t *testing.T) {
 		"2001:1::2",     // TURN anycast inside 2001::/23
 		"2001:3::1",     // AMT inside 2001::/23
 		"2001:4:112::1", // AS112-v6 inside 2001::/23
+		"100:0:0:2::1",  // just past the dummy prefix — not a registered special range
 	}
 	for _, raw := range allowed {
 		if !isPublicAddress(netip.MustParseAddr(raw)) {
