@@ -118,13 +118,23 @@ setting can be fixed.
 ## Coexisting with your own firewall rules
 
 `wdbgp` manages a single, self-contained nftables table named
-`wdbgp_dynamic_md5` (`inet` family, so it covers both IPv4 and IPv6). It's
-dropped and recreated fresh on every process start — safe to run alongside
-whatever else you already manage with `iptables`, `nft`, `firewalld`, or
-`ufw`, as long as nothing else on the host also tries to own a table with
-that exact name. Nothing about this rule alters routing, NAT, or filtering
-for any other traffic — it only redirects TCP SYNs on the configured BGP
-port into the NFQUEUE.
+`wdbgp_dynamic_md5_p<bgp-port>_q<queue-num>` (e.g.
+`wdbgp_dynamic_md5_p179_q0`; `inet` family, so it covers both IPv4 and
+IPv6). It's dropped and recreated fresh on every speaker start — safe to
+run alongside whatever else you already manage with `iptables`, `nft`,
+`firewalld`, or `ufw`, as long as nothing else on the host also tries to
+own a table with that exact name. Nothing about this rule alters routing,
+NAT, or filtering for any other traffic — it only redirects TCP SYNs on
+the configured BGP port into the NFQUEUE.
+
+The name is scoped by port and queue number so multiple `wdbgp` instances
+sharing one network namespace (e.g. host networking) on different BGP
+ports manage disjoint tables. Two caveats follow from that: run at most
+one MD5-enabled instance per BGP port per network namespace, and if you
+change the BGP port or queue number between runs, the table under the old
+name may be left behind (cleanup only knows the current name) — remove it
+manually with `nft list tables | grep wdbgp_dynamic_md5` and
+`nft delete table inet <name>`.
 
 ## Troubleshooting
 
@@ -135,7 +145,7 @@ comes back, and nothing shows up in the logs at all:**
   ```sh
   nft list ruleset
   ```
-  Expect a `wdbgp_dynamic_md5` table with a rule like
+  Expect a `wdbgp_dynamic_md5_p<port>_q<num>` table with a rule like
   `tcp dport <port> tcp flags & (syn|ack) == syn queue to <num>`.
 - Check whether a consumer is actually bound to that queue number (requires
   root or `CAP_NET_ADMIN` to read):

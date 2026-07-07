@@ -137,7 +137,7 @@ func (s *Speaker) removeDynamicMD5Rule() {
 	if !s.cfg.DynamicPeerMD5Match {
 		return
 	}
-	if err := RemoveDynamicMD5NFQueueRule(); err != nil {
+	if err := RemoveDynamicMD5NFQueueRule(uint16(s.cfg.Port), s.cfg.DynamicPeerMD5QueueNum); err != nil { //nolint:gosec // BGP port fits uint16
 		s.logger.Error("remove dynamic MD5 nfqueue rule", "error", err)
 	}
 }

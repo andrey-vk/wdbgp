@@ -495,6 +495,7 @@ var globalExceptionPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("2001:1::3/128"),   // DNS-SD service registration (RFC 9665)
 	netip.MustParsePrefix("2001:3::/32"),     // AMT (RFC 7450)
 	netip.MustParsePrefix("2001:4:112::/48"), // AS112-v6 (RFC 7534)
+	netip.MustParsePrefix("2001:20::/28"),    // ORCHIDv2 (RFC 7343)
 	netip.MustParsePrefix("2001:30::/28"),    // Drone Remote ID (RFC 9374)
 }
 

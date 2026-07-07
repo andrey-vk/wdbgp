@@ -412,6 +412,7 @@ func TestIsPublicAddressRejectsNonGlobalRanges(t *testing.T) {
 		"2001:1::2",     // TURN anycast inside 2001::/23
 		"2001:3::1",     // AMT inside 2001::/23
 		"2001:4:112::1", // AS112-v6 inside 2001::/23
+		"2001:20::1",    // ORCHIDv2 inside 2001::/23
 		"100:0:0:2::1",  // just past the dummy prefix — not a registered special range
 	}
 	for _, raw := range allowed {
