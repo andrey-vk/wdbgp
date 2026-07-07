@@ -251,3 +251,10 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	rw.bytesWritten += int64(n)
 	return n, err
 }
+
+// Unwrap exposes the underlying writer to http.ResponseController, so
+// handlers can reach per-request controls (SetWriteDeadline, Flush, …)
+// through this wrapper.
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
+}

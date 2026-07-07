@@ -233,18 +233,6 @@ func (s *Server) apiFeedsDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
 
-// extendWriteDeadline lifts the server-wide WriteTimeout for a handler that
-// legitimately runs longer than it (the synchronous feed syncs: minutes for
-// large feeds). Without this the sync completes server-side but the response
-// write happens after the connection's deadline and the admin sees a broken
-// reply instead of the result. Best-effort: an error just means the server
-// type doesn't support it (e.g. some test recorders), which is fine.
-func extendWriteDeadline(w http.ResponseWriter, r *http.Request) {
-	if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
-		logging.FromContext(r.Context()).Debug("extend write deadline failed", "error", err)
-	}
-}
-
 func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 	extendWriteDeadline(w, r)
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)

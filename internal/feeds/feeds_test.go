@@ -403,6 +403,13 @@ func TestIsPublicAddressRejectsNonGlobalRanges(t *testing.T) {
 		"2001:4860:4860::8888", "2620:fe::fe",
 		"::ffff:8.8.8.8",   // IPv4-mapped public
 		"64:ff9b::808:808", // NAT64 embedding 8.8.8.8 (legit DNS64 synthesis)
+		// globally reachable exceptions inside otherwise-blocked ranges
+		"192.0.0.9",     // PCP anycast inside 192.0.0.0/24
+		"192.0.0.10",    // NAT traversal anycast inside 192.0.0.0/24
+		"2001:1::1",     // PCP anycast inside 2001::/23
+		"2001:1::2",     // TURN anycast inside 2001::/23
+		"2001:3::1",     // AMT inside 2001::/23
+		"2001:4:112::1", // AS112-v6 inside 2001::/23
 	}
 	for _, raw := range allowed {
 		if !isPublicAddress(netip.MustParseAddr(raw)) {

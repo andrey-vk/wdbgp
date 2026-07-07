@@ -483,6 +483,21 @@ var nonGlobalPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("5f00::/16"),      // SRv6 SIDs (RFC 9602)
 }
 
+// globalExceptionPrefixes are the sub-ranges of nonGlobalPrefixes that the
+// IANA special-purpose registries mark "globally reachable: True" — anycast
+// and infrastructure services that legitimately live inside otherwise
+// non-global blocks. Checked before the deny-list.
+var globalExceptionPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("192.0.0.9/32"),    // PCP anycast (RFC 7723)
+	netip.MustParsePrefix("192.0.0.10/32"),   // NAT traversal anycast (RFC 8155)
+	netip.MustParsePrefix("2001:1::1/128"),   // PCP anycast (RFC 7723)
+	netip.MustParsePrefix("2001:1::2/128"),   // NAT traversal anycast (RFC 8155)
+	netip.MustParsePrefix("2001:1::3/128"),   // DNS-SD service registration (RFC 9665)
+	netip.MustParsePrefix("2001:3::/32"),     // AMT (RFC 7450)
+	netip.MustParsePrefix("2001:4:112::/48"), // AS112-v6 (RFC 7534)
+	netip.MustParsePrefix("2001:30::/28"),    // Drone Remote ID (RFC 9374)
+}
+
 // wellKnownNAT64 is the RFC 6052 NAT64 translation prefix. DNS64 synthesizes
 // these on legitimate IPv6-only networks, so it can't be denied outright —
 // instead the IPv4 address embedded in the low 32 bits is validated, closing
@@ -502,6 +517,11 @@ func isPublicAddress(address netip.Addr) bool {
 		address.IsMulticast() ||
 		address.IsUnspecified() {
 		return false
+	}
+	for _, prefix := range globalExceptionPrefixes {
+		if prefix.Contains(address) {
+			return true
+		}
 	}
 	for _, prefix := range nonGlobalPrefixes {
 		if prefix.Contains(address) {

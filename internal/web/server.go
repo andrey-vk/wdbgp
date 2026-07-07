@@ -127,9 +127,18 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	handler := http.Handler(mux)
 	handler = server.limitRequestBody(handler)
 	handler = panicRecovery(handler)
-	if st.SecurityHeaders.Get() {
-		handler = securityHeaders(handler)
-	}
+	// Checked per request, not once at construction, so toggling the
+	// setting from /admin/settings takes effect immediately — the UI
+	// doesn't mark it restart-required, and it shouldn't have to be.
+	withHeaders := securityHeaders(handler)
+	plain := handler
+	handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if st.SecurityHeaders.Get() {
+			withHeaders.ServeHTTP(w, r)
+			return
+		}
+		plain.ServeHTTP(w, r)
+	})
 	// Apply admin rate limiting to admin endpoints
 	handler = server.adminRateLimitMiddleware(handler)
 	handler = logging.HTTPMiddleware(handler)
@@ -341,4 +350,9 @@ func (c *notFoundCatcher) Write(b []byte) (int, error) {
 		return len(b), nil
 	}
 	return c.ResponseWriter.Write(b)
+}
+
+// Unwrap exposes the underlying writer to http.ResponseController.
+func (c *notFoundCatcher) Unwrap() http.ResponseWriter {
+	return c.ResponseWriter
 }

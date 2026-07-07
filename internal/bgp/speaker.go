@@ -159,10 +159,23 @@ func (s *Speaker) abortStart() {
 }
 
 // Stop shuts down the speaker.
+//
+// Teardown mirrors Start's fail-closed ordering in reverse: the listener
+// closes first, while the rule and consumer are still verifying SYNs — if
+// the rule went first, a SYN arriving before the listener closes would be
+// accepted from the backlog without MD5 verification. With the listener
+// gone, remaining SYNs are either dropped by the consumer-less rule
+// (fail-closed) or refused once the rule is removed too.
 func (s *Speaker) Stop() error {
 	s.started.Store(false)
 	if s.cancel != nil {
 		s.cancel()
+	}
+	if s.listener != nil {
+		if err := s.listener.Close(); err != nil {
+			log.Printf("DEBUG: close listener: %v", err)
+		}
+		s.listener = nil
 	}
 	if s.dynMD5 != nil {
 		if err := s.dynMD5.Close(); err != nil {
@@ -172,12 +185,6 @@ func (s *Speaker) Stop() error {
 		// The redirect rule must not outlive its consumer — without one it
 		// drops every inbound BGP SYN (no bypass flag, deliberately).
 		s.removeDynamicMD5Rule()
-	}
-	if s.listener != nil {
-		if err := s.listener.Close(); err != nil {
-			log.Printf("DEBUG: close listener: %v", err)
-		}
-		s.listener = nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

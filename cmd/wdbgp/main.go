@@ -124,9 +124,15 @@ func serve(s *settings.Settings, db *store.Store) error {
 	// previous run and is disabled now. In a host network namespace that
 	// run's rule survives process death, and with no consumer attached it
 	// drops every inbound BGP SYN — so clear any leftover here.
+	// A cleanup failure here is NOT fatal: every unprivileged deployment
+	// (no CAP_NET_ADMIN, the common case) fails this netlink call even
+	// though there is nothing to clean — such a namespace can only hold a
+	// stale rule if a *previous, privileged* run installed one. The warning
+	// carries the manual fix for exactly that scenario: privileges were
+	// dropped while the old rule is still black-holing BGP SYNs.
 	if !s.DynamicPeerMD5Match.Get() {
 		if err := bgp.RemoveDynamicMD5NFQueueRule(); err != nil {
-			logging.Debug("cleanup of leftover dynamic-peer MD5 NFQUEUE rule failed (harmless unless the feature was previously enabled)", "error", err)
+			logging.Warn("cannot verify removal of leftover dynamic-peer MD5 NFQUEUE rule; if dynamic-peer MD5 was previously enabled on this host and BGP peers cannot connect, remove the nftables table 'wdbgp_dynamic_md5' manually (nft delete table inet wdbgp_dynamic_md5) or re-grant CAP_NET_ADMIN", "error", err)
 		}
 	}
 

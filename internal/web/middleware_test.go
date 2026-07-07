@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/andrey-vk/wdbgp/internal/logging"
 )
 
 // =============================================================================
@@ -123,6 +125,29 @@ func TestLimitRequestBody(t *testing.T) {
 	var maxErr *http.MaxBytesError
 	if !errors.As(readErr, &maxErr) {
 		t.Fatalf("body over limit: read error = %v, want *http.MaxBytesError", readErr)
+	}
+}
+
+// The long-running handlers (feed sync, BGP reload) lift the server-wide
+// WriteTimeout via http.ResponseController, which only reaches the real
+// connection if every wrapper in the middleware chain implements Unwrap —
+// logging.HTTPMiddleware's status-capturing writer didn't, silently turning
+// the deadline extension into a no-op. Exercise it over a real connection.
+func TestSetWriteDeadlineWorksThroughLoggingMiddleware(t *testing.T) {
+	errCh := make(chan error, 1)
+	h := logging.HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		errCh <- http.NewResponseController(w).SetWriteDeadline(time.Time{})
+	}))
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close() //nolint:errcheck // test cleanup
+	if err := <-errCh; err != nil {
+		t.Fatalf("SetWriteDeadline through logging middleware = %v, want nil", err)
 	}
 }
 
