@@ -43,6 +43,10 @@ jobs:
             type=semver,pattern={{version}}
             type=raw,value=alpha,enable=${{ github.event_name == 'release' && github.event.release.prerelease }}
             type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            # Manual dispatch pushes only a throwaway tag — for testing the
+            # release pipeline (e.g. attestation manifests vs RouterOS pulls)
+            # without touching the tags users pull.
+            type=raw,value=test,enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
