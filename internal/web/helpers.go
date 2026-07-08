@@ -25,12 +25,13 @@ func extendWriteDeadline(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// extendRequestDeadlines additionally lifts ReadTimeout, for the few
-// routes whose request body is legitimately large: selection/count
-// payloads up to selectionBodyLimit (32 MiB, > ~9 Mbit/s of uplink needed
-// inside the 30s ReadTimeout) and adapter saves (up to ~6 MiB). Must run
-// before the handler reads the body. Everything else keeps the read
-// deadline — see extendWriteDeadline.
+// extendRequestDeadlines additionally lifts ReadTimeout, for the routes
+// whose request body is legitimately large — i.e. every route bodyLimit
+// puts in an elevated tier: selection/count payloads up to
+// selectionBodyLimit (32 MiB, > ~9 Mbit/s of uplink needed inside the 30s
+// ReadTimeout), route-filter carriers (8 MiB), and adapter saves (~6 MiB).
+// Must run before the handler reads the body. Everything else keeps the
+// read deadline — see extendWriteDeadline.
 func extendRequestDeadlines(w http.ResponseWriter, r *http.Request) {
 	if err := http.NewResponseController(w).SetReadDeadline(time.Time{}); err != nil {
 		logging.FromContext(r.Context()).Debug("extend read deadline failed", "error", err)

@@ -404,7 +404,7 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 // Saves the user's route filters, then reconciles BGP.
 // Only allowed if filter_editable is enabled for the user.
 func (s *Server) apiUserSaveFilters(w http.ResponseWriter, r *http.Request) {
-	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
+	extendRequestDeadlines(w, r) // large filter upload + reconcile can outlive Read/WriteTimeout
 	ctx := r.Context()
 	user, ok := requireUser(w, r)
 	if !ok {

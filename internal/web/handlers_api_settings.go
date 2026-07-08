@@ -22,7 +22,7 @@ var filterKeysAffectBGP = map[string]bool{"filter_allow": true, "filter_deny": t
 
 // apiSettingsPut handles PUT /api/admin/settings.
 func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
-	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
+	extendRequestDeadlines(w, r) // large filter upload + reconcile can outlive Read/WriteTimeout
 	var body map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})

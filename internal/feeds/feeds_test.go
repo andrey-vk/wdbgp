@@ -392,7 +392,16 @@ func TestIsPublicAddressRejectsNonGlobalRanges(t *testing.T) {
 		"2001:db8::1",                   // documentation
 		"2002::1",                       // 6to4
 		"3fff::1",                       // documentation (RFC 9637)
-		"5f00::1",                       // SRv6 SIDs
+		"5f00::1",                       // SRv6 SIDs (reserved space, outside 2000::/3)
+		// IPv6 outside the 2000::/3 global-unicast allocation — reserved or
+		// deprecated space a deny-list can't enumerate
+		"fec0::1",      // deprecated site-local
+		"4000::1",      // IETF reserved
+		"8000::1",      // IETF reserved
+		"e000::1",      // IETF reserved
+		"100:0:0:2::1", // reserved space just past the dummy prefix
+		"1fff:ffff::1", // last address block below 2000::/3
+		"4::1",         // low reserved space
 	}
 	for _, raw := range blocked {
 		if isPublicAddress(netip.MustParseAddr(raw)) {
@@ -413,7 +422,8 @@ func TestIsPublicAddressRejectsNonGlobalRanges(t *testing.T) {
 		"2001:3::1",     // AMT inside 2001::/23
 		"2001:4:112::1", // AS112-v6 inside 2001::/23
 		"2001:20::1",    // ORCHIDv2 inside 2001::/23
-		"100:0:0:2::1",  // just past the dummy prefix — not a registered special range
+		"2000::1",       // first address of the global-unicast block
+		"3ffe::1",       // inside 2000::/3 (former 6bone, returned to the free pool)
 	}
 	for _, raw := range allowed {
 		if !isPublicAddress(netip.MustParseAddr(raw)) {

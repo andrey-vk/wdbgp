@@ -457,13 +457,13 @@ func hasPublicAddress(addresses []netip.Addr) bool {
 	return false
 }
 
-// nonGlobalPrefixes are the IANA special-purpose ranges that are not
+// nonGlobalV4Prefixes are the IANA special-purpose IPv4 ranges that are not
 // globally reachable but slip past the stdlib's boolean predicates
-// (IsPrivate, IsLoopback, …): CGNAT, benchmarking, documentation, reserved,
-// NAT64/discard-only and friends. Addresses are checked after Unmap(), so
-// IPv4 entries also cover their ::ffff:0:0/96 mapped forms.
-var nonGlobalPrefixes = []netip.Prefix{
-	// IPv4 (per iana-ipv4-special-registry)
+// (IsPrivate, IsLoopback, …): CGNAT, benchmarking, documentation, reserved.
+// The IPv4 space is fully allocated, so a deny-list is the right shape
+// here; addresses are checked after Unmap(), so these entries also cover
+// their ::ffff:0:0/96 mapped forms.
+var nonGlobalV4Prefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),       // "this network"
 	netip.MustParsePrefix("100.64.0.0/10"),   // CGNAT (RFC 6598)
 	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
@@ -473,23 +473,39 @@ var nonGlobalPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2
 	netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3
 	netip.MustParsePrefix("240.0.0.0/4"),     // reserved, incl. 255.255.255.255
-	// IPv6 (per iana-ipv6-special-registry)
-	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64
-	netip.MustParsePrefix("100::/63"),       // discard-only (100::/64) + dummy prefix (100:0:0:1::/64)
-	netip.MustParsePrefix("2001::/23"),      // IETF: TEREDO, ORCHID, benchmarking
-	netip.MustParsePrefix("2001:db8::/32"),  // documentation
-	netip.MustParsePrefix("2002::/16"),      // 6to4
-	netip.MustParsePrefix("3fff::/20"),      // documentation (RFC 9637)
-	netip.MustParsePrefix("5f00::/16"),      // SRv6 SIDs (RFC 9602)
 }
 
-// globalExceptionPrefixes are the sub-ranges of nonGlobalPrefixes that the
-// IANA special-purpose registries mark "globally reachable: True" — anycast
-// and infrastructure services that legitimately live inside otherwise
-// non-global blocks. Checked before the deny-list.
-var globalExceptionPrefixes = []netip.Prefix{
-	netip.MustParsePrefix("192.0.0.9/32"),    // PCP anycast (RFC 7723)
-	netip.MustParsePrefix("192.0.0.10/32"),   // NAT traversal anycast (RFC 8155)
+// globalUnicastV6 is the only block IANA has ever allocated for IPv6
+// global unicast (per the IPv6 Address Space registry). Everything outside
+// it — deprecated site-local fec0::/10, the reserved /3s (4000::, 6000::,
+// …), discard-only, SRv6 SIDs, local-use NAT64 — is not globally routable,
+// so IPv6 is filtered allowlist-first: only addresses inside this block
+// can be public. A deny-list can't keep up with reserved space that is
+// mostly *unassigned* rather than specially registered.
+var globalUnicastV6 = netip.MustParsePrefix("2000::/3")
+
+// nonGlobalV6Prefixes are the special-purpose carve-outs INSIDE the
+// 2000::/3 global-unicast block that are still not globally reachable
+// (per iana-ipv6-special-registry). Ranges outside 2000::/3 don't need
+// entries — the allowlist already rejects them.
+var nonGlobalV6Prefixes = []netip.Prefix{
+	netip.MustParsePrefix("2001::/23"),     // IETF: TEREDO, ORCHID, benchmarking
+	netip.MustParsePrefix("2001:db8::/32"), // documentation
+	netip.MustParsePrefix("2002::/16"),     // 6to4
+	netip.MustParsePrefix("3fff::/20"),     // documentation (RFC 9637)
+}
+
+// globalExceptionV4Prefixes / globalExceptionV6Prefixes are the sub-ranges
+// of the deny-lists above that the IANA special-purpose registries mark
+// "globally reachable: True" — anycast and infrastructure services that
+// legitimately live inside otherwise non-global blocks. Checked before the
+// deny-lists.
+var globalExceptionV4Prefixes = []netip.Prefix{
+	netip.MustParsePrefix("192.0.0.9/32"),  // PCP anycast (RFC 7723)
+	netip.MustParsePrefix("192.0.0.10/32"), // NAT traversal anycast (RFC 8155)
+}
+
+var globalExceptionV6Prefixes = []netip.Prefix{
 	netip.MustParsePrefix("2001:1::1/128"),   // PCP anycast (RFC 7723)
 	netip.MustParsePrefix("2001:1::2/128"),   // NAT traversal anycast (RFC 8155)
 	netip.MustParsePrefix("2001:1::3/128"),   // DNS-SD service registration (RFC 9665)
@@ -503,7 +519,8 @@ var globalExceptionPrefixes = []netip.Prefix{
 // these on legitimate IPv6-only networks, so it can't be denied outright —
 // instead the IPv4 address embedded in the low 32 bits is validated, closing
 // the hole where 64:ff9b::<internal-v4> would reach private IPv4 space
-// through the site's NAT64 gateway.
+// through the site's NAT64 gateway. (The local-use sibling 64:ff9b:1::/48
+// falls outside both this /96 and 2000::/3, so the allowlist rejects it.)
 var wellKnownNAT64 = netip.MustParsePrefix("64:ff9b::/96")
 
 func isPublicAddress(address netip.Addr) bool {
@@ -519,20 +536,36 @@ func isPublicAddress(address netip.Addr) bool {
 		address.IsUnspecified() {
 		return false
 	}
-	for _, prefix := range globalExceptionPrefixes {
-		if prefix.Contains(address) {
-			return true
+	if address.Is4() {
+		for _, prefix := range globalExceptionV4Prefixes {
+			if prefix.Contains(address) {
+				return true
+			}
 		}
-	}
-	for _, prefix := range nonGlobalPrefixes {
-		if prefix.Contains(address) {
-			return false
+		for _, prefix := range nonGlobalV4Prefixes {
+			if prefix.Contains(address) {
+				return false
+			}
 		}
+		return true
 	}
 	if wellKnownNAT64.Contains(address) {
 		raw := address.As16()
 		embedded := netip.AddrFrom4([4]byte(raw[12:16]))
 		return isPublicAddress(embedded)
+	}
+	if !globalUnicastV6.Contains(address) {
+		return false
+	}
+	for _, prefix := range globalExceptionV6Prefixes {
+		if prefix.Contains(address) {
+			return true
+		}
+	}
+	for _, prefix := range nonGlobalV6Prefixes {
+		if prefix.Contains(address) {
+			return false
+		}
 	}
 	return true
 }
