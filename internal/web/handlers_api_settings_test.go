@@ -187,6 +187,98 @@ func TestAPISettingsPut_DynamicPeerMD5Match(t *testing.T) {
 	}
 }
 
+// TestAPISettingsPut_BGPHoldTime guards the dispatch wiring for
+// bgp_hold_time: the setting shipped with metadata, locales and an OnChange
+// hook but without cases in setSetting/validateSettingKey/resetSetting, so
+// every UI edit answered "unknown setting" (only the env var worked).
+func TestAPISettingsPut_BGPHoldTime(t *testing.T) {
+	store := settings.NewTestStore()
+	st, err := settings.New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustSetSetting(t, st.SessionSecret, "test-secret")
+	server := New(st, nil, nil, nil)
+
+	put := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(adminCookie(st))
+		addCSRF(req)
+		w := httptest.NewRecorder()
+		server.handler.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := put(`{"bgp_hold_time": 180}`); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if st.BGPHoldTime.Get() != 180 {
+		t.Errorf("bgp_hold_time = %d, want 180", st.BGPHoldTime.Get())
+	}
+
+	// Below the RFC 4271 minimum of 3 — validation must reject it.
+	if w := put(`{"bgp_hold_time": 2}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid value: status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+	if st.BGPHoldTime.Get() != 180 {
+		t.Errorf("bgp_hold_time = %d after rejected PUT, want 180", st.BGPHoldTime.Get())
+	}
+
+	if w := put(`{"bgp_hold_time": null}`); w.Code != http.StatusOK {
+		t.Fatalf("reset status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if st.BGPHoldTime.Get() != 90 {
+		t.Errorf("bgp_hold_time = %d after reset, want default 90", st.BGPHoldTime.Get())
+	}
+}
+
+// TestSettingsDispatchCoversAllKeys sweeps every key the settings API
+// exposes (the JSON field names of GET /api/admin/settings) through the
+// three dispatch switches. A setting added to SettingsJSON but missed in
+// setSetting/validateSettingKey/resetSetting shows up in the UI yet always
+// answers "unknown setting" on save — exactly what happened with
+// bgp_hold_time. Read-only keys are fine: they return their own
+// "cannot be changed here" error, not the unknown-setting fallthrough.
+func TestSettingsDispatchCoversAllKeys(t *testing.T) {
+	st, err := settings.New(settings.NewTestStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(st, nil, nil, nil)
+	ctx := context.Background()
+
+	blob, err := json.Marshal(st.JSON(ctx))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(blob, &keys); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) < 30 {
+		t.Fatalf("only %d settings keys found — JSON shape changed?", len(keys))
+	}
+
+	unknown := func(err error) bool {
+		return err != nil && strings.Contains(err.Error(), "unknown setting")
+	}
+	for key := range keys {
+		if err := server.validateSettingKey(key, json.RawMessage("null")); unknown(err) {
+			t.Errorf("validateSettingKey misses %q", key)
+		}
+		// "{}" parses as valid JSON but unmarshals into no scalar type, so
+		// no setting is actually mutated — editable keys fail with a type
+		// error, only a missing case falls through to "unknown setting".
+		if err := server.setSetting(ctx, key, json.RawMessage("{}")); unknown(err) {
+			t.Errorf("setSetting misses %q", key)
+		}
+		if err := server.resetSetting(ctx, key); unknown(err) {
+			t.Errorf("resetSetting misses %q", key)
+		}
+	}
+}
+
 // TestAPISettingsPut_HostPortDBPathAreReadOnly verifies host/port/db_path
 // and backup_enabled/backup_dir/auto_restore_enabled can no longer be
 // changed via the API — they're all env-only. host/port/db_path always

@@ -102,6 +102,8 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 		return callBoolSetting(ctx, s.settings.AllowDynamicPeers, raw)
 	case "auto_restore_enabled":
 		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
+	case "bgp_hold_time":
+		return callUint16Setting(ctx, s.settings.BGPHoldTime, raw)
 	case "bgp_port":
 		return callUint16Setting(ctx, s.settings.BGPPort, raw)
 	case "backup_dir":
@@ -218,6 +220,11 @@ func (s *Server) validateSettingKey(key string, raw json.RawMessage) error {
 		return callBoolValidate(s.settings.AllowDynamicPeers, raw)
 	case "auto_restore_enabled":
 		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
+	case "bgp_hold_time":
+		if isReset {
+			return nil
+		}
+		return callUint16Validate(s.settings.BGPHoldTime, raw)
 	case "bgp_port":
 		if isReset {
 			return nil
@@ -434,6 +441,8 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 		return s.settings.AllowDynamicPeers.Reset(ctx)
 	case "auto_restore_enabled":
 		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
+	case "bgp_hold_time":
+		return s.settings.BGPHoldTime.Reset(ctx)
 	case "bgp_port":
 		return s.settings.BGPPort.Reset(ctx)
 	case "backup_dir":
