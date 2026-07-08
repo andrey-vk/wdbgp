@@ -512,6 +512,55 @@ WHERE f.name = 'disabled'`).Scan(&disabledEntries); err != nil {
 	}
 }
 
+// TestSyncOneFailurePersistsErrorBeforeAttempt — a failed sync must have
+// last_error written by the syncer itself, in syncOne's body, so that by
+// the time the attempt is published as finished (LastAttempt, the API's
+// sync_attempted_at) the outcome is already readable in the DB. Callers
+// writing last_error after SyncOne returns would race polling clients.
+func TestSyncOneFailurePersistsErrorBeforeAttempt(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatal(err)
+	}
+	feedID, err := db.AddFeed(ctx, "failing", "https://example.test/feed", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed := feedList[0]
+
+	syncer := NewSyncer(db, testSettings())
+	syncer.Client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("connection refused")
+	})}
+
+	if _, err := syncer.SyncOne(ctx, feed); err == nil {
+		t.Fatal("SyncOne succeeded, want download failure")
+	}
+	var lastError string
+	if err := db.DB.QueryRow(
+		"SELECT COALESCE(last_error, '') FROM feeds WHERE id = ?", feedID).Scan(&lastError); err != nil {
+		t.Fatal(err)
+	}
+	if lastError == "" {
+		t.Fatal("last_error empty after failed SyncOne, want the failure recorded by the syncer itself")
+	}
+	if _, ok := syncer.LastAttempt(feedID); !ok {
+		t.Fatal("LastAttempt not recorded after failed SyncOne")
+	}
+}
+
 func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), false, "", false)

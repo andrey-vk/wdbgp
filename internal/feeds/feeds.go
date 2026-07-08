@@ -163,31 +163,12 @@ func (s *Syncer) SyncAll(ctx context.Context) []error {
 	var errors []error
 	for _, feed := range feeds {
 		logger.Debug("syncing feed", "name", feed.Name, "url", feed.URL, "feed_id", feed.ID)
-		executedRevision, err := s.SyncOne(ctx, feed)
+		_, err := s.SyncOne(ctx, feed)
 		if err != nil {
+			// last_error is already persisted by syncOne, before it
+			// published the attempt as finished.
 			logger.Error("feed sync failed", "name", feed.Name, "error", err)
 			errors = append(errors, fmt.Errorf("%s: %w", feed.Name, err))
-			// Guard against adapter source changes during sync: if the
-			// adapter was edited (same adapter_id, new revision) after
-			// SyncOne loaded it, the error belongs to the old revision
-			// and must not overwrite the new feed status.
-			if executedRevision > 0 {
-				if _, err := s.Store.DB.ExecContext(ctx,
-					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
-					 AND data = ? AND adapter_id = ? AND name = ?
-					 AND adapter_id IN (SELECT id FROM feed_adapters WHERE id = ? AND revision = ?)`,
-					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name,
-					feed.AdapterID, executedRevision); err != nil {
-					log.Printf("WARNING: cleanup: %v", err)
-				}
-			} else {
-				if _, err := s.Store.DB.ExecContext(ctx,
-					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
-					 AND data = ? AND adapter_id = ? AND name = ?`,
-					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name); err != nil {
-					log.Printf("WARNING: cleanup: %v", err)
-				}
-			}
 		} else {
 			logger.Info("feed synced successfully", "name", feed.Name, "feed_id", feed.ID)
 		}
@@ -288,8 +269,32 @@ func (s *Syncer) unmarkSyncing(feedID int64) {
 	s.syncingMu.Unlock()
 }
 
+// persistSyncError records a failed sync in feeds.last_error, guarded so
+// that a feed edited mid-sync doesn't receive an error belonging to its old
+// configuration. When executedRevision > 0 the write additionally requires
+// the adapter revision to be unchanged: if the adapter was edited (same
+// adapter_id, new revision) after the sync loaded it, the error belongs to
+// the old revision and must not overwrite the new feed status.
+func (s *Syncer) persistSyncError(ctx context.Context, feed store.Feed, executedRevision int64, syncErr error) {
+	query := `UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1
+		 AND data = ? AND adapter_id = ? AND name = ?`
+	args := []any{syncErr.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name}
+	if executedRevision > 0 {
+		query += ` AND adapter_id IN (SELECT id FROM feed_adapters WHERE id = ? AND revision = ?)`
+		args = append(args, feed.AdapterID, executedRevision)
+	}
+	if _, err := s.Store.DB.ExecContext(ctx, query, args...); err != nil {
+		log.Printf("WARNING: cleanup: %v", err)
+	}
+}
+
 func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	s.markSyncing(feed.ID)
+	// unmarkSyncing publishes the attempt as finished (sync_attempted_at),
+	// which the SPA takes as "the outcome is now readable" — so every
+	// last_error/last_success write must happen in the function body, before
+	// the defer runs. That's why failures are persisted here and not by the
+	// callers.
 	defer s.unmarkSyncing(feed.ID)
 
 	logger := logging.FromContext(ctx)
@@ -297,6 +302,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	adapter, err := s.Store.FeedAdapter(ctx, feed.AdapterID)
 	if err != nil {
 		logger.Error("failed to get feed adapter", "feed_id", feed.ID, "adapter_id", feed.AdapterID, "error", err)
+		s.persistSyncError(ctx, feed, 0, err)
 		return 0, err
 	}
 	logger.Debug("testing adapter", "feed", feed.Name, "adapter", adapter.Name, "adapter_revision", adapter.Revision)
@@ -304,6 +310,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	entries, err := s.TestAdapter(ctx, feed, adapter)
 	if err != nil {
 		logger.Error("adapter test failed", "feed", feed.Name, "adapter", adapter.Name, "error", err)
+		s.persistSyncError(ctx, feed, adapter.Revision, err)
 		return adapter.Revision, err
 	}
 	logger.Debug("adapter executed successfully", "feed", feed.Name, "entry_count", len(entries))
@@ -356,6 +363,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		return adapter.Revision, nil
 	}
 	if err != nil {
+		s.persistSyncError(ctx, feed, adapter.Revision, err)
 		return adapter.Revision, err
 	}
 	// A resync replaces the feed's entries wholesale, so prefixes that

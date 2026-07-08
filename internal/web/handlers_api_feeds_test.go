@@ -569,6 +569,61 @@ func TestFeedsSyncOneAsync(t *testing.T) {
 	}
 }
 
+// TestFeedsSyncAllRejectsWhileFeedSyncing — sync-all must answer 409 while
+// any per-feed sync is in flight: its 202 baselines are snapshotted before
+// the run starts, so an already-running sync finishing afterwards would
+// bump sync_attempted_at and make the SPA consume that feed's completion
+// watch on the wrong run's outcome.
+func TestFeedsSyncAllRejectsWhileFeedSyncing(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	if _, err := st.DB.ExecContext(ctx, `INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision)
+		VALUES (7, 'blocking', 'javascript', 1, 'function sync(feed, api) { api.httpGet(feed.url); return []; }', 1)`); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+	feedID, err := st.AddFeed(ctx, "async-feed", "http://feed.test/data.json", 7, true, 0, "", "", false)
+	if err != nil {
+		t.Fatalf("AddFeed: %v", err)
+	}
+
+	bt := &blockingTransport{release: make(chan struct{}), started: make(chan struct{})}
+	syncer := feeds.NewSyncer(st, srv.settings)
+	syncer.Client = &http.Client{Transport: bt}
+	srv.syncer = syncer
+
+	req := httptest.NewRequest("POST", "/api/admin/feeds/"+strconv.FormatInt(feedID, 10)+"/sync", nil)
+	req.SetPathValue("id", strconv.FormatInt(feedID, 10))
+	w := httptest.NewRecorder()
+	srv.apiFeedsSyncOne(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("sync-one trigger: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case <-bt.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sync goroutine never reached the HTTP transport")
+	}
+
+	syncAll := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		srv.apiFeedsSyncAll(w, httptest.NewRequest("POST", "/api/admin/feeds/sync-all", nil))
+		return w
+	}
+	if w := syncAll(); w.Code != http.StatusConflict {
+		t.Fatalf("sync-all during feed sync: status = %d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	// The rejection must release the in-flight guard: once the running sync
+	// finishes, sync-all is accepted again.
+	close(bt.release)
+	srv.WaitBackground(ctx)
+	if w := syncAll(); w.Code != http.StatusAccepted {
+		t.Fatalf("sync-all after feed sync finished: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+	srv.WaitBackground(ctx)
+}
+
 // TestBackgroundCtxFollowsAppContext — the context handed to async sync
 // goroutines must survive the end of the request that spawned it, but be
 // cancelled when the application shuts down (SetAppContext).

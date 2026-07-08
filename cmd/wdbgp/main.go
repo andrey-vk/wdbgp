@@ -200,8 +200,12 @@ func serve(s *settings.Settings, db *store.Store) error {
 	err := httpServer.Shutdown(shutdownCtx)
 	// Async 202 feed syncs outlive their requests, so Shutdown doesn't
 	// wait for them — but the deferred db.Close must not race their final
-	// writes. They were cancelled with ctx, so this returns promptly.
-	webServer.WaitBackground(shutdownCtx)
+	// writes. Fresh budget rather than shutdownCtx: slow in-flight requests
+	// can consume all of it inside Shutdown, and the syncs — cancelled with
+	// ctx — still need a moment to record their outcome (last_error etc).
+	bgCtx, bgCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer bgCancel()
+	webServer.WaitBackground(bgCtx)
 	return err
 }
 

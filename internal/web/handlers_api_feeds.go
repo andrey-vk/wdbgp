@@ -302,11 +302,8 @@ func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		defer s.syncer.UnlockFeed(mu)
 		if _, err := s.syncer.SyncOneLocked(ctx, f); err != nil {
-			if _, execErr := s.store.DB.ExecContext(ctx,
-				"UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1",
-				err.Error(), id, f.URL); execErr != nil {
-				logging.FromContext(ctx).Debug("failed to write last_error", "feed_id", id, "error", execErr)
-			}
+			// last_error is persisted by the syncer itself, before it
+			// publishes the attempt as finished.
 			logging.FromContext(ctx).Error("manual feed sync failed", "feed_id", id, "error", err)
 			return
 		}
@@ -330,6 +327,17 @@ func (s *Server) apiFeedsSyncAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.syncAllInFlight.CompareAndSwap(false, true) {
+		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Sync already in progress"})
+		return
+	}
+	// A feed already mid-sync (scheduled, or a manual single-feed run) would
+	// finish after the baselines below are snapshotted and bump its
+	// sync_attempted_at, so the SPA would consume that feed's completion
+	// watch on the wrong run's outcome while the actual sync-all pass over
+	// it goes unreported. Reject instead; the window between this check and
+	// the run acquiring feed locks is unavoidable but tiny.
+	if len(s.syncer.SyncingFeeds()) > 0 {
+		s.syncAllInFlight.Store(false)
 		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Sync already in progress"})
 		return
 	}
