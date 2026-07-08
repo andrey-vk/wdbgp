@@ -16,15 +16,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -33,14 +33,20 @@ jobs:
       - name: Install frontend dependencies
         run: cd webgui && npm ci
 
+      - name: Lint frontend
+        run: cd webgui && npm run lint
+
       - name: Build frontend
         run: cd webgui && npm run build
 
       - name: Run Vue tests
         run: cd webgui && npm run test
 
+      - name: Lint Go
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+
       - name: Run Go tests
-        run: go test -short ./...
+        run: go test -race -short ./...
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest

@@ -25,12 +25,13 @@ func (s *Server) apiBGPStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.bgpStatusJSON())
 }
 
-// apiBGPReload handles POST /api/admin/bgp/reload. Applies the 5
+// apiBGPReload handles POST /api/admin/bgp/reload. Applies the
 // restart-only BGP settings (LocalASN, RouterID, BGPPort,
-// LocalAddressV4/V6) by tearing down and rebuilding the speaker — the
-// same action whether the admin is applying a pending change or retrying
-// after a failed start.
+// LocalAddressV4/V6, ActiveDial, DynamicPeerMD5Match/QueueNum) by tearing
+// down and rebuilding the speaker — the same action whether the admin is
+// applying a pending change or retrying after a failed start.
 func (s *Server) apiBGPReload(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // full speaker rebuild + reconcile can exceed WriteTimeout
 	err := s.bgp.ReloadPeers(r.Context())
 	if err == nil {
 		s.restartPending.Store(false)

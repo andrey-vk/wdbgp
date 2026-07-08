@@ -2,10 +2,14 @@ package web
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/andrey-vk/wdbgp/internal/logging"
 )
 
 // =============================================================================
@@ -86,6 +90,103 @@ func TestClientIP(t *testing.T) {
 			}
 		})
 	}
+}
+
+// =============================================================================
+// TestLimitRequestBody — every JSON handler decodes r.Body without its own
+// cap, so the middleware must bound it: an unauthenticated client could
+// otherwise stream an arbitrarily large body into json.Decode.
+// =============================================================================
+
+func TestLimitRequestBody(t *testing.T) {
+	s := testSettings()
+	server := &Server{settings: s}
+
+	var readErr error
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, readErr = io.Copy(io.Discard, r.Body)
+	})
+	handler := server.limitRequestBody(inner)
+
+	adapterLimit := int64(s.JSMaxSourceBytes.Get())*6 + 64<<10
+	cases := []struct {
+		name  string
+		path  string
+		limit int64
+	}{
+		{"default routes get 1MiB", "/api/user/login", 1 << 20},
+		{"adapter routes scale with js_max_source", "/api/admin/adapters/7", adapterLimit},
+		{"user selections get the large cap", "/api/user/selections", selectionBodyLimit},
+		{"user count gets the large cap", "/api/user/count-prefixes", selectionBodyLimit},
+		{"admin selections get the large cap", "/api/admin/users/12/selections", selectionBodyLimit},
+		{"admin count gets the large cap", "/api/admin/users/12/count-selections", selectionBodyLimit},
+		{"settings carry global route filters", "/api/admin/settings", routeFilterBodyLimit},
+		{"user filters get the filter cap", "/api/user/filters", routeFilterBodyLimit},
+		{"user create carries per-user filters", "/api/admin/users", routeFilterBodyLimit},
+		{"user update carries per-user filters", "/api/admin/users/12", routeFilterBodyLimit},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A body exactly at the limit reads fully.
+			readErr = nil
+			req := httptest.NewRequest("POST", tc.path, io.LimitReader(neverEnding('a'), tc.limit))
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+			if readErr != nil {
+				t.Fatalf("body at limit: read error = %v, want nil", readErr)
+			}
+
+			// One byte over must fail with MaxBytesError.
+			readErr = nil
+			req = httptest.NewRequest("POST", tc.path, io.LimitReader(neverEnding('a'), tc.limit+1))
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+			var maxErr *http.MaxBytesError
+			if !errors.As(readErr, &maxErr) {
+				t.Fatalf("body over limit: read error = %v, want *http.MaxBytesError", readErr)
+			}
+		})
+	}
+}
+
+// The long-running handlers (feed sync, BGP reload, reconcile-calling
+// mutations) lift the server-wide Read/WriteTimeout via
+// http.ResponseController, which only reaches the real connection if every
+// wrapper in the middleware chain implements Unwrap —
+// logging.HTTPMiddleware's status-capturing writer didn't, silently turning
+// the deadline extension into a no-op. Exercise it over a real connection.
+func TestDeadlineControlsWorkThroughLoggingMiddleware(t *testing.T) {
+	type result struct{ readErr, writeErr error }
+	resCh := make(chan result, 1)
+	h := logging.HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rc := http.NewResponseController(w)
+		resCh <- result{
+			readErr:  rc.SetReadDeadline(time.Time{}),
+			writeErr: rc.SetWriteDeadline(time.Time{}),
+		}
+	}))
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close() //nolint:errcheck // test cleanup
+	res := <-resCh
+	if res.readErr != nil {
+		t.Fatalf("SetReadDeadline through logging middleware = %v, want nil", res.readErr)
+	}
+	if res.writeErr != nil {
+		t.Fatalf("SetWriteDeadline through logging middleware = %v, want nil", res.writeErr)
+	}
+}
+
+type neverEnding byte
+
+func (b neverEnding) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(b)
+	}
+	return len(p), nil
 }
 
 // =============================================================================

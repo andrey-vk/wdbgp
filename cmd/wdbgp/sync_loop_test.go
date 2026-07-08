@@ -85,13 +85,18 @@ func TestSyncLoopReloadsIntervalLive(t *testing.T) {
 		<-done
 	}()
 
+	// Count the exact quoted message: a bare substring match also counts
+	// SyncAll's own "starting feed synchronization" line, inflating the
+	// count by one per sync.
+	const syncStarted = `msg="starting feed sync"`
+
 	// Wait for the initial up-front sync (syncLoop calls syncNow() once
 	// before entering the ticker loop).
-	deadline := time.Now().Add(2 * time.Second)
-	for strings.Count(buf.String(), "starting feed sync") < 1 && time.Now().Before(deadline) {
+	deadline := time.Now().Add(5 * time.Second)
+	for strings.Count(buf.String(), syncStarted) < 1 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	countAfterInitial := strings.Count(buf.String(), "starting feed sync")
+	countAfterInitial := strings.Count(buf.String(), syncStarted)
 	if countAfterInitial < 1 {
 		t.Fatal("initial sync never ran")
 	}
@@ -99,15 +104,30 @@ func TestSyncLoopReloadsIntervalLive(t *testing.T) {
 	// Lower sync_interval to 1 second at runtime — without the fix, the
 	// ticker keeps firing on the original 1 hour interval and a second sync
 	// would never happen within this test's timeout.
-	if err := s.SyncInterval.Set(ctx, 1); err != nil {
-		t.Fatal(err)
+	//
+	// The Set is retried in rounds: syncLoop registers its OnChange
+	// subscription only after the initial syncNow() fully returns
+	// (Reconcile + snapshot writes happen after the log line this test
+	// waits on), so a single Set racing that window is silently lost and
+	// the ticker stays at 1 hour — the CI-under-load failure mode. Each
+	// round must then wait LONGER than the 1s interval before retrying:
+	// ticker.Reset restarts the period, so rapid-fire Sets would keep the
+	// ticker from ever completing a full second.
+	synced := false
+	for attempt := 0; attempt < 6 && !synced; attempt++ {
+		if err := s.SyncInterval.Set(ctx, 1); err != nil {
+			t.Fatal(err)
+		}
+		roundDeadline := time.Now().Add(1500 * time.Millisecond)
+		for time.Now().Before(roundDeadline) {
+			if strings.Count(buf.String(), syncStarted) > countAfterInitial {
+				synced = true
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
-
-	deadline = time.Now().Add(3 * time.Second)
-	for strings.Count(buf.String(), "starting feed sync") <= countAfterInitial && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if got := strings.Count(buf.String(), "starting feed sync"); got <= countAfterInitial {
+	if got := strings.Count(buf.String(), syncStarted); got <= countAfterInitial {
 		t.Fatalf("sync count = %d after lowering sync_interval to 1s, want > %d (a new sync should have run within ~1s, not wait out the original 1 hour interval)", got, countAfterInitial)
 	}
 }

@@ -44,6 +44,59 @@ func (s *Server) clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
+// limitRequestBody caps every request body with http.MaxBytesReader so a
+// handler's json.NewDecoder(r.Body) can never be fed an unbounded stream.
+// The cap is route-aware — see bodyLimit.
+func (s *Server) limitRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, s.bodyLimit(r.URL.Path))
+		next.ServeHTTP(w, r)
+	})
+}
+
+// selectionBodyLimit bounds the selection/count endpoints. Their payload is
+// not delta-based: the SPA serializes one JSON object per category and per
+// service in the entire catalog on every save/preview, so the size scales
+// with catalog size, not with what the user changed. 32 MiB comfortably
+// fits catalogs far beyond the ~100k-service range while still bounding the
+// stream; these endpoints all sit behind an authenticated session.
+const selectionBodyLimit = 32 << 20
+
+// routeFilterBodyLimit bounds the endpoints that carry route-filter CIDR
+// lists (global settings, per-user filters, admin user create/update). The
+// filter code accepts up to prefixfilter.DefaultMaxPrefixes (65,536)
+// entries, and a near-max IPv6 list runs ~3 MiB before JSON overhead —
+// past the 1 MiB default. 8 MiB leaves headroom without opening the
+// floodgates.
+const routeFilterBodyLimit = 8 << 20
+
+// bodyLimit returns the request-body cap for a path. Default 1 MiB; adapter
+// routes scale with JSMaxSourceBytes (the JavaScript source may expand up
+// to ~6× under JSON string escaping, plus envelope slack); selection/count
+// routes get the flat selectionBodyLimit. Deliberately NOT derived from one
+// global knob: sizing everything off JSMaxSourceBytes would let an admin
+// lowering the adapter limit silently break catalog selection saves.
+func (s *Server) bodyLimit(path string) int64 {
+	switch {
+	case strings.HasPrefix(path, "/api/admin/adapters"):
+		limit := int64(s.settings.JSMaxSourceBytes.Get())*6 + 64<<10
+		if limit < 1<<20 {
+			limit = 1 << 20
+		}
+		return limit
+	case path == "/api/user/selections" || path == "/api/user/count-prefixes":
+		return selectionBodyLimit
+	case strings.HasPrefix(path, "/api/admin/users/") &&
+		(strings.HasSuffix(path, "/selections") || strings.HasSuffix(path, "/count-selections")):
+		return selectionBodyLimit
+	case path == "/api/admin/settings" || path == "/api/user/filters" ||
+		strings.HasPrefix(path, "/api/admin/users"):
+		return routeFilterBodyLimit
+	default:
+		return 1 << 20
+	}
+}
+
 // csrfCookieName/csrfHeaderName implement the double-submit-cookie pattern:
 // the cookie is deliberately NOT HttpOnly so the SPA's HTTP client can read
 // it and echo it back as a header. A cross-site attacker can trigger a

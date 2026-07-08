@@ -227,8 +227,11 @@ func New(store Store) (*Settings, error) {
 		return nil, err
 	}
 
-	// SecurityHeaders.
-	s.SecurityHeaders, err = newSimple(false, "security_headers", "WDBGP_SECURITY_HEADERS", parseBool, nil, store, dbSettings)
+	// SecurityHeaders: on by default — the CSP is tailored to the bundled
+	// SPA and HSTS is deliberately not among the headers, so plain-HTTP
+	// deployments are unaffected. Opt out when a reverse proxy in front
+	// injects its own (conflicting) headers.
+	s.SecurityHeaders, err = newSimple(true, "security_headers", "WDBGP_SECURITY_HEADERS", parseBool, nil, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -361,13 +364,14 @@ func New(store Store) (*Settings, error) {
 	// DynamicPeerMD5Match: default off. Authenticates dynamic (0.0.0.0/::)
 	// BGP peers by bruteforce-matching a real TCP MD5 (RFC 2385) signature
 	// on the inbound SYN against configured dynamic-peer passwords, via an
-	// NFQUEUE consumer (see internal/bgp/nfqueue_md5.go). Requires the
-	// process's own container to have installed the matching NFQUEUE
-	// redirect rule — see the container entrypoint — and a Linux kernel
-	// with nfnetlink_queue support (RouterOS 7.21+ containers on x86/ARM64;
-	// not available on ARM32). Off by default so existing dynamic-peer
-	// deployments (ASN-only identification) are unaffected until an admin
-	// explicitly opts in.
+	// NFQUEUE consumer (see internal/bgp/nfqueue_md5.go). The BGP speaker
+	// installs the matching NFQUEUE redirect rule itself on start and
+	// removes it on stop; enabling this requires a Linux kernel with
+	// nfnetlink_queue support (RouterOS 7.21+ containers on x86/ARM64;
+	// not available on ARM32). Fail-closed: if the rule or consumer can't
+	// run, the speaker refuses to start. Off by default so existing
+	// dynamic-peer deployments (ASN-only identification) are unaffected
+	// until an admin explicitly opts in.
 	s.DynamicPeerMD5Match, err = newSimple(false, "dynamic_peer_md5_match", "WDBGP_DYNAMIC_PEER_MD5_MATCH", parseBool, nil, store, dbSettings)
 	if err != nil {
 		return nil, err

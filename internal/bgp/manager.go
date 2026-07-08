@@ -296,13 +296,16 @@ func (m *Manager) UpdatePeer(ctx context.Context, user store.User) error {
 	}
 	// Clear old peer routes if the peer key changed (new IP/ASN), or if
 	// SetPeers will recreate the peer session for another reason — a BGP
-	// password change, the only other condition speaker.SetPeers uses to
-	// decide whether to restart an existing peer. Otherwise the freshly
+	// password change, or a change of the effective dial port (the per-user
+	// active_dial toggle, folded through the global ActiveDial setting; the
+	// same peerPort call buildPeerConfigs uses). Otherwise the freshly
 	// recreated peer keeps zero announced routes: reconcileLocked compares
 	// against this stale cache, finds no diff, and skips re-announcing
 	// until some unrelated route change happens to produce a real one.
 	peerKey := fmt.Sprintf("%s:%d", user.PeerIP, user.PeerASN)
-	if oldPeerKey != "" && (oldPeerKey != peerKey || oldUser.BGPPassword != user.BGPPassword) {
+	oldPort := peerPort(oldUser.PeerIP, m.activeDial && oldUser.ActiveDial)
+	newPort := peerPort(user.PeerIP, m.activeDial && user.ActiveDial)
+	if oldPeerKey != "" && (oldPeerKey != peerKey || oldUser.BGPPassword != user.BGPPassword || oldPort != newPort) {
 		delete(m.peerRoutes, oldPeerKey)
 	}
 	cfgs, err := m.buildPeerConfigs()

@@ -64,9 +64,10 @@ BGP section — either way, changing them requires a restart to take effect):
 | `WDBGP_DYNAMIC_PEER_MD5_QUEUE_NUM` | `0` | The NFQUEUE number this process binds to. Only matters if something else on the same host also uses NFQUEUE and needs a different number to avoid colliding. |
 
 Everything else — creating the nftables table/chain/rule that redirects BGP
-SYNs into that queue — happens automatically at startup
-(`EnsureDynamicMD5NFQueueRule`, called once before the BGP speaker starts).
-There is no manual rule to write.
+SYNs into that queue — happens automatically: the BGP speaker installs the
+rule together with the NFQUEUE consumer when it starts, and removes both
+when it stops (including on "Apply BGP" from the admin UI). There is no
+manual rule to write.
 
 ## Running as a systemd service (bare metal or VM)
 
@@ -107,21 +108,35 @@ docker run --rm \
   wh1ted/wdbgp:alpha
 ```
 
-Without `--cap-add=NET_ADMIN`, `EnsureDynamicMD5NFQueueRule` and the NFQUEUE
-consumer both fail at startup — logged, but the process continues serving
-BGP with dynamic peers falling back to ASN-only identification, same as if
-the feature were disabled outright.
+Without `--cap-add=NET_ADMIN`, the nftables rule and the NFQUEUE consumer
+can't start. This is fail-closed: since MD5 verification was requested but
+can't be enforced, the BGP speaker refuses to start at all (the error shows
+up in the log and in the admin UI's BGP status banner) rather than silently
+accepting unauthenticated dynamic peers. The web UI stays reachable so the
+setting can be fixed.
 
 ## Coexisting with your own firewall rules
 
 `wdbgp` manages a single, self-contained nftables table named
-`wdbgp_dynamic_md5` (`inet` family, so it covers both IPv4 and IPv6). It's
-dropped and recreated fresh on every process start — safe to run alongside
-whatever else you already manage with `iptables`, `nft`, `firewalld`, or
-`ufw`, as long as nothing else on the host also tries to own a table with
-that exact name. Nothing about this rule alters routing, NAT, or filtering
-for any other traffic — it only redirects TCP SYNs on the configured BGP
-port into the NFQUEUE.
+`wdbgp_dynamic_md5_p<bgp-port>_q<queue-num>` (e.g.
+`wdbgp_dynamic_md5_p179_q0`; `inet` family, so it covers both IPv4 and
+IPv6). It's dropped and recreated fresh on every speaker start — safe to
+run alongside whatever else you already manage with `iptables`, `nft`,
+`firewalld`, or `ufw`, as long as nothing else on the host also tries to
+own a table with that exact name. Nothing about this rule alters routing,
+NAT, or filtering for any other traffic — it only redirects TCP SYNs on
+the configured BGP port into the NFQUEUE.
+
+The name is scoped by port and queue number so multiple `wdbgp` instances
+sharing one network namespace (e.g. host networking) on different BGP
+ports manage disjoint tables. Cleanup sweeps every queue variant of its
+own port, so changing the queue number between runs leaves nothing
+behind. Two caveats follow from the scoping: run at most one MD5-enabled
+instance per BGP port per network namespace, and if you change the *BGP
+port* between runs, the table under the old port's name may be left
+behind (cleanup never touches other ports' tables, by design) — remove it
+manually with `nft list tables | grep wdbgp_dynamic_md5` and
+`nft delete table inet <name>`.
 
 ## Troubleshooting
 
@@ -132,7 +147,7 @@ comes back, and nothing shows up in the logs at all:**
   ```sh
   nft list ruleset
   ```
-  Expect a `wdbgp_dynamic_md5` table with a rule like
+  Expect a `wdbgp_dynamic_md5_p<port>_q<num>` table with a rule like
   `tcp dport <port> tcp flags & (syn|ack) == syn queue to <num>`.
 - Check whether a consumer is actually bound to that queue number (requires
   root or `CAP_NET_ADMIN` to read):

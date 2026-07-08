@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 
       - name: Log in to Docker Hub
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
@@ -39,10 +39,17 @@ jobs:
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/wdbgp
+          # The last entry pushes only a throwaway "test" tag on manual
+          # dispatch — for testing the release pipeline (e.g. attestation
+          # manifests vs RouterOS pulls) without touching the tags users
+          # pull. Kept outside the block scalar: lines in there are action
+          # input, not YAML comments (the pinned action filters #-lines,
+          # but don't rely on it).
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=alpha,enable=${{ github.event_name == 'release' && github.event.release.prerelease }}
             type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
+            type=raw,value=test,enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf
@@ -50,8 +57,8 @@ jobs:
           context: .
           platforms: linux/amd64,linux/386,linux/arm64,linux/arm/v7,linux/arm/v5
           push: true
-          provenance: false
-          sbom: false
+          provenance: true
+          sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 

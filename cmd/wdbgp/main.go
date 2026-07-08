@@ -118,18 +118,21 @@ func serve(s *settings.Settings, db *store.Store) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Install the NFQUEUE redirect rule once per process, before the BGP
-	// speaker starts consuming that queue. Not tied to bgpManager.Start —
-	// that can re-run on every settings reload, and re-adding the same
-	// nftables rule on every reload would be wasteful (EnsureDynamicMD5NFQueueRule
-	// itself is idempotent, but there's no reason to pay the netlink round
-	// trip on every reload when the rule never changes after boot).
-	if s.DynamicPeerMD5Match.Get() {
-		if err := bgp.EnsureDynamicMD5NFQueueRule(s.BGPPort.Get(), s.DynamicPeerMD5QueueNum.Get()); err != nil {
-			// Not fatal: dynamic peers fall back to ASN-only identification,
-			// same as when the feature is off, and the failure is visible
-			// in logs immediately rather than only on first connection.
-			logging.Error("failed to install dynamic-peer MD5 NFQUEUE rule, falling back to ASN-only dynamic peer identification", "error", err)
+	// The NFQUEUE redirect rule for dynamic-peer MD5 is managed by the BGP
+	// speaker, paired with the queue consumer's lifetime (see Speaker.Start).
+	// The one case the speaker never sees: the feature was enabled in a
+	// previous run and is disabled now. In a host network namespace that
+	// run's rule survives process death, and with no consumer attached it
+	// drops every inbound BGP SYN — so clear any leftover here.
+	// A cleanup failure here is NOT fatal: every unprivileged deployment
+	// (no CAP_NET_ADMIN, the common case) fails this netlink call even
+	// though there is nothing to clean — such a namespace can only hold a
+	// stale rule if a *previous, privileged* run installed one. The warning
+	// carries the manual fix for exactly that scenario: privileges were
+	// dropped while the old rule is still black-holing BGP SYNs.
+	if !s.DynamicPeerMD5Match.Get() {
+		if err := bgp.RemoveDynamicMD5NFQueueRule(s.BGPPort.Get()); err != nil {
+			logging.Warn("cannot verify removal of leftover dynamic-peer MD5 NFQUEUE rule; if dynamic-peer MD5 was previously enabled on this host and BGP peers cannot connect, remove the leftover table manually (nft list tables | grep wdbgp_dynamic_md5, then nft delete table inet <name>) or re-grant CAP_NET_ADMIN", "error", err)
 		}
 	}
 
@@ -158,6 +161,8 @@ func serve(s *settings.Settings, db *store.Store) error {
 		Addr:              fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
 		Handler:           web.New(s, db, syncer, bgpManager).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 	serverErrors := make(chan error, 1)
@@ -235,6 +240,8 @@ func serveDegraded(s *settings.Settings, db *store.Store) error {
 		Addr:              fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 	serverErrors := make(chan error, 1)

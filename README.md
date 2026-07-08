@@ -166,6 +166,14 @@ Open `/admin` to add users and edit their selections. `/` identifies a user by
 source IP. Enable `WDBGP_TRUST_PROXY_HEADERS=true` only behind a trusted reverse
 proxy.
 
+The container runs as root: the process must bind the BGP port (179, below
+1024) inside the container, and the optional
+[dynamic-peer MD5 feature](docs/dynamic-peer-md5.md) additionally needs
+`CAP_NET_ADMIN` for its nftables/NFQUEUE setup. To run as a non-root user
+instead, move the BGP port above 1024 (`WDBGP_BGP_PORT`) or grant the binary
+`CAP_NET_BIND_SERVICE`, and keep the MD5 feature off (or grant
+`CAP_NET_ADMIN` explicitly — see the systemd example in the MD5 doc).
+
 The web interface is available in English and Russian. It follows the browser's
 `Accept-Language` preference and stores an explicit `EN`/`RU` selection in a
 cookie. `WDBGP_DEFAULT_LANGUAGE` controls the fallback language and defaults to
@@ -193,7 +201,7 @@ password check. Force `true` only when the admin UI is always served over HTTPS.
 | `WDBGP_SYNC_INTERVAL` | `3600` seconds |
 | `WDBGP_ADMIN_COOKIE_SECURE` | `auto` |
 | `WDBGP_DEFAULT_LANGUAGE` | `en` |
-| `WDBGP_SECURITY_HEADERS` | `false` |
+| `WDBGP_SECURITY_HEADERS` | `true` |
 | `WDBGP_RATE_LIMIT_LOGIN` | `5` |
 | `WDBGP_RATE_LIMIT_ADMIN` | `30` |
 | `WDBGP_SESSION_MAX_AGE` | `28800` |
@@ -264,7 +272,7 @@ All values are validated on startup with helpful error messages. If not specifie
 | `WDBGP_ROUTER_ID` | Valid IPv4 address |
 | `WDBGP_BGP_LOCAL_ADDRESS` | Valid IPv4 address |
 | `WDBGP_BGP_LOCAL_ADDRESS_V6` | Valid IPv6 address (or empty to disable IPv6 announcements) |
-| `WDBGP_SECURITY_HEADERS` | Boolean; enables HTTP security headers (CSP, HSTS, X-Frame-Options, etc.) |
+| `WDBGP_SECURITY_HEADERS` | Boolean; enables HTTP security headers (CSP, X-Frame-Options, etc. — no HSTS, so plain-HTTP setups are unaffected). On by default; turn off if a reverse proxy injects its own |
 | `WDBGP_RATE_LIMIT_LOGIN` | Integer 1–1000; login requests per minute (default 5) |
 | `WDBGP_RATE_LIMIT_ADMIN` | Integer 1–1000; admin API requests per minute (default 30) |
 | `WDBGP_SESSION_MAX_AGE` | Integer 60–31536000; session cookie max-age in seconds (default 28800 = 8 hours) |

@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1-alpha] — 2026-07-08
+
+### Changed
+- **Dynamic-peer MD5 is now fail-closed and its NFQUEUE rule lifecycle is managed by the BGP speaker.** Previously the nftables redirect rule was installed once at process startup, before the queue consumer existed, and a consumer startup failure logged "falling back to ASN-only" while leaving the rule in place — with no consumer attached, that rule silently dropped **every** inbound BGP SYN, fixed peers included, and in a host network namespace it even survived process restarts after the feature was disabled. Now `Speaker.Start` installs the rule together with the consumer and refuses to start BGP if either can't run (the admin asked for MD5 verification; running without it would mean silently accepting unauthenticated dynamic peers), `Speaker.Stop` removes them together, and startup clears any leftover rule from a previous run when the feature is off. Enabling/disabling the feature or changing the queue number from `/admin/settings` now correctly raises the "BGP settings changed — apply now" banner, and "Apply BGP" actually applies it. The nftables table name is scoped per instance (`wdbgp_dynamic_md5_p<port>_q<queue>`), so multiple wdbgp instances sharing a network namespace on different BGP ports no longer delete each other's live redirect rule; the old fixed-name table is cleaned up on upgrade.
+- **`security_headers` now defaults to on.** The CSP is tailored to the bundled SPA and HSTS is not among the headers sent, so plain-HTTP deployments are unaffected; disable it if a reverse proxy injects its own conflicting headers.
+- Docker release images are published with build provenance and SBOM attestations; remaining GitHub Actions are pinned by commit SHA; CI now enforces `golangci-lint`, frontend ESLint (the `lint` npm script no longer auto-fixes — that moved to `lint:fix`), and runs Go tests under the race detector.
+
+### Fixed
+- **Changing a peer's `active_dial` (or its resolved local bind address) now takes effect immediately**: `Speaker.SetPeers` only restarted an existing peer when its ASN or password changed, so a per-user active-dial toggle silently kept the old passive/active behavior until an unrelated full speaker reload.
+- **Feed-adapter SSRF filter now rejects all IANA non-global ranges**, not just the stdlib's private/loopback/link-local set: CGNAT (`100.64.0.0/10`), benchmarking (`198.18.0.0/15`), documentation (TEST-NET-1/2/3, `2001:db8::/32`, `3fff::/20`), reserved (`240.0.0.0/4`), `0.0.0.0/8`, protocol assignments (`192.0.0.0/24`), 6to4 (`192.88.99.0/24`, `2002::/16`), TEREDO/ORCHID/benchmarking (`2001::/23`), discard-only (`100::/64`), SRv6 SIDs (`5f00::/16`) and local-use NAT64 (`64:ff9b:1::/48`). IPv4-mapped IPv6 addresses are unmapped before checking, and addresses under the well-known NAT64 prefix (`64:ff9b::/96`) are judged by their embedded IPv4 address — legitimate DNS64 synthesis keeps working, but `64:ff9b::<internal-v4>` no longer reaches private IPv4 space through a NAT64 gateway.
+- **HTTP request bodies are now bounded** (`http.MaxBytesReader` middleware sized to the adapter-source limit, ≥1 MiB) and the server sets `ReadTimeout`/`WriteTimeout` in addition to the existing header/idle timeouts, so slow or oversized request bodies can't pin handlers and memory indefinitely.
+
 ## [0.17.0-alpha] — 2026-07-07
 
 ### Added

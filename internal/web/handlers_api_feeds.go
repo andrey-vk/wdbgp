@@ -143,6 +143,7 @@ func (s *Server) apiFeedsCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed ID"})
@@ -212,6 +213,7 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiFeedsDelete(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed ID"})
@@ -234,6 +236,7 @@ func (s *Server) apiFeedsDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r)
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed ID"})
@@ -271,6 +274,7 @@ func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiFeedsSyncAll(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r)
 	if s.syncer == nil {
 		writeJSON(w, http.StatusServiceUnavailable, apiResponse{OK: false, Error: "Syncer not available"})
 		return

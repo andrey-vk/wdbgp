@@ -344,6 +344,7 @@ func (s *Server) apiUserLogout(w http.ResponseWriter, r *http.Request) {
 // Saves the user's category and service selections, then reconciles BGP.
 // Only allowed if the user is not selection_locked.
 func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
+	extendRequestDeadlines(w, r) // large selection upload + reconcile can outlive Read/WriteTimeout
 	ctx := r.Context()
 	user, ok := requireUser(w, r)
 	if !ok {
@@ -403,6 +404,7 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 // Saves the user's route filters, then reconciles BGP.
 // Only allowed if filter_editable is enabled for the user.
 func (s *Server) apiUserSaveFilters(w http.ResponseWriter, r *http.Request) {
+	extendRequestDeadlines(w, r) // large filter upload + reconcile can outlive Read/WriteTimeout
 	ctx := r.Context()
 	user, ok := requireUser(w, r)
 	if !ok {
@@ -439,6 +441,7 @@ func (s *Server) apiUserSaveFilters(w http.ResponseWriter, r *http.Request) {
 // Returns the number of v4/v6 prefixes that would be announced for a given selection,
 // along with deltas compared to the user's currently saved selections.
 func (s *Server) apiUserCountPrefixes(w http.ResponseWriter, r *http.Request) {
+	extendRequestDeadlines(w, r) // large request body can outlive ReadTimeout
 	ctx := r.Context()
 	user, ok := requireUser(w, r)
 	if !ok {
@@ -517,6 +520,7 @@ func (s *Server) apiUserCountPrefixes(w http.ResponseWriter, r *http.Request) {
 // apiUserSwitchMode handles PUT /api/user/mode.
 // Changes the user's catalog mode. Only allowed if catalog_editable.
 func (s *Server) apiUserSwitchMode(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	user, ok := requireUser(w, r)
 	if !ok {
 		return

@@ -30,8 +30,8 @@ const (
 // (see md5.go). No match, or no MD5 option at all, drops the SYN outright.
 //
 // This requires an NFQUEUE redirect rule for the BGP port in this process's
-// own network namespace — see the container entrypoint, which installs it
-// when this feature is enabled.
+// own network namespace — Speaker.Start installs it (see nftrule.go) right
+// before starting this consumer, and Speaker.Stop removes it again.
 type dynamicMD5Queue struct {
 	nf       *nfqueue.Nfqueue
 	listener net.Listener
