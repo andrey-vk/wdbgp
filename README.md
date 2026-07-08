@@ -194,6 +194,7 @@ password check. Force `true` only when the admin UI is always served over HTTPS.
 | `WDBGP_DB` | `/data/wdbgp.sqlite3` |
 | `WDBGP_HOST` / `WDBGP_PORT` | `0.0.0.0` / `8080` |
 | `WDBGP_BGP_PORT` | `179` |
+| `WDBGP_BGP_HOLD_TIME` | `90` seconds |
 | `WDBGP_LOCAL_ASN` | `64512` |
 | `WDBGP_ROUTER_ID` | `192.0.2.1` |
 | `WDBGP_BGP_LOCAL_ADDRESS` | `192.0.2.2` |
@@ -267,6 +268,7 @@ All values are validated on startup with helpful error messages. If not specifie
 | Variable | Constraints |
 | --- | --- |
 | `WDBGP_PORT` / `WDBGP_BGP_PORT` | Integer 1–65535 |
+| `WDBGP_BGP_HOLD_TIME` | Integer 3–65535 (seconds); proposed in OPEN, sessions negotiate min(local, remote) |
 | `WDBGP_LOCAL_ASN` | Integer 1–4294967295 |
 | `WDBGP_SYNC_INTERVAL` | Integer ≥1 (seconds) |
 | `WDBGP_ROUTER_ID` | Valid IPv4 address |

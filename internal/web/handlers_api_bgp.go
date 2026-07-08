@@ -26,7 +26,7 @@ func (s *Server) apiBGPStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiBGPReload handles POST /api/admin/bgp/reload. Applies the
-// restart-only BGP settings (LocalASN, RouterID, BGPPort,
+// restart-only BGP settings (LocalASN, RouterID, BGPPort, BGPHoldTime,
 // LocalAddressV4/V6, ActiveDial, DynamicPeerMD5Match/QueueNum) by tearing
 // down and rebuilding the speaker — the same action whether the admin is
 // applying a pending change or retrying after a failed start.

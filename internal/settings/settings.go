@@ -19,6 +19,7 @@ type Settings struct {
 	AdminPassword                 Setting[string, string]
 	AllowDynamicPeers             Setting[bool, bool]
 	AutoRestoreEnabled            Setting[bool, bool]
+	BGPHoldTime                   Setting[uint16, uint16]
 	BGPPort                       Setting[uint16, uint16]
 	BackupDir                     Setting[string, string]
 	BackupEnabled                 Setting[bool, bool]
@@ -67,6 +68,7 @@ type SettingsJSON struct {
 	AdminPassword                 SettingJSON[string] `json:"admin_password"`
 	AllowDynamicPeers             SettingJSON[bool]   `json:"allow_dynamic_peers"`
 	AutoRestoreEnabled            SettingJSON[bool]   `json:"auto_restore_enabled"`
+	BGPHoldTime                   SettingJSON[uint16] `json:"bgp_hold_time"`
 	BGPPort                       SettingJSON[uint16] `json:"bgp_port"`
 	BackupDir                     SettingJSON[string] `json:"backup_dir"`
 	BackupEnabled                 SettingJSON[bool]   `json:"backup_enabled"`
@@ -145,6 +147,15 @@ func New(store Store) (*Settings, error) {
 
 	// Port: env-only, no dbKey — same reasoning as Host above.
 	s.Port, err = newSimple[uint16](8080, "", "WDBGP_PORT", parseUint16, validatePort, store, dbSettings)
+	if err != nil {
+		return nil, err
+	}
+
+	// BGPHoldTime: the hold time this speaker proposes in its OPEN (RFC
+	// 4271); each session negotiates min(local, remote). Restart-only —
+	// the Manager snapshots it into SpeakerConfig, and it only matters at
+	// session establishment anyway. 90s is the RFC-recommended default.
+	s.BGPHoldTime, err = newSimple[uint16](90, "bgp_hold_time", "WDBGP_BGP_HOLD_TIME", parseUint16, validateHoldTime, store, dbSettings)
 	if err != nil {
 		return nil, err
 	}
@@ -450,6 +461,7 @@ func (s *Settings) JSON(ctx context.Context) SettingsJSON {
 		AdminPassword:                 s.AdminPassword.JSON(dbSettings),
 		AllowDynamicPeers:             s.AllowDynamicPeers.JSON(dbSettings),
 		AutoRestoreEnabled:            s.AutoRestoreEnabled.JSON(dbSettings),
+		BGPHoldTime:                   s.BGPHoldTime.JSON(dbSettings),
 		BGPPort:                       s.BGPPort.JSON(dbSettings),
 		BackupDir:                     s.BackupDir.JSON(dbSettings),
 		BackupEnabled:                 s.BackupEnabled.JSON(dbSettings),
@@ -582,6 +594,17 @@ func validateLogFormat(v string) error {
 func validatePort(v uint16) error {
 	if v == 0 {
 		return fmt.Errorf("port must be 1-65535, got %d", v)
+	}
+	return nil
+}
+
+// validateHoldTime checks the RFC 4271 constraint: a proposed hold time is
+// either 0 or at least 3 seconds. 0 ("no keepalives, infinite hold") is
+// deliberately rejected too — on the flaky links this app targets it turns
+// every silent peer death into a permanently wedged session.
+func validateHoldTime(v uint16) error {
+	if v < 3 {
+		return fmt.Errorf("hold time must be 3-65535 seconds, got %d", v)
 	}
 	return nil
 }

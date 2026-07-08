@@ -163,6 +163,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	st.LocalASN.OnChange(func(uint32) { markBGPRestartPending() })
 	st.RouterID.OnChange(func(string) { markBGPRestartPending() })
 	st.BGPPort.OnChange(func(uint16) { markBGPRestartPending() })
+	st.BGPHoldTime.OnChange(func(uint16) { markBGPRestartPending() })
 	st.LocalAddressV4.OnChange(func(string) { markBGPRestartPending() })
 	st.LocalAddressV6.OnChange(func(string) { markBGPRestartPending() })
 	// ActiveDial changes which port buildPeerConfigs assigns existing peers
