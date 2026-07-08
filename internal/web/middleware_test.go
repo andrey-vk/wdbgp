@@ -120,6 +120,10 @@ func TestLimitRequestBody(t *testing.T) {
 		{"user count gets the large cap", "/api/user/count-prefixes", selectionBodyLimit},
 		{"admin selections get the large cap", "/api/admin/users/12/selections", selectionBodyLimit},
 		{"admin count gets the large cap", "/api/admin/users/12/count-selections", selectionBodyLimit},
+		{"settings carry global route filters", "/api/admin/settings", routeFilterBodyLimit},
+		{"user filters get the filter cap", "/api/user/filters", routeFilterBodyLimit},
+		{"user create carries per-user filters", "/api/admin/users", routeFilterBodyLimit},
+		{"user update carries per-user filters", "/api/admin/users/12", routeFilterBodyLimit},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

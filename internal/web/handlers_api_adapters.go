@@ -77,6 +77,7 @@ func (s *Server) apiAdaptersGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiAdaptersCreate(w http.ResponseWriter, r *http.Request) {
+	extendRequestDeadlines(w, r) // large request body can outlive ReadTimeout
 	var body struct {
 		Name   string `json:"name"`
 		Source string `json:"source"`
@@ -106,6 +107,7 @@ func (s *Server) apiAdaptersCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiAdaptersUpdate(w http.ResponseWriter, r *http.Request) {
+	extendRequestDeadlines(w, r) // large request body can outlive ReadTimeout
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid adapter ID"})

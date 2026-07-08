@@ -62,6 +62,14 @@ func (s *Server) limitRequestBody(next http.Handler) http.Handler {
 // stream; these endpoints all sit behind an authenticated session.
 const selectionBodyLimit = 32 << 20
 
+// routeFilterBodyLimit bounds the endpoints that carry route-filter CIDR
+// lists (global settings, per-user filters, admin user create/update). The
+// filter code accepts up to prefixfilter.DefaultMaxPrefixes (65,536)
+// entries, and a near-max IPv6 list runs ~3 MiB before JSON overhead —
+// past the 1 MiB default. 8 MiB leaves headroom without opening the
+// floodgates.
+const routeFilterBodyLimit = 8 << 20
+
 // bodyLimit returns the request-body cap for a path. Default 1 MiB; adapter
 // routes scale with JSMaxSourceBytes (the JavaScript source may expand up
 // to ~6× under JSON string escaping, plus envelope slack); selection/count
@@ -81,6 +89,9 @@ func (s *Server) bodyLimit(path string) int64 {
 	case strings.HasPrefix(path, "/api/admin/users/") &&
 		(strings.HasSuffix(path, "/selections") || strings.HasSuffix(path, "/count-selections")):
 		return selectionBodyLimit
+	case path == "/api/admin/settings" || path == "/api/user/filters" ||
+		strings.HasPrefix(path, "/api/admin/users"):
+		return routeFilterBodyLimit
 	default:
 		return 1 << 20
 	}

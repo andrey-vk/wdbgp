@@ -39,13 +39,16 @@ jobs:
         uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/wdbgp
+          # The last entry pushes only a throwaway "test" tag on manual
+          # dispatch — for testing the release pipeline (e.g. attestation
+          # manifests vs RouterOS pulls) without touching the tags users
+          # pull. Kept outside the block scalar: lines in there are action
+          # input, not YAML comments (the pinned action filters #-lines,
+          # but don't rely on it).
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=alpha,enable=${{ github.event_name == 'release' && github.event.release.prerelease }}
             type=raw,value=latest,enable=${{ github.event_name == 'release' && !github.event.release.prerelease }}
-            # Manual dispatch pushes only a throwaway tag — for testing the
-            # release pipeline (e.g. attestation manifests vs RouterOS pulls)
-            # without touching the tags users pull.
             type=raw,value=test,enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Build and push Docker image
