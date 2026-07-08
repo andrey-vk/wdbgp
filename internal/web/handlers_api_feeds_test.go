@@ -464,8 +464,24 @@ func TestFeedsSyncOneAsync(t *testing.T) {
 		return w
 	}
 
-	if w := trigger(); w.Code != http.StatusAccepted {
+	accepted := func(w *httptest.ResponseRecorder) string {
+		t.Helper()
+		var resp struct {
+			OK              bool   `json:"ok"`
+			SyncAttemptedAt string `json:"sync_attempted_at"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil || !resp.OK {
+			t.Fatalf("202 body = %s (decode err %v), want ok=true", w.Body.String(), err)
+		}
+		return resp.SyncAttemptedAt
+	}
+
+	w := trigger()
+	if w.Code != http.StatusAccepted {
 		t.Fatalf("first trigger: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+	if baseline := accepted(w); baseline != "" {
+		t.Fatalf("first trigger baseline = %q, want empty (no prior attempt)", baseline)
 	}
 
 	// The goroutine is mid-sync once the transport has been reached.
@@ -502,6 +518,9 @@ func TestFeedsSyncOneAsync(t *testing.T) {
 	if during == nil || !during.Syncing || during.SyncStartedAt == "" {
 		t.Fatalf("feed during sync = %+v, want syncing=true with sync_started_at", during)
 	}
+	if during.SyncAttemptedAt != "" {
+		t.Fatalf("sync_attempted_at = %q during first sync, want empty until an attempt finishes", during.SyncAttemptedAt)
+	}
 
 	close(bt.release)
 
@@ -515,9 +534,66 @@ func TestFeedsSyncOneAsync(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	firstAttempt := ""
 	for _, f := range listFeeds() {
-		if f.ID == feedID && (f.Syncing || f.SyncStartedAt != "") {
+		if f.ID != feedID {
+			continue
+		}
+		if f.Syncing || f.SyncStartedAt != "" {
 			t.Fatalf("feed after sync = %+v, want syncing=false", f)
 		}
+		firstAttempt = f.SyncAttemptedAt
+	}
+	if firstAttempt == "" {
+		t.Fatal("sync_attempted_at empty after a finished attempt")
+	}
+
+	// A second run must hand out the first attempt as its baseline and
+	// bump sync_attempted_at past it when done — that moving value is the
+	// SPA's completion signal (last_error text alone can't be: a retry
+	// failing identically leaves it unchanged).
+	w = trigger()
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("second run trigger: status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if baseline := accepted(w); baseline != firstAttempt {
+		t.Fatalf("second run baseline = %q, want first attempt %q", baseline, firstAttempt)
+	}
+	// The transport's release channel is already closed, so this run
+	// finishes on its own; wait via the tracked background goroutines.
+	srv.WaitBackground(context.Background())
+	for _, f := range listFeeds() {
+		if f.ID == feedID && (f.SyncAttemptedAt == "" || f.SyncAttemptedAt == firstAttempt) {
+			t.Fatalf("sync_attempted_at = %q after second attempt, want a value past %q", f.SyncAttemptedAt, firstAttempt)
+		}
+	}
+}
+
+// TestBackgroundCtxFollowsAppContext — the context handed to async sync
+// goroutines must survive the end of the request that spawned it, but be
+// cancelled when the application shuts down (SetAppContext).
+func TestBackgroundCtxFollowsAppContext(t *testing.T) {
+	srv := &Server{}
+	appCtx, appCancel := context.WithCancel(context.Background())
+	defer appCancel()
+	srv.SetAppContext(appCtx)
+
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("GET", "/", nil).WithContext(reqCtx)
+	ctx, cancel := srv.backgroundCtx(req)
+	defer cancel()
+
+	reqCancel() // request over — background work must keep running
+	select {
+	case <-ctx.Done():
+		t.Fatal("background ctx cancelled by request cancellation")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	appCancel() // shutdown — background work must stop
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("background ctx not cancelled by app shutdown")
 	}
 }

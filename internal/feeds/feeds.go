@@ -63,7 +63,13 @@ type Syncer struct {
 
 	// syncing tracks in-flight syncs (feed ID → start time) so the API can
 	// report live per-feed status; entries exist only while syncOne runs.
+	// attempted records when the last attempt for a feed *finished*
+	// (success or failure) — the SPA detects sync completion by watching
+	// this value change, which stays correct even when a failed retry
+	// rewrites last_error with the identical text. In-memory only: resets
+	// on restart, grows like feedLocks (negligible, see note above).
 	syncing   map[int64]time.Time
+	attempted map[int64]time.Time
 	syncingMu sync.Mutex
 }
 
@@ -90,6 +96,7 @@ func NewSyncer(s *store.Store, st *settings.Settings) *Syncer {
 		},
 		feedLocks: make(map[int64]*sync.Mutex),
 		syncing:   make(map[int64]time.Time),
+		attempted: make(map[int64]time.Time),
 	}
 }
 
@@ -247,6 +254,27 @@ func (s *Syncer) SyncingFeeds() map[int64]time.Time {
 	return snapshot
 }
 
+// LastAttempt reports when the last sync attempt for the feed finished
+// (success or failure) since process start.
+func (s *Syncer) LastAttempt(feedID int64) (time.Time, bool) {
+	s.syncingMu.Lock()
+	defer s.syncingMu.Unlock()
+	finished, ok := s.attempted[feedID]
+	return finished, ok
+}
+
+// AttemptedFeeds returns a snapshot of when the last sync attempt per feed
+// finished (success or failure) since process start.
+func (s *Syncer) AttemptedFeeds() map[int64]time.Time {
+	s.syncingMu.Lock()
+	defer s.syncingMu.Unlock()
+	snapshot := make(map[int64]time.Time, len(s.attempted))
+	for id, finished := range s.attempted {
+		snapshot[id] = finished
+	}
+	return snapshot
+}
+
 func (s *Syncer) markSyncing(feedID int64) {
 	s.syncingMu.Lock()
 	s.syncing[feedID] = time.Now()
@@ -256,6 +284,7 @@ func (s *Syncer) markSyncing(feedID int64) {
 func (s *Syncer) unmarkSyncing(feedID int64) {
 	s.syncingMu.Lock()
 	delete(s.syncing, feedID)
+	s.attempted[feedID] = time.Now()
 	s.syncingMu.Unlock()
 }
 

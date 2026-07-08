@@ -1,7 +1,6 @@
 package web
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -27,8 +26,13 @@ type feedJSON struct {
 	LastError     string `json:"last_error,omitempty"`
 	// Live sync status — filled in list responses from the Syncer's
 	// in-flight tracking, so the SPA can poll while a sync runs.
-	Syncing       bool   `json:"syncing"`
-	SyncStartedAt string `json:"sync_started_at,omitempty"`
+	// sync_attempted_at is when the last attempt finished (success or
+	// failure) since process start; the SPA detects completion by watching
+	// it change, so it uses RFC3339Nano — with 1s resolution two quick
+	// failed retries could land on the same timestamp and be missed.
+	Syncing         bool   `json:"syncing"`
+	SyncStartedAt   string `json:"sync_started_at,omitempty"`
+	SyncAttemptedAt string `json:"sync_attempted_at,omitempty"`
 }
 
 func feedToJSON(f store.Feed) feedJSON {
@@ -53,9 +57,10 @@ func (s *Server) apiFeedsList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load feeds"})
 		return
 	}
-	var inFlight map[int64]time.Time
+	var inFlight, attempted map[int64]time.Time
 	if s.syncer != nil {
 		inFlight = s.syncer.SyncingFeeds()
+		attempted = s.syncer.AttemptedFeeds()
 	}
 	result := make([]feedJSON, len(feeds))
 	for i, f := range feeds {
@@ -63,6 +68,9 @@ func (s *Server) apiFeedsList(w http.ResponseWriter, r *http.Request) {
 		if started, ok := inFlight[f.ID]; ok {
 			result[i].Syncing = true
 			result[i].SyncStartedAt = started.UTC().Format(time.RFC3339)
+		}
+		if finished, ok := attempted[f.ID]; ok {
+			result[i].SyncAttemptedAt = finished.UTC().Format(time.RFC3339Nano)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"feeds": result})
@@ -278,10 +286,20 @@ func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Sync already in progress"})
 		return
 	}
-	// Detached from the request's cancellation (the response returns right
-	// away) but keeps its values, so the request ID stays in the logs.
-	ctx := context.WithoutCancel(r.Context())
+	// Baseline for the SPA's completion watch, read while holding the feed
+	// lock so no other sync can bump it before the response: the sync we
+	// are about to run is done once the feed's sync_attempted_at moves
+	// past this value. Diffing last_error can't do that job — a failed
+	// retry may rewrite the identical text.
+	baseline := ""
+	if finished, ok := s.syncer.LastAttempt(id); ok {
+		baseline = finished.UTC().Format(time.RFC3339Nano)
+	}
+	ctx, cancel := s.backgroundCtx(r)
+	s.bg.Add(1)
 	go func() {
+		defer s.bg.Done()
+		defer cancel()
 		defer s.syncer.UnlockFeed(mu)
 		if _, err := s.syncer.SyncOneLocked(ctx, f); err != nil {
 			if _, execErr := s.store.DB.ExecContext(ctx,
@@ -299,7 +317,7 @@ func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 		}
 		s.store.RecordFeedSnapshot(ctx, s.settings.MetricsEnabled.Get())
 	}()
-	writeJSON(w, http.StatusAccepted, apiResponse{OK: true})
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "sync_attempted_at": baseline})
 }
 
 // apiFeedsSyncAll handles POST /api/admin/feeds/sync-all. Asynchronous —
@@ -315,8 +333,19 @@ func (s *Server) apiFeedsSyncAll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Sync already in progress"})
 		return
 	}
-	ctx := context.WithoutCancel(r.Context())
+	// Completion-watch baselines (see apiFeedsSyncOne), snapshotted before
+	// the run starts so every attempt it makes lands after them. Keys are
+	// feed IDs; feeds never attempted since process start are simply
+	// absent, and the SPA treats a missing baseline as "".
+	baselines := make(map[int64]string)
+	for id, finished := range s.syncer.AttemptedFeeds() {
+		baselines[id] = finished.UTC().Format(time.RFC3339Nano)
+	}
+	ctx, cancel := s.backgroundCtx(r)
+	s.bg.Add(1)
 	go func() {
+		defer s.bg.Done()
+		defer cancel()
 		defer s.syncAllInFlight.Store(false)
 		if errs := s.syncer.SyncAll(ctx); len(errs) > 0 {
 			logging.FromContext(ctx).Error("manual sync-all completed with errors", "error_count", len(errs))
@@ -331,7 +360,7 @@ func (s *Server) apiFeedsSyncAll(w http.ResponseWriter, r *http.Request) {
 		s.store.RecordUserSnapshot(ctx, s.settings.MetricsEnabled.Get(), peerStates)
 		s.store.RecordFeedSnapshot(ctx, s.settings.MetricsEnabled.Get())
 	}()
-	writeJSON(w, http.StatusAccepted, apiResponse{OK: true})
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "baselines": baselines})
 }
 
 // mergeAllowedHosts adds host to a comma-separated hosts string if not already present.

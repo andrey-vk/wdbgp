@@ -6,7 +6,7 @@ import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
 import { formatDateTime } from '@/utils/format'
 import type { AxiosResponse } from 'axios'
-import type { Feed as ApiFeed } from '@/types/feeds'
+import type { Feed as ApiFeed, SyncAccepted, SyncAllAccepted } from '@/types/feeds'
 import type { AdaptersListResponse } from '@/types/adapters'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
@@ -62,11 +62,22 @@ const anySyncing = computed(() => feeds.value.some(f => f.syncing))
 const syncBusy = computed(() => triggering.value || anySyncing.value)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
-// Completion watches: feed id → last_error before the sync was triggered,
-// so a finished sync can be reported as success or failure.
+// Completion watches: feed id → sync_attempted_at before the sync was
+// triggered. A feed is done when that value changes (the server bumps it
+// on every finished attempt, success or failure); the outcome is then
+// last_error. Queued sync-all feeds keep their baseline until they
+// actually run, so they are never reported early.
 const awaited = new Map<number, string>()
+// Consecutive polls with nothing syncing while watches remain — after a
+// few of those the run is over and the leftover watches will never fire
+// (feed disabled mid-run, sync-all failed to list feeds), so drop them
+// instead of polling forever. Serial sync-all gaps between feeds are
+// milliseconds and cannot produce this many idle polls in a row.
+let idlePolls = 0
+const maxIdlePolls = 5
 
 function startPolling() {
+  idlePolls = 0
   if (pollTimer !== null) return
   pollTimer = setInterval(pollSyncStatus, 3000)
 }
@@ -84,16 +95,19 @@ async function pollSyncStatus() {
   try {
     await loadList()
   } catch { return /* transient fetch failure — keep polling */ }
-  for (const [id, prevError] of awaited) {
+  for (const [id, prevAttempt] of awaited) {
     const feed = feeds.value.find(f => f.id === id)
-    if (!feed || feed.syncing) continue
+    if (!feed) { awaited.delete(id); continue }
+    if ((feed.sync_attempted_at || '') === prevAttempt) continue
     awaited.delete(id)
-    if (feed.last_error && feed.last_error !== prevError) {
+    if (feed.last_error) {
       toast.add({ severity: 'error', summary: t('feeds.sync_error'), life: 5000 })
     } else {
       toast.add({ severity: 'success', summary: t('feeds.synced'), life: 3000 })
     }
   }
+  idlePolls = anySyncing.value ? 0 : idlePolls + 1
+  if (awaited.size > 0 && idlePolls >= maxIdlePolls) awaited.clear()
   if (!anySyncing.value && awaited.size === 0) stopPolling()
 }
 
@@ -226,13 +240,15 @@ async function handleSync() {
   const id = selected.value.id
   triggering.value = true
   try {
-    awaited.set(id, selected.value.last_error || '')
-    await apiClient.post('/admin/feeds/' + id + '/sync')
+    // The 202 carries the pre-run baseline, read server-side under the
+    // feed lock — the local feed object may be stale (a scheduled sync
+    // finishing since the last poll would trip the watch immediately).
+    const resp = await apiClient.post<SyncAccepted>('/admin/feeds/' + id + '/sync')
+    awaited.set(id, resp.data.sync_attempted_at || '')
     toast.add({ severity: 'info', summary: t('feeds.sync_started'), life: 3000 })
     await loadList()
     startPolling()
   } catch (e) {
-    awaited.delete(id)
     if (isConflict(e)) {
       toast.add({ severity: 'warn', summary: t('feeds.sync_in_progress'), life: 3000 })
       startPolling()
@@ -245,16 +261,19 @@ async function handleSync() {
 async function handleSyncAll() {
   triggering.value = true
   try {
-    // Watch every enabled feed; each reports success/failure as it finishes.
+    // Watch every enabled feed; each reports success/failure once its
+    // sync_attempted_at moves past the server-provided baseline — i.e.
+    // when it has actually run, not merely been queued behind the serial
+    // sync-all. Feeds with no attempt since server start have no entry.
+    const resp = await apiClient.post<SyncAllAccepted>('/admin/feeds/sync-all')
+    const baselines = resp.data.baselines || {}
     for (const f of feeds.value) {
-      if (f.enabled) awaited.set(f.id, f.last_error || '')
+      if (f.enabled) awaited.set(f.id, baselines[f.id] || '')
     }
-    await apiClient.post('/admin/feeds/sync-all')
     toast.add({ severity: 'info', summary: t('feeds.sync_started'), life: 3000 })
     await loadList()
     startPolling()
   } catch (e) {
-    awaited.clear()
     if (isConflict(e)) {
       toast.add({ severity: 'warn', summary: t('feeds.sync_in_progress'), life: 3000 })
       startPolling()

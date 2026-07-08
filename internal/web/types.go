@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -50,6 +51,14 @@ type Server struct {
 	// still working. Individual feeds are serialized by the Syncer's
 	// per-feed locks; this only dedupes the whole-catalog operation.
 	syncAllInFlight atomic.Bool
+
+	// appCtx and bg tie handler-spawned background work (the async 202
+	// feed syncs) to the application lifecycle: appCtx cancellation
+	// propagates into their contexts, and shutdown waits on bg so the
+	// goroutines finish recording results before the store closes.
+	// appCtx is nil unless SetAppContext was called (tests).
+	appCtx context.Context
+	bg     sync.WaitGroup
 }
 
 // DegradedInfo carries version mismatch details for the degraded-mode page.
