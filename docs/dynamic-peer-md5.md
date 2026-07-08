@@ -129,10 +129,12 @@ the configured BGP port into the NFQUEUE.
 
 The name is scoped by port and queue number so multiple `wdbgp` instances
 sharing one network namespace (e.g. host networking) on different BGP
-ports manage disjoint tables. Two caveats follow from that: run at most
-one MD5-enabled instance per BGP port per network namespace, and if you
-change the BGP port or queue number between runs, the table under the old
-name may be left behind (cleanup only knows the current name) — remove it
+ports manage disjoint tables. Cleanup sweeps every queue variant of its
+own port, so changing the queue number between runs leaves nothing
+behind. Two caveats follow from the scoping: run at most one MD5-enabled
+instance per BGP port per network namespace, and if you change the *BGP
+port* between runs, the table under the old port's name may be left
+behind (cleanup never touches other ports' tables, by design) — remove it
 manually with `nft list tables | grep wdbgp_dynamic_md5` and
 `nft delete table inet <name>`.
 

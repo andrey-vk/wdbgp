@@ -131,7 +131,7 @@ func serve(s *settings.Settings, db *store.Store) error {
 	// carries the manual fix for exactly that scenario: privileges were
 	// dropped while the old rule is still black-holing BGP SYNs.
 	if !s.DynamicPeerMD5Match.Get() {
-		if err := bgp.RemoveDynamicMD5NFQueueRule(s.BGPPort.Get(), s.DynamicPeerMD5QueueNum.Get()); err != nil {
+		if err := bgp.RemoveDynamicMD5NFQueueRule(s.BGPPort.Get()); err != nil {
 			logging.Warn("cannot verify removal of leftover dynamic-peer MD5 NFQUEUE rule; if dynamic-peer MD5 was previously enabled on this host and BGP peers cannot connect, remove the leftover table manually (nft list tables | grep wdbgp_dynamic_md5, then nft delete table inet <name>) or re-grant CAP_NET_ADMIN", "error", err)
 		}
 	}

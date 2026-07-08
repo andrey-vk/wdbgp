@@ -143,15 +143,21 @@ func TestLimitRequestBody(t *testing.T) {
 	}
 }
 
-// The long-running handlers (feed sync, BGP reload) lift the server-wide
-// WriteTimeout via http.ResponseController, which only reaches the real
-// connection if every wrapper in the middleware chain implements Unwrap —
+// The long-running handlers (feed sync, BGP reload, reconcile-calling
+// mutations) lift the server-wide Read/WriteTimeout via
+// http.ResponseController, which only reaches the real connection if every
+// wrapper in the middleware chain implements Unwrap —
 // logging.HTTPMiddleware's status-capturing writer didn't, silently turning
 // the deadline extension into a no-op. Exercise it over a real connection.
-func TestSetWriteDeadlineWorksThroughLoggingMiddleware(t *testing.T) {
-	errCh := make(chan error, 1)
+func TestDeadlineControlsWorkThroughLoggingMiddleware(t *testing.T) {
+	type result struct{ readErr, writeErr error }
+	resCh := make(chan result, 1)
 	h := logging.HTTPMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		errCh <- http.NewResponseController(w).SetWriteDeadline(time.Time{})
+		rc := http.NewResponseController(w)
+		resCh <- result{
+			readErr:  rc.SetReadDeadline(time.Time{}),
+			writeErr: rc.SetWriteDeadline(time.Time{}),
+		}
 	}))
 	srv := httptest.NewServer(h)
 	defer srv.Close()
@@ -161,8 +167,12 @@ func TestSetWriteDeadlineWorksThroughLoggingMiddleware(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close() //nolint:errcheck // test cleanup
-	if err := <-errCh; err != nil {
-		t.Fatalf("SetWriteDeadline through logging middleware = %v, want nil", err)
+	res := <-resCh
+	if res.readErr != nil {
+		t.Fatalf("SetReadDeadline through logging middleware = %v, want nil", res.readErr)
+	}
+	if res.writeErr != nil {
+		t.Fatalf("SetWriteDeadline through logging middleware = %v, want nil", res.writeErr)
 	}
 }
 

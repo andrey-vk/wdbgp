@@ -3,6 +3,7 @@ package bgp
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
@@ -26,12 +27,47 @@ const nftDynamicMD5LegacyTable = nftDynamicMD5TablePrefix
 // host networking) on different ports manage disjoint tables — with one
 // shared name, either instance's cleanup deleted the other's live rule,
 // silently disabling that instance's MD5 verification (fail-open).
-// The cost: changing port/queue between runs strands the old name, which
-// exact-name cleanup won't find (a prefix sweep would reintroduce the
-// cross-instance deletion). That stale rule only affects the old,
-// no-longer-used port, and startup logs the manual fix.
+// The cost: changing the BGP port between runs strands the old name (a
+// cross-port sweep would reintroduce the cross-instance deletion); that
+// stale rule only affects the old, no-longer-used port, and startup logs
+// the manual fix. Queue-number changes are NOT stranded — cleanup sweeps
+// every queue variant of its own port (see sweepDynamicMD5Tables).
 func dynamicMD5TableName(bgpPort, queueNum uint16) string {
 	return fmt.Sprintf("%s_p%d_q%d", nftDynamicMD5TablePrefix, bgpPort, queueNum)
+}
+
+// dynamicMD5PortPrefix returns the table-name prefix shared by every queue
+// variant for one BGP port. The trailing "_q" keeps p179 from matching
+// p1790's tables.
+func dynamicMD5PortPrefix(bgpPort uint16) string {
+	return fmt.Sprintf("%s_p%d_q", nftDynamicMD5TablePrefix, bgpPort)
+}
+
+// sweepDynamicMD5Tables deletes every dynamic-MD5 table belonging to this
+// BGP port — any queue number — plus the pre-scoping legacy fixed-name
+// table. Sweeping all queue variants matters: after a crash/redeploy that
+// also changed the queue number, exact-name cleanup would leave the old
+// queue's table in place, still matching this port's SYNs and feeding them
+// to a queue with no consumer (black hole). Within one port there is no
+// other legitimate instance (documented constraint), so the sweep can't
+// cross-delete; other ports' tables are never touched.
+func sweepDynamicMD5Tables(bgpPort uint16) error {
+	conn, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("nftables: connect: %w", err)
+	}
+	tables, err := conn.ListTablesOfFamily(nftables.TableFamilyINet)
+	if err != nil {
+		return fmt.Errorf("nftables: list tables: %w", err)
+	}
+	portPrefix := dynamicMD5PortPrefix(bgpPort)
+	var errs []error
+	for _, table := range tables {
+		if table.Name == nftDynamicMD5LegacyTable || strings.HasPrefix(table.Name, portPrefix) {
+			errs = append(errs, deleteDynamicMD5Table(table.Name))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // deleteDynamicMD5Table removes one table in its own netlink batch, so a
@@ -65,12 +101,13 @@ func deleteDynamicMD5Table(name string) error {
 // calling this again (e.g. on speaker reload) never accumulates duplicate
 // rules.
 func EnsureDynamicMD5NFQueueRule(bgpPort, queueNum uint16) error {
-	// Best-effort cleanup of a previous run's tables — this instance's own
-	// scoped name and the pre-scoping legacy name (upgrade path). The
-	// common error here is "no such table", which is expected.
+	// Best-effort cleanup of a previous run's tables for this port (any
+	// queue number) and the pre-scoping legacy name (upgrade path). A
+	// stale other-queue table would still match this port's SYNs and
+	// black-hole them even after this rule goes in, since packets
+	// traverse every table's chain.
+	_ = sweepDynamicMD5Tables(bgpPort) //nolint:errcheck // best-effort cleanup before recreate
 	name := dynamicMD5TableName(bgpPort, queueNum)
-	_ = deleteDynamicMD5Table(name)                     //nolint:errcheck // best-effort cleanup before recreate
-	_ = deleteDynamicMD5Table(nftDynamicMD5LegacyTable) //nolint:errcheck // best-effort legacy cleanup
 
 	conn, err := nftables.New()
 	if err != nil {
@@ -112,16 +149,13 @@ func EnsureDynamicMD5NFQueueRule(bgpPort, queueNum uint16) error {
 	return nil
 }
 
-// RemoveDynamicMD5NFQueueRule drops this instance's dynamic-MD5 nftables
-// table (and with it the NFQUEUE redirect rule), plus the pre-scoping
-// legacy table. A missing table is not an error — the common case is
-// cleaning up when the feature is disabled and nothing was ever installed.
-// In a host network namespace the table survives process death, so this
-// must run whenever the queue consumer goes away: a leftover no-consumer
-// rule black-holes every inbound SYN on its port.
-func RemoveDynamicMD5NFQueueRule(bgpPort, queueNum uint16) error {
-	return errors.Join(
-		deleteDynamicMD5Table(dynamicMD5TableName(bgpPort, queueNum)),
-		deleteDynamicMD5Table(nftDynamicMD5LegacyTable),
-	)
+// RemoveDynamicMD5NFQueueRule drops every dynamic-MD5 nftables table for
+// this BGP port (and with them the NFQUEUE redirect rules), plus the
+// pre-scoping legacy table. Missing tables are not an error — the common
+// case is cleaning up when the feature is disabled and nothing was ever
+// installed. In a host network namespace tables survive process death, so
+// this must run whenever the queue consumer goes away: a leftover
+// no-consumer rule black-holes every inbound SYN on its port.
+func RemoveDynamicMD5NFQueueRule(bgpPort uint16) error {
+	return sweepDynamicMD5Tables(bgpPort)
 }

@@ -31,7 +31,7 @@ func (s *Server) apiBGPStatus(w http.ResponseWriter, r *http.Request) {
 // down and rebuilding the speaker — the same action whether the admin is
 // applying a pending change or retrying after a failed start.
 func (s *Server) apiBGPReload(w http.ResponseWriter, r *http.Request) {
-	extendWriteDeadline(w, r) // full speaker rebuild + reconcile can exceed WriteTimeout
+	extendRequestDeadlines(w, r) // full speaker rebuild + reconcile can exceed WriteTimeout
 	err := s.bgp.ReloadPeers(r.Context())
 	if err == nil {
 		s.restartPending.Store(false)

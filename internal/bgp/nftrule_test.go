@@ -1,6 +1,9 @@
 package bgp
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The table name must be scoped per instance (port+queue): with a single
 // shared name, two wdbgp instances in one network namespace deleted each
@@ -18,5 +21,23 @@ func TestDynamicMD5TableNameScopedPerInstance(t *testing.T) {
 	// upgrade cleanup deletes unconditionally.
 	if dynamicMD5TableName(179, 0) == nftDynamicMD5LegacyTable {
 		t.Fatal("scoped name collides with the legacy table name")
+	}
+}
+
+// The same-port sweep must match every queue variant of its own port and
+// nothing belonging to another port — p179's prefix matching p1790's
+// tables would reintroduce the cross-instance deletion the scoped names
+// exist to prevent.
+func TestDynamicMD5PortPrefixMatchesOwnPortOnly(t *testing.T) {
+	prefix := dynamicMD5PortPrefix(179)
+	for _, name := range []string{dynamicMD5TableName(179, 0), dynamicMD5TableName(179, 65535)} {
+		if !strings.HasPrefix(name, prefix) {
+			t.Errorf("own-port table %q not matched by prefix %q", name, prefix)
+		}
+	}
+	for _, name := range []string{dynamicMD5TableName(1790, 0), dynamicMD5TableName(17, 0)} {
+		if strings.HasPrefix(name, prefix) {
+			t.Errorf("other-port table %q wrongly matched by prefix %q", name, prefix)
+		}
 	}
 }
