@@ -44,6 +44,12 @@ type Server struct {
 	// written from settings-change callbacks and read from HTTP handlers
 	// concurrently.
 	restartPending atomic.Bool
+
+	// syncAllInFlight guards against overlapping manual sync-all runs —
+	// apiFeedsSyncAll answers 409 while a previous run's goroutine is
+	// still working. Individual feeds are serialized by the Syncer's
+	// per-feed locks; this only dedupes the whole-catalog operation.
+	syncAllInFlight atomic.Bool
 }
 
 // DegradedInfo carries version mismatch details for the degraded-mode page.

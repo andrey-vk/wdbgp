@@ -3,11 +3,15 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/andrey-vk/wdbgp/internal/feeds"
 )
 
 // =============================================================================
@@ -403,6 +407,117 @@ func TestFeedsCreateRejectsInvalidAdapterID(t *testing.T) {
 	for _, f := range after.Feeds {
 		if f.Name == "bad-adapter-feed" {
 			t.Fatal("bad-adapter-feed must not have been created after rejected adapter_id")
+		}
+	}
+}
+
+// =============================================================================
+// TestFeedsSyncOneAsync — manual sync answers 202 immediately, the feeds
+// list reports live syncing/sync_started_at while the sync runs, a second
+// trigger gets 409, and the status clears once the sync finishes. Uses a
+// real Syncer whose HTTP transport blocks until the test releases it.
+// =============================================================================
+
+type blockingTransport struct {
+	release chan struct{}
+	started chan struct{} // closed on first request, signals the sync is mid-flight
+}
+
+func (bt *blockingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	select {
+	case <-bt.started:
+	default:
+		close(bt.started)
+	}
+	<-bt.release
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`[]`)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+func TestFeedsSyncOneAsync(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	if _, err := st.DB.ExecContext(ctx, `INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision)
+		VALUES (7, 'blocking', 'javascript', 1, 'function sync(feed, api) { api.httpGet(feed.url); return []; }', 1)`); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+	feedID, err := st.AddFeed(ctx, "async-feed", "http://feed.test/data.json", 7, true, 0, "", "", false)
+	if err != nil {
+		t.Fatalf("AddFeed: %v", err)
+	}
+
+	bt := &blockingTransport{release: make(chan struct{}), started: make(chan struct{})}
+	syncer := feeds.NewSyncer(st, srv.settings)
+	syncer.Client = &http.Client{Transport: bt}
+	srv.syncer = syncer
+
+	syncPath := "/api/admin/feeds/" + strconv.FormatInt(feedID, 10) + "/sync"
+	trigger := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", syncPath, nil)
+		req.SetPathValue("id", strconv.FormatInt(feedID, 10))
+		w := httptest.NewRecorder()
+		srv.apiFeedsSyncOne(w, req)
+		return w
+	}
+
+	if w := trigger(); w.Code != http.StatusAccepted {
+		t.Fatalf("first trigger: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+
+	// The goroutine is mid-sync once the transport has been reached.
+	select {
+	case <-bt.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sync goroutine never reached the HTTP transport")
+	}
+
+	if w := trigger(); w.Code != http.StatusConflict {
+		t.Fatalf("second trigger during sync: status = %d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	listFeeds := func() []feedJSON {
+		req := httptest.NewRequest("GET", "/api/admin/feeds", nil)
+		w := httptest.NewRecorder()
+		srv.apiFeedsList(w, req)
+		var resp struct {
+			Feeds []feedJSON `json:"feeds"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		return resp.Feeds
+	}
+
+	var during *feedJSON
+	for _, f := range listFeeds() {
+		if f.ID == feedID {
+			f := f
+			during = &f
+		}
+	}
+	if during == nil || !during.Syncing || during.SyncStartedAt == "" {
+		t.Fatalf("feed during sync = %+v, want syncing=true with sync_started_at", during)
+	}
+
+	close(bt.release)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, running := srv.syncer.SyncingSince(feedID); !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("sync never finished after transport release")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for _, f := range listFeeds() {
+		if f.ID == feedID && (f.Syncing || f.SyncStartedAt != "") {
+			t.Fatalf("feed after sync = %+v, want syncing=false", f)
 		}
 	}
 }

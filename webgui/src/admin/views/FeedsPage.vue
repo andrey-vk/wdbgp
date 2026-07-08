@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
@@ -52,8 +52,50 @@ const form = ref({
   mode_id: 0,
 })
 const saving = ref(false)
-const syncing = ref(false)
+const triggering = ref(false) // a sync trigger request is in flight
 const editMode = ref(false)
+
+// Live sync state comes from the backend: sync endpoints return 202
+// immediately and the feeds list carries syncing/sync_started_at, so the
+// page polls the list while anything is running.
+const anySyncing = computed(() => feeds.value.some(f => f.syncing))
+const syncBusy = computed(() => triggering.value || anySyncing.value)
+
+let pollTimer: ReturnType<typeof setInterval> | null = null
+// Completion watches: feed id → last_error before the sync was triggered,
+// so a finished sync can be reported as success or failure.
+const awaited = new Map<number, string>()
+
+function startPolling() {
+  if (pollTimer !== null) return
+  pollTimer = setInterval(pollSyncStatus, 3000)
+}
+
+function stopPolling() {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+onUnmounted(stopPolling)
+
+async function pollSyncStatus() {
+  try {
+    await loadList()
+  } catch { return /* transient fetch failure — keep polling */ }
+  for (const [id, prevError] of awaited) {
+    const feed = feeds.value.find(f => f.id === id)
+    if (!feed || feed.syncing) continue
+    awaited.delete(id)
+    if (feed.last_error && feed.last_error !== prevError) {
+      toast.add({ severity: 'error', summary: t('feeds.sync_error'), life: 5000 })
+    } else {
+      toast.add({ severity: 'success', summary: t('feeds.synced'), life: 3000 })
+    }
+  }
+  if (!anySyncing.value && awaited.size === 0) stopPolling()
+}
 
 onMounted(async () => {
   await run(async () => {
@@ -65,6 +107,9 @@ onMounted(async () => {
     feeds.value.sort((a, b) => (a.name || a.url || '').localeCompare(b.name || b.url || ''))
     adapters.value = adaptersResp.data.adapters.map((a) => ({ id: a.id, name: a.name }))
     fetchModes()
+    // A scheduled/background sync may already be running when the page
+    // opens — pick it up so the indicators are live from the start.
+    if (anySyncing.value) startPolling()
   })
 })
 
@@ -171,48 +216,64 @@ async function handleDelete() {
   })
 }
 
+function isConflict(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && 'response' in e &&
+    (e as { response?: { status?: number } }).response?.status === 409
+}
+
 async function handleSync() {
   if (!selected.value) return
-  syncing.value = true
+  const id = selected.value.id
+  triggering.value = true
   try {
-    await apiClient.post('/admin/feeds/' + selected.value.id + '/sync')
-    toast.add({ severity: 'success', summary: t('feeds.synced'), life: 3000 })
+    awaited.set(id, selected.value.last_error || '')
+    await apiClient.post('/admin/feeds/' + id + '/sync')
+    toast.add({ severity: 'info', summary: t('feeds.sync_started'), life: 3000 })
     await loadList()
-    const updated = feeds.value.find(f => f.id === selected.value!.id)
-    if (updated) {
-      selected.value = updated
-      form.value = {
-        url: updated.url,
-        name: updated.name,
-        adapter_id: updated.adapter_id,
-        allowed_hosts: updated.allowed_hosts || '',
-        restrict_hosts: updated.restrict_hosts,
-        enabled: updated.enabled,
-        data: updated.data || '',
-        sync_interval: updated.sync_interval,
-        mode_id: 0,
-      }
+    startPolling()
+  } catch (e) {
+    awaited.delete(id)
+    if (isConflict(e)) {
+      toast.add({ severity: 'warn', summary: t('feeds.sync_in_progress'), life: 3000 })
+      startPolling()
+    } else {
+      toast.add({ severity: 'error', summary: t('feeds.sync_error'), life: 3000 })
     }
-  } catch {
-    toast.add({ severity: 'error', summary: t('feeds.sync_error'), life: 3000 })
-  } finally { syncing.value = false }
+  } finally { triggering.value = false }
 }
 
 async function handleSyncAll() {
-  syncing.value = true
+  triggering.value = true
   try {
+    // Watch every enabled feed; each reports success/failure as it finishes.
+    for (const f of feeds.value) {
+      if (f.enabled) awaited.set(f.id, f.last_error || '')
+    }
     await apiClient.post('/admin/feeds/sync-all')
-    toast.add({ severity: 'success', summary: t('feeds.synced'), life: 3000 })
+    toast.add({ severity: 'info', summary: t('feeds.sync_started'), life: 3000 })
     await loadList()
-  } catch {
-    toast.add({ severity: 'error', summary: t('feeds.sync_error'), life: 3000 })
-  } finally { syncing.value = false }
+    startPolling()
+  } catch (e) {
+    awaited.clear()
+    if (isConflict(e)) {
+      toast.add({ severity: 'warn', summary: t('feeds.sync_in_progress'), life: 3000 })
+      startPolling()
+    } else {
+      toast.add({ severity: 'error', summary: t('feeds.sync_error'), life: 3000 })
+    }
+  } finally { triggering.value = false }
 }
 
 async function loadList() {
   const resp = await apiClient.get('/admin/feeds')
   feeds.value = resp.data.feeds
   feeds.value.sort((a, b) => (a.name || a.url || '').localeCompare(b.name || b.url || ''))
+  // Keep the detail pane in step with fresh list data (last_error,
+  // syncing) — but never while the admin is editing the form.
+  if (selected.value && !editMode.value) {
+    const updated = feeds.value.find(f => f.id === selected.value!.id)
+    if (updated) selectFeed(updated)
+  }
 }
 </script>
 
@@ -269,6 +330,11 @@ async function loadList() {
                 severity="info"
                 :value="t('feeds.restricted_label')"
               />
+              <i
+                v-if="f.syncing"
+                class="pi pi-spin pi-spinner text-xs text-primary shrink-0"
+                :title="t('feeds.sync_in_progress')"
+              />
               <span
                 v-if="f.last_error"
                 class="w-2 h-2 rounded-full bg-red-500 shrink-0"
@@ -282,7 +348,7 @@ async function loadList() {
             icon="pi pi-refresh"
             severity="secondary"
             size="small"
-            :loading="syncing"
+            :loading="syncBusy"
             fluid
             @click="handleSyncAll"
           />
@@ -506,7 +572,8 @@ async function loadList() {
                 :label="t('feeds.sync')"
                 icon="pi pi-refresh"
                 severity="secondary"
-                :loading="syncing"
+                :loading="triggering || selected?.syncing"
+                :disabled="syncBusy"
                 @click="handleSync"
               />
               <Button

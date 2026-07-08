@@ -10,6 +10,9 @@ export interface Feed {
   data?: string
   last_success?: string
   last_error?: string
+  /** Live status: a sync for this feed is currently running (list responses). */
+  syncing: boolean
+  sync_started_at?: string
 }
 
 export interface FeedsListResponse {

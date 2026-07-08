@@ -60,6 +60,11 @@ type Syncer struct {
 	// NOTE: map grows without bound as feeds are created/deleted.
 	// Entries are small (~40 bytes each); with <1000 feeds this is negligible.
 	feedLocksMu sync.Mutex
+
+	// syncing tracks in-flight syncs (feed ID → start time) so the API can
+	// report live per-feed status; entries exist only while syncOne runs.
+	syncing   map[int64]time.Time
+	syncingMu sync.Mutex
 }
 
 var errFeedChanged = errors.New("feed changed during synchronization")
@@ -84,6 +89,7 @@ func NewSyncer(s *store.Store, st *settings.Settings) *Syncer {
 			MaxCallStack:     ifZero(st.JSMaxCallStack.Get(), 1_000),
 		},
 		feedLocks: make(map[int64]*sync.Mutex),
+		syncing:   make(map[int64]time.Time),
 	}
 }
 
@@ -220,7 +226,43 @@ func (s *Syncer) SyncOneLocked(ctx context.Context, feed store.Feed) (int64, err
 	return s.syncOne(ctx, feed)
 }
 
+// SyncingSince reports whether a sync for the feed is currently running,
+// and when it started.
+func (s *Syncer) SyncingSince(feedID int64) (time.Time, bool) {
+	s.syncingMu.Lock()
+	defer s.syncingMu.Unlock()
+	started, ok := s.syncing[feedID]
+	return started, ok
+}
+
+// SyncingFeeds returns a snapshot of all in-flight syncs (feed ID → start
+// time), for decorating list responses without locking per feed.
+func (s *Syncer) SyncingFeeds() map[int64]time.Time {
+	s.syncingMu.Lock()
+	defer s.syncingMu.Unlock()
+	snapshot := make(map[int64]time.Time, len(s.syncing))
+	for id, started := range s.syncing {
+		snapshot[id] = started
+	}
+	return snapshot
+}
+
+func (s *Syncer) markSyncing(feedID int64) {
+	s.syncingMu.Lock()
+	s.syncing[feedID] = time.Now()
+	s.syncingMu.Unlock()
+}
+
+func (s *Syncer) unmarkSyncing(feedID int64) {
+	s.syncingMu.Lock()
+	delete(s.syncing, feedID)
+	s.syncingMu.Unlock()
+}
+
 func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
+	s.markSyncing(feed.ID)
+	defer s.unmarkSyncing(feed.ID)
+
 	logger := logging.FromContext(ctx)
 
 	adapter, err := s.Store.FeedAdapter(ctx, feed.AdapterID)

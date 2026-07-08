@@ -233,6 +233,8 @@
   "feeds.sync": "Sync now",
   "feeds.sync_all": "Sync all",
   "feeds.synced": "Feed synced.",
+  "feeds.sync_started": "Sync started — running in the background.",
+  "feeds.sync_in_progress": "Sync already in progress.",
   "feeds.sync_error": "Sync failed.",
   "feeds.saved": "Feed saved.",
   "feeds.deleted": "Feed deleted.",

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -24,6 +25,10 @@ type feedJSON struct {
 	RestrictHosts bool   `json:"restrict_hosts"`
 	LastSuccess   string `json:"last_success,omitempty"`
 	LastError     string `json:"last_error,omitempty"`
+	// Live sync status — filled in list responses from the Syncer's
+	// in-flight tracking, so the SPA can poll while a sync runs.
+	Syncing       bool   `json:"syncing"`
+	SyncStartedAt string `json:"sync_started_at,omitempty"`
 }
 
 func feedToJSON(f store.Feed) feedJSON {
@@ -48,9 +53,17 @@ func (s *Server) apiFeedsList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load feeds"})
 		return
 	}
+	var inFlight map[int64]time.Time
+	if s.syncer != nil {
+		inFlight = s.syncer.SyncingFeeds()
+	}
 	result := make([]feedJSON, len(feeds))
 	for i, f := range feeds {
 		result[i] = feedToJSON(f)
+		if started, ok := inFlight[f.ID]; ok {
+			result[i].Syncing = true
+			result[i].SyncStartedAt = started.UTC().Format(time.RFC3339)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"feeds": result})
 }
@@ -235,8 +248,13 @@ func (s *Server) apiFeedsDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }
 
+// apiFeedsSyncOne handles POST /api/admin/feeds/{id}/sync. Asynchronous:
+// the sync runs in a background goroutine and the handler answers 202
+// immediately (409 if a sync for this feed is already running) — a large
+// feed takes minutes, and the SPA follows progress by polling the feeds
+// list, which carries live syncing/sync_started_at fields. Errors land in
+// the feed's last_error exactly as scheduled syncs record them.
 func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
-	extendWriteDeadline(w, r)
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed ID"})
@@ -255,45 +273,65 @@ func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Feed is disabled"})
 		return
 	}
-	if _, err := s.syncer.SyncOne(r.Context(), f); err != nil {
-		if _, execErr := s.store.DB.ExecContext(r.Context(),
-			"UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1",
-			err.Error(), id, f.URL); execErr != nil {
-			logging.FromContext(r.Context()).Debug("failed to write last_error", "feed_id", id, "error", execErr)
-		}
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+	mu, ok := s.syncer.TryLockFeed(id)
+	if !ok {
+		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Sync already in progress"})
 		return
 	}
-	if s.bgp != nil {
-		if err := s.bgp.Reconcile(r.Context()); err != nil {
-			logging.FromContext(r.Context()).Debug("bgp reconcile failed after feed sync", "error", err)
+	// Detached from the request's cancellation (the response returns right
+	// away) but keeps its values, so the request ID stays in the logs.
+	ctx := context.WithoutCancel(r.Context())
+	go func() {
+		defer s.syncer.UnlockFeed(mu)
+		if _, err := s.syncer.SyncOneLocked(ctx, f); err != nil {
+			if _, execErr := s.store.DB.ExecContext(ctx,
+				"UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1",
+				err.Error(), id, f.URL); execErr != nil {
+				logging.FromContext(ctx).Debug("failed to write last_error", "feed_id", id, "error", execErr)
+			}
+			logging.FromContext(ctx).Error("manual feed sync failed", "feed_id", id, "error", err)
+			return
 		}
-	}
-	s.store.RecordFeedSnapshot(r.Context(), s.settings.MetricsEnabled.Get())
-	writeJSON(w, http.StatusOK, apiResponse{OK: true})
+		if s.bgp != nil {
+			if err := s.bgp.Reconcile(ctx); err != nil {
+				logging.FromContext(ctx).Debug("bgp reconcile failed after feed sync", "error", err)
+			}
+		}
+		s.store.RecordFeedSnapshot(ctx, s.settings.MetricsEnabled.Get())
+	}()
+	writeJSON(w, http.StatusAccepted, apiResponse{OK: true})
 }
 
+// apiFeedsSyncAll handles POST /api/admin/feeds/sync-all. Asynchronous —
+// see apiFeedsSyncOne; a single in-flight guard prevents overlapping
+// sync-all runs (individual feeds are additionally serialized by their
+// per-feed locks).
 func (s *Server) apiFeedsSyncAll(w http.ResponseWriter, r *http.Request) {
-	extendWriteDeadline(w, r)
 	if s.syncer == nil {
 		writeJSON(w, http.StatusServiceUnavailable, apiResponse{OK: false, Error: "Syncer not available"})
 		return
 	}
-	errors := s.syncer.SyncAll(r.Context())
-	if s.bgp != nil {
-		s.bgp.Reconcile(r.Context()) //nolint:errcheck,gosec // best-effort; successful feeds need route updates
-	}
-	if len(errors) > 0 {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Some feeds failed to sync"})
+	if !s.syncAllInFlight.CompareAndSwap(false, true) {
+		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Sync already in progress"})
 		return
 	}
-	var peerStates map[string]string
-	if s.bgp != nil {
-		peerStates, _ = s.bgp.PeerStates(r.Context()) //nolint:errcheck // best-effort
-	}
-	s.store.RecordUserSnapshot(r.Context(), s.settings.MetricsEnabled.Get(), peerStates)
-	s.store.RecordFeedSnapshot(r.Context(), s.settings.MetricsEnabled.Get())
-	writeJSON(w, http.StatusOK, apiResponse{OK: true})
+	ctx := context.WithoutCancel(r.Context())
+	go func() {
+		defer s.syncAllInFlight.Store(false)
+		if errs := s.syncer.SyncAll(ctx); len(errs) > 0 {
+			logging.FromContext(ctx).Error("manual sync-all completed with errors", "error_count", len(errs))
+		}
+		if s.bgp != nil {
+			s.bgp.Reconcile(ctx) //nolint:errcheck,gosec // best-effort; successful feeds need route updates
+		}
+		var peerStates map[string]string
+		if s.bgp != nil {
+			peerStates, _ = s.bgp.PeerStates(ctx) //nolint:errcheck // best-effort
+		}
+		s.store.RecordUserSnapshot(ctx, s.settings.MetricsEnabled.Get(), peerStates)
+		s.store.RecordFeedSnapshot(ctx, s.settings.MetricsEnabled.Get())
+	}()
+	writeJSON(w, http.StatusAccepted, apiResponse{OK: true})
 }
 
 // mergeAllowedHosts adds host to a comma-separated hosts string if not already present.
