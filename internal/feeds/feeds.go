@@ -107,11 +107,15 @@ func ifZero(val, def int) int {
 	return val
 }
 
-// RemoveFeedLock cleans up the per-feed mutex after feed deletion.
-// Uses TryLock to check whether the mutex is still held: if a sync is in
-// progress the entry stays in the map (acceptable small memory leak) so that
-// the old sync goroutine cannot accidentally collide with a reused feed ID.
-func (s *Syncer) RemoveFeedLock(feedID int64) {
+// ForgetFeed cleans up the syncer's per-feed state after feed deletion, so
+// a later feed reusing the SQLite rowid doesn't inherit live status or a
+// completion baseline. The mutex uses TryLock to check whether it is still
+// held: if a sync is in progress the entry stays in the map (acceptable
+// small memory leak) so that the old sync goroutine cannot accidentally
+// collide with a reused feed ID — and unmarkSyncing skips the attempted
+// bump for feeds no longer tracked in syncing, so that in-flight sync
+// can't re-plant a stale baseline either.
+func (s *Syncer) ForgetFeed(feedID int64) {
 	s.feedLocksMu.Lock()
 	mu := s.feedLocks[feedID]
 	if mu != nil {
@@ -122,6 +126,10 @@ func (s *Syncer) RemoveFeedLock(feedID int64) {
 		// If TryLock fails: someone holds it, skip removal
 	}
 	s.feedLocksMu.Unlock()
+	s.syncingMu.Lock()
+	delete(s.syncing, feedID)
+	delete(s.attempted, feedID)
+	s.syncingMu.Unlock()
 }
 
 // TryLockFeed attempts to acquire the per-feed mutex without blocking.
@@ -256,16 +264,34 @@ func (s *Syncer) AttemptedFeeds() map[int64]time.Time {
 	return snapshot
 }
 
-func (s *Syncer) markSyncing(feedID int64) {
+// MarkSyncing registers the feed as having a sync in flight. syncOne calls
+// it on entry; the manual-sync handler additionally calls it synchronously
+// after acquiring the feed lock, so a concurrent sync-all admission check
+// (SyncingFeeds) can't miss a sync whose goroutine hasn't started yet.
+func (s *Syncer) MarkSyncing(feedID int64) {
 	s.syncingMu.Lock()
 	s.syncing[feedID] = time.Now()
 	s.syncingMu.Unlock()
 }
 
-func (s *Syncer) unmarkSyncing(feedID int64) {
+// ClearSyncing removes the in-flight marker WITHOUT recording a finished
+// attempt — for backing out an admitted-but-never-started manual sync.
+// Bumping attempted here would falsely fire completion watches.
+func (s *Syncer) ClearSyncing(feedID int64) {
 	s.syncingMu.Lock()
 	delete(s.syncing, feedID)
-	s.attempted[feedID] = time.Now()
+	s.syncingMu.Unlock()
+}
+
+func (s *Syncer) unmarkSyncing(feedID int64) {
+	s.syncingMu.Lock()
+	// Only feeds still tracked get an attempted timestamp: if the feed was
+	// deleted mid-sync (ForgetFeed cleared it), recording the attempt would
+	// plant a stale completion baseline on a later feed reusing the rowid.
+	if _, tracked := s.syncing[feedID]; tracked {
+		s.attempted[feedID] = time.Now()
+	}
+	delete(s.syncing, feedID)
 	s.syncingMu.Unlock()
 }
 
@@ -276,6 +302,11 @@ func (s *Syncer) unmarkSyncing(feedID int64) {
 // adapter_id, new revision) after the sync loaded it, the error belongs to
 // the old revision and must not overwrite the new feed status.
 func (s *Syncer) persistSyncError(ctx context.Context, feed store.Feed, executedRevision int64, syncErr error) {
+	// The write must survive cancellation: at shutdown the app context that
+	// cancelled the sync IS the error being recorded, and WaitBackground
+	// holds db.Close open precisely so this lands. Detach, keep a bound.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	query := `UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1
 		 AND data = ? AND adapter_id = ? AND name = ?`
 	args := []any{syncErr.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name}
@@ -289,7 +320,7 @@ func (s *Syncer) persistSyncError(ctx context.Context, feed store.Feed, executed
 }
 
 func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
-	s.markSyncing(feed.ID)
+	s.MarkSyncing(feed.ID)
 	// unmarkSyncing publishes the attempt as finished (sync_attempted_at),
 	// which the SPA takes as "the outcome is now readable" — so every
 	// last_error/last_success write must happen in the function body, before

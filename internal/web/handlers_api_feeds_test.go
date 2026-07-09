@@ -484,6 +484,13 @@ func TestFeedsSyncOneAsync(t *testing.T) {
 		t.Fatalf("first trigger baseline = %q, want empty (no prior attempt)", baseline)
 	}
 
+	// The admitted sync must be visible to sync-all's SyncingFeeds guard
+	// the moment the 202 is out — the handler marks it synchronously; the
+	// goroutine (which also marks) may not have started yet.
+	if _, admitted := srv.syncer.SyncingSince(feedID); !admitted {
+		t.Fatal("sync not marked in flight immediately after 202")
+	}
+
 	// The goroutine is mid-sync once the transport has been reached.
 	select {
 	case <-bt.started:

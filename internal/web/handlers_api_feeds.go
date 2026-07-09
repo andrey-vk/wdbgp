@@ -248,6 +248,11 @@ func (s *Server) apiFeedsDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	if s.syncer != nil {
+		// Drop the syncer's per-feed state (lock, live status, completion
+		// baseline) so a feed later reusing this rowid starts clean.
+		s.syncer.ForgetFeed(id)
+	}
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after feed delete", "error", err)
@@ -293,6 +298,19 @@ func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 	}
 	mu, ok := s.syncer.TryLockFeed(id)
 	if !ok {
+		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Sync already in progress"})
+		return
+	}
+	// Publish the admitted sync before re-checking the sync-all flag —
+	// syncOne marking it from the goroutine would be too late, a
+	// concurrent sync-all could pass its SyncingFeeds guard in between.
+	// Sync-all sets its flag before reading SyncingFeeds and we mark
+	// before re-reading the flag, so of two concurrent admissions at
+	// least one always sees the other (worst case both 409 — harmless).
+	s.syncer.MarkSyncing(id)
+	if s.syncAllInFlight.Load() {
+		s.syncer.ClearSyncing(id)
+		s.syncer.UnlockFeed(mu)
 		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Sync already in progress"})
 		return
 	}

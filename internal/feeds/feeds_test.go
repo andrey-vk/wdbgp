@@ -512,6 +512,87 @@ WHERE f.name = 'disabled'`).Scan(&disabledEntries); err != nil {
 	}
 }
 
+// TestForgetFeedClearsLiveState — deleting a feed must drop the syncer's
+// live-status and completion-baseline entries, and an in-flight sync of a
+// forgotten feed must not plant a baseline a future feed reusing the
+// SQLite rowid would inherit.
+func TestForgetFeedClearsLiveState(t *testing.T) {
+	s := NewSyncer(nil, testSettings())
+
+	s.MarkSyncing(42)
+	if _, ok := s.SyncingSince(42); !ok {
+		t.Fatal("MarkSyncing not visible via SyncingSince")
+	}
+	s.ForgetFeed(42)
+	if _, ok := s.SyncingSince(42); ok {
+		t.Fatal("syncing entry survived ForgetFeed")
+	}
+	// The deleted feed's still-running sync finishing must not record an
+	// attempt for the forgotten ID.
+	s.unmarkSyncing(42)
+	if _, ok := s.LastAttempt(42); ok {
+		t.Fatal("unmarkSyncing planted a baseline for a forgotten feed")
+	}
+	// Normal tracked completion still records the attempt, and ForgetFeed
+	// clears that too.
+	s.MarkSyncing(42)
+	s.unmarkSyncing(42)
+	if _, ok := s.LastAttempt(42); !ok {
+		t.Fatal("attempted missing after tracked sync completion")
+	}
+	s.ForgetFeed(42)
+	if _, ok := s.LastAttempt(42); ok {
+		t.Fatal("attempted entry survived ForgetFeed")
+	}
+	// ClearSyncing backs out an admitted sync without recording an attempt.
+	s.MarkSyncing(42)
+	s.ClearSyncing(42)
+	if _, ok := s.LastAttempt(42); ok {
+		t.Fatal("ClearSyncing recorded an attempt")
+	}
+}
+
+// TestFailedSyncRecordsErrorAfterCancellation — persistSyncError must land
+// even when the sync failed because its context was cancelled (shutdown):
+// recording that outcome is the point of WaitBackground holding db.Close.
+func TestFailedSyncRecordsErrorAfterCancellation(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "feeds.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatal(err)
+	}
+	feedID, err := db.AddFeed(ctx, "cancelled", "https://example.test/feed", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	syncer := NewSyncer(db, testSettings())
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := syncer.SyncOne(cancelled, feedList[0]); err == nil {
+		t.Fatal("SyncOne succeeded on a cancelled context")
+	}
+	var lastError string
+	if err := db.DB.QueryRow(
+		"SELECT COALESCE(last_error, '') FROM feeds WHERE id = ?", feedID).Scan(&lastError); err != nil {
+		t.Fatal(err)
+	}
+	if lastError == "" {
+		t.Fatal("last_error empty after cancelled sync, want the cancellation recorded")
+	}
+}
+
 // TestSyncOneFailurePersistsErrorBeforeAttempt — a failed sync must have
 // last_error written by the syncer itself, in syncOne's body, so that by
 // the time the attempt is published as finished (LastAttempt, the API's

@@ -592,7 +592,7 @@ async function loadList() {
                 icon="pi pi-refresh"
                 severity="secondary"
                 :loading="triggering || selected?.syncing"
-                :disabled="syncBusy"
+                :disabled="triggering || selected?.syncing"
                 @click="handleSync"
               />
               <Button
