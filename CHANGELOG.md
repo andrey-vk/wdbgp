@@ -6,11 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [0.17.2-alpha] — 2026-07-09
 
 ### Added
 - **Configurable BGP hold time** (`WDBGP_BGP_HOLD_TIME` / `bgp_hold_time`, default 90s, range 3–65535). The speaker's RFC 4271 hold-time negotiation (min of local and remote) was fully implemented but hardwired to propose 90s — the knob existed with no way to turn it. Restart-required like the other BGP identity settings (raises the "apply now" banner), editable from the admin BGP section. 0 (infinite hold time) is deliberately rejected: on flaky links it turns silent peer death into a permanently wedged session.
 - **Live feed-sync status and asynchronous manual sync.** `GET /api/admin/feeds` items now carry `syncing`/`sync_started_at` from the syncer's in-flight tracking, and the manual sync endpoints (`POST /feeds/{id}/sync`, `/feeds/sync-all`) return `202 Accepted` immediately (or `409` if that sync is already running) instead of holding the HTTP request for the whole sync — on a 100k-CIDR feed that was minutes of a hung request and a frozen UI. The feeds page shows a per-feed spinner, polls while anything is running (including scheduled background syncs already in flight when the page opens), and reports success/failure per feed as it finishes. Errors still land in the feed's `last_error` exactly as scheduled syncs record them.
+
+### Security
+- Docker build image and CI toolchain bumped to Go 1.26.5 (GO-2026-5856: Encrypted Client Hello privacy leak in `crypto/tls`, reachable through the HTTPS listener); CI's setup-go now uses `check-latest` so future Go security patch releases are picked up automatically.
 
 ## [0.17.1-alpha] — 2026-07-08
 
