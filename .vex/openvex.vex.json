@@ -1,0 +1,23 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/andrey-vk/wdbgp/blob/main/.vex/openvex.vex.json",
+  "author": "andr.vk@gmail.com",
+  "timestamp": "2026-07-09T12:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "GO-2026-5932",
+        "description": "golang.org/x/crypto/openpgp is unmaintained and unsafe by design"
+      },
+      "products": [
+        {
+          "@id": "pkg:docker/wh1ted/wdbgp"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "wdbgp imports only golang.org/x/crypto/bcrypt (password hashing). The deprecated openpgp packages this advisory covers are not in the dependency graph of the shipped binary: `go mod why golang.org/x/crypto/openpgp` reports the main module does not need it, `go list -deps ./cmd/wdbgp` links zero openpgp packages, and govulncheck's symbol-level analysis in CI classifies this advisory as required-but-never-called. The advisory has no fixed version (the package is deprecated, not patched), so upgrading golang.org/x/crypto cannot clear it."
+    }
+  ]
+}
