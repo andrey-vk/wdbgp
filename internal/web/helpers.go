@@ -9,8 +9,9 @@ import (
 )
 
 // extendWriteDeadline lifts the server-wide WriteTimeout for a handler
-// that legitimately outlives it: synchronous feed syncs (minutes for large
-// feeds), BGP reload, and every handler that runs a synchronous reconcile.
+// that legitimately outlives it: BGP reload and every handler that runs a
+// synchronous reconcile. (Manual feed syncs used to be the main case, but
+// they run asynchronously now.)
 // Without this the work completes server-side but the response write
 // happens after the connection's deadline and the admin sees a broken
 // reply. Deliberately leaves the read deadline alone — these handlers have

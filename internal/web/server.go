@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"html/template"
 	"io"
 	"net/http"
@@ -163,6 +164,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	st.LocalASN.OnChange(func(uint32) { markBGPRestartPending() })
 	st.RouterID.OnChange(func(string) { markBGPRestartPending() })
 	st.BGPPort.OnChange(func(uint16) { markBGPRestartPending() })
+	st.BGPHoldTime.OnChange(func(uint16) { markBGPRestartPending() })
 	st.LocalAddressV4.OnChange(func(string) { markBGPRestartPending() })
 	st.LocalAddressV6.OnChange(func(string) { markBGPRestartPending() })
 	// ActiveDial changes which port buildPeerConfigs assigns existing peers
@@ -200,6 +202,50 @@ func parseCIDRs(s string) []netip.Prefix {
 
 func (s *Server) Handler() http.Handler {
 	return s.handler
+}
+
+// SetAppContext ties handler-spawned background work (the async 202 feed
+// syncs) to the application lifecycle: cancelling ctx cancels their
+// contexts too, so a SIGTERM interrupts them the same way it interrupts
+// scheduled syncs instead of leaving them racing process exit. Call before
+// serving; without it (tests) background work is never cancelled.
+func (s *Server) SetAppContext(ctx context.Context) {
+	s.appCtx = ctx
+}
+
+// WaitBackground blocks until handler-spawned background goroutines finish
+// or ctx expires. http.Server.Shutdown only waits for in-flight requests —
+// work that answered 202 and kept going is invisible to it, so main calls
+// this after Shutdown to let those goroutines record their results before
+// the store closes.
+func (s *Server) WaitBackground(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		s.bg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		logging.Warn("background feed syncs still running at shutdown deadline")
+	}
+}
+
+// backgroundCtx builds the context for work that continues after the
+// response is written: detached from the request's cancellation but keeping
+// its values (request ID in logs), and cancelled when the application shuts
+// down. The returned cancel releases the shutdown watcher — the goroutine
+// must defer it.
+func (s *Server) backgroundCtx(r *http.Request) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(r.Context()))
+	if s.appCtx == nil {
+		return ctx, cancel
+	}
+	stop := context.AfterFunc(s.appCtx, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // SetDegraded enables degraded mode with version mismatch info.

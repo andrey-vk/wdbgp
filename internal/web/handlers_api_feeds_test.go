@@ -3,11 +3,15 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/andrey-vk/wdbgp/internal/feeds"
 )
 
 // =============================================================================
@@ -404,5 +408,322 @@ func TestFeedsCreateRejectsInvalidAdapterID(t *testing.T) {
 		if f.Name == "bad-adapter-feed" {
 			t.Fatal("bad-adapter-feed must not have been created after rejected adapter_id")
 		}
+	}
+}
+
+// =============================================================================
+// TestFeedsSyncOneAsync — manual sync answers 202 immediately, the feeds
+// list reports live syncing/sync_started_at while the sync runs, a second
+// trigger gets 409, and the status clears once the sync finishes. Uses a
+// real Syncer whose HTTP transport blocks until the test releases it.
+// =============================================================================
+
+type blockingTransport struct {
+	release chan struct{}
+	started chan struct{} // closed on first request, signals the sync is mid-flight
+}
+
+func (bt *blockingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	select {
+	case <-bt.started:
+	default:
+		close(bt.started)
+	}
+	<-bt.release
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`[]`)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+func TestFeedsSyncOneAsync(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	if _, err := st.DB.ExecContext(ctx, `INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision)
+		VALUES (7, 'blocking', 'javascript', 1, 'function sync(feed, api) { api.httpGet(feed.url); return []; }', 1)`); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+	feedID, err := st.AddFeed(ctx, "async-feed", "http://feed.test/data.json", 7, true, 0, "", "", false)
+	if err != nil {
+		t.Fatalf("AddFeed: %v", err)
+	}
+
+	bt := &blockingTransport{release: make(chan struct{}), started: make(chan struct{})}
+	syncer := feeds.NewSyncer(st, srv.settings)
+	syncer.Client = &http.Client{Transport: bt}
+	srv.syncer = syncer
+
+	syncPath := "/api/admin/feeds/" + strconv.FormatInt(feedID, 10) + "/sync"
+	trigger := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", syncPath, nil)
+		req.SetPathValue("id", strconv.FormatInt(feedID, 10))
+		w := httptest.NewRecorder()
+		srv.apiFeedsSyncOne(w, req)
+		return w
+	}
+
+	accepted := func(w *httptest.ResponseRecorder) string {
+		t.Helper()
+		var resp struct {
+			OK              bool   `json:"ok"`
+			SyncAttemptedAt string `json:"sync_attempted_at"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil || !resp.OK {
+			t.Fatalf("202 body = %s (decode err %v), want ok=true", w.Body.String(), err)
+		}
+		return resp.SyncAttemptedAt
+	}
+
+	w := trigger()
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("first trigger: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+	if baseline := accepted(w); baseline != "" {
+		t.Fatalf("first trigger baseline = %q, want empty (no prior attempt)", baseline)
+	}
+
+	// The admitted sync must be visible to sync-all's SyncingFeeds guard
+	// the moment the 202 is out — the handler marks it synchronously; the
+	// goroutine (which also marks) may not have started yet.
+	if _, admitted := srv.syncer.SyncingSince(feedID); !admitted {
+		t.Fatal("sync not marked in flight immediately after 202")
+	}
+
+	// The goroutine is mid-sync once the transport has been reached.
+	select {
+	case <-bt.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sync goroutine never reached the HTTP transport")
+	}
+
+	if w := trigger(); w.Code != http.StatusConflict {
+		t.Fatalf("second trigger during sync: status = %d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	listFeeds := func() []feedJSON {
+		req := httptest.NewRequest("GET", "/api/admin/feeds", nil)
+		w := httptest.NewRecorder()
+		srv.apiFeedsList(w, req)
+		var resp struct {
+			Feeds []feedJSON `json:"feeds"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode list: %v", err)
+		}
+		return resp.Feeds
+	}
+
+	var during *feedJSON
+	for _, f := range listFeeds() {
+		if f.ID == feedID {
+			f := f
+			during = &f
+		}
+	}
+	if during == nil || !during.Syncing || during.SyncStartedAt == "" {
+		t.Fatalf("feed during sync = %+v, want syncing=true with sync_started_at", during)
+	}
+	if during.SyncAttemptedAt != "" {
+		t.Fatalf("sync_attempted_at = %q during first sync, want empty until an attempt finishes", during.SyncAttemptedAt)
+	}
+
+	close(bt.release)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, running := srv.syncer.SyncingSince(feedID); !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("sync never finished after transport release")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	firstAttempt := ""
+	for _, f := range listFeeds() {
+		if f.ID != feedID {
+			continue
+		}
+		if f.Syncing || f.SyncStartedAt != "" {
+			t.Fatalf("feed after sync = %+v, want syncing=false", f)
+		}
+		firstAttempt = f.SyncAttemptedAt
+	}
+	if firstAttempt == "" {
+		t.Fatal("sync_attempted_at empty after a finished attempt")
+	}
+
+	// A second run must hand out the first attempt as its baseline and
+	// bump sync_attempted_at past it when done — that moving value is the
+	// SPA's completion signal (last_error text alone can't be: a retry
+	// failing identically leaves it unchanged).
+	w = trigger()
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("second run trigger: status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if baseline := accepted(w); baseline != firstAttempt {
+		t.Fatalf("second run baseline = %q, want first attempt %q", baseline, firstAttempt)
+	}
+	// The transport's release channel is already closed, so this run
+	// finishes on its own; wait via the tracked background goroutines.
+	srv.WaitBackground(context.Background())
+	for _, f := range listFeeds() {
+		if f.ID == feedID && (f.SyncAttemptedAt == "" || f.SyncAttemptedAt == firstAttempt) {
+			t.Fatalf("sync_attempted_at = %q after second attempt, want a value past %q", f.SyncAttemptedAt, firstAttempt)
+		}
+	}
+}
+
+// TestFeedsSyncAllRejectsWhileFeedSyncing — sync-all must answer 409 while
+// any per-feed sync is in flight: its 202 baselines are snapshotted before
+// the run starts, so an already-running sync finishing afterwards would
+// bump sync_attempted_at and make the SPA consume that feed's completion
+// watch on the wrong run's outcome.
+func TestFeedsSyncAllRejectsWhileFeedSyncing(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	if _, err := st.DB.ExecContext(ctx, `INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision)
+		VALUES (7, 'blocking', 'javascript', 1, 'function sync(feed, api) { api.httpGet(feed.url); return []; }', 1)`); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+	feedID, err := st.AddFeed(ctx, "async-feed", "http://feed.test/data.json", 7, true, 0, "", "", false)
+	if err != nil {
+		t.Fatalf("AddFeed: %v", err)
+	}
+
+	bt := &blockingTransport{release: make(chan struct{}), started: make(chan struct{})}
+	syncer := feeds.NewSyncer(st, srv.settings)
+	syncer.Client = &http.Client{Transport: bt}
+	srv.syncer = syncer
+
+	req := httptest.NewRequest("POST", "/api/admin/feeds/"+strconv.FormatInt(feedID, 10)+"/sync", nil)
+	req.SetPathValue("id", strconv.FormatInt(feedID, 10))
+	w := httptest.NewRecorder()
+	srv.apiFeedsSyncOne(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("sync-one trigger: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case <-bt.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sync goroutine never reached the HTTP transport")
+	}
+
+	syncAll := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		srv.apiFeedsSyncAll(w, httptest.NewRequest("POST", "/api/admin/feeds/sync-all", nil))
+		return w
+	}
+	if w := syncAll(); w.Code != http.StatusConflict {
+		t.Fatalf("sync-all during feed sync: status = %d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	// The rejection must release the in-flight guard: once the running sync
+	// finishes, sync-all is accepted again.
+	close(bt.release)
+	srv.WaitBackground(ctx)
+	if w := syncAll(); w.Code != http.StatusAccepted {
+		t.Fatalf("sync-all after feed sync finished: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+	srv.WaitBackground(ctx)
+}
+
+// TestFeedsSyncOneRejectsWhileSyncAllRunning — the mirror guard: while a
+// manual sync-all is in flight, a single-feed sync on a feed the serial
+// run hasn't locked yet must answer 409, or its completion would bump
+// sync_attempted_at and consume that feed's sync-all watch on the wrong
+// run's outcome.
+func TestFeedsSyncOneRejectsWhileSyncAllRunning(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	if _, err := st.DB.ExecContext(ctx, "UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatalf("disable seeded feeds: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision)
+		VALUES (7, 'blocking', 'javascript', 1, 'function sync(feed, api) { api.httpGet(feed.url); return []; }', 1)`); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+	// Two feeds in the enabled default mode: the serial sync-all blocks on
+	// the first (lowest id), leaving the second unlocked — so only the
+	// syncAllInFlight guard can reject a single-feed sync for it.
+	feedA, err := st.AddFeed(ctx, "blocking-a", "http://feed.test/a.json", 7, true, 0, "", "", false)
+	if err != nil {
+		t.Fatalf("AddFeed a: %v", err)
+	}
+	feedB, err := st.AddFeed(ctx, "blocking-b", "http://feed.test/b.json", 7, true, 0, "", "", false)
+	if err != nil {
+		t.Fatalf("AddFeed b: %v", err)
+	}
+	for _, id := range []int64{feedA, feedB} {
+		if _, err := st.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", id); err != nil {
+			t.Fatalf("add feed %d to mode: %v", id, err)
+		}
+	}
+
+	bt := &blockingTransport{release: make(chan struct{}), started: make(chan struct{})}
+	syncer := feeds.NewSyncer(st, srv.settings)
+	syncer.Client = &http.Client{Transport: bt}
+	srv.syncer = syncer
+
+	w := httptest.NewRecorder()
+	srv.apiFeedsSyncAll(w, httptest.NewRequest("POST", "/api/admin/feeds/sync-all", nil))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("sync-all trigger: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case <-bt.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sync-all goroutine never reached the HTTP transport")
+	}
+
+	syncOne := func(id int64) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/api/admin/feeds/"+strconv.FormatInt(id, 10)+"/sync", nil)
+		req.SetPathValue("id", strconv.FormatInt(id, 10))
+		w := httptest.NewRecorder()
+		srv.apiFeedsSyncOne(w, req)
+		return w
+	}
+	if w := syncOne(feedB); w.Code != http.StatusConflict {
+		t.Fatalf("sync-one during sync-all: status = %d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	close(bt.release)
+	srv.WaitBackground(ctx)
+	if w := syncOne(feedB); w.Code != http.StatusAccepted {
+		t.Fatalf("sync-one after sync-all finished: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+	srv.WaitBackground(ctx)
+}
+
+// TestBackgroundCtxFollowsAppContext — the context handed to async sync
+// goroutines must survive the end of the request that spawned it, but be
+// cancelled when the application shuts down (SetAppContext).
+func TestBackgroundCtxFollowsAppContext(t *testing.T) {
+	srv := &Server{}
+	appCtx, appCancel := context.WithCancel(context.Background())
+	defer appCancel()
+	srv.SetAppContext(appCtx)
+
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("GET", "/", nil).WithContext(reqCtx)
+	ctx, cancel := srv.backgroundCtx(req)
+	defer cancel()
+
+	reqCancel() // request over — background work must keep running
+	select {
+	case <-ctx.Done():
+		t.Fatal("background ctx cancelled by request cancellation")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	appCancel() // shutdown — background work must stop
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("background ctx not cancelled by app shutdown")
 	}
 }

@@ -157,9 +157,14 @@ func serve(s *settings.Settings, db *store.Store) error {
 	go syncLoop(ctx, time.Duration(s.SyncInterval.Get())*time.Second, syncer, bgpManager, db, s)
 	go purgeLoop(ctx, time.Hour, db, s)
 
+	webServer := web.New(s, db, syncer, bgpManager)
+	// Tie the async 202 feed syncs to the signal context and wait for them
+	// below — Shutdown alone doesn't know about work that outlived its
+	// request, and the deferred db.Close must not race their final writes.
+	webServer.SetAppContext(ctx)
 	httpServer := &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),
-		Handler:           web.New(s, db, syncer, bgpManager).Handler(),
+		Handler:           webServer.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
@@ -192,7 +197,16 @@ func serve(s *settings.Settings, db *store.Store) error {
 	logging.Info("shutting down HTTP server")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-	return httpServer.Shutdown(shutdownCtx)
+	err := httpServer.Shutdown(shutdownCtx)
+	// Async 202 feed syncs outlive their requests, so Shutdown doesn't
+	// wait for them — but the deferred db.Close must not race their final
+	// writes. Fresh budget rather than shutdownCtx: slow in-flight requests
+	// can consume all of it inside Shutdown, and the syncs — cancelled with
+	// ctx — still need a moment to record their outcome (last_error etc).
+	bgCtx, bgCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer bgCancel()
+	webServer.WaitBackground(bgCtx)
+	return err
 }
 
 // purgeLoop periodically removes old metric snapshots based on metrics_history_days.

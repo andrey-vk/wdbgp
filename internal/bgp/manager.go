@@ -147,6 +147,7 @@ func (m *Manager) startLocked(ctx context.Context) error {
 		RouterID:               routerID,
 		Port:                   int32(m.cfg.BGPPort.Get()), // uint16 always fits int32
 		LocalAddr:              localAddr,
+		HoldTime:               m.cfg.BGPHoldTime.Get(),
 		DynamicPeerMD5Match:    m.cfg.DynamicPeerMD5Match.Get(),
 		DynamicPeerMD5QueueNum: m.cfg.DynamicPeerMD5QueueNum.Get(),
 	}, logger.Logger)

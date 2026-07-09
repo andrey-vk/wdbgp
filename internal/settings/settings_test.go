@@ -1050,6 +1050,22 @@ func TestValidateHost(t *testing.T) {
 	}
 }
 
+// TestValidateHoldTime pins the RFC 4271 constraint (0 or ≥3) plus this
+// app's deliberate rejection of 0 — infinite hold time turns silent peer
+// death into a wedged session on the flaky links this app targets.
+func TestValidateHoldTime(t *testing.T) {
+	for _, v := range []uint16{0, 1, 2} {
+		if err := validateHoldTime(v); err == nil {
+			t.Errorf("validateHoldTime(%d) = nil, want error", v)
+		}
+	}
+	for _, v := range []uint16{3, 90, 65535} {
+		if err := validateHoldTime(v); err != nil {
+			t.Errorf("validateHoldTime(%d) = %v, want nil", v, err)
+		}
+	}
+}
+
 func TestHostValidationRejectsEmbeddedPortInEnvValue(t *testing.T) {
 	t.Setenv("WDBGP_HOST", "0.0.0.0:8080")
 	store := newMockStore()

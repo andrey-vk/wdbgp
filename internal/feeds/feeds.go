@@ -60,6 +60,17 @@ type Syncer struct {
 	// NOTE: map grows without bound as feeds are created/deleted.
 	// Entries are small (~40 bytes each); with <1000 feeds this is negligible.
 	feedLocksMu sync.Mutex
+
+	// syncing tracks in-flight syncs (feed ID → start time) so the API can
+	// report live per-feed status; entries exist only while syncOne runs.
+	// attempted records when the last attempt for a feed *finished*
+	// (success or failure) — the SPA detects sync completion by watching
+	// this value change, which stays correct even when a failed retry
+	// rewrites last_error with the identical text. In-memory only: resets
+	// on restart, grows like feedLocks (negligible, see note above).
+	syncing   map[int64]time.Time
+	attempted map[int64]time.Time
+	syncingMu sync.Mutex
 }
 
 var errFeedChanged = errors.New("feed changed during synchronization")
@@ -84,6 +95,8 @@ func NewSyncer(s *store.Store, st *settings.Settings) *Syncer {
 			MaxCallStack:     ifZero(st.JSMaxCallStack.Get(), 1_000),
 		},
 		feedLocks: make(map[int64]*sync.Mutex),
+		syncing:   make(map[int64]time.Time),
+		attempted: make(map[int64]time.Time),
 	}
 }
 
@@ -94,11 +107,15 @@ func ifZero(val, def int) int {
 	return val
 }
 
-// RemoveFeedLock cleans up the per-feed mutex after feed deletion.
-// Uses TryLock to check whether the mutex is still held: if a sync is in
-// progress the entry stays in the map (acceptable small memory leak) so that
-// the old sync goroutine cannot accidentally collide with a reused feed ID.
-func (s *Syncer) RemoveFeedLock(feedID int64) {
+// ForgetFeed cleans up the syncer's per-feed state after feed deletion, so
+// a later feed reusing the SQLite rowid doesn't inherit live status or a
+// completion baseline. The mutex uses TryLock to check whether it is still
+// held: if a sync is in progress the entry stays in the map (acceptable
+// small memory leak) so that the old sync goroutine cannot accidentally
+// collide with a reused feed ID — and unmarkSyncing skips the attempted
+// bump for feeds no longer tracked in syncing, so that in-flight sync
+// can't re-plant a stale baseline either.
+func (s *Syncer) ForgetFeed(feedID int64) {
 	s.feedLocksMu.Lock()
 	mu := s.feedLocks[feedID]
 	if mu != nil {
@@ -109,6 +126,10 @@ func (s *Syncer) RemoveFeedLock(feedID int64) {
 		// If TryLock fails: someone holds it, skip removal
 	}
 	s.feedLocksMu.Unlock()
+	s.syncingMu.Lock()
+	delete(s.syncing, feedID)
+	delete(s.attempted, feedID)
+	s.syncingMu.Unlock()
 }
 
 // TryLockFeed attempts to acquire the per-feed mutex without blocking.
@@ -150,31 +171,12 @@ func (s *Syncer) SyncAll(ctx context.Context) []error {
 	var errors []error
 	for _, feed := range feeds {
 		logger.Debug("syncing feed", "name", feed.Name, "url", feed.URL, "feed_id", feed.ID)
-		executedRevision, err := s.SyncOne(ctx, feed)
+		_, err := s.SyncOne(ctx, feed)
 		if err != nil {
+			// last_error is already persisted by syncOne, before it
+			// published the attempt as finished.
 			logger.Error("feed sync failed", "name", feed.Name, "error", err)
 			errors = append(errors, fmt.Errorf("%s: %w", feed.Name, err))
-			// Guard against adapter source changes during sync: if the
-			// adapter was edited (same adapter_id, new revision) after
-			// SyncOne loaded it, the error belongs to the old revision
-			// and must not overwrite the new feed status.
-			if executedRevision > 0 {
-				if _, err := s.Store.DB.ExecContext(ctx,
-					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
-					 AND data = ? AND adapter_id = ? AND name = ?
-					 AND adapter_id IN (SELECT id FROM feed_adapters WHERE id = ? AND revision = ?)`,
-					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name,
-					feed.AdapterID, executedRevision); err != nil {
-					log.Printf("WARNING: cleanup: %v", err)
-				}
-			} else {
-				if _, err := s.Store.DB.ExecContext(ctx,
-					`UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1 
-					 AND data = ? AND adapter_id = ? AND name = ?`,
-					err.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name); err != nil {
-					log.Printf("WARNING: cleanup: %v", err)
-				}
-			}
 		} else {
 			logger.Info("feed synced successfully", "name", feed.Name, "feed_id", feed.ID)
 		}
@@ -220,12 +222,118 @@ func (s *Syncer) SyncOneLocked(ctx context.Context, feed store.Feed) (int64, err
 	return s.syncOne(ctx, feed)
 }
 
+// SyncingSince reports whether a sync for the feed is currently running,
+// and when it started.
+func (s *Syncer) SyncingSince(feedID int64) (time.Time, bool) {
+	s.syncingMu.Lock()
+	defer s.syncingMu.Unlock()
+	started, ok := s.syncing[feedID]
+	return started, ok
+}
+
+// SyncingFeeds returns a snapshot of all in-flight syncs (feed ID → start
+// time), for decorating list responses without locking per feed.
+func (s *Syncer) SyncingFeeds() map[int64]time.Time {
+	s.syncingMu.Lock()
+	defer s.syncingMu.Unlock()
+	snapshot := make(map[int64]time.Time, len(s.syncing))
+	for id, started := range s.syncing {
+		snapshot[id] = started
+	}
+	return snapshot
+}
+
+// LastAttempt reports when the last sync attempt for the feed finished
+// (success or failure) since process start.
+func (s *Syncer) LastAttempt(feedID int64) (time.Time, bool) {
+	s.syncingMu.Lock()
+	defer s.syncingMu.Unlock()
+	finished, ok := s.attempted[feedID]
+	return finished, ok
+}
+
+// AttemptedFeeds returns a snapshot of when the last sync attempt per feed
+// finished (success or failure) since process start.
+func (s *Syncer) AttemptedFeeds() map[int64]time.Time {
+	s.syncingMu.Lock()
+	defer s.syncingMu.Unlock()
+	snapshot := make(map[int64]time.Time, len(s.attempted))
+	for id, finished := range s.attempted {
+		snapshot[id] = finished
+	}
+	return snapshot
+}
+
+// MarkSyncing registers the feed as having a sync in flight. syncOne calls
+// it on entry; the manual-sync handler additionally calls it synchronously
+// after acquiring the feed lock, so a concurrent sync-all admission check
+// (SyncingFeeds) can't miss a sync whose goroutine hasn't started yet.
+func (s *Syncer) MarkSyncing(feedID int64) {
+	s.syncingMu.Lock()
+	s.syncing[feedID] = time.Now()
+	s.syncingMu.Unlock()
+}
+
+// ClearSyncing removes the in-flight marker WITHOUT recording a finished
+// attempt — for backing out an admitted-but-never-started manual sync.
+// Bumping attempted here would falsely fire completion watches.
+func (s *Syncer) ClearSyncing(feedID int64) {
+	s.syncingMu.Lock()
+	delete(s.syncing, feedID)
+	s.syncingMu.Unlock()
+}
+
+func (s *Syncer) unmarkSyncing(feedID int64) {
+	s.syncingMu.Lock()
+	// Only feeds still tracked get an attempted timestamp: if the feed was
+	// deleted mid-sync (ForgetFeed cleared it), recording the attempt would
+	// plant a stale completion baseline on a later feed reusing the rowid.
+	if _, tracked := s.syncing[feedID]; tracked {
+		s.attempted[feedID] = time.Now()
+	}
+	delete(s.syncing, feedID)
+	s.syncingMu.Unlock()
+}
+
+// persistSyncError records a failed sync in feeds.last_error, guarded so
+// that a feed edited mid-sync doesn't receive an error belonging to its old
+// configuration. When executedRevision > 0 the write additionally requires
+// the adapter revision to be unchanged: if the adapter was edited (same
+// adapter_id, new revision) after the sync loaded it, the error belongs to
+// the old revision and must not overwrite the new feed status.
+func (s *Syncer) persistSyncError(ctx context.Context, feed store.Feed, executedRevision int64, syncErr error) {
+	// The write must survive cancellation: at shutdown the app context that
+	// cancelled the sync IS the error being recorded, and WaitBackground
+	// holds db.Close open precisely so this lands. Detach, keep a bound.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	query := `UPDATE feeds SET last_error = ? WHERE id = ? AND url = ? AND enabled = 1
+		 AND data = ? AND adapter_id = ? AND name = ?`
+	args := []any{syncErr.Error(), feed.ID, feed.URL, feed.Data, feed.AdapterID, feed.Name}
+	if executedRevision > 0 {
+		query += ` AND adapter_id IN (SELECT id FROM feed_adapters WHERE id = ? AND revision = ?)`
+		args = append(args, feed.AdapterID, executedRevision)
+	}
+	if _, err := s.Store.DB.ExecContext(ctx, query, args...); err != nil {
+		log.Printf("WARNING: cleanup: %v", err)
+	}
+}
+
 func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
+	s.MarkSyncing(feed.ID)
+	// unmarkSyncing publishes the attempt as finished (sync_attempted_at),
+	// which the SPA takes as "the outcome is now readable" — so every
+	// last_error/last_success write must happen in the function body, before
+	// the defer runs. That's why failures are persisted here and not by the
+	// callers.
+	defer s.unmarkSyncing(feed.ID)
+
 	logger := logging.FromContext(ctx)
 
 	adapter, err := s.Store.FeedAdapter(ctx, feed.AdapterID)
 	if err != nil {
 		logger.Error("failed to get feed adapter", "feed_id", feed.ID, "adapter_id", feed.AdapterID, "error", err)
+		s.persistSyncError(ctx, feed, 0, err)
 		return 0, err
 	}
 	logger.Debug("testing adapter", "feed", feed.Name, "adapter", adapter.Name, "adapter_revision", adapter.Revision)
@@ -233,6 +341,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	entries, err := s.TestAdapter(ctx, feed, adapter)
 	if err != nil {
 		logger.Error("adapter test failed", "feed", feed.Name, "adapter", adapter.Name, "error", err)
+		s.persistSyncError(ctx, feed, adapter.Revision, err)
 		return adapter.Revision, err
 	}
 	logger.Debug("adapter executed successfully", "feed", feed.Name, "entry_count", len(entries))
@@ -285,6 +394,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		return adapter.Revision, nil
 	}
 	if err != nil {
+		s.persistSyncError(ctx, feed, adapter.Revision, err)
 		return adapter.Revision, err
 	}
 	// A resync replaces the feed's entries wholesale, so prefixes that

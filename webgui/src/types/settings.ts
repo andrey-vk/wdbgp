@@ -28,6 +28,7 @@ export const settingsSchema = z.object({
   admin_password: settingStringSchema,
   allow_dynamic_peers: settingBoolSchema,
   auto_restore_enabled: settingBoolSchema,
+  bgp_hold_time: settingIntSchema,
   bgp_port: settingIntSchema,
   backup_dir: settingStringSchema,
   backup_enabled: settingBoolSchema,
