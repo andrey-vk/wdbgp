@@ -624,6 +624,74 @@ func TestFeedsSyncAllRejectsWhileFeedSyncing(t *testing.T) {
 	srv.WaitBackground(ctx)
 }
 
+// TestFeedsSyncOneRejectsWhileSyncAllRunning — the mirror guard: while a
+// manual sync-all is in flight, a single-feed sync on a feed the serial
+// run hasn't locked yet must answer 409, or its completion would bump
+// sync_attempted_at and consume that feed's sync-all watch on the wrong
+// run's outcome.
+func TestFeedsSyncOneRejectsWhileSyncAllRunning(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	if _, err := st.DB.ExecContext(ctx, "UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatalf("disable seeded feeds: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, `INSERT OR IGNORE INTO feed_adapters(id, name, language, api_version, source, revision)
+		VALUES (7, 'blocking', 'javascript', 1, 'function sync(feed, api) { api.httpGet(feed.url); return []; }', 1)`); err != nil {
+		t.Fatalf("setup adapter: %v", err)
+	}
+	// Two feeds in the enabled default mode: the serial sync-all blocks on
+	// the first (lowest id), leaving the second unlocked — so only the
+	// syncAllInFlight guard can reject a single-feed sync for it.
+	feedA, err := st.AddFeed(ctx, "blocking-a", "http://feed.test/a.json", 7, true, 0, "", "", false)
+	if err != nil {
+		t.Fatalf("AddFeed a: %v", err)
+	}
+	feedB, err := st.AddFeed(ctx, "blocking-b", "http://feed.test/b.json", 7, true, 0, "", "", false)
+	if err != nil {
+		t.Fatalf("AddFeed b: %v", err)
+	}
+	for _, id := range []int64{feedA, feedB} {
+		if _, err := st.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", id); err != nil {
+			t.Fatalf("add feed %d to mode: %v", id, err)
+		}
+	}
+
+	bt := &blockingTransport{release: make(chan struct{}), started: make(chan struct{})}
+	syncer := feeds.NewSyncer(st, srv.settings)
+	syncer.Client = &http.Client{Transport: bt}
+	srv.syncer = syncer
+
+	w := httptest.NewRecorder()
+	srv.apiFeedsSyncAll(w, httptest.NewRequest("POST", "/api/admin/feeds/sync-all", nil))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("sync-all trigger: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+	select {
+	case <-bt.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sync-all goroutine never reached the HTTP transport")
+	}
+
+	syncOne := func(id int64) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/api/admin/feeds/"+strconv.FormatInt(id, 10)+"/sync", nil)
+		req.SetPathValue("id", strconv.FormatInt(id, 10))
+		w := httptest.NewRecorder()
+		srv.apiFeedsSyncOne(w, req)
+		return w
+	}
+	if w := syncOne(feedB); w.Code != http.StatusConflict {
+		t.Fatalf("sync-one during sync-all: status = %d, want 409, body=%s", w.Code, w.Body.String())
+	}
+
+	close(bt.release)
+	srv.WaitBackground(ctx)
+	if w := syncOne(feedB); w.Code != http.StatusAccepted {
+		t.Fatalf("sync-one after sync-all finished: status = %d, want 202, body=%s", w.Code, w.Body.String())
+	}
+	srv.WaitBackground(ctx)
+}
+
 // TestBackgroundCtxFollowsAppContext — the context handed to async sync
 // goroutines must survive the end of the request that spawned it, but be
 // cancelled when the application shuts down (SetAppContext).

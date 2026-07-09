@@ -281,6 +281,16 @@ func (s *Server) apiFeedsSyncOne(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Feed is disabled"})
 		return
 	}
+	// Mirror of the guard in apiFeedsSyncAll: a manual sync-all in flight
+	// handed the SPA per-feed completion-watch baselines, and a single-feed
+	// sync slipping in on a feed the serial run hasn't locked yet would
+	// bump sync_attempted_at and consume that feed's watch on the wrong
+	// run's outcome. Scheduled SyncAll runs don't set this flag — they hand
+	// out no watches, and per-feed collisions are covered by TryLockFeed.
+	if s.syncAllInFlight.Load() {
+		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Sync already in progress"})
+		return
+	}
 	mu, ok := s.syncer.TryLockFeed(id)
 	if !ok {
 		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Sync already in progress"})
