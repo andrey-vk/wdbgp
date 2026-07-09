@@ -73,16 +73,25 @@ jobs:
 
       - name: Attach OpenVEX attestation
         # Ships the repo's VEX exceptions (.vex/openvex.vex.json) with the
-        # image, so Docker Scout (and any OpenVEX-aware scanner) suppresses
-        # advisories we've verified don't apply — e.g. GO-2026-5932, which
-        # flags all of golang.org/x/crypto forever while only bcrypt is
-        # linked. Must be an attestation: Scout ignores VEX files embedded
-        # in the image filesystem once provenance/SBOM attestations exist.
-        # All tags pushed above share one index digest, so attaching via
-        # the first tag covers every tag of this release.
+        # image, so OpenVEX-aware scanners suppress advisories we've
+        # verified don't apply — e.g. GO-2026-5932, which flags all of
+        # golang.org/x/crypto forever while only bcrypt is linked. Must be
+        # an attestation: Scout ignores VEX files embedded in the image
+        # filesystem once provenance/SBOM attestations exist. All tags
+        # pushed above share one index digest, so attaching via the first
+        # tag covers every tag of this release.
+        #
+        # KNOWN LIMITATION: the Scout *platform* (Hub badge, dashboard)
+        # currently does not ingest attestation-based VEX for multi-arch
+        # images (long-standing upstream issue, forums.docker.com/t/143422
+        # — verified 2026-07-09: attach + readback succeed, exception never
+        # applies, with or without --org). The Hub badge is covered by an
+        # org-level dashboard exception instead; this attestation is the
+        # portable, in-repo record and takes over if Docker fixes ingestion.
         run: |
           FIRST_TAG="$(printf '%s\n' "${TAGS}" | head -n1)"
           docker scout attestation add \
+            --org "${DOCKERHUB_ORG}" \
             --file .vex/openvex.vex.json \
             --predicate-type https://openvex.dev/ns/v0.2.0 \
             "${FIRST_TAG}"
@@ -91,6 +100,7 @@ jobs:
             "${FIRST_TAG}" > /dev/null
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
+          DOCKERHUB_ORG: ${{ secrets.DOCKERHUB_USERNAME }}
 
       - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa
