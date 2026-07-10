@@ -62,6 +62,46 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Install Docker Scout CLI
+        run: |
+          curl -fsSL -o /tmp/scout.tar.gz \
+            https://github.com/docker/scout-cli/releases/download/v1.23.1/docker-scout_1.23.1_linux_amd64.tar.gz
+          echo "0f778f9d833f28bc6cccff95e33039849c0afcecafa38d9f46fe74bfd0915714  /tmp/scout.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.docker/cli-plugins"
+          tar -xzf /tmp/scout.tar.gz -C "$HOME/.docker/cli-plugins" docker-scout
+          chmod +x "$HOME/.docker/cli-plugins/docker-scout"
+
+      - name: Attach OpenVEX attestation
+        # Ships the repo's VEX exceptions (.vex/openvex.vex.json) with the
+        # image, so OpenVEX-aware scanners suppress advisories we've
+        # verified don't apply — e.g. GO-2026-5932, which flags all of
+        # golang.org/x/crypto forever while only bcrypt is linked. Must be
+        # an attestation: Scout ignores VEX files embedded in the image
+        # filesystem once provenance/SBOM attestations exist. All tags
+        # pushed above share one index digest, so attaching via the first
+        # tag covers every tag of this release.
+        #
+        # KNOWN LIMITATION: the Scout *platform* (Hub badge, dashboard)
+        # currently does not ingest attestation-based VEX for multi-arch
+        # images (long-standing upstream issue, forums.docker.com/t/143422
+        # — verified 2026-07-09: attach + readback succeed, exception never
+        # applies, with or without --org). The Hub badge is covered by an
+        # org-level dashboard exception instead; this attestation is the
+        # portable, in-repo record and takes over if Docker fixes ingestion.
+        run: |
+          FIRST_TAG="$(printf '%s\n' "${TAGS}" | head -n1)"
+          docker scout attestation add \
+            --org "${DOCKERHUB_ORG}" \
+            --file .vex/openvex.vex.json \
+            --predicate-type https://openvex.dev/ns/v0.2.0 \
+            "${FIRST_TAG}"
+          docker scout attestation get \
+            --predicate-type https://openvex.dev/ns/v0.2.0 \
+            "${FIRST_TAG}" > /dev/null
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DOCKERHUB_ORG: ${{ secrets.DOCKERHUB_USERNAME }}
+
       - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa
         with:
