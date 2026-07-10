@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [0.17.3-alpha] — 2026-07-10
 
 ### Changed
 - **Release images now carry an OpenVEX attestation** (`.vex/openvex.vex.json`, attached by the deploy pipeline via `docker scout attestation add`) recording vulnerability-applicability verdicts as a portable, repo-versioned record for OpenVEX-aware scanners. First entry: GO-2026-5932 (`golang.org/x/crypto/openpgp` is unmaintained) — it matches every version of `x/crypto` with no fix ever coming, while the shipped binary links only `x/crypto/bcrypt`; verified via govulncheck symbol analysis and `go list -deps`. To reproduce the suppression locally: `docker scout cves <image> --vex-location .vex --vex-author andr.vk@gmail.com` (Scout's CLI trusts only `@docker.com` authors by default). Note the Scout platform (Docker Hub badge, dashboard) currently does not ingest attestation-based VEX for multi-arch images — a long-standing upstream issue (forums.docker.com/t/143422), verified against this repo's images — so the Hub badge is covered by an org-level Scout dashboard exception until Docker fixes ingestion; the attestation then takes over automatically. A statement must be removed if the flagged package ever becomes reachable — CI's govulncheck would start failing on its own in that case, which serves as the safety net.
