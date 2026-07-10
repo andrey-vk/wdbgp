@@ -61,6 +61,11 @@ jobs:
           sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # meta.outputs.version is the semver from the release tag (or
+          # the raw tag on workflow_dispatch), so the version the binary
+          # reports always matches the Docker tag it shipped under.
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
 
       - name: Install Docker Scout CLI
         run: |

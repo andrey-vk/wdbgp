@@ -41,6 +41,20 @@ describe('auth store', () => {
     expect(result).toBe(true)
   })
 
+  it('checkAuth() picks up server_version from /api/admin/me', async () => {
+    mockGet.mockResolvedValue({ data: { authenticated: true, server_version: '0.17.4-alpha' } })
+    const store = useAuthStore()
+    await store.checkAuth()
+    expect(store.serverVersion).toBe('0.17.4-alpha')
+  })
+
+  it('checkAuth() leaves serverVersion empty when the response omits it', async () => {
+    mockGet.mockResolvedValue({ data: { authenticated: true } })
+    const store = useAuthStore()
+    await store.checkAuth()
+    expect(store.serverVersion).toBe('')
+  })
+
   it('checkAuth() sets authenticated=false on 401', async () => {
     mockGet.mockRejectedValue({ response: { status: 401 } })
     const store = useAuthStore()

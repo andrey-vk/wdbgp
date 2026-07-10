@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Added
+- **The admin UI footer now shows the running server version.** The build stamps the version into the binary via `-ldflags -X` (`internal/version`): release images get the semver matching their Docker tag (deploy passes the metadata-action version as the `VERSION` build arg, so they can't drift), hand-built images can pass their own (`docker build --build-arg VERSION="$(git describe --tags --dirty)"` tells apart a working-tree build from the release it forked from), and anything else reports `dev`. The version rides the existing `/api/admin/me` bootstrap response — admin-authenticated only, so anonymous visitors can't fingerprint the exact build — and is logged once at startup.
+
 ## [0.17.4-alpha] — 2026-07-10
 
 ### Fixed
