@@ -5,15 +5,14 @@
     clear: both;
 }
 
+// No default margin: inside CSS grid rows the margin made every card except
+// the :last-child stretch short (visibly unequal heights). Spacing between
+// cards is the caller's job (mt-*, mb-*, gap utilities), which is already how
+// every usage in the admin SPA works.
 .card {
     background: var(--surface-card);
     padding: 2rem;
-    margin-bottom: 2rem;
     border-radius: var(--content-border-radius);
-
-    &:last-child {
-        margin-bottom: 0;
-    }
 }
 
 .p-toast {

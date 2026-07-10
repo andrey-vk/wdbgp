@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
@@ -228,6 +228,11 @@ function debounceCount(): void {
 }
 
 async function fetchCounts(): Promise<void> {
+  // Code from this page can outlive its route (the debounce timer, or an
+  // in-flight loadData chain resuming after navigation). By then
+  // route.params.id is gone and userId computes to NaN — don't fire a
+  // request to /users/NaN/count-selections.
+  if (!Number.isInteger(userId.value)) return
   const token = countRequest.next()
   const selections = {
     ...buildSelectionPayload(),
@@ -289,6 +294,13 @@ function goBack() {
 // ── Lifecycle ───────────────────────────────────────────────
 onMounted(() => {
   loadData()
+})
+
+onUnmounted(() => {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer)
+    debounceTimer = null
+  }
 })
 </script>
 

@@ -21,14 +21,16 @@ onUnmounted(() => {
   stopStatusPolling()
 })
 
-// Stat cards data
+// Stat cards data. Icon classes are hardcoded literals: Tailwind only
+// generates classes it finds verbatim in the source, so building names
+// like 'bg-' + color + '-100' at runtime yields classes with no CSS.
 const stats = computed(() => {
   if (!data.value) return []
   return [
-    { label: t('dashboard.prefixes'), value: data.value.prefixes?.toLocaleString() || '0', icon: 'pi-globe', color: 'blue' },
-    { label: t('dashboard.bgp_peers'), value: `${data.value.bgp?.connected_peers || 0}/${data.value.bgp?.total_peers || 0}`, icon: 'pi-sitemap', color: 'green' },
-    { label: t('dashboard.feeds'), value: `${data.value.feeds?.enabled || 0}/${data.value.feeds?.total || 0}`, icon: 'pi-download', color: 'teal' },
-    { label: t('dashboard.users'), value: data.value.users?.total || 0, icon: 'pi-users', color: 'purple' },
+    { label: t('dashboard.prefixes'), value: data.value.prefixes?.toLocaleString() || '0', icon: 'pi-globe', boxClass: 'bg-blue-100 dark:bg-blue-400/10', iconClass: 'text-blue-500' },
+    { label: t('dashboard.bgp_peers'), value: `${data.value.bgp?.connected_peers || 0}/${data.value.bgp?.total_peers || 0}`, icon: 'pi-sitemap', boxClass: 'bg-green-100 dark:bg-green-400/10', iconClass: 'text-green-500' },
+    { label: t('dashboard.feeds'), value: `${data.value.feeds?.enabled || 0}/${data.value.feeds?.total || 0}`, icon: 'pi-download', boxClass: 'bg-teal-100 dark:bg-teal-400/10', iconClass: 'text-teal-500' },
+    { label: t('dashboard.users'), value: data.value.users?.total || 0, icon: 'pi-users', boxClass: 'bg-purple-100 dark:bg-purple-400/10', iconClass: 'text-purple-500' },
   ]
 })
 
@@ -181,8 +183,8 @@ async function fetchStatuses() {
               <div class="text-gray-500 dark:text-gray-400 text-sm mb-1">{{ stat.label }}</div>
               <div class="text-2xl font-semibold">{{ stat.value }}</div>
             </div>
-            <div :class="['w-10 h-10 rounded-lg flex items-center justify-center', 'bg-' + stat.color + '-100', 'dark:bg-' + stat.color + '-400/10']">
-              <i :class="['pi', stat.icon, 'text-' + stat.color + '-500', 'text-xl']" />
+            <div :class="['w-10 h-10 rounded-lg flex items-center justify-center', stat.boxClass]">
+              <i :class="['pi', stat.icon, stat.iconClass, 'text-xl']" />
             </div>
           </div>
         </div>

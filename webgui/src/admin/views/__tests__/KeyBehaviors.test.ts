@@ -322,3 +322,55 @@ describe('UsersPage BGP password', () => {
     expect((toggle.element as HTMLInputElement).checked).toBe(true)
   })
 })
+
+// ============================================================
+// Regression: leaving the user-selections page with the count debounce
+// pending fired POST /admin/users/NaN/count-selections — the timer
+// survived unmount, and userId (computed from route.params.id) turned
+// NaN once the route no longer carried an :id param.
+// ============================================================
+
+describe('UserSelectionsPage stray count request', () => {
+  it('does not fire count-selections after the page is left mid-debounce', async () => {
+    mockRouteParams = { id: '4' }
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/users/4/catalog') {
+        return Promise.resolve({
+          data: {
+            user: { id: 4, name: 'Test User', catalog_mode_id: 1 },
+            modes: [{ id: 1, name: 'Default' }],
+            catalog: { Video: ['youtube'] },
+            prefix_counts: { v4: { Video: { youtube: 10 } }, v6: {} },
+            selections: { categories: [], services: [] },
+          },
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+    mockPost.mockResolvedValue({ data: { v4: 10, v6: 0, delta_v4: 0, delta_v6: 0 } })
+
+    const UserSelectionsPage = (await import('@/admin/views/UserSelectionsPage.vue')).default
+    const wrapper = mount(UserSelectionsPage, {
+      global: { stubs: stubPrimeVueComponents() },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    // The initial load counts with the real id.
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/4/count-selections', expect.anything())
+    mockPost.mockClear()
+
+    // Toggle a category: arms the 300ms debounced recount.
+    const label = wrapper.findAll('span').find((s) => s.text() === 'Video')
+    expect(label).toBeDefined()
+    await label!.trigger('click')
+
+    // Navigate away before the debounce fires: the route loses :id and
+    // the component unmounts.
+    delete mockRouteParams.id
+    wrapper.unmount()
+
+    await new Promise(resolve => setTimeout(resolve, 400))
+    expect(mockPost).not.toHaveBeenCalled()
+  })
+})
