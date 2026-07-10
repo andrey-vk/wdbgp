@@ -41,6 +41,26 @@ type Peer struct {
 	routeCB     RouteCallback
 	hasIPv6Cap  bool // remote peer advertised IPv6 unicast capability
 	hasAS4Cap   bool // remote peer advertised Four-octet ASN capability (RFC 6793)
+
+	// writeMu serializes all writes to the session socket once it can have
+	// multiple writers: the keepalive goroutine, mainLoop (updates,
+	// notifications) and the manager's reconcile goroutine (AnnounceRoutes/
+	// WithdrawRoutes on an established session) would otherwise interleave
+	// partial writes and corrupt the BGP byte stream mid-message.
+	writeMu sync.Mutex
+}
+
+// writeConn sends one serialized BGP message under writeMu with its own
+// write deadline. The deadline matters twice over: mainLoop's SetDeadline
+// before each read covers BOTH directions, so an unadorned Write could
+// inherit a stale, already-expired read deadline — or block indefinitely
+// on a full socket buffer until that shared deadline kills it mid-stream.
+func (p *Peer) writeConn(conn net.Conn, data []byte, timeout time.Duration) error {
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
+	conn.SetWriteDeadline(time.Now().Add(timeout)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
+	_, err := conn.Write(data)
+	return err
 }
 
 func NewPeer(cfg PeerConfig, spk SpeakerConfig, logger *slog.Logger, routeCB RouteCallback) *Peer {
@@ -264,7 +284,10 @@ func (p *Peer) connectAndRun() error {
 	p.logger.Info("BGP session established")
 
 	// Step 5: Send initial routes
-	p.sendRoutes(conn)
+	if err := p.sendRoutes(conn); err != nil {
+		p.setState(StateIdle)
+		return fmt.Errorf("send initial routes: %w", err)
+	}
 
 	// Step 6: Main loop
 	err = p.mainLoop(conn)
@@ -298,7 +321,11 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 
 		// Check for pending route updates
 		if p.needsUpdate.Swap(false) {
-			p.sendRoutes(conn)
+			if err := p.sendRoutes(conn); err != nil {
+				// needsUpdate is re-armed by sendRoutes; tear the session
+				// down so the establish path re-sends the full set.
+				return fmt.Errorf("send route update: %w", err)
+			}
 		}
 
 		// Read message (blocking with deadline)
@@ -509,11 +536,11 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	p.hasIPv6Cap = openIn.HasIPv6Unicast
 	p.hasAS4Cap = openIn.HasAS4Cap
 
-	// Initial routes
-	p.sendRoutes(conn)
-
-	// Main loop
-	if err := p.mainLoop(conn); err != nil {
+	// Initial routes. On failure fall through to teardown — needsUpdate is
+	// re-armed by sendRoutes, so the next session re-sends the full set.
+	if err := p.sendRoutes(conn); err != nil {
+		p.logger.Error("initial route send failed", "error", err)
+	} else if err := p.mainLoop(conn); err != nil {
 		p.logger.Error("main loop error", "error", err)
 	}
 	p.setState(StateIdle)
@@ -529,13 +556,12 @@ func (p *Peer) sendNotification(conn net.Conn, code, subcode uint8, data []byte)
 		ErrorSubcode: subcode,
 		Data:         data,
 	}
-	// Give the write its own fresh deadline: this is called right after a
-	// read-deadline expiry (e.g. hold timer), so the connection's existing
-	// deadline has, by definition, already passed — without resetting it
-	// here, this Write would immediately fail with the same stale timeout
-	// and the peer would never actually receive the NOTIFICATION.
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
-	if _, err := conn.Write(notif.Serialize()); err != nil {
+	// writeConn gives the write its own fresh deadline: this is called right
+	// after a read-deadline expiry (e.g. hold timer), so the connection's
+	// existing deadline has, by definition, already passed — without
+	// resetting it, this Write would immediately fail with the same stale
+	// timeout and the peer would never actually receive the NOTIFICATION.
+	if err := p.writeConn(conn, notif.Serialize(), 5*time.Second); err != nil {
 		p.logger.Debug("send notification write", "error", err)
 	}
 	// Write error is intentionally ignored — the session is being torn down

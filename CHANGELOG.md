@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Fixed
+- **BGP peers could get stuck with a small fraction of their routes while the session stayed healthy** (observed live: 2380 desired routes, router holding 10). Three send-path defects compounded: route UPDATEs were written with no write deadline of their own, inheriting the read deadline `mainLoop` sets on the shared connection — so announcing a large set to a slow peer could fail mid-stream when that deadline expired; the failure was then swallowed (`sendRoutes` logged and returned void), so the manager recorded the full set as announced and every later reconcile skipped the peer — freezing it at whatever subset got through; and keepalives, notifications, and route updates were written from three goroutines with no shared lock, able to interleave partial writes and corrupt the BGP byte stream. All session writes now go through one per-connection mutex with a per-message write deadline; send failures re-arm the update flag and propagate, so the session either retries the full set or tears down and re-sends on re-establish — partial announcements can no longer be recorded as success.
+
+### Changed
+- **Route announcements are batched**: routes sharing an attribute set (next hop + communities) are packed into common UPDATE messages (up to 100 NLRI each) instead of one message per route — a typical multi-thousand-prefix announcement now takes dozens of writes rather than thousands, shrinking the slow-peer window that triggered the freeze above.
+
 ## [0.17.3-alpha] — 2026-07-10
 
 ### Changed
