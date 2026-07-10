@@ -2,6 +2,7 @@ package bgp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"sort"
@@ -451,7 +452,12 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		newInstalled[prefix] = instPrefix{Signature: signature(userIDs)}
 	}
 
-	// For each enabled peer, compute desired routes and reconcile
+	// For each enabled peer, compute desired routes and reconcile.
+	// Delivery failures don't abort the loop — every peer gets its
+	// announcement attempted — but they are collected and returned:
+	// callers treat a Reconcile error as "your change did not (fully)
+	// reach BGP".
+	var deliveryErrs []error
 	for _, user := range m.peerConfigs {
 		if !user.Enabled {
 			continue
@@ -490,43 +496,42 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		// Use "addr:asn" as the peer routes key for multi-peer-per-IP support
 		peerKey := fmt.Sprintf("%s:%d", user.PeerIP, user.PeerASN)
 
-		// Compare with previously announced
-		prevRoutes := m.peerRoutes[peerKey]
-		if routesEqual(prevRoutes, desiredRoutes) {
+		// Compare with previously announced. A missing entry always forces
+		// a re-announce: after a delivery failure the entry is deleted, and
+		// treating absent as "empty set" would skip the retry whenever the
+		// desired set is itself empty.
+		prevRoutes, announced := m.peerRoutes[peerKey]
+		if announced && routesEqual(prevRoutes, desiredRoutes) {
 			continue
 		}
 
-		// Compute withdrawals (prefixes in prev but not in desired)
-		desiredSet := routePrefixSet(desiredRoutes)
-		var toWithdraw []netip.Prefix
-		for _, r := range prevRoutes {
-			if !desiredSet[r.Prefix.String()] {
-				toWithdraw = append(toWithdraw, r.Prefix)
-			}
-		}
-
-		if len(toWithdraw) > 0 {
-			if err := m.speaker.Withdraw(addr, user.PeerASN, toWithdraw); err != nil {
-				return fmt.Errorf("withdraw from %s: %w", user.PeerIP, err)
-			}
-		}
-
-		if len(desiredRoutes) > 0 {
-			if err := m.speaker.Announce(addr, user.PeerASN, desiredRoutes); err != nil {
-				return fmt.Errorf("announce to %s: %w", user.PeerIP, err)
-			}
-		} else {
-			// No routes — ensure peer has empty routes
-			if err := m.speaker.Announce(addr, user.PeerASN, nil); err != nil {
-				return fmt.Errorf("clear routes for %s: %w", user.PeerIP, err)
-			}
+		// Announce the desired set (possibly empty). The peer computes
+		// withdrawals itself from what it actually delivered (lastSent
+		// diff), so no explicit Withdraw call is needed — and a manager-side
+		// diff against peerRoutes would be wrong anyway whenever a previous
+		// delivery only partially succeeded.
+		if err := m.speaker.Announce(addr, user.PeerASN, desiredRoutes); err != nil {
+			// Delivery failed — drop the cache entry entirely rather than
+			// keeping the previous set. The peer has already stored the new
+			// desired set and its own retry may deliver it later, so a
+			// stale entry could make a future reconcile back to exactly the
+			// old set hit routesEqual and skip the announce, stranding the
+			// router on the retried set. With no entry, the next reconcile
+			// always re-announces — idempotent, since the peer computes its
+			// own withdrawal diffs from what it actually delivered.
+			delete(m.peerRoutes, peerKey)
+			logger.Warn("route announcement failed, will retry",
+				"peer", user.PeerIP, "asn", user.PeerASN, "error", err)
+			deliveryErrs = append(deliveryErrs,
+				fmt.Errorf("announce to %s AS%d: %w", user.PeerIP, user.PeerASN, err))
+			continue
 		}
 
 		m.peerRoutes[peerKey] = desiredRoutes
 	}
 
 	m.installed = newInstalled
-	return nil
+	return errors.Join(deliveryErrs...)
 }
 
 func signature(userIDs []int64) string {
@@ -583,14 +588,6 @@ func communitiesEqual(a, b []LargeCommunity) bool {
 		}
 	}
 	return true
-}
-
-func routePrefixSet(routes []Route) map[string]bool {
-	set := make(map[string]bool, len(routes))
-	for _, r := range routes {
-		set[r.Prefix.String()] = true
-	}
-	return set
 }
 
 // peerPort returns the destination port for a peer connection.

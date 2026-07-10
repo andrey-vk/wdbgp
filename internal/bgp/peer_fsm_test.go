@@ -1,6 +1,7 @@
 package bgp
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -64,3 +65,46 @@ func TestMainLoopSendsNotificationOnHoldTimerExpiry(t *testing.T) {
 		t.Fatal("mainLoop did not return after sending the notification")
 	}
 }
+
+// =============================================================================
+// TestWriteConnPartialWriteClosesConn — a write that lands only part of a
+// BGP message before failing leaves a truncated message on the wire; any
+// retry on that connection appends a fresh header after the truncated body
+// and corrupts the stream. writeConn must close the conn in that case so
+// recovery goes through a clean re-establish — but must NOT close it when
+// nothing was written, since then the stream is intact and a retry is safe.
+// =============================================================================
+
+func TestWriteConnPartialWriteClosesConn(t *testing.T) {
+	p := &Peer{}
+
+	partial := &stubWriteConn{n: 5, err: errors.New("i/o timeout")}
+	if err := p.writeConn(partial, make([]byte, 100), time.Second); err == nil {
+		t.Fatal("writeConn returned nil for a failed write")
+	}
+	if !partial.closed {
+		t.Error("conn left open after a partial write — a retry would corrupt the stream")
+	}
+
+	clean := &stubWriteConn{n: 0, err: errors.New("i/o timeout")}
+	if err := p.writeConn(clean, make([]byte, 100), time.Second); err == nil {
+		t.Fatal("writeConn returned nil for a failed write")
+	}
+	if clean.closed {
+		t.Error("conn closed although nothing was written — retrying on the intact stream was safe")
+	}
+}
+
+// stubWriteConn fails every Write after reporting n bytes written and
+// records whether Close was called. Methods writeConn doesn't touch are
+// inherited from the nil embedded net.Conn and would panic if reached.
+type stubWriteConn struct {
+	net.Conn
+	n      int
+	err    error
+	closed bool
+}
+
+func (c *stubWriteConn) Write([]byte) (int, error)        { return c.n, c.err }
+func (c *stubWriteConn) Close() error                     { c.closed = true; return nil }
+func (c *stubWriteConn) SetWriteDeadline(time.Time) error { return nil }
