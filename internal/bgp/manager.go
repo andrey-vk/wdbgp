@@ -496,9 +496,12 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		// Use "addr:asn" as the peer routes key for multi-peer-per-IP support
 		peerKey := fmt.Sprintf("%s:%d", user.PeerIP, user.PeerASN)
 
-		// Compare with previously announced
-		prevRoutes := m.peerRoutes[peerKey]
-		if routesEqual(prevRoutes, desiredRoutes) {
+		// Compare with previously announced. A missing entry always forces
+		// a re-announce: after a delivery failure the entry is deleted, and
+		// treating absent as "empty set" would skip the retry whenever the
+		// desired set is itself empty.
+		prevRoutes, announced := m.peerRoutes[peerKey]
+		if announced && routesEqual(prevRoutes, desiredRoutes) {
 			continue
 		}
 

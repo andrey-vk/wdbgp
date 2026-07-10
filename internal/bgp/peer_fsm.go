@@ -66,7 +66,14 @@ func (p *Peer) writeConn(conn net.Conn, data []byte, timeout time.Duration) erro
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
 	conn.SetWriteDeadline(time.Now().Add(timeout)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
-	_, err := conn.Write(data)
+	n, err := conn.Write(data)
+	if err != nil && n > 0 {
+		// A partial write leaves a truncated BGP message on the wire; any
+		// retry on this connection would append a fresh header after the
+		// truncated body and corrupt the stream. Kill the conn so mainLoop's
+		// next read fails and recovery goes through a clean re-establish.
+		conn.Close() //nolint:errcheck,gosec // already failing, close is best-effort
+	}
 	return err
 }
 

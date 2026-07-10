@@ -945,4 +945,19 @@ func TestReconcileFailureInvalidatesCacheAndReturnsError(t *testing.T) {
 	if _, cached := manager.peerRoutes[peerKey]; cached {
 		t.Fatal("peerRoutes cache entry survived a failed delivery — a later reconcile back to the old set would be skipped")
 	}
+
+	// Shrink the desired set to EMPTY and reconcile again. The failed
+	// delivery above deleted the cache entry; if a missing entry were read
+	// as the zero value, routesEqual(nil, empty) would be true and the
+	// withdrawal would never be retried at the manager level. With the
+	// presence bit the manager must attempt Announce again (and here fail
+	// again, since the peer is still gone from the speaker).
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, userID, nil, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Reconcile(ctx); err == nil {
+		t.Fatal("Reconcile with an empty desired set skipped the announce retry after a failed delivery")
+	}
 }
