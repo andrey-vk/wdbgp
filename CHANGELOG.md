@@ -6,12 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [0.17.4-alpha] — 2026-07-10
 
 ### Added
 - **The admin UI footer now shows the running server version.** The build stamps the version into the binary via `-ldflags -X` (`internal/version`): release images get the semver matching their Docker tag (deploy passes the metadata-action version as the `VERSION` build arg, so they can't drift), hand-built images can pass their own (`docker build --build-arg VERSION="$(git describe --tags --dirty)"` tells apart a working-tree build from the release it forked from), and anything else reports `dev`. The version rides the existing `/api/admin/me` bootstrap response — admin-authenticated only, so anonymous visitors can't fingerprint the exact build — and is logged once at startup.
-
-## [0.17.4-alpha] — 2026-07-10
 
 ### Fixed
 - **BGP peers could get stuck with a small fraction of their routes while the session stayed healthy** (observed live: 2380 desired routes, router holding 10). Three send-path defects compounded: route UPDATEs were written with no write deadline of their own, inheriting the read deadline `mainLoop` sets on the shared connection — so announcing a large set to a slow peer could fail mid-stream when that deadline expired; the failure was then swallowed (`sendRoutes` logged and returned void), so the manager recorded the full set as announced and every later reconcile skipped the peer — freezing it at whatever subset got through; and keepalives, notifications, and route updates were written from three goroutines with no shared lock, able to interleave partial writes and corrupt the BGP byte stream. All session writes now go through one per-connection mutex with a per-message write deadline (and `mainLoop` arms only the read deadline, so inbound traffic can't extend a blocked write); route delivery is a peer-owned atomic resync — the peer tracks what the remote actually holds, computes withdrawals itself, and advances that state only after a fully successful pass — with failures propagating all the way up so the manager never records a partial announcement as success and both the session-level retry and the next reconcile re-attempt. A write that fails after landing part of a message now also closes the connection outright: the truncated message makes the byte stream unrecoverable, so recovery goes through a clean session re-establish instead of a retry that would corrupt it further.
