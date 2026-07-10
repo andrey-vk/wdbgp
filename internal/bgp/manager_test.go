@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -871,5 +872,77 @@ func TestActiveDialSnapshotSurvivesLiveSettingChange(t *testing.T) {
 	}
 	if got := p.PeerConfig().Port; got != 0 {
 		t.Errorf("Port = %d after AddPeer with live active_dial=false, want 0 (snapshot active_dial=true must still apply)", got)
+	}
+}
+
+// TestReconcileFailureInvalidatesCacheAndReturnsError — when route delivery
+// to a peer fails, reconcileLocked must (a) return an error so API callers
+// know the change did not reach BGP, and (b) DELETE the peerRoutes cache
+// entry rather than keep the previous set: the peer already stored the new
+// desired set and its own retry may deliver it, so a stale cache entry
+// would make a later reconcile back to exactly the old set hit routesEqual
+// and skip the announce, stranding the router on the retried set.
+func TestReconcileFailureInvalidatesCacheAndReturnsError(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "bgp.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	userID, err := s.AddUser(ctx, store.User{
+		Name: "client", PeerIP: "192.0.2.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"198.51.100.0/24"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertCatalogEntries(ctx, 1, []store.CatalogEntry{
+		{Category: "video", Service: "youtube", CIDR: "8.8.8.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserSelection(ctx, tx, userID, []string{"video"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(testSettings(t, map[string]string{
+		"local_asn": "64512", "router_id": "192.0.2.1", "bgp_port": "1179",
+		"local_address_v4": "192.0.2.1",
+	}), s)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Stop(ctx)
+
+	const peerKey = "192.0.2.2:65001"
+	if len(manager.peerRoutes[peerKey]) == 0 {
+		t.Fatal("cache not populated after Start")
+	}
+
+	// Force the next Announce to fail: remove the peer from the speaker so
+	// it reports "peer not found" (same code path as a delivery failure).
+	manager.speaker.mu.Lock()
+	delete(manager.speaker.peers, peerKey)
+	manager.speaker.mu.Unlock()
+
+	// Grow the desired set so the reconcile doesn't short-circuit on
+	// routesEqual before reaching Announce.
+	if err := s.InsertCatalogEntries(ctx, 1, []store.CatalogEntry{
+		{Category: "video", Service: "youtube", CIDR: "8.8.4.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = manager.Reconcile(ctx)
+	if err == nil {
+		t.Fatal("Reconcile returned nil despite failed route delivery")
+	}
+	if !strings.Contains(err.Error(), "announce to 192.0.2.2") {
+		t.Fatalf("Reconcile error = %q, want it to identify the failed peer", err)
+	}
+	if _, cached := manager.peerRoutes[peerKey]; cached {
+		t.Fatal("peerRoutes cache entry survived a failed delivery — a later reconcile back to the old set would be skipped")
 	}
 }

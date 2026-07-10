@@ -2,6 +2,7 @@ package bgp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"sort"
@@ -451,7 +452,12 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		newInstalled[prefix] = instPrefix{Signature: signature(userIDs)}
 	}
 
-	// For each enabled peer, compute desired routes and reconcile
+	// For each enabled peer, compute desired routes and reconcile.
+	// Delivery failures don't abort the loop — every peer gets its
+	// announcement attempted — but they are collected and returned:
+	// callers treat a Reconcile error as "your change did not (fully)
+	// reach BGP".
+	var deliveryErrs []error
 	for _, user := range m.peerConfigs {
 		if !user.Enabled {
 			continue
@@ -502,12 +508,19 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		// diff against peerRoutes would be wrong anyway whenever a previous
 		// delivery only partially succeeded.
 		if err := m.speaker.Announce(addr, user.PeerASN, desiredRoutes); err != nil {
-			// Delivery failed — do NOT record the set as announced, or every
-			// later reconcile would skip this peer and freeze it on a
-			// partial route set. The peer's own retry (needsUpdate) and the
-			// next reconcile both re-attempt; other peers proceed.
+			// Delivery failed — drop the cache entry entirely rather than
+			// keeping the previous set. The peer has already stored the new
+			// desired set and its own retry may deliver it later, so a
+			// stale entry could make a future reconcile back to exactly the
+			// old set hit routesEqual and skip the announce, stranding the
+			// router on the retried set. With no entry, the next reconcile
+			// always re-announces — idempotent, since the peer computes its
+			// own withdrawal diffs from what it actually delivered.
+			delete(m.peerRoutes, peerKey)
 			logger.Warn("route announcement failed, will retry",
 				"peer", user.PeerIP, "asn", user.PeerASN, "error", err)
+			deliveryErrs = append(deliveryErrs,
+				fmt.Errorf("announce to %s AS%d: %w", user.PeerIP, user.PeerASN, err))
 			continue
 		}
 
@@ -515,7 +528,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 	}
 
 	m.installed = newInstalled
-	return nil
+	return errors.Join(deliveryErrs...)
 }
 
 func signature(userIDs []int64) string {
