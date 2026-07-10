@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
+	"github.com/andrey-vk/wdbgp/internal/version"
 )
 
 // apiResponse is a standard JSON response envelope.
@@ -95,9 +96,15 @@ func (s *Server) apiAdminLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiAdminMe handles GET /api/admin/me.
-// Requires valid admin session. Returns whether the user is authenticated.
+// Requires valid admin session. Returns whether the user is authenticated,
+// plus the running server version — this endpoint is the SPA's bootstrap
+// call, and keeping the version behind admin auth avoids advertising the
+// exact build to anonymous visitors.
 func (s *Server) apiAdminMe(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"authenticated":  true,
+		"server_version": version.Version,
+	})
 }
 
 // apiAdminLogout handles POST /api/admin/logout.

@@ -17,6 +17,7 @@ import (
 	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
+	"github.com/andrey-vk/wdbgp/internal/version"
 	"github.com/andrey-vk/wdbgp/internal/web"
 )
 
@@ -109,6 +110,7 @@ func serve(s *settings.Settings, db *store.Store) error {
 	}
 
 	logging.Info("starting application",
+		"version", version.Version,
 		"bgp_asn", s.LocalASN.Get(),
 		"bgp_port", s.BGPPort.Get(),
 		"http_address", fmt.Sprintf("%s:%d", s.Host.Get(), s.Port.Get()),

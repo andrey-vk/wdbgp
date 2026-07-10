@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/andrey-vk/wdbgp/internal/feeds"
 	"github.com/andrey-vk/wdbgp/internal/store"
+	"github.com/andrey-vk/wdbgp/internal/version"
 )
 
 // =============================================================================
@@ -121,5 +123,71 @@ func TestLoginCookieExpiresWithMaxAge(t *testing.T) {
 
 	if c.MaxAge != 3600 {
 		t.Fatalf("MaxAge = %d, want 3600", c.MaxAge)
+	}
+}
+
+// =============================================================================
+// TestAdminMeReturnsServerVersion — /api/admin/me is the SPA's bootstrap
+// call and the only place the running build version is exposed; it must be
+// present for authenticated admins (the footer shows it) and the endpoint
+// itself must stay behind auth so anonymous visitors can't fingerprint the
+// exact build.
+// =============================================================================
+
+func TestAdminMeReturnsServerVersion(t *testing.T) {
+	db, err := store.Open(":memory:", false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if errClose := db.Close(); errClose != nil {
+			t.Logf("close: %v", errClose)
+		}
+	}()
+
+	handler := New(testSettings(), db, feeds.NewSyncer(db, testSettings()), &fakeBGP{}).Handler()
+
+	// Unauthenticated: 401, no version leak.
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/me", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated /api/admin/me: status=%d, want 401", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "server_version") {
+		t.Fatal("unauthenticated /api/admin/me response leaks server_version")
+	}
+
+	// Log in, replay the session cookie.
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/admin/login", strings.NewReader(`{"password": "admin"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	handler.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login: status=%d, want 200", loginRec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/admin/me", nil)
+	for _, c := range loginRec.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated /api/admin/me: status=%d, want 200", rec.Code)
+	}
+
+	var resp struct {
+		Authenticated bool   `json:"authenticated"`
+		ServerVersion string `json:"server_version"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Authenticated {
+		t.Fatal("authenticated = false, want true")
+	}
+	if resp.ServerVersion != version.Version {
+		t.Fatalf("server_version = %q, want %q", resp.ServerVersion, version.Version)
 	}
 }

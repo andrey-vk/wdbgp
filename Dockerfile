@@ -18,10 +18,11 @@ COPY --from=frontend /src/webgui/dist ./webgui/dist
 ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
+ARG VERSION=dev
 RUN set -eux; \
     if [ "$TARGETARCH" = "arm" ]; then export GOARM="${TARGETVARIANT#v}"; fi; \
     CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
-    go build -trimpath -ldflags="-s -w" -o /out/wdbgp ./cmd/wdbgp
+    go build -trimpath -ldflags="-s -w -X github.com/andrey-vk/wdbgp/internal/version.Version=${VERSION}" -o /out/wdbgp ./cmd/wdbgp
 
 FROM --platform=$BUILDPLATFORM alpine:3.23 AS certs
 

@@ -7,6 +7,7 @@ let _checkPromise: Promise<boolean> | null = null
 export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = ref(false)
   const isChecking = ref(true) // true while initial session check is in progress
+  const serverVersion = ref('') // running server build, from /admin/me (empty until authenticated)
 
   async function login(password: string): Promise<string | null> {
     try {
@@ -36,6 +37,9 @@ export const useAuthStore = defineStore('auth', () => {
       try {
         const response = await apiClient.get('/admin/me', { skipAuthRedirect: true })
         isAuthenticated.value = response.data.authenticated === true
+        if (isAuthenticated.value && typeof response.data.server_version === 'string') {
+          serverVersion.value = response.data.server_version
+        }
         return isAuthenticated.value
       } catch {
         isAuthenticated.value = false
@@ -58,5 +62,5 @@ export const useAuthStore = defineStore('auth', () => {
     isChecking.value = false
   }
 
-  return { isAuthenticated, isChecking, login, checkAuth, logout }
+  return { isAuthenticated, isChecking, serverVersion, login, checkAuth, logout }
 })
