@@ -496,30 +496,19 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			continue
 		}
 
-		// Compute withdrawals (prefixes in prev but not in desired)
-		desiredSet := routePrefixSet(desiredRoutes)
-		var toWithdraw []netip.Prefix
-		for _, r := range prevRoutes {
-			if !desiredSet[r.Prefix.String()] {
-				toWithdraw = append(toWithdraw, r.Prefix)
-			}
-		}
-
-		if len(toWithdraw) > 0 {
-			if err := m.speaker.Withdraw(addr, user.PeerASN, toWithdraw); err != nil {
-				return fmt.Errorf("withdraw from %s: %w", user.PeerIP, err)
-			}
-		}
-
-		if len(desiredRoutes) > 0 {
-			if err := m.speaker.Announce(addr, user.PeerASN, desiredRoutes); err != nil {
-				return fmt.Errorf("announce to %s: %w", user.PeerIP, err)
-			}
-		} else {
-			// No routes — ensure peer has empty routes
-			if err := m.speaker.Announce(addr, user.PeerASN, nil); err != nil {
-				return fmt.Errorf("clear routes for %s: %w", user.PeerIP, err)
-			}
+		// Announce the desired set (possibly empty). The peer computes
+		// withdrawals itself from what it actually delivered (lastSent
+		// diff), so no explicit Withdraw call is needed — and a manager-side
+		// diff against peerRoutes would be wrong anyway whenever a previous
+		// delivery only partially succeeded.
+		if err := m.speaker.Announce(addr, user.PeerASN, desiredRoutes); err != nil {
+			// Delivery failed — do NOT record the set as announced, or every
+			// later reconcile would skip this peer and freeze it on a
+			// partial route set. The peer's own retry (needsUpdate) and the
+			// next reconcile both re-attempt; other peers proceed.
+			logger.Warn("route announcement failed, will retry",
+				"peer", user.PeerIP, "asn", user.PeerASN, "error", err)
+			continue
 		}
 
 		m.peerRoutes[peerKey] = desiredRoutes
@@ -583,14 +572,6 @@ func communitiesEqual(a, b []LargeCommunity) bool {
 		}
 	}
 	return true
-}
-
-func routePrefixSet(routes []Route) map[string]bool {
-	set := make(map[string]bool, len(routes))
-	for _, r := range routes {
-		set[r.Prefix.String()] = true
-	}
-	return set
 }
 
 // peerPort returns the destination port for a peer connection.

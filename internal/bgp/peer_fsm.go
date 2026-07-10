@@ -48,6 +48,13 @@ type Peer struct {
 	// WithdrawRoutes on an established session) would otherwise interleave
 	// partial writes and corrupt the BGP byte stream mid-message.
 	writeMu sync.Mutex
+
+	// sendMu makes a whole route resync atomic against other resyncs (see
+	// resyncRoutes) and guards lastSent — the prefixes the remote side
+	// currently holds from us, advanced only after a fully successful
+	// resync and cleared when a session (re-)establishes.
+	sendMu   sync.Mutex
+	lastSent []netip.Prefix
 }
 
 // writeConn sends one serialized BGP message under writeMu with its own
@@ -283,8 +290,9 @@ func (p *Peer) connectAndRun() error {
 	p.setState(StateEstablished)
 	p.logger.Info("BGP session established")
 
-	// Step 5: Send initial routes
-	if err := p.sendRoutes(conn); err != nil {
+	// Step 5: Send initial routes (fresh session — remote holds nothing yet)
+	p.resetSent()
+	if err := p.resyncRoutes(conn); err != nil {
 		p.setState(StateIdle)
 		return fmt.Errorf("send initial routes: %w", err)
 	}
@@ -316,13 +324,16 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 
 	for !p.stopping.Load() {
 		if holdTime > 0 {
-			conn.SetDeadline(time.Now().Add(holdTime)) //nolint:errcheck,gosec // deadline is advisory, session dying if Write fails
+			// Read side only: SetDeadline would also reset the write
+			// deadline, letting a chatty peer extend a blocked concurrent
+			// route write past routeWriteTimeout indefinitely.
+			conn.SetReadDeadline(time.Now().Add(holdTime)) //nolint:errcheck,gosec // deadline is advisory, session dying if Read fails
 		}
 
 		// Check for pending route updates
 		if p.needsUpdate.Swap(false) {
-			if err := p.sendRoutes(conn); err != nil {
-				// needsUpdate is re-armed by sendRoutes; tear the session
+			if err := p.resyncRoutes(conn); err != nil {
+				// needsUpdate is re-armed by resyncRoutes; tear the session
 				// down so the establish path re-sends the full set.
 				return fmt.Errorf("send route update: %w", err)
 			}
@@ -536,9 +547,11 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	p.hasIPv6Cap = openIn.HasIPv6Unicast
 	p.hasAS4Cap = openIn.HasAS4Cap
 
-	// Initial routes. On failure fall through to teardown — needsUpdate is
-	// re-armed by sendRoutes, so the next session re-sends the full set.
-	if err := p.sendRoutes(conn); err != nil {
+	// Initial routes (fresh session — remote holds nothing yet). On failure
+	// fall through to teardown — needsUpdate is re-armed by resyncRoutes,
+	// so the next session re-sends the full set.
+	p.resetSent()
+	if err := p.resyncRoutes(conn); err != nil {
 		p.logger.Error("initial route send failed", "error", err)
 	} else if err := p.mainLoop(conn); err != nil {
 		p.logger.Error("main loop error", "error", err)

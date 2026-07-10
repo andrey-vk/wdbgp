@@ -96,12 +96,13 @@ func TestRouteAnnouncementBatched(t *testing.T) {
 	}
 }
 
-// TestSendRoutesFailureRearmsNeedsUpdate — a write failure mid-announcement
-// must re-arm needsUpdate and surface an error, never report success: the
+// TestResyncFailureRearmsNeedsUpdate — a write failure mid-resync must
+// re-arm needsUpdate and surface an error, never report success: the
 // manager records the full set as announced, so a swallowed error would
 // freeze the peer at a partial route set forever (live-deployment bug:
-// desired 2380 routes, router stuck at 10).
-func TestSendRoutesFailureRearmsNeedsUpdate(t *testing.T) {
+// desired 2380 routes, router stuck at 10). lastSent must also stay
+// unadvanced so the retry re-sends everything.
+func TestResyncFailureRearmsNeedsUpdate(t *testing.T) {
 	server, client := net.Pipe()
 	client.Close()       //nolint:errcheck,gosec // every write into the pipe must now fail
 	defer server.Close() //nolint:errcheck // test cleanup
@@ -117,11 +118,88 @@ func TestSendRoutesFailureRearmsNeedsUpdate(t *testing.T) {
 		NextHop: netip.MustParseAddr("192.0.2.2"),
 	}}
 
-	if err := p.sendRoutes(server); err == nil {
-		t.Fatal("sendRoutes returned nil on a dead connection")
+	if err := p.resyncRoutes(server); err == nil {
+		t.Fatal("resyncRoutes returned nil on a dead connection")
 	}
 	if !p.needsUpdate.Load() {
 		t.Fatal("needsUpdate not re-armed after failed send")
+	}
+	if len(p.lastSent) != 0 {
+		t.Fatalf("lastSent advanced to %v after a failed resync", p.lastSent)
+	}
+}
+
+// TestResyncWithdrawsRemovedPrefixes — shrinking the desired set must emit
+// withdrawals for the removed prefixes, computed by the peer itself from
+// what it previously delivered (the manager no longer sends withdrawal
+// deltas, and a failed withdrawal write must propagate — Codex round-1 #1).
+func TestResyncWithdrawsRemovedPrefixes(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close() //nolint:errcheck // test cleanup
+	defer client.Close() //nolint:errcheck // test cleanup
+
+	// Drain and decode everything the peer writes.
+	type result struct {
+		nlri      []netip.Prefix
+		withdrawn []netip.Prefix
+	}
+	decoded := make(chan result, 16)
+	go func() {
+		for {
+			msg, err := ReadMessage(client)
+			if err != nil {
+				close(decoded)
+				return
+			}
+			if u, ok := msg.(*UpdateMessage); ok {
+				decoded <- result{nlri: u.NLRI, withdrawn: u.WithdrawnRoutes}
+			}
+		}
+	}()
+
+	p := NewPeer(
+		PeerConfig{Address: netip.MustParseAddr("192.0.2.1"), ASN: 65001},
+		SpeakerConfig{ASN: 64512},
+		slog.New(slog.NewTextHandler(nil2Writer{}, nil)),
+		nil,
+	)
+	nextHop := netip.MustParseAddr("192.0.2.2")
+	a := netip.MustParsePrefix("10.1.0.0/16")
+	b := netip.MustParsePrefix("10.2.0.0/16")
+	c := netip.MustParsePrefix("10.3.0.0/16")
+
+	p.routes = []Route{
+		{Prefix: a, NextHop: nextHop},
+		{Prefix: b, NextHop: nextHop},
+		{Prefix: c, NextHop: nextHop},
+	}
+	if err := p.resyncRoutes(server); err != nil {
+		t.Fatalf("initial resync: %v", err)
+	}
+	first := <-decoded
+	if len(first.nlri) != 3 || len(first.withdrawn) != 0 {
+		t.Fatalf("initial resync: nlri=%v withdrawn=%v, want 3 NLRI in one batched UPDATE",
+			first.nlri, first.withdrawn)
+	}
+
+	// Drop b — the resync must withdraw it before re-announcing a and c.
+	p.routes = []Route{
+		{Prefix: a, NextHop: nextHop},
+		{Prefix: c, NextHop: nextHop},
+	}
+	if err := p.resyncRoutes(server); err != nil {
+		t.Fatalf("second resync: %v", err)
+	}
+	withdrawal := <-decoded
+	if len(withdrawal.withdrawn) != 1 || withdrawal.withdrawn[0] != b {
+		t.Fatalf("second resync withdrawal = %v, want [%s]", withdrawal.withdrawn, b)
+	}
+	announce := <-decoded
+	if len(announce.nlri) != 2 {
+		t.Fatalf("second resync re-announce NLRI = %v, want [a c]", announce.nlri)
+	}
+	if got := p.lastSent; len(got) != 2 {
+		t.Fatalf("lastSent = %v after successful resync, want the 2 delivered prefixes", got)
 	}
 }
 

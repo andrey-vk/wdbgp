@@ -301,8 +301,7 @@ func (s *Speaker) Announce(addr netip.Addr, asn uint32, routes []Route) error {
 	if !ok {
 		return fmt.Errorf("peer %s:%d not found", addr.String(), asn)
 	}
-	p.AnnounceRoutes(routes)
-	return nil
+	return p.AnnounceRoutes(routes)
 }
 
 // Withdraw removes prefixes from a specific peer.
@@ -314,8 +313,7 @@ func (s *Speaker) Withdraw(addr netip.Addr, asn uint32, prefixes []netip.Prefix)
 	if !ok {
 		return fmt.Errorf("peer %s:%d not found", addr.String(), asn)
 	}
-	p.WithdrawRoutes(prefixes)
-	return nil
+	return p.WithdrawRoutes(prefixes)
 }
 
 // acceptLoop accepts incoming connections.
