@@ -85,6 +85,16 @@ WHERE cmf.mode_id = ? AND cmf.exclude = 0`, modeID)
 			closeRows(rows)
 			return err
 		}
+		if prefix.Bits() == 0 {
+			// A feed-provided default route is neutralized at read time
+			// (DesiredPrefixes and queryPrefixes skip bits==0 rows). Never
+			// subtract excludes from it: the fragments would be non-default
+			// and dodge that guard — a service that announced nothing for
+			// the default route would suddenly announce nearly the whole
+			// address space minus the excludes. Pass it through untouched.
+			result = append(result, modeEntry{serviceID: serviceID, prefixID: prefixID})
+			continue
+		}
 		pieces, changed := set.Subtract(prefix)
 		if !changed {
 			result = append(result, modeEntry{serviceID: serviceID, prefixID: prefixID})
@@ -162,6 +172,36 @@ WHERE cmf.mode_id = ? AND cmf.exclude = 1`, modeID)
 		prefixes = append(prefixes, prefix)
 	}
 	return prefixes, rows.Err()
+}
+
+// ModeFeedLink is one feed↔mode assignment with its role.
+type ModeFeedLink struct {
+	FeedID  int64
+	Exclude bool
+}
+
+// ReplaceModeFeeds replaces all of a mode's feed links with the given set
+// and rebuilds the materialized entries — a single transaction, so a
+// rebuild failure rolls the membership change back too and readers never
+// see links and materialization disagree.
+func (s *Store) ReplaceModeFeeds(ctx context.Context, modeID int64, links []ModeFeedLink) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM catalog_mode_feeds WHERE mode_id = ?", modeID); err != nil {
+			return err
+		}
+		for _, link := range links {
+			if link.FeedID <= 0 {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx,
+				"INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, ?)",
+				modeID, link.FeedID, link.Exclude); err != nil {
+				return err
+			}
+		}
+		return rebuildModeEntriesTx(ctx, tx, modeID)
+	})
 }
 
 // RebuildModeEntriesForFeed rebuilds every mode the feed is linked to, in

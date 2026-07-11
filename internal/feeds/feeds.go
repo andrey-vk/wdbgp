@@ -399,9 +399,15 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	}
 	// The feed's contribution changed — rebuild the materialized merge of
 	// every mode linking it (include or exclude role). Must run before the
-	// orphan prune: the rebuild interns split fragments into prefixes.
+	// orphan prune: the rebuild interns split fragments into prefixes. A
+	// failure here fails the sync: the entries are committed but the
+	// materialized view is stale, and reporting success would let BGP
+	// reconcile from stale mode entries with the feed showing green — the
+	// next scheduled sync retries the whole pass, rebuild included.
 	if rebuildErr := s.Store.RebuildModeEntriesForFeed(ctx, feed.ID); rebuildErr != nil {
-		logger.Warn("failed to rebuild mode entries after sync", "feed_id", feed.ID, "error", rebuildErr)
+		rebuildErr = fmt.Errorf("rebuild mode entries: %w", rebuildErr)
+		s.persistSyncError(ctx, feed, adapter.Revision, rebuildErr)
+		return adapter.Revision, rebuildErr
 	}
 	// A resync replaces the feed's entries wholesale, so prefixes that
 	// dropped out of the feed may no longer be referenced by anything.

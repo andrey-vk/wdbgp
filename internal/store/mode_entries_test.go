@@ -262,3 +262,46 @@ func TestPruneKeepsFragmentPrefixes(t *testing.T) {
 		t.Errorf("after prune: %v, want %v (fragments must survive)", got, want)
 	}
 }
+
+// TestRebuildLeavesDefaultRouteUntouched — a feed-provided default route is
+// filtered at read time (DesiredPrefixes skips bits==0); the rebuild must
+// never shatter it into non-default fragments that dodge that guard
+// (Codex P1 on PR #39). Every exclude overlaps 0.0.0.0/0, so without the
+// guard this test's default route would explode into fragments.
+func TestRebuildLeavesDefaultRouteUntouched(t *testing.T) {
+	s, ctx := setupModeEntriesTest(t)
+
+	modeID, err := s.AddCatalogMode(ctx, "default-route-mode", true)
+	if err != nil {
+		t.Fatalf("add mode: %v", err)
+	}
+	include := addTestFeed(ctx, t, s, "default-include")
+	exclude := addTestFeed(ctx, t, s, "default-exclude")
+	if err := s.InsertCatalogEntries(ctx, include, []CatalogEntry{
+		{Category: "Cat", Service: "Svc", CIDR: "0.0.0.0/0"},
+		{Category: "Cat", Service: "Svc", CIDR: "10.0.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert include entries: %v", err)
+	}
+	if err := s.InsertCatalogEntries(ctx, exclude, []CatalogEntry{
+		{Category: "X", Service: "X", CIDR: "10.0.0.0/25"},
+	}); err != nil {
+		t.Fatalf("insert exclude entries: %v", err)
+	}
+	if err := s.AddFeedToMode(ctx, modeID, include, false); err != nil {
+		t.Fatalf("link include: %v", err)
+	}
+	if err := s.AddFeedToMode(ctx, modeID, exclude, true); err != nil {
+		t.Fatalf("link exclude: %v", err)
+	}
+
+	got := modePrefixStrings(ctx, t, s, modeID)
+	want := []string{
+		"Cat/Svc:0.0.0.0/0", // untouched, filtered later at read time
+		"Cat/Svc:10.0.0.128/25",
+	}
+	sort.Strings(want)
+	if !equalStrings(got, want) {
+		t.Errorf("mode prefixes = %v, want %v (default route must not fragment)", got, want)
+	}
+}

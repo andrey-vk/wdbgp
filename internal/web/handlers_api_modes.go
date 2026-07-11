@@ -2,7 +2,6 @@ package web
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -261,55 +260,21 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	links := body.Feeds
-	if links == nil {
+	links := make([]store.ModeFeedLink, 0, len(body.Feeds)+len(body.FeedIDs))
+	if body.Feeds != nil {
+		for _, f := range body.Feeds {
+			links = append(links, store.ModeFeedLink{FeedID: f.ID, Exclude: f.Exclude})
+		}
+	} else {
 		for _, feedID := range body.FeedIDs {
-			links = append(links, struct {
-				ID      int64 `json:"id"`
-				Exclude bool  `json:"exclude"`
-			}{ID: feedID})
+			links = append(links, store.ModeFeedLink{FeedID: feedID})
 		}
 	}
-	// Replace all assignments atomically: delete existing + insert new in a transaction.
-	tx, err := s.store.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to begin transaction"})
-		return
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			if err := tx.Rollback(); err != nil {
-				log.Printf("WARNING: mode feeds transaction rollback: %v", err)
-			}
-		}
-	}()
-
-	if _, err := tx.ExecContext(r.Context(),
-		"DELETE FROM catalog_mode_feeds WHERE mode_id = ?", modeID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
-	for _, link := range links {
-		if link.ID <= 0 {
-			continue
-		}
-		if _, err := tx.ExecContext(r.Context(),
-			"INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, ?)",
-			modeID, link.ID, link.Exclude); err != nil {
-			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-			return
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save feed assignments"})
-		return
-	}
-	committed = true
-	// The membership/role set changed — rebuild the materialized merge
-	// before anything reads it (reconcile below does).
-	if err := s.store.RebuildModeEntries(r.Context(), modeID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to rebuild mode entries: " + err.Error()})
+	// Links and the materialized rebuild land in ONE transaction: a rebuild
+	// failure rolls the membership change back, so catalog_mode_feeds and
+	// catalog_mode_entries can never disagree.
+	if err := s.store.ReplaceModeFeeds(r.Context(), modeID, links); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save feed assignments: " + err.Error()})
 		return
 	}
 	// Generate communities and reconcile (best-effort side effects, after commit)
