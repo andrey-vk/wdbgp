@@ -344,6 +344,12 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 				// down so the establish path re-sends the full set.
 				return fmt.Errorf("send route update: %w", err)
 			}
+			// Re-arm the read deadline before reading: a large resync to a
+			// slow peer can consume most (or all) of the hold time, and the
+			// deadline set above would then expire during our own writing —
+			// misreporting a live peer (whose keepalives sat unread) as a
+			// hold-timer expiry.
+			continue
 		}
 
 		// Read message (blocking with deadline)
@@ -397,6 +403,16 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 			// requested AFI/SAFI — re-announcing the other family too is an
 			// idempotent no-op.
 			rr := msg.(*RouteRefreshMessage) //nolint:errcheck,staticcheck // guarded by type switch
+			if rr.Subtype != 0 {
+				// RFC 7313 subtypes (1=BoRR, 2=EoRR) demarcate the PEER's
+				// own re-advertisement toward us, not a request for ours —
+				// and are only valid under the Enhanced Route Refresh
+				// capability, which we don't advertise. Ignore them (and
+				// any other non-zero value) instead of resending the table.
+				p.logger.Debug("ignoring route refresh with non-zero subtype",
+					"afi", rr.AFI, "safi", rr.SAFI, "subtype", rr.Subtype)
+				break
+			}
 			p.logger.Info("route refresh requested, re-announcing all routes", "afi", rr.AFI, "safi", rr.SAFI)
 			p.needsUpdate.Store(true)
 		}

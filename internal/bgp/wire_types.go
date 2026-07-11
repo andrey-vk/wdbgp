@@ -73,10 +73,12 @@ type KeepaliveMessage struct{}
 
 // ROUTE-REFRESH message (RFC 2918). The peer asks us to re-advertise our
 // full Adj-RIB-Out for the given AFI/SAFI. RFC 7313 reuses the reserved
-// byte between AFI and SAFI as a subtype; we accept and ignore it.
+// byte between AFI and SAFI as a subtype (0 = normal refresh request,
+// 1 = BoRR, 2 = EoRR); only subtype 0 is a request for our routes.
 type RouteRefreshMessage struct {
-	AFI  uint16
-	SAFI uint8
+	AFI     uint16
+	Subtype uint8
+	SAFI    uint8
 }
 
 // PathAttribute interface

@@ -876,10 +876,13 @@ func TestEncodeDecodeRouteRefresh(t *testing.T) {
 	if rr.SAFI != 1 {
 		t.Errorf("safi = %d, want 1", rr.SAFI)
 	}
+	if rr.Subtype != 0 {
+		t.Errorf("subtype = %d, want 0", rr.Subtype)
+	}
 
-	// RFC 7313 reuses the reserved byte as a subtype — it must not affect
-	// parsing.
-	data = wrapMessage(MsgRouteRefresh, []byte{0x00, 0x02, 0x01, 0x01}) // IPv6 unicast, subtype 1
+	// RFC 7313 reuses the reserved byte as a subtype — it must be
+	// preserved so the FSM can tell a refresh request from a BoRR/EoRR.
+	data = wrapMessage(MsgRouteRefresh, []byte{0x00, 0x02, 0x01, 0x01}) // IPv6 unicast, subtype 1 (BoRR)
 	msg, err = ReadMessage(bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
@@ -887,6 +890,9 @@ func TestEncodeDecodeRouteRefresh(t *testing.T) {
 	rr = msg.(*RouteRefreshMessage) //nolint:errcheck // type checked via AFI/SAFI assertions below
 	if rr.AFI != 2 || rr.SAFI != 1 {
 		t.Errorf("afi/safi = %d/%d, want 2/1", rr.AFI, rr.SAFI)
+	}
+	if rr.Subtype != 1 {
+		t.Errorf("subtype = %d, want 1", rr.Subtype)
 	}
 }
 
