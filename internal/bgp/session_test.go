@@ -503,23 +503,16 @@ func TestReconnect(t *testing.T) {
 }
 
 // =============================================================================
-// Test 9: Password authentication
+// Test 9: Loopback sessions ignore passwords
 // =============================================================================
 
-func TestPasswordAuthCorrect(t *testing.T) {
-	serverPeer := PeerConfig{
-		ID:       1,
-		Address:  netip.MustParseAddr("127.0.0.1"),
-		ASN:      65001,
-		Password: "secret",
-	}
-	speaker, client := startSpeakerAndClient(t, 64512, serverPeer, 65001, nil)
-
-	waitForPeerState(t, client, StateEstablished, 10*time.Second)
-	waitForSpeakerPeerState(t, speaker, stateKey("127.0.0.1", 65001), StateEstablished, 10*time.Second)
-}
-
-func TestPasswordAuthWrong(t *testing.T) {
+// TestLoopbackPasswordIgnored — loopback sessions are unauthenticated:
+// TCP MD5 can't be enforced there by many kernels (WSL2 included), and the
+// old plaintext password-in-OPEN fallback (a wdbgp-only dialect squatting
+// on the deprecated RFC 1771 parameter type 1) was removed. A configured
+// password must neither authenticate nor break a loopback session — even
+// mismatched passwords establish.
+func TestLoopbackPasswordIgnored(t *testing.T) {
 	port := freeTCPPort(t)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -534,21 +527,18 @@ func TestPasswordAuthWrong(t *testing.T) {
 	}
 	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
 
-	// Speaker expects password "secret"
 	_ = speaker.SetPeers([]PeerConfig{
 		{ID: 1, Address: netip.MustParseAddr("127.0.0.1"), ASN: 65001, Password: "secret", Port: -1},
 	})
 
-	// Client provides wrong password
-	clientCfg := PeerConfig{
+	clientPeer := NewPeer(PeerConfig{
 		ID:       2,
 		Address:  netip.MustParseAddr("127.0.0.1"),
 		Port:     port,
 		ASN:      64512,
-		Password: "wrong",
+		Password: "does-not-match",
 		Name:     "test-client",
-	}
-	clientPeer := NewPeer(clientCfg, SpeakerConfig{
+	}, SpeakerConfig{
 		ASN:      65001,
 		RouterID: netip.MustParseAddr("192.0.2.3"),
 	}, logger, nil)
@@ -556,20 +546,8 @@ func TestPasswordAuthWrong(t *testing.T) {
 	go clientPeer.Run()
 	t.Cleanup(func() { clientPeer.Stop() })
 
-	// Client should NOT reach ESTABLISHED
-	time.Sleep(3 * time.Second)
-	clientState := clientPeer.State()
-	if clientState == StateEstablished {
-		t.Fatal("client reached ESTABLISHED with wrong password")
-	}
-	t.Logf("client state with wrong password: %s", clientState)
-
-	// Speaker should also not be established
-	states := speaker.PeerStates()
-	if st, ok := states[stateKey("127.0.0.1", 65001)]; ok && st == StateEstablished {
-		t.Fatal("speaker peer reached ESTABLISHED with wrong password")
-	}
-	t.Logf("speaker peer state with wrong password: %v", states)
+	waitForPeerState(t, clientPeer, StateEstablished, 10*time.Second)
+	waitForSpeakerPeerState(t, speaker, stateKey("127.0.0.1", 65001), StateEstablished, 10*time.Second)
 }
 
 // =============================================================================
@@ -1011,39 +989,6 @@ func TestRouteWithdrawalIPv6(t *testing.T) {
 	if recorder.len() <= receivedBefore {
 		t.Logf("note: withdrawal message may not trigger NLRI callback")
 	}
-}
-
-// TestPasswordAuthCorrectIPv6: password auth over IPv6 session.
-func TestPasswordAuthCorrectIPv6(t *testing.T) {
-	port := freeTCPPortV6(t)
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	speaker := NewSpeaker(SpeakerConfig{
-		ASN:       64512,
-		RouterID:  netip.MustParseAddr("192.0.2.1"),
-		Port:      port,
-		LocalAddr: netip.MustParseAddr("192.0.2.2"),
-	}, logger)
-	if err := speaker.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { speaker.Stop() }) //nolint:gosec // test cleanup
-
-	_ = speaker.SetPeers([]PeerConfig{
-		{ID: 1, Address: netip.MustParseAddr("::1"), ASN: 65001, Password: "secret", Port: -1},
-	})
-
-	client := NewPeer(PeerConfig{
-		ID: 2, Address: netip.MustParseAddr("::1"), Port: port,
-		ASN: 64512, Password: "secret", Name: "test-client-v6",
-	}, SpeakerConfig{
-		ASN: 65001, RouterID: netip.MustParseAddr("192.0.2.3"),
-	}, logger, nil)
-	go client.Run()
-	t.Cleanup(func() { client.Stop() })
-
-	waitForPeerState(t, client, StateEstablished, 10*time.Second)
-	waitForSpeakerPeerState(t, speaker, stateKey("::1", 65001), StateEstablished, 10*time.Second)
 }
 
 // TestReconnectIPv6: reconnect over IPv6 session.

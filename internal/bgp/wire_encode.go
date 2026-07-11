@@ -2,7 +2,6 @@ package bgp
 
 import (
 	"encoding/binary"
-	"log"
 	"net/netip"
 )
 
@@ -101,8 +100,6 @@ func wrapMessage(msgType uint8, body []byte) []byte {
 // Route Refresh (RFC 2918) capabilities. Uses either 2-byte or 4-byte
 // AS_PATH encoding depending
 // on the local ASN value (AS_TRANS=23456 for >65535 in the 2-byte field).
-// If Password is set, it is included as parameter type 1 (fallback auth
-// for loopback connections where TCP MD5 is not enforced).
 func (o *OpenMessage) Serialize() []byte {
 	// Build capability parameter with four capabilities:
 	//   1) IPv6 unicast (RFC 4760): code 1, len 4 (AFI=2, SAFI=1)
@@ -136,22 +133,8 @@ func (o *OpenMessage) Serialize() []byte {
 	capParam[20] = 2 // Capability code: Route Refresh
 	capParam[21] = 0 // Capability length: 0
 
-	// Build password parameter (type 1) if set and fits in OPEN message.
-	// Max password length is 231 bytes: OptParmLen (255) - capParam (22) - pwParam header (2).
-	var pwParam []byte
-	if o.Password != "" {
-		if len(o.Password) > 231 {
-			log.Printf("WARNING: BGP password too long (%d bytes > 231), omitting from OPEN", len(o.Password))
-		} else {
-			pwParam = make([]byte, 2+len(o.Password))
-			pwParam[0] = 1                      // Parameter type: password
-			pwParam[1] = uint8(len(o.Password)) //nolint:gosec // password length fits in uint8
-			copy(pwParam[2:], o.Password)
-		}
-	}
-
 	// 2-byte ASN field: use AS_TRANS (23456) for ASNs > 65535 (RFC 6793).
-	o.OptParmLen = uint8(len(capParam) + len(pwParam)) //nolint:gosec // optional parameters fit in uint8 per BGP spec
+	o.OptParmLen = uint8(len(capParam)) //nolint:gosec // optional parameters fit in uint8 per BGP spec
 	if o.MyASN32 > 65535 {
 		o.MyASN = 23456 // AS_TRANS — real ASN in Four-octet ASN capability
 	} else {
@@ -165,9 +148,6 @@ func (o *OpenMessage) Serialize() []byte {
 	copy(body[5:9], o.BGPID[:])
 	body[9] = o.OptParmLen
 	copy(body[10:], capParam)
-	if len(pwParam) > 0 {
-		copy(body[10+len(capParam):], pwParam)
-	}
 
 	return wrapMessage(MsgOpen, body)
 }

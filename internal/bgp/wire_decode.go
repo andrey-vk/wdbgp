@@ -102,8 +102,8 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 	}
 	copy(o.BGPID[:], data[5:9])
 
-	// Parse optional parameters for Four-octet ASN Capability (RFC 6793),
-	// IPv6 unicast capability (RFC 4760), and password parameter.
+	// Parse optional parameters for Four-octet ASN Capability (RFC 6793)
+	// and IPv6 unicast capability (RFC 4760).
 	if o.OptParmLen > 0 && len(data) >= 10+int(o.OptParmLen) {
 		opts := data[10 : 10+int(o.OptParmLen)]
 		for len(opts) >= 2 {
@@ -139,10 +139,6 @@ func decodeOpen(data []byte) (*OpenMessage, error) {
 					}
 					capData = capData[2+capLen:]
 				}
-			}
-			// Password parameter (type 1) — fallback for loopback
-			if paramType == 1 && paramLen > 0 {
-				o.Password = string(paramData)
 			}
 			opts = opts[2+paramLen:]
 		}
