@@ -344,6 +344,12 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 				// down so the establish path re-sends the full set.
 				return fmt.Errorf("send route update: %w", err)
 			}
+			// Re-arm the read deadline before reading: a large resync to a
+			// slow peer can consume most (or all) of the hold time, and the
+			// deadline set above would then expire during our own writing —
+			// misreporting a live peer (whose keepalives sat unread) as a
+			// hold-timer expiry.
+			continue
 		}
 
 		// Read message (blocking with deadline)
@@ -384,6 +390,31 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 		case *NotificationMessage:
 			nm := msg.(*NotificationMessage) //nolint:errcheck,staticcheck // guarded by type switch
 			return fmt.Errorf("received notification: code=%d sub=%d", nm.ErrorCode, nm.ErrorSubcode)
+		case *RouteRefreshMessage:
+			// The peer asks for a full re-advertisement (RFC 2918; RouterOS
+			// sends this on `refresh` and on input-filter changes). Arming
+			// needsUpdate is sufficient: every resync re-announces the whole
+			// desired set — lastSent only feeds withdrawal computation.
+			// Deliberately NOT resetSent(): the remote still holds our
+			// routes (unlike a fresh session), and wiping lastSent would
+			// race a concurrent shrink of the desired set — the resync
+			// would compute no withdrawals and the peer would keep stale
+			// prefixes until the session bounced. Sent regardless of the
+			// requested AFI/SAFI — re-announcing the other family too is an
+			// idempotent no-op.
+			rr := msg.(*RouteRefreshMessage) //nolint:errcheck,staticcheck // guarded by type switch
+			if rr.Subtype != 0 {
+				// RFC 7313 subtypes (1=BoRR, 2=EoRR) demarcate the PEER's
+				// own re-advertisement toward us, not a request for ours —
+				// and are only valid under the Enhanced Route Refresh
+				// capability, which we don't advertise. Ignore them (and
+				// any other non-zero value) instead of resending the table.
+				p.logger.Debug("ignoring route refresh with non-zero subtype",
+					"afi", rr.AFI, "safi", rr.SAFI, "subtype", rr.Subtype)
+				break
+			}
+			p.logger.Info("route refresh requested, re-announcing all routes", "afi", rr.AFI, "safi", rr.SAFI)
+			p.needsUpdate.Store(true)
 		}
 	}
 	return nil
