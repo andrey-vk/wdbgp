@@ -142,6 +142,56 @@ function sync(feed, api) {
 }
 `
 
+const asAdapter = `
+function sync(feed, api) {
+    if (!feed.data || !feed.data.trim()) {
+        throw new Error("AS adapter: feed Data JSON is required ({asns, category, service})");
+    }
+    var cfg;
+    try {
+        cfg = JSON.parse(feed.data);
+    } catch (e) {
+        throw new Error("AS adapter: feed Data is not valid JSON: " + e.message);
+    }
+    if (!Array.isArray(cfg.asns) || cfg.asns.length === 0) {
+        throw new Error("AS adapter: 'asns' must be a non-empty array of AS numbers");
+    }
+    cfg.asns.forEach(function (asn) {
+        if (typeof asn !== "number" || !isFinite(asn) || asn <= 0 || asn !== Math.floor(asn)) {
+            throw new Error("AS adapter: 'asns' contains an invalid AS number: " + JSON.stringify(asn));
+        }
+    });
+    if (typeof cfg.category !== "string" || !cfg.category.trim()) {
+        throw new Error("AS adapter: 'category' must be a non-empty string");
+    }
+    if (typeof cfg.service !== "string" || !cfg.service.trim()) {
+        throw new Error("AS adapter: 'service' must be a non-empty string");
+    }
+
+    var seen = {};
+    var cidrs = [];
+    cfg.asns.forEach(function (asn) {
+        var url = "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS"
+            + asn + "&sourceapp=wdbgp";
+        var resp = JSON.parse(api.httpGet(url));
+        var prefixes = (resp.data && resp.data.prefixes) || [];
+        api.log("AS" + asn + ": " + prefixes.length + " announced prefixes");
+        prefixes.forEach(function (p) {
+            if (p && p.prefix && !seen[p.prefix]) {
+                seen[p.prefix] = true;
+                cidrs.push(p.prefix);
+            }
+        });
+    });
+
+    return [{
+        category: cfg.category,
+        service: cfg.service,
+        cidrs: cidrs
+    }];
+}
+`
+
 // builtInAdapter is keyed by the adapter's canonical name (feed_adapters.name
 // is NOT NULL UNIQUE) — combined with is_builtin, that's already a unique,
 // stable identifier for "which built-in is this DB row," so there's no need
@@ -169,6 +219,11 @@ var builtInAdapters = map[string]builtInAdapter{
 	"sing-box SRS": {
 		source:         singboxSRSAdapter,
 		builtinVersion: 1,
+	},
+	"ASN": {
+		source:         asAdapter,
+		builtinVersion: 1,
+		allowedHosts:   "stat.ripe.net",
 	},
 }
 

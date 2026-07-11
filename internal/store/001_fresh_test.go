@@ -30,8 +30,8 @@ func TestMigrateFreshDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(adapters) != 4 {
-		t.Fatalf("adapter count = %d, want 4", len(adapters))
+	if len(adapters) != 5 {
+		t.Fatalf("adapter count = %d, want 5", len(adapters))
 	}
 	for _, adapter := range adapters {
 		if adapter.Source == "" || adapter.Revision != 1 {

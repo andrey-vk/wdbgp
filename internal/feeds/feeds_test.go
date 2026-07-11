@@ -838,6 +838,125 @@ WHERE f.id NOT IN (SELECT feed_id FROM catalog_mode_feeds WHERE mode_id = ?)
 	}
 }
 
+func TestSyncASNFeedFetchesAnnouncedPrefixes(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "asn.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatal(err)
+	}
+	var adapterID int64
+	if err := db.DB.QueryRowContext(ctx,
+		"SELECT id FROM feed_adapters WHERE name = ?", "ASN").Scan(&adapterID); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"asns":[15169,32934],"category":"Cloud providers","service":"Google"}`
+	feedID, err := db.AddFeed(ctx, "asn-feed", "https://stat.ripe.net", adapterID, true, 0, data, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feedList) != 1 {
+		t.Fatalf("enabled feeds = %#v", feedList)
+	}
+	feed := feedList[0]
+	if feed.AllowedHosts != "stat.ripe.net" {
+		t.Fatalf("allowed hosts = %q, want stat.ripe.net (merged from the builtin adapter)", feed.AllowedHosts)
+	}
+
+	syncer := NewSyncer(db, testSettings())
+	syncer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Query().Get("resource") {
+		case "AS15169":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"data":{"prefixes":[{"prefix":"8.8.8.0/24"},{"prefix":"8.8.4.0/24"}]}}`)),
+				Header:     make(http.Header),
+			}, nil
+		case "AS32934":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"data":{"prefixes":[{"prefix":"157.240.0.0/16"},{"prefix":"8.8.8.0/24"}]}}`)),
+				Header:     make(http.Header),
+			}, nil
+		default:
+			t.Fatalf("unexpected resource %q", request.URL.Query().Get("resource"))
+			return nil, nil
+		}
+	})}
+	if _, err := syncer.SyncOne(ctx, feed); err != nil {
+		t.Fatal(err)
+	}
+
+	var count int
+	if err := db.DB.QueryRow(
+		"SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feed.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	// 8.8.8.0/24 is announced by both ASNs and must be deduplicated.
+	if count != 3 {
+		t.Fatalf("catalog entries = %d, want 3 (deduped across both ASNs)", count)
+	}
+}
+
+func TestJavaScriptASNAdapterValidatesConfig(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "asn-validate.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var adapterID int64
+	if err := db.DB.QueryRowContext(ctx,
+		"SELECT id FROM feed_adapters WHERE name = ?", "ASN").Scan(&adapterID); err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := db.FeedAdapter(ctx, adapterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("HTTP client must not be called for a config that fails validation")
+		return nil, nil
+	})}
+
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{"empty data", "", "Data JSON is required"},
+		{"invalid JSON", "{not json", "not valid JSON"},
+		{"missing asns", `{"category":"c","service":"s"}`, "'asns' must be a non-empty array"},
+		{"empty asns", `{"asns":[],"category":"c","service":"s"}`, "'asns' must be a non-empty array"},
+		{"invalid asn", `{"asns":[-1],"category":"c","service":"s"}`, "invalid AS number"},
+		{"missing category", `{"asns":[15169],"service":"s"}`, "'category' must be a non-empty string"},
+		{"missing service", `{"asns":[15169],"category":"c"}`, "'service' must be a non-empty string"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := (feedRunner{limits: testLimits(), client: client, timeout: time.Second}).run(
+				ctx,
+				store.Feed{URL: "https://stat.ripe.net/", Data: tc.data, RestrictHosts: true, AllowedHosts: "stat.ripe.net"},
+				adapter,
+			)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
