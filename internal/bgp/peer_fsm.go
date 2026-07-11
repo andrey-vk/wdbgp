@@ -207,12 +207,6 @@ func (p *Peer) connectAndRun() error {
 		HoldTime: ht,
 		BGPID:    bgpID,
 	}
-	// Only include Password in OPEN for loopback connections where TCP MD5
-	// is not enforced by the kernel. Real routers may reject unknown
-	// optional parameters, so this fallback is limited to loopback.
-	if p.cfg.Address.IsLoopback() {
-		openOut.Password = p.cfg.Password
-	}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		return fmt.Errorf("write open: %w", err)
 	}
@@ -241,15 +235,6 @@ func (p *Peer) connectAndRun() error {
 			return fmt.Errorf("peer ASN mismatch: got %d, want %d", remoteASN, p.cfg.ASN)
 		}
 	}
-	// Validate remote password when loopback (TCP MD5 not enforced).
-	// On non-loopback, TCP MD5 handles authentication.
-	if p.cfg.Address.IsLoopback() && p.cfg.Password != "" {
-		if openIn.Password != p.cfg.Password {
-			p.sendNotification(conn, 5, 0, nil)
-			return fmt.Errorf("peer password mismatch")
-		}
-	}
-
 	// Negotiate hold time per RFC 4271: use min(local, remote), 0 means disabled.
 	localHold := time.Duration(p.spk.HoldTime) * time.Second
 	if localHold == 0 {
@@ -482,8 +467,10 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	//     and would needlessly tear down an already-authenticated
 	//     connection.
 	//   - TCP MD5 is not enforceable on loopback (many kernels, including
-	//     WSL2, don't support it there), so loopback validates the
-	//     Password field in the OPEN message instead.
+	//     WSL2, don't support it there), so loopback sessions are
+	//     unauthenticated — a configured password is simply not applied
+	//     there (loopback means same-host traffic; anyone able to
+	//     interfere with it already owns the box).
 	//   - Dynamic peers (0.0.0.0) on non-loopback: the listener can't
 	//     preinstall a key for a wildcard address, so this accept is
 	//     otherwise unauthenticated. When dynamic-peer MD5 matching is
@@ -495,16 +482,6 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	//     feature is off / its NFQUEUE prerequisites aren't met on this
 	//     host, in which case this remains ASN-only identification, same
 	//     as before).
-	remoteAddr, _ := netip.ParseAddrPort(conn.RemoteAddr().String()) //nolint:errcheck // always valid from kernel accept()
-	remoteIP := remoteAddr.Addr()
-	if p.cfg.Password != "" && remoteIP.IsLoopback() && openIn.Password != p.cfg.Password {
-		p.sendNotification(conn, 5, 0, nil)
-		if err := conn.Close(); err != nil {
-			p.logger.Debug("close connection", "error", err)
-		}
-		return
-	}
-
 	// Send OPEN — hold time negotiation per RFC 4271
 	localHold := p.spk.HoldTime
 	if localHold == 0 {
@@ -523,12 +500,6 @@ func (p *Peer) AcceptWithOpen(conn net.Conn, openIn *OpenMessage) {
 	var id [4]byte
 	copy(id[:], bgpID[:])
 	openOut := &OpenMessage{Version: 4, MyASN32: p.spk.ASN, HoldTime: holdTime, BGPID: id}
-	// Only include Password in OPEN for loopback connections.
-	if p.cfg.Password != "" {
-		if remoteIP.IsLoopback() {
-			openOut.Password = p.cfg.Password
-		}
-	}
 	if _, err := conn.Write(openOut.Serialize()); err != nil {
 		p.logger.Error("accept: write open", "error", err)
 		if err := conn.Close(); err != nil {

@@ -47,8 +47,8 @@ type Header struct {
 }
 
 // OPEN message (RFC 4271 section 4.2). Password authentication is done
-// at the TCP level via TCP MD5 (RFC 2385). The Password field is a fallback
-// for loopback connections where TCP MD5 is not enforced by the kernel.
+// at the TCP level via TCP MD5 (RFC 2385); loopback connections, where
+// many kernels (including WSL2) can't enforce TCP MD5, are unauthenticated.
 type OpenMessage struct {
 	Version        uint8
 	MyASN          uint16 // 2-byte ASN field
@@ -56,9 +56,8 @@ type OpenMessage struct {
 	HoldTime       uint16
 	BGPID          [4]byte
 	OptParmLen     uint8
-	Password       string // fallback auth for loopback (empty = none)
-	HasIPv6Unicast bool   // remote peer advertised IPv6 unicast capability (AFI=2, SAFI=1)
-	HasAS4Cap      bool   // remote peer advertised Four-octet ASN capability (capCode 65, RFC 6793)
+	HasIPv6Unicast bool // remote peer advertised IPv6 unicast capability (AFI=2, SAFI=1)
+	HasAS4Cap      bool // remote peer advertised Four-octet ASN capability (capCode 65, RFC 6793)
 }
 
 // UPDATE message
