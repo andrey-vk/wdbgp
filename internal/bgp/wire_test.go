@@ -39,9 +39,10 @@ func TestEncodeDecodeOpen(t *testing.T) {
 	if decoded.BGPID != [4]byte{192, 0, 2, 1} {
 		t.Fatalf("bgp_id = %v, want {192, 0, 2, 1}", decoded.BGPID)
 	}
-	// OptParmLen reflects IPv6 unicast + IPv4 unicast + AS4 capabilities (20 bytes: 2 header + 18 TLV data)
-	if decoded.OptParmLen != 20 {
-		t.Fatalf("opt_parm_len = %d, want 20", decoded.OptParmLen)
+	// OptParmLen reflects IPv6 unicast + IPv4 unicast + AS4 + Route Refresh
+	// capabilities (22 bytes: 2 header + 20 TLV data)
+	if decoded.OptParmLen != 22 {
+		t.Fatalf("opt_parm_len = %d, want 22", decoded.OptParmLen)
 	}
 }
 
@@ -854,4 +855,80 @@ func TestDecodeNLRIFromAttr(t *testing.T) {
 		t.Fatalf("nlri[1] = %s, want %s", nlri[1], ipv6)
 	}
 	t.Logf("decodeNLRIFromAttr: %v", nlri)
+}
+
+func TestEncodeDecodeRouteRefresh(t *testing.T) {
+	// RFC 2918 body: AFI (2 bytes), reserved/subtype (1), SAFI (1).
+	body := []byte{0x00, 0x01, 0x00, 0x01} // IPv4 unicast
+	data := wrapMessage(MsgRouteRefresh, body)
+
+	msg, err := ReadMessage(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr, ok := msg.(*RouteRefreshMessage)
+	if !ok {
+		t.Fatalf("expected *RouteRefreshMessage, got %T", msg)
+	}
+	if rr.AFI != 1 {
+		t.Errorf("afi = %d, want 1", rr.AFI)
+	}
+	if rr.SAFI != 1 {
+		t.Errorf("safi = %d, want 1", rr.SAFI)
+	}
+
+	// RFC 7313 reuses the reserved byte as a subtype — it must not affect
+	// parsing.
+	data = wrapMessage(MsgRouteRefresh, []byte{0x00, 0x02, 0x01, 0x01}) // IPv6 unicast, subtype 1
+	msg, err = ReadMessage(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr = msg.(*RouteRefreshMessage) //nolint:errcheck // type checked via AFI/SAFI assertions below
+	if rr.AFI != 2 || rr.SAFI != 1 {
+		t.Errorf("afi/safi = %d/%d, want 2/1", rr.AFI, rr.SAFI)
+	}
+}
+
+func TestDecodeRouteRefreshRejectsBadLength(t *testing.T) {
+	for _, bodyLen := range []int{0, 3, 5} {
+		data := wrapMessage(MsgRouteRefresh, make([]byte, bodyLen))
+		if _, err := ReadMessage(bytes.NewReader(data)); err == nil {
+			t.Errorf("body length %d: expected error, got nil", bodyLen)
+		}
+	}
+}
+
+func TestOpenIncludesRouteRefreshCapability(t *testing.T) {
+	open := &OpenMessage{
+		Version:  4,
+		MyASN32:  64512,
+		HoldTime: 90,
+		BGPID:    [4]byte{192, 0, 2, 1},
+	}
+	data := open.Serialize()
+	body := data[19:] // skip BGP header
+	optParmLen := int(body[9])
+	opts := body[10 : 10+optParmLen]
+
+	if opts[0] != 2 {
+		t.Fatalf("param type = %d, want 2 (Capability)", opts[0])
+	}
+	capData := opts[2 : 2+int(opts[1])]
+
+	found := false
+	for len(capData) >= 2 {
+		capCode := capData[0]
+		capLen := int(capData[1])
+		if 2+capLen > len(capData) {
+			break
+		}
+		if capCode == 2 && capLen == 0 {
+			found = true
+		}
+		capData = capData[2+capLen:]
+	}
+	if !found {
+		t.Error("Route Refresh capability (code 2, len 0) not found in OPEN message")
+	}
 }

@@ -97,20 +97,22 @@ func wrapMessage(msgType uint8, body []byte) []byte {
 }
 
 // Serialize encodes the OPEN message to wire format including header.
-// Advertises IPv6 unicast (RFC 4760) and Four-octet ASN (RFC 6793)
-// capabilities. Uses either 2-byte or 4-byte AS_PATH encoding depending
+// Advertises IPv6 unicast (RFC 4760), Four-octet ASN (RFC 6793) and
+// Route Refresh (RFC 2918) capabilities. Uses either 2-byte or 4-byte
+// AS_PATH encoding depending
 // on the local ASN value (AS_TRANS=23456 for >65535 in the 2-byte field).
 // If Password is set, it is included as parameter type 1 (fallback auth
 // for loopback connections where TCP MD5 is not enforced).
 func (o *OpenMessage) Serialize() []byte {
-	// Build capability parameter with three capabilities:
+	// Build capability parameter with four capabilities:
 	//   1) IPv6 unicast (RFC 4760): code 1, len 4 (AFI=2, SAFI=1)
 	//   2) IPv4 unicast (RFC 4760): code 1, len 4 (AFI=1, SAFI=1)
 	//   3) Four-octet ASN (RFC 6793): code 65, len 4 (MyASN32 in network byte order)
+	//   4) Route Refresh (RFC 2918): code 2, len 0
 	// Parameter type: 2 (Capability)
-	capParam := make([]byte, 20)
+	capParam := make([]byte, 22)
 	capParam[0] = 2  // Parameter type: Capability
-	capParam[1] = 18 // Parameter length: three capabilities, 6 bytes each = 18
+	capParam[1] = 20 // Parameter length: three 6-byte capabilities + one 2-byte = 20
 	// Capability 1: Multiprotocol Extension for IPv6 unicast
 	capParam[2] = 1    // Capability code: Multiprotocol Extension
 	capParam[3] = 4    // Capability length: 4
@@ -129,13 +131,17 @@ func (o *OpenMessage) Serialize() []byte {
 	capParam[14] = 65 // Capability code: Four-octet ASN
 	capParam[15] = 4  // Capability length: 4
 	binary.BigEndian.PutUint32(capParam[16:20], o.MyASN32)
+	// Capability 4: Route Refresh (RFC 2918) — we honor an incoming
+	// ROUTE-REFRESH with a full re-advertisement (see mainLoop).
+	capParam[20] = 2 // Capability code: Route Refresh
+	capParam[21] = 0 // Capability length: 0
 
 	// Build password parameter (type 1) if set and fits in OPEN message.
-	// Max password length is 233 bytes: OptParmLen (255) - capParam (20) - pwParam header (2).
+	// Max password length is 231 bytes: OptParmLen (255) - capParam (22) - pwParam header (2).
 	var pwParam []byte
 	if o.Password != "" {
-		if len(o.Password) > 233 {
-			log.Printf("WARNING: BGP password too long (%d bytes > 233), omitting from OPEN", len(o.Password))
+		if len(o.Password) > 231 {
+			log.Printf("WARNING: BGP password too long (%d bytes > 231), omitting from OPEN", len(o.Password))
 		} else {
 			pwParam = make([]byte, 2+len(o.Password))
 			pwParam[0] = 1                      // Parameter type: password

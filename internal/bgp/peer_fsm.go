@@ -384,6 +384,16 @@ func (p *Peer) mainLoop(conn net.Conn) error {
 		case *NotificationMessage:
 			nm := msg.(*NotificationMessage) //nolint:errcheck,staticcheck // guarded by type switch
 			return fmt.Errorf("received notification: code=%d sub=%d", nm.ErrorCode, nm.ErrorSubcode)
+		case *RouteRefreshMessage:
+			// The peer asks for a full re-advertisement (RFC 2918; RouterOS
+			// sends this on `refresh` and on input-filter changes). Forget
+			// what the remote holds and let the next loop iteration resync
+			// the full table. Sent regardless of the requested AFI/SAFI —
+			// re-announcing the other family too is an idempotent no-op.
+			rr := msg.(*RouteRefreshMessage) //nolint:errcheck,staticcheck // guarded by type switch
+			p.logger.Info("route refresh requested, re-announcing all routes", "afi", rr.AFI, "safi", rr.SAFI)
+			p.resetSent()
+			p.needsUpdate.Store(true)
 		}
 	}
 	return nil

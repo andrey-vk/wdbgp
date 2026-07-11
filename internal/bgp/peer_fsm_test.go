@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -108,3 +109,76 @@ type stubWriteConn struct {
 func (c *stubWriteConn) Write([]byte) (int, error)        { return c.n, c.err }
 func (c *stubWriteConn) Close() error                     { c.closed = true; return nil }
 func (c *stubWriteConn) SetWriteDeadline(time.Time) error { return nil }
+
+// =============================================================================
+// TestMainLoopRouteRefreshTriggersFullResync — an incoming ROUTE-REFRESH
+// (RFC 2918; RouterOS sends one on `refresh` and on input-filter changes)
+// must NOT kill the session — it previously surfaced as "unknown message
+// type: 5" and tore the connection down mid-table. The peer must instead
+// re-announce its full route set, even though lastSent says the remote
+// already holds it.
+// =============================================================================
+
+func TestMainLoopRouteRefreshTriggersFullResync(t *testing.T) {
+	serverSide, clientSide := net.Pipe()
+	defer serverSide.Close() //nolint:errcheck // test cleanup
+	defer clientSide.Close() //nolint:errcheck // test cleanup
+
+	prefix := netip.MustParsePrefix("10.0.0.0/8")
+	p := &Peer{
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		holdTime: 5 * time.Second,
+		spk:      SpeakerConfig{ASN: 64512},
+		routes:   []Route{{Prefix: prefix, NextHop: netip.MustParseAddr("192.0.2.1")}},
+	}
+	// Simulate a fully synced session: the remote already holds the set,
+	// so without the refresh nothing would be re-sent.
+	p.lastSent = []netip.Prefix{prefix}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- p.mainLoop(serverSide) }()
+
+	// Ask for a refresh (IPv4 unicast).
+	if _, err := clientSide.Write(wrapMessage(MsgRouteRefresh, []byte{0x00, 0x01, 0x00, 0x01})); err != nil {
+		t.Fatalf("write route refresh: %v", err)
+	}
+
+	// The peer must re-announce the prefix. Drain keepalives while waiting.
+	if err := clientSide.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	var upd *UpdateMessage
+	for upd == nil {
+		msg, err := ReadMessage(clientSide)
+		if err != nil {
+			t.Fatalf("expected an UPDATE re-announcement, got read error: %v", err)
+		}
+		if u, ok := msg.(*UpdateMessage); ok {
+			upd = u
+		}
+	}
+	found := false
+	for _, pf := range upd.NLRI {
+		if pf == prefix {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("UPDATE NLRI = %v, want it to contain %v", upd.NLRI, prefix)
+	}
+
+	// The session must still be alive — the refresh itself is not an error.
+	select {
+	case err := <-errCh:
+		t.Fatalf("mainLoop exited on route refresh: %v", err)
+	default:
+	}
+
+	// Cleanup: closing the pipe ends mainLoop.
+	clientSide.Close() //nolint:errcheck,gosec // test cleanup
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mainLoop did not return after pipe close")
+	}
+}

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **BGP ROUTE-REFRESH support (RFC 2918).** A peer asking for a route refresh — RouterOS sends one on `/routing/bgp/session refresh` and when its input filters change — now gets the full table re-announced through the existing atomic resync path. Previously the message was rejected as an unknown type and tore the whole session down mid-table, leaving the peer with whatever fraction of prefixes had already arrived. The Route Refresh capability (code 2) is now advertised in our OPEN alongside the existing multiprotocol and 4-octet-ASN capabilities.
+
 ### Fixed
 - **Leaving a user's Selections page no longer fires a stray `count-selections` request.** The 300ms debounce behind the live prefix counter survived navigation: the timer was never cleared on unmount, and the user id — computed live from the route — turned `NaN` once the route lost its `:id` param, producing a `POST /api/admin/users/NaN/count-selections` that the server rejected with 400 (a console error with no user-visible harm). The timer is now cleared on unmount and the count request bails when the id is gone.
 - **Dashboard stat cards render correctly again.** The last card in each dashboard grid row appeared taller than its siblings: the template's `.card` style carried a `margin-bottom` with a `:last-child` reset, and inside a CSS grid row that margin made every card except the last stretch short. The margin is gone — card spacing was already handled by explicit gap/margin utilities everywhere. The stat-card icon colors are also back: the classes were built by string concatenation (`'bg-' + color + '-100'`), which Tailwind's scanner can't see, so most of them had no CSS and only two rendered by accident (as literals used elsewhere). The classes are now spelled out verbatim per card, including the dark-theme variants.

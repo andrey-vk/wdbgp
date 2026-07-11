@@ -65,9 +65,24 @@ func ReadMessage(r io.Reader) (interface{}, error) {
 		return &KeepaliveMessage{}, nil
 	case MsgNotification:
 		return decodeNotification(body)
+	case MsgRouteRefresh:
+		return decodeRouteRefresh(body)
 	default:
 		return nil, fmt.Errorf("bgp: unknown message type: %d", h.Type)
 	}
+}
+
+// decodeRouteRefresh parses a ROUTE-REFRESH message body (RFC 2918):
+// AFI (2 bytes), one reserved byte (an RFC 7313 subtype, ignored), SAFI
+// (1 byte).
+func decodeRouteRefresh(data []byte) (*RouteRefreshMessage, error) {
+	if len(data) != 4 {
+		return nil, fmt.Errorf("bgp: route-refresh body length %d, want 4", len(data))
+	}
+	return &RouteRefreshMessage{
+		AFI:  binary.BigEndian.Uint16(data[0:2]),
+		SAFI: data[3],
+	}, nil
 }
 
 // decodeOpen parses an OPEN message body.
