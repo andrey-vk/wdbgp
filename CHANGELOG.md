@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [0.17.5-alpha] — 2026-07-11
 
 ### Added
 - **BGP ROUTE-REFRESH support (RFC 2918).** A peer asking for a route refresh — RouterOS sends one on `/routing/bgp/session refresh` and when its input filters change — now gets the full table re-announced through the existing atomic resync path. Previously the message was rejected as an unknown type and tore the whole session down mid-table, leaving the peer with whatever fraction of prefixes had already arrived. The Route Refresh capability (code 2) is now advertised in our OPEN alongside the existing multiprotocol and 4-octet-ASN capabilities. RFC 7313 BoRR/EoRR markers (subtypes 1/2, which demarcate the peer's own re-advertisement rather than requesting ours) are recognized and deliberately ignored.
