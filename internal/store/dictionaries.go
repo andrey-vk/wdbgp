@@ -142,17 +142,15 @@ func AppendCatalogEntries(ctx context.Context, tx *sql.Tx, feedID int64, entries
 	return nil
 }
 
-// InsertCatalogEntries appends entries for a feed in its own transaction —
-// a convenience wrapper around AppendCatalogEntries — and refreshes the
-// materialized entries of every mode linking the feed.
+// InsertCatalogEntries appends entries for a feed and refreshes the
+// materialized entries of every mode linking the feed, in one transaction.
 func (s *Store) InsertCatalogEntries(ctx context.Context, feedID int64, entries []CatalogEntry) error {
-	err := s.Transaction(ctx, func(tx *sql.Tx) error {
-		return AppendCatalogEntries(ctx, tx, feedID, entries)
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if err := AppendCatalogEntries(ctx, tx, feedID, entries); err != nil {
+			return err
+		}
+		return RebuildModeEntriesForFeedTx(ctx, tx, feedID)
 	})
-	if err != nil {
-		return err
-	}
-	return s.RebuildModeEntriesForFeed(ctx, feedID)
 }
 
 // ensurePrefixIDs upserts the given (already masked) prefixes into the

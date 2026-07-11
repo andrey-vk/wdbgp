@@ -167,28 +167,33 @@ ORDER BY f.id`, modeID)
 
 // AddFeedToMode links a feed to a mode with the given role, updating the
 // role if the link already exists, and rebuilds the mode's materialized
-// entries.
+// entries — one transaction, so the link and the materialization never
+// disagree.
 func (s *Store) AddFeedToMode(ctx context.Context, modeID, feedID int64, exclude bool) error {
-	if _, err := s.DB.ExecContext(ctx, `
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
 INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, ?)
 ON CONFLICT(mode_id, feed_id) DO UPDATE SET exclude = excluded.exclude`,
-		modeID, feedID, exclude); err != nil {
-		return err
-	}
-	return s.RebuildModeEntries(ctx, modeID)
+			modeID, feedID, exclude); err != nil {
+			return err
+		}
+		return rebuildModeEntriesTx(ctx, tx, modeID)
+	})
 }
 
 func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) error {
-	result, err := s.DB.ExecContext(ctx,
-		"DELETE FROM catalog_mode_feeds WHERE mode_id = ? AND feed_id = ?",
-		modeID, feedID)
-	if err != nil {
-		return err
-	}
-	if count, err := result.RowsAffected(); err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	} else if count == 0 {
-		return sql.ErrNoRows
-	}
-	return s.RebuildModeEntries(ctx, modeID)
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx,
+			"DELETE FROM catalog_mode_feeds WHERE mode_id = ? AND feed_id = ?",
+			modeID, feedID)
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		} else if count == 0 {
+			return sql.ErrNoRows
+		}
+		return rebuildModeEntriesTx(ctx, tx, modeID)
+	})
 }

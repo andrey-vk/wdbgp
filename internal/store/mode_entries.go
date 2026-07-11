@@ -204,24 +204,42 @@ func (s *Store) ReplaceModeFeeds(ctx context.Context, modeID int64, links []Mode
 	})
 }
 
-// RebuildModeEntriesForFeed rebuilds every mode the feed is linked to, in
-// either role. Call after anything that changes what the feed contributes:
-// a completed sync, enable/disable, or deletion (for deletion, collect the
-// mode list before removing the links).
-func (s *Store) RebuildModeEntriesForFeed(ctx context.Context, feedID int64) error {
-	modeIDs, err := s.FeedModes(ctx, feedID)
+// RebuildModeEntriesForFeedTx rebuilds every mode the feed is linked to
+// (either role) inside the caller's transaction. Run it in the same
+// transaction as whatever changed the feed's contribution — a completed
+// sync, enable/disable, entry append, or deletion (for deletion, rebuild
+// after the links are gone but in the same transaction) — so the mutation
+// and the materialization commit or roll back as one unit and readers
+// never see them disagree.
+func RebuildModeEntriesForFeedTx(ctx context.Context, tx *sql.Tx, feedID int64) error {
+	modeIDs, err := feedModeIDsTx(ctx, tx, feedID)
 	if err != nil {
 		return err
 	}
-	return s.rebuildModes(ctx, modeIDs)
-}
-
-// rebuildModes rebuilds the given modes, stopping at the first error.
-func (s *Store) rebuildModes(ctx context.Context, modeIDs []int64) error {
 	for _, modeID := range modeIDs {
-		if err := s.RebuildModeEntries(ctx, modeID); err != nil {
+		if err := rebuildModeEntriesTx(ctx, tx, modeID); err != nil {
 			return fmt.Errorf("rebuild mode %d: %w", modeID, err)
 		}
 	}
 	return nil
+}
+
+// feedModeIDsTx returns the ids of every mode linking the feed, read
+// inside the caller's transaction.
+func feedModeIDsTx(ctx context.Context, tx *sql.Tx, feedID int64) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx,
+		"SELECT mode_id FROM catalog_mode_feeds WHERE feed_id = ? ORDER BY mode_id", feedID)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows)
+	var modeIDs []int64
+	for rows.Next() {
+		var modeID int64
+		if err := rows.Scan(&modeID); err != nil {
+			return nil, err
+		}
+		modeIDs = append(modeIDs, modeID)
+	}
+	return modeIDs, rows.Err()
 }
