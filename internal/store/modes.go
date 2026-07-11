@@ -120,13 +120,22 @@ func (s *Store) ModeFeedCounts(ctx context.Context) (map[int64]int, error) {
 }
 
 // ModeFeeds returns all feeds associated with a catalog mode.
-func (s *Store) ModeFeeds(ctx context.Context, modeID int64) ([]Feed, error) {
+// ModeFeed is a feed as linked to a mode, carrying the link's role:
+// Exclude=false contributes the feed's entries to the mode's catalog,
+// Exclude=true subtracts its prefixes from the mode's built list.
+type ModeFeed struct {
+	Feed
+	Exclude bool
+}
+
+func (s *Store) ModeFeeds(ctx context.Context, modeID int64) ([]ModeFeed, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT f.id, f.name, f.url, f.adapter_id, f.enabled,
        COALESCE(f.sync_interval, 0),
        COALESCE(f.data, ''),
        f.allowed_hosts, f.restrict_hosts,
-       COALESCE(f.last_success, 0), COALESCE(f.last_error, '')
+       COALESCE(f.last_success, 0), COALESCE(f.last_error, ''),
+       cmf.exclude
 FROM feeds f
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
 WHERE cmf.mode_id = ?
@@ -139,14 +148,15 @@ ORDER BY f.id`, modeID)
 			log.Printf("WARNING: rows close: %v", err)
 		}
 	}()
-	var feeds []Feed
+	var feeds []ModeFeed
 	for rows.Next() {
-		var feed Feed
+		var feed ModeFeed
 		if err := rows.Scan(
 			&feed.ID, &feed.Name, &feed.URL, &feed.AdapterID,
 			&feed.Enabled, &feed.SyncInterval, &feed.Data,
 			&feed.AllowedHosts, &feed.RestrictHosts,
 			&feed.LastSuccess, &feed.LastError,
+			&feed.Exclude,
 		); err != nil {
 			return nil, err
 		}
@@ -155,11 +165,17 @@ ORDER BY f.id`, modeID)
 	return feeds, rows.Err()
 }
 
-func (s *Store) AddFeedToMode(ctx context.Context, modeID, feedID int64) error {
-	_, err := s.DB.ExecContext(ctx,
-		"INSERT OR IGNORE INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
-		modeID, feedID)
-	return err
+// AddFeedToMode links a feed to a mode with the given role, updating the
+// role if the link already exists, and rebuilds the mode's materialized
+// entries.
+func (s *Store) AddFeedToMode(ctx context.Context, modeID, feedID int64, exclude bool) error {
+	if _, err := s.DB.ExecContext(ctx, `
+INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, ?)
+ON CONFLICT(mode_id, feed_id) DO UPDATE SET exclude = excluded.exclude`,
+		modeID, feedID, exclude); err != nil {
+		return err
+	}
+	return s.RebuildModeEntries(ctx, modeID)
 }
 
 func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) error {
@@ -174,5 +190,5 @@ func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) er
 	} else if count == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return s.RebuildModeEntries(ctx, modeID)
 }

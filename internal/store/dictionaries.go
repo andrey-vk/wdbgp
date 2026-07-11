@@ -143,11 +143,16 @@ func AppendCatalogEntries(ctx context.Context, tx *sql.Tx, feedID int64, entries
 }
 
 // InsertCatalogEntries appends entries for a feed in its own transaction —
-// a convenience wrapper around AppendCatalogEntries.
+// a convenience wrapper around AppendCatalogEntries — and refreshes the
+// materialized entries of every mode linking the feed.
 func (s *Store) InsertCatalogEntries(ctx context.Context, feedID int64, entries []CatalogEntry) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return AppendCatalogEntries(ctx, tx, feedID, entries)
 	})
+	if err != nil {
+		return err
+	}
+	return s.RebuildModeEntriesForFeed(ctx, feedID)
 }
 
 // ensurePrefixIDs upserts the given (already masked) prefixes into the
@@ -207,12 +212,16 @@ func ensurePrefixIDs(ctx context.Context, tx *sql.Tx, prefixes []netip.Prefix) (
 }
 
 // PruneOrphanPrefixes deletes dictionary prefixes no longer referenced by
-// any catalog entry. Run after a feed resync (outside its transaction):
+// any catalog entry or materialized mode entry (split fragments produced
+// by exclude-feed subtraction live only in catalog_mode_entries). Run
+// after a feed resync (outside its transaction, after the mode rebuild):
 // resync replaces a feed's entries wholesale, so prefixes that dropped out
 // of the feed would otherwise accumulate forever.
 func (s *Store) PruneOrphanPrefixes(ctx context.Context) (int64, error) {
 	result, err := s.DB.ExecContext(ctx,
-		"DELETE FROM prefixes WHERE id NOT IN (SELECT prefix_id FROM catalog_entries)")
+		`DELETE FROM prefixes
+		 WHERE id NOT IN (SELECT prefix_id FROM catalog_entries)
+		   AND id NOT IN (SELECT prefix_id FROM catalog_mode_entries)`)
 	if err != nil {
 		return 0, err
 	}

@@ -48,4 +48,5 @@ var migrations = []Migration{
 	{33, "binary IPs and integer enums for user tables", m.V033, m.V033NoTxSQL},
 	{34, "epoch timestamps, drop catalog_modes.key", m.V034, m.V034NoTxSQL},
 	{35, "feed snapshot counts table replaces JSON", m.V035, m.V035NoTxSQL},
+	{36, "mode feed roles and materialized mode entries", m.V036, nil},
 }

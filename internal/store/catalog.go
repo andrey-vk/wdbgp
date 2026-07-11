@@ -19,19 +19,29 @@ func (s *Store) Catalog(ctx context.Context) (map[string][]string, error) {
 }
 
 func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisabled bool) (map[string][]string, error) {
-	includeDisabledInt := 0
+	// The materialized catalog_mode_entries only carries enabled include
+	// feeds (minus excludes). The includeDisabled admin view wants disabled
+	// feeds' services listed too, so it reads the raw entries — still
+	// restricted to include links: exclude feeds never contribute catalog
+	// services, they only subtract prefixes.
+	query := `
+SELECT DISTINCT c.name, sv.name
+FROM catalog_mode_entries cme
+JOIN services sv ON sv.id = cme.service_id
+JOIN categories c ON c.id = sv.category_id
+WHERE cme.mode_id = ?
+ORDER BY c.name, sv.name`
 	if includeDisabled {
-		includeDisabledInt = 1
-	}
-	rows, err := s.DB.QueryContext(ctx, `
+		query = `
 SELECT DISTINCT c.name, sv.name
 FROM catalog_entries ce
 JOIN services sv ON sv.id = ce.service_id
 JOIN categories c ON c.id = sv.category_id
-JOIN feeds f ON f.id = ce.feed_id
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-WHERE (f.enabled = 1 OR ? = 1) AND cmf.mode_id = ?
-ORDER BY c.name, sv.name`, includeDisabledInt, modeID)
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = ce.feed_id
+WHERE cmf.mode_id = ? AND cmf.exclude = 0
+ORDER BY c.name, sv.name`
+	}
+	rows, err := s.DB.QueryContext(ctx, query, modeID)
 	if err != nil {
 		return nil, err
 	}
@@ -54,14 +64,12 @@ ORDER BY c.name, sv.name`, includeDisabledInt, modeID)
 func (s *Store) EnabledCatalogPrefixes(ctx context.Context, modeID int64) ([]CatalogPrefix, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT DISTINCT c.name, sv.name, p.ip, p.bits
-FROM catalog_entries ce
-JOIN services sv ON sv.id = ce.service_id
+FROM catalog_mode_entries cme
+JOIN services sv ON sv.id = cme.service_id
 JOIN categories c ON c.id = sv.category_id
-JOIN prefixes p ON p.id = ce.prefix_id
-JOIN feeds f ON f.id = ce.feed_id
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-JOIN catalog_modes m ON m.id = cmf.mode_id
-WHERE f.enabled = 1 AND m.enabled = 1 AND cmf.mode_id = ?
+JOIN prefixes p ON p.id = cme.prefix_id
+JOIN catalog_modes m ON m.id = cme.mode_id
+WHERE m.enabled = 1 AND cme.mode_id = ?
 ORDER BY c.name, sv.name, p.ip, p.bits`, modeID)
 	if err != nil {
 		return nil, err
@@ -92,14 +100,12 @@ ORDER BY c.name, sv.name, p.ip, p.bits`, modeID)
 // CategoryPrefixCounts returns the number of distinct IPv4 and IPv6 CIDRs per category.
 func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (v4 map[string]int, v6 map[string]int, err error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT c.name, length(p.ip), COUNT(DISTINCT ce.prefix_id)
-FROM catalog_entries ce
-JOIN services sv ON sv.id = ce.service_id
+SELECT c.name, length(p.ip), COUNT(DISTINCT cme.prefix_id)
+FROM catalog_mode_entries cme
+JOIN services sv ON sv.id = cme.service_id
 JOIN categories c ON c.id = sv.category_id
-JOIN prefixes p ON p.id = ce.prefix_id
-JOIN feeds f ON f.id = ce.feed_id
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-WHERE cmf.mode_id = ? AND f.enabled = 1
+JOIN prefixes p ON p.id = cme.prefix_id
+WHERE cme.mode_id = ?
 GROUP BY c.name, length(p.ip)`, modeID)
 	if err != nil {
 		return nil, nil, err
@@ -129,14 +135,12 @@ GROUP BY c.name, length(p.ip)`, modeID)
 // PrefixCounts returns the number of distinct IPv4 and IPv6 CIDR prefixes for each service in each category.
 func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (v4 map[string]map[string]int, v6 map[string]map[string]int, err error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT c.name, sv.name, length(p.ip), COUNT(DISTINCT ce.prefix_id)
-FROM catalog_entries ce
-JOIN services sv ON sv.id = ce.service_id
+SELECT c.name, sv.name, length(p.ip), COUNT(DISTINCT cme.prefix_id)
+FROM catalog_mode_entries cme
+JOIN services sv ON sv.id = cme.service_id
 JOIN categories c ON c.id = sv.category_id
-JOIN prefixes p ON p.id = ce.prefix_id
-JOIN feeds f ON f.id = ce.feed_id
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-WHERE cmf.mode_id = ? AND f.enabled = 1
+JOIN prefixes p ON p.id = cme.prefix_id
+WHERE cme.mode_id = ?
 GROUP BY c.name, sv.name, length(p.ip)`, modeID)
 	if err != nil {
 		return nil, nil, err
@@ -200,15 +204,12 @@ func (s *Store) CountPrefixes(ctx context.Context, modeID int64, categories []st
 		}
 		queryParts = append(queryParts, fmt.Sprintf(`
 SELECT DISTINCT p.ip, p.bits
-FROM feeds f
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-JOIN catalog_modes m ON m.id = cmf.mode_id
-JOIN catalog_entries ce ON ce.feed_id = f.id
-JOIN services sv ON sv.id = ce.service_id
+FROM catalog_mode_entries cme
+JOIN catalog_modes m ON m.id = cme.mode_id
+JOIN services sv ON sv.id = cme.service_id
 JOIN categories c ON c.id = sv.category_id
-JOIN prefixes p ON p.id = ce.prefix_id
-WHERE cmf.mode_id = ?1
-  AND f.enabled = 1
+JOIN prefixes p ON p.id = cme.prefix_id
+WHERE cme.mode_id = ?1
   AND m.enabled = 1
   AND c.name IN (%s)`, strings.Join(placeholders, ", ")))
 	}
@@ -221,15 +222,12 @@ WHERE cmf.mode_id = ?1
 		}
 		queryParts = append(queryParts, fmt.Sprintf(`
 SELECT DISTINCT p.ip, p.bits
-FROM feeds f
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-JOIN catalog_modes m ON m.id = cmf.mode_id
-JOIN catalog_entries ce ON ce.feed_id = f.id
-JOIN services sv ON sv.id = ce.service_id
+FROM catalog_mode_entries cme
+JOIN catalog_modes m ON m.id = cme.mode_id
+JOIN services sv ON sv.id = cme.service_id
 JOIN categories c ON c.id = sv.category_id
-JOIN prefixes p ON p.id = ce.prefix_id
-WHERE cmf.mode_id = ?1
-  AND f.enabled = 1
+JOIN prefixes p ON p.id = cme.prefix_id
+WHERE cme.mode_id = ?1
   AND m.enabled = 1
   AND (c.name, sv.name) IN (%s)`, strings.Join(pairs, ", ")))
 	}
@@ -265,36 +263,25 @@ func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64) (v4, v
 
 	prefixes, err := s.queryPrefixes(ctx, `
 SELECT DISTINCT p.ip, p.bits
-FROM feeds f
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-JOIN catalog_modes m ON m.id = cmf.mode_id
-JOIN catalog_entries ce ON ce.feed_id = f.id
-JOIN services sv ON sv.id = ce.service_id
-JOIN prefixes p ON p.id = ce.prefix_id
-WHERE cmf.mode_id = ?1
-  AND f.enabled = 1
+FROM catalog_mode_entries cme
+JOIN catalog_modes m ON m.id = cme.mode_id
+JOIN services sv ON sv.id = cme.service_id
+JOIN prefixes p ON p.id = cme.prefix_id
+WHERE cme.mode_id = ?1
   AND m.enabled = 1
-  AND EXISTS (
-      SELECT 1 FROM selected_categories sc
-      WHERE sc.user_id = ?2
-        AND sc.mode_id = ?1
-        AND sc.category_id = sv.category_id
-  )
-UNION
-SELECT DISTINCT p.ip, p.bits
-FROM feeds f
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-JOIN catalog_modes m ON m.id = cmf.mode_id
-JOIN catalog_entries ce ON ce.feed_id = f.id
-JOIN prefixes p ON p.id = ce.prefix_id
-WHERE cmf.mode_id = ?1
-  AND f.enabled = 1
-  AND m.enabled = 1
-  AND EXISTS (
-      SELECT 1 FROM selected_services ss
-      WHERE ss.user_id = ?2
-        AND ss.mode_id = ?1
-        AND ss.service_id = ce.service_id
+  AND (
+      EXISTS (
+          SELECT 1 FROM selected_categories sc
+          WHERE sc.user_id = ?2
+            AND sc.mode_id = ?1
+            AND sc.category_id = sv.category_id
+      )
+      OR EXISTS (
+          SELECT 1 FROM selected_services ss
+          WHERE ss.user_id = ?2
+            AND ss.mode_id = ?1
+            AND ss.service_id = cme.service_id
+      )
   )`, catalogModeID, userID)
 	if err != nil {
 		return 0, 0, err

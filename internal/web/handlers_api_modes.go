@@ -25,6 +25,25 @@ type modeFeedJSON struct {
 	URL         string `json:"url"`
 	Enabled     bool   `json:"enabled"`
 	AdapterName string `json:"adapter_name"`
+	Exclude     bool   `json:"exclude"`
+}
+
+// modeFeedsJSON converts mode feed links to their wire form, resolving
+// adapter names best-effort for display.
+func (s *Server) modeFeedsJSON(r *http.Request, feeds []store.ModeFeed) []modeFeedJSON {
+	result := make([]modeFeedJSON, len(feeds))
+	for i, f := range feeds {
+		adapter, _ := s.store.FeedAdapter(r.Context(), f.AdapterID) //nolint:errcheck // best-effort lookup for display
+		result[i] = modeFeedJSON{
+			ID:          f.ID,
+			Name:        f.Name,
+			URL:         f.URL,
+			Enabled:     f.Enabled,
+			AdapterName: adapter.Name,
+			Exclude:     f.Exclude,
+		}
+	}
+	return result
 }
 
 type communityItemJSON struct {
@@ -74,17 +93,7 @@ func (s *Server) apiModesGet(w http.ResponseWriter, r *http.Request) {
 	}
 	feedCounts, _ := s.store.ModeFeedCounts(r.Context()) //nolint:errcheck // best-effort lookup for display
 	feeds, _ := s.store.ModeFeeds(r.Context(), id)       //nolint:errcheck // best-effort lookup for display
-	feedList := make([]modeFeedJSON, len(feeds))
-	for i, f := range feeds {
-		adapter, _ := s.store.FeedAdapter(r.Context(), f.AdapterID) //nolint:errcheck // best-effort lookup for display
-		feedList[i] = modeFeedJSON{
-			ID:          f.ID,
-			Name:        f.Name,
-			URL:         f.URL,
-			Enabled:     f.Enabled,
-			AdapterName: adapter.Name,
-		}
-	}
+	feedList := s.modeFeedsJSON(r, feeds)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode": modeJSON{
 			ID:        mode.ID,
@@ -228,18 +237,7 @@ func (s *Server) apiModeFeedsGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load mode feeds"})
 		return
 	}
-	result := make([]modeFeedJSON, len(feeds))
-	for i, f := range feeds {
-		adapter, _ := s.store.FeedAdapter(r.Context(), f.AdapterID) //nolint:errcheck // best-effort lookup for display
-		result[i] = modeFeedJSON{
-			ID:          f.ID,
-			Name:        f.Name,
-			URL:         f.URL,
-			Enabled:     f.Enabled,
-			AdapterName: adapter.Name,
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"feeds": result})
+	writeJSON(w, http.StatusOK, map[string]any{"feeds": s.modeFeedsJSON(r, feeds)})
 }
 
 // apiModeFeedsSet handles PUT /api/admin/modes/{id}/feeds.
@@ -251,11 +249,26 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		// feeds carries roles; feed_ids is the legacy include-only form,
+		// used when feeds is absent.
+		Feeds []struct {
+			ID      int64 `json:"id"`
+			Exclude bool  `json:"exclude"`
+		} `json:"feeds"`
 		FeedIDs []int64 `json:"feed_ids"`
 	}
 	if err = json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
+	}
+	links := body.Feeds
+	if links == nil {
+		for _, feedID := range body.FeedIDs {
+			links = append(links, struct {
+				ID      int64 `json:"id"`
+				Exclude bool  `json:"exclude"`
+			}{ID: feedID})
+		}
 	}
 	// Replace all assignments atomically: delete existing + insert new in a transaction.
 	tx, err := s.store.DB.BeginTx(r.Context(), nil)
@@ -277,13 +290,13 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	for _, feedID := range body.FeedIDs {
-		if feedID <= 0 {
+	for _, link := range links {
+		if link.ID <= 0 {
 			continue
 		}
 		if _, err := tx.ExecContext(r.Context(),
-			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
-			modeID, feedID); err != nil {
+			"INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, ?)",
+			modeID, link.ID, link.Exclude); err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 			return
 		}
@@ -293,6 +306,12 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	committed = true
+	// The membership/role set changed — rebuild the materialized merge
+	// before anything reads it (reconcile below does).
+	if err := s.store.RebuildModeEntries(r.Context(), modeID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to rebuild mode entries: " + err.Error()})
+		return
+	}
 	// Generate communities and reconcile (best-effort side effects, after commit)
 	s.store.GenerateCommunities(r.Context(), modeID) //nolint:errcheck,gosec // best-effort community generation
 	if s.bgp != nil {
@@ -311,18 +330,7 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load mode feeds"})
 		return
 	}
-	result := make([]modeFeedJSON, len(feeds))
-	for i, f := range feeds {
-		adapter, _ := s.store.FeedAdapter(r.Context(), f.AdapterID) //nolint:errcheck // best-effort lookup for display
-		result[i] = modeFeedJSON{
-			ID:          f.ID,
-			Name:        f.Name,
-			URL:         f.URL,
-			Enabled:     f.Enabled,
-			AdapterName: adapter.Name,
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"feeds": result})
+	writeJSON(w, http.StatusOK, map[string]any{"feeds": s.modeFeedsJSON(r, feeds)})
 }
 
 // --- Communities handlers ---

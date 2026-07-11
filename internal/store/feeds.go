@@ -189,7 +189,7 @@ func mergeHosts(hosts, host string) string {
 }
 
 func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		var oldURL string
 		var oldAdapterID int64
 		var oldData string
@@ -220,6 +220,13 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 			"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", feed.ID)
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	// The update may have flipped enabled or wiped the feed's entries (the
+	// config-change branch above) — either way the materialized merge of
+	// every mode linking this feed is stale now.
+	return s.RebuildModeEntriesForFeed(ctx, feed.ID)
 }
 
 // FeedModes returns the mode IDs associated with a feed.
@@ -246,7 +253,13 @@ func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {
 }
 
 func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
+	// Collect the affected modes before the delete cascades the
+	// catalog_mode_feeds links away.
+	modeIDs, err := s.FeedModes(ctx, id)
+	if err != nil {
+		return err
+	}
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, "DELETE FROM feeds WHERE id = ?", id)
 		if err != nil {
 			return err
@@ -267,6 +280,7 @@ WHERE NOT EXISTS (
     JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
     WHERE sv.category_id = selected_categories.category_id
       AND cmf.mode_id = selected_categories.mode_id
+      AND cmf.exclude = 0
 )`); err != nil {
 			return err
 		}
@@ -277,7 +291,12 @@ WHERE NOT EXISTS (
     JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
     WHERE ce.service_id = selected_services.service_id
       AND cmf.mode_id = selected_services.mode_id
+      AND cmf.exclude = 0
 )`)
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	return s.rebuildModes(ctx, modeIDs)
 }

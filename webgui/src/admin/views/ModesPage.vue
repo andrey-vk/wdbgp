@@ -17,7 +17,7 @@ import ErrorPage from '@/components/ErrorPage.vue'
 import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
 
 interface FeedItem {
-  id: number; name: string; url: string; enabled: boolean; adapter_name: string
+  id: number; name: string; url: string; enabled: boolean; adapter_name: string; exclude?: boolean
 }
 
 const { t } = useI18n()
@@ -36,6 +36,7 @@ const editMode = ref(false)
 const assignedFeeds = ref<FeedItem[]>([])
 const allFeeds = ref<FeedItem[]>([])
 const assignedFeedIds = ref<number[]>([])
+const excludedFeedIds = ref<number[]>([])
 const loadingFeeds = ref(false)
 const savingFeeds = ref(false)
 
@@ -61,6 +62,7 @@ function startNew() {
   assignedFeeds.value = []
   allFeeds.value = []
   assignedFeedIds.value = []
+  excludedFeedIds.value = []
   loadAllFeeds()
 }
 
@@ -116,7 +118,10 @@ async function handleSave() {
     let feedsSaveFailed = false
     try {
       await apiClient.put('/admin/modes/' + savedMode.id + '/feeds', {
-        feed_ids: assignedFeedIds.value,
+        feeds: assignedFeedIds.value.map((id) => ({
+          id,
+          exclude: excludedFeedIds.value.includes(id),
+        })),
       })
       // Fire-and-forget regenerate communities
       apiClient.post('/admin/modes/' + savedMode.id + '/communities/generate').catch(() => {})
@@ -179,6 +184,7 @@ async function loadModeFeeds() {
     const resp = await apiClient.get('/admin/modes/' + selected.value.id + '/feeds')
     assignedFeeds.value = resp.data.feeds || []
     assignedFeedIds.value = assignedFeeds.value.map((f: FeedItem) => f.id)
+    excludedFeedIds.value = assignedFeeds.value.filter((f: FeedItem) => f.exclude).map((f: FeedItem) => f.id)
   } finally { loadingFeeds.value = false }
 }
 
@@ -196,8 +202,23 @@ function isFeedAssigned(feedId: number): boolean {
 
 function toggleFeed(feedId: number) {
   const idx = assignedFeedIds.value.indexOf(feedId)
-  if (idx >= 0) assignedFeedIds.value.splice(idx, 1)
-  else assignedFeedIds.value.push(feedId)
+  if (idx >= 0) {
+    assignedFeedIds.value.splice(idx, 1)
+    const exIdx = excludedFeedIds.value.indexOf(feedId)
+    if (exIdx >= 0) excludedFeedIds.value.splice(exIdx, 1)
+  } else {
+    assignedFeedIds.value.push(feedId)
+  }
+}
+
+function isFeedExcluded(feedId: number): boolean {
+  return excludedFeedIds.value.includes(feedId)
+}
+
+function toggleFeedRole(feedId: number) {
+  const idx = excludedFeedIds.value.indexOf(feedId)
+  if (idx >= 0) excludedFeedIds.value.splice(idx, 1)
+  else excludedFeedIds.value.push(feedId)
 }
 
 // Exposed for ModesPage.spec.ts, which drives saves and inspects local
@@ -209,6 +230,7 @@ defineExpose({
   form,
   editMode,
   assignedFeedIds,
+  excludedFeedIds,
   handleSave,
   startNew,
 })
@@ -325,8 +347,14 @@ defineExpose({
                 <span
                   v-for="f in assignedFeeds"
                   :key="f.id"
-                  class="text-sm px-1.5 py-0.5 bg-gray-50 dark:bg-gray-950 border border-gray-200 dark:border-gray-700 rounded text-gray-700 dark:text-gray-300"
-                >{{ f.name }}</span>
+                  class="text-sm px-1.5 py-0.5 border rounded inline-flex items-center gap-1"
+                  :class="f.exclude
+                    ? 'bg-red-50 dark:bg-red-400/10 border-red-200 dark:border-red-500/30 text-red-700 dark:text-red-300'
+                    : 'bg-gray-50 dark:bg-gray-950 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300'"
+                >
+                  <i v-if="f.exclude" class="pi pi-minus-circle text-xs" />
+                  {{ f.name }}
+                </span>
               </div>
             </div>
           </div>
@@ -387,6 +415,18 @@ defineExpose({
                     class="font-medium cursor-pointer overflow-hidden text-ellipsis whitespace-nowrap"
                   >{{ feed.name }}</label>
                   <span class="text-xs text-gray-500 dark:text-gray-400 truncate flex-1 min-w-0">{{ feed.url }}</span>
+                  <button
+                    v-if="isFeedAssigned(feed.id)"
+                    type="button"
+                    class="text-xs px-1.5 py-0.5 rounded border cursor-pointer"
+                    :class="isFeedExcluded(feed.id)
+                      ? 'bg-red-50 dark:bg-red-400/10 border-red-300 dark:border-red-500/40 text-red-700 dark:text-red-300'
+                      : 'bg-green-50 dark:bg-green-400/10 border-green-300 dark:border-green-500/40 text-green-700 dark:text-green-300'"
+                    :title="t('modes.role_hint')"
+                    @click="toggleFeedRole(feed.id)"
+                  >
+                    {{ isFeedExcluded(feed.id) ? t('modes.role_exclude') : t('modes.role_include') }}
+                  </button>
                   <Tag
                     v-if="!feed.enabled"
                     severity="warn"
