@@ -137,4 +137,42 @@ describe('ModesPage', () => {
     expect(mockPost).not.toHaveBeenCalledWith('/admin/modes', expect.anything())
     expect(mockPut).toHaveBeenCalledWith('/admin/modes/42', expect.anything())
   })
+
+  it('saves feed assignments with include/exclude roles', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/modes') {
+        return Promise.resolve({ data: { modes: [] } })
+      }
+      if (url === '/admin/modes/7/feeds') {
+        return Promise.resolve({ data: { feeds: [] } })
+      }
+      if (url === '/admin/feeds') {
+        return Promise.resolve({ data: { feeds: [
+          { id: 1, name: 'inc', url: 'u1', enabled: true, adapter_name: 'a' },
+          { id: 2, name: 'exc', url: 'u2', enabled: true, adapter_name: 'a' },
+        ] } })
+      }
+      return Promise.resolve({ data: {} })
+    })
+
+    const { wrapper } = await mountModesPage()
+    const vm = wrapper.vm as ModesPageVM
+
+    vm.startNew()
+    vm.form.name = 'roles-mode'
+    vm.assignedFeedIds.push(1, 2)
+    vm.excludedFeedIds.push(2)
+
+    mockPost.mockResolvedValue({ data: { id: 7, name: 'roles-mode', enabled: true, feed_count: 2 } })
+    mockPut.mockResolvedValue({ data: {} })
+
+    await vm.handleSave()
+
+    expect(mockPut).toHaveBeenCalledWith('/admin/modes/7/feeds', {
+      feeds: [
+        { id: 1, exclude: false },
+        { id: 2, exclude: true },
+      ],
+    })
+  })
 })

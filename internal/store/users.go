@@ -741,7 +741,7 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
       JOIN services sv ON sv.id = ce.service_id
       JOIN feeds f ON f.id = ce.feed_id
       JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-      WHERE sv.category_id = sc.category_id AND cmf.mode_id = sc.mode_id AND f.enabled = 0
+      WHERE sv.category_id = sc.category_id AND cmf.mode_id = sc.mode_id AND cmf.exclude = 0 AND f.enabled = 0
   )
   AND NOT EXISTS (
       SELECT 1
@@ -749,7 +749,7 @@ WHERE sc.user_id = ? AND sc.mode_id = ?
       JOIN services sv ON sv.id = ce.service_id
       JOIN feeds f ON f.id = ce.feed_id
       JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-      WHERE sv.category_id = sc.category_id AND cmf.mode_id = sc.mode_id AND f.enabled = 1
+      WHERE sv.category_id = sc.category_id AND cmf.mode_id = sc.mode_id AND cmf.exclude = 0 AND f.enabled = 1
   )`, userID, modeID)
 	if err != nil {
 		return nil, err
@@ -788,6 +788,7 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
       JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
       WHERE ce.service_id = ss.service_id
         AND cmf.mode_id = ss.mode_id
+        AND cmf.exclude = 0
         AND f.enabled = 0
   )
   AND NOT EXISTS (
@@ -797,6 +798,7 @@ WHERE ss.user_id = ? AND ss.mode_id = ?
       JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
       WHERE ce.service_id = ss.service_id
         AND cmf.mode_id = ss.mode_id
+        AND cmf.exclude = 0
         AND f.enabled = 1
   )`, userID, modeID)
 	if err != nil {

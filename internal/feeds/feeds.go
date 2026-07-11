@@ -385,10 +385,17 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		if err := store.ReplaceCatalogEntries(ctx, tx, feed.ID, toCatalogEntries(entries)); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx,
+		if _, err = tx.ExecContext(ctx,
 			"UPDATE feeds SET last_success = ?, last_error = NULL WHERE id = ? AND url = ? AND enabled = 1",
-			time.Now().Unix(), feed.ID, feed.URL)
-		return err
+			time.Now().Unix(), feed.ID, feed.URL); err != nil {
+			return err
+		}
+		// Rebuild the materialized merge of every mode linking this feed
+		// (include or exclude role) in the SAME transaction: entries,
+		// last_success and the materialization commit or roll back as one
+		// unit, so a successful sync can never leave BGP announcing stale
+		// mode entries.
+		return store.RebuildModeEntriesForFeedTx(ctx, tx, feed.ID)
 	})
 	if errors.Is(err, errFeedChanged) {
 		return adapter.Revision, nil
@@ -399,6 +406,8 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 	}
 	// A resync replaces the feed's entries wholesale, so prefixes that
 	// dropped out of the feed may no longer be referenced by anything.
+	// (The mode-entry rebuild already ran inside the sync transaction
+	// above, so the fragments it interned are referenced and safe.)
 	if pruned, pruneErr := s.Store.PruneOrphanPrefixes(ctx); pruneErr != nil {
 		logger.Warn("failed to prune orphan prefixes after sync", "feed_id", feed.ID, "error", pruneErr)
 	} else if pruned > 0 {

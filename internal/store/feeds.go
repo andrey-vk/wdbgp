@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log"
 	"strings"
 )
@@ -189,7 +190,7 @@ func mergeHosts(hosts, host string) string {
 }
 
 func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		var oldURL string
 		var oldAdapterID int64
 		var oldData string
@@ -210,16 +211,25 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 			return err
 		}
 		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name && oldAllowedHosts == feed.AllowedHosts && oldRestrictHosts == feed.RestrictHosts {
-			return nil
+			// Config unchanged — but enabled may have flipped, which
+			// changes what the feed contributes.
+			return RebuildModeEntriesForFeedTx(ctx, tx, feed.ID)
 		}
 		if _, err := tx.ExecContext(ctx,
 			"DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
-			"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", feed.ID)
-		return err
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", feed.ID); err != nil {
+			return err
+		}
+		// The update may have flipped enabled or wiped the feed's entries
+		// (the config-change branch above) — rebuild in the SAME
+		// transaction, so a disabled/reconfigured feed can never keep
+		// being announced from a stale materialized merge.
+		return RebuildModeEntriesForFeedTx(ctx, tx, feed.ID)
 	})
+	return err
 }
 
 // FeedModes returns the mode IDs associated with a feed.
@@ -247,6 +257,13 @@ func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {
 
 func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		// Collect the affected modes before the delete cascades the
+		// catalog_mode_feeds links away — inside the transaction, so the
+		// list can't race a concurrent membership change.
+		modeIDs, err := feedModeIDsTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, "DELETE FROM feeds WHERE id = ?", id)
 		if err != nil {
 			return err
@@ -267,17 +284,28 @@ WHERE NOT EXISTS (
     JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
     WHERE sv.category_id = selected_categories.category_id
       AND cmf.mode_id = selected_categories.mode_id
+      AND cmf.exclude = 0
 )`); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `
+		if _, err = tx.ExecContext(ctx, `
 DELETE FROM selected_services
 WHERE NOT EXISTS (
     SELECT 1 FROM catalog_entries ce JOIN feeds f ON f.id = ce.feed_id
     JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
     WHERE ce.service_id = selected_services.service_id
       AND cmf.mode_id = selected_services.mode_id
-)`)
-		return err
+      AND cmf.exclude = 0
+)`); err != nil {
+			return err
+		}
+		// Rebuild in the SAME transaction: a deleted feed must never keep
+		// being advertised from a stale materialized merge.
+		for _, modeID := range modeIDs {
+			if err := rebuildModeEntriesTx(ctx, tx, modeID); err != nil {
+				return fmt.Errorf("rebuild mode %d: %w", modeID, err)
+			}
+		}
+		return nil
 	})
 }

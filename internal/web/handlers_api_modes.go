@@ -2,7 +2,6 @@ package web
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -25,6 +24,25 @@ type modeFeedJSON struct {
 	URL         string `json:"url"`
 	Enabled     bool   `json:"enabled"`
 	AdapterName string `json:"adapter_name"`
+	Exclude     bool   `json:"exclude"`
+}
+
+// modeFeedsJSON converts mode feed links to their wire form, resolving
+// adapter names best-effort for display.
+func (s *Server) modeFeedsJSON(r *http.Request, feeds []store.ModeFeed) []modeFeedJSON {
+	result := make([]modeFeedJSON, len(feeds))
+	for i, f := range feeds {
+		adapter, _ := s.store.FeedAdapter(r.Context(), f.AdapterID) //nolint:errcheck // best-effort lookup for display
+		result[i] = modeFeedJSON{
+			ID:          f.ID,
+			Name:        f.Name,
+			URL:         f.URL,
+			Enabled:     f.Enabled,
+			AdapterName: adapter.Name,
+			Exclude:     f.Exclude,
+		}
+	}
+	return result
 }
 
 type communityItemJSON struct {
@@ -74,17 +92,7 @@ func (s *Server) apiModesGet(w http.ResponseWriter, r *http.Request) {
 	}
 	feedCounts, _ := s.store.ModeFeedCounts(r.Context()) //nolint:errcheck // best-effort lookup for display
 	feeds, _ := s.store.ModeFeeds(r.Context(), id)       //nolint:errcheck // best-effort lookup for display
-	feedList := make([]modeFeedJSON, len(feeds))
-	for i, f := range feeds {
-		adapter, _ := s.store.FeedAdapter(r.Context(), f.AdapterID) //nolint:errcheck // best-effort lookup for display
-		feedList[i] = modeFeedJSON{
-			ID:          f.ID,
-			Name:        f.Name,
-			URL:         f.URL,
-			Enabled:     f.Enabled,
-			AdapterName: adapter.Name,
-		}
-	}
+	feedList := s.modeFeedsJSON(r, feeds)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode": modeJSON{
 			ID:        mode.ID,
@@ -228,18 +236,7 @@ func (s *Server) apiModeFeedsGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load mode feeds"})
 		return
 	}
-	result := make([]modeFeedJSON, len(feeds))
-	for i, f := range feeds {
-		adapter, _ := s.store.FeedAdapter(r.Context(), f.AdapterID) //nolint:errcheck // best-effort lookup for display
-		result[i] = modeFeedJSON{
-			ID:          f.ID,
-			Name:        f.Name,
-			URL:         f.URL,
-			Enabled:     f.Enabled,
-			AdapterName: adapter.Name,
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"feeds": result})
+	writeJSON(w, http.StatusOK, map[string]any{"feeds": s.modeFeedsJSON(r, feeds)})
 }
 
 // apiModeFeedsSet handles PUT /api/admin/modes/{id}/feeds.
@@ -251,48 +248,35 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		// feeds carries roles; feed_ids is the legacy include-only form,
+		// used when feeds is absent.
+		Feeds []struct {
+			ID      int64 `json:"id"`
+			Exclude bool  `json:"exclude"`
+		} `json:"feeds"`
 		FeedIDs []int64 `json:"feed_ids"`
 	}
 	if err = json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	// Replace all assignments atomically: delete existing + insert new in a transaction.
-	tx, err := s.store.DB.BeginTx(r.Context(), nil)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to begin transaction"})
-		return
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			if err := tx.Rollback(); err != nil {
-				log.Printf("WARNING: mode feeds transaction rollback: %v", err)
-			}
+	links := make([]store.ModeFeedLink, 0, len(body.Feeds)+len(body.FeedIDs))
+	if body.Feeds != nil {
+		for _, f := range body.Feeds {
+			links = append(links, store.ModeFeedLink{FeedID: f.ID, Exclude: f.Exclude})
 		}
-	}()
-
-	if _, err := tx.ExecContext(r.Context(),
-		"DELETE FROM catalog_mode_feeds WHERE mode_id = ?", modeID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
-	for _, feedID := range body.FeedIDs {
-		if feedID <= 0 {
-			continue
-		}
-		if _, err := tx.ExecContext(r.Context(),
-			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)",
-			modeID, feedID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-			return
+	} else {
+		for _, feedID := range body.FeedIDs {
+			links = append(links, store.ModeFeedLink{FeedID: feedID})
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save feed assignments"})
+	// Links and the materialized rebuild land in ONE transaction: a rebuild
+	// failure rolls the membership change back, so catalog_mode_feeds and
+	// catalog_mode_entries can never disagree.
+	if err := s.store.ReplaceModeFeeds(r.Context(), modeID, links); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save feed assignments: " + err.Error()})
 		return
 	}
-	committed = true
 	// Generate communities and reconcile (best-effort side effects, after commit)
 	s.store.GenerateCommunities(r.Context(), modeID) //nolint:errcheck,gosec // best-effort community generation
 	if s.bgp != nil {
@@ -311,18 +295,7 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load mode feeds"})
 		return
 	}
-	result := make([]modeFeedJSON, len(feeds))
-	for i, f := range feeds {
-		adapter, _ := s.store.FeedAdapter(r.Context(), f.AdapterID) //nolint:errcheck // best-effort lookup for display
-		result[i] = modeFeedJSON{
-			ID:          f.ID,
-			Name:        f.Name,
-			URL:         f.URL,
-			Enabled:     f.Enabled,
-			AdapterName: adapter.Name,
-		}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"feeds": result})
+	writeJSON(w, http.StatusOK, map[string]any{"feeds": s.modeFeedsJSON(r, feeds)})
 }
 
 // --- Communities handlers ---

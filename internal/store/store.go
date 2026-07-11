@@ -422,15 +422,20 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if _, err := backupDB.Exec("DELETE FROM catalog_entries"); err != nil {
 			log.Printf("WARNING: backup cleanup DELETE: %v", err)
 		}
-		// The prefixes dictionary (schema >= 32) is recreatable too; on
-		// older-format DBs the table doesn't exist yet.
-		var hasPrefixes int
-		if err := backupDB.QueryRow(
-			"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='prefixes'").Scan(&hasPrefixes); err != nil {
-			log.Printf("WARNING: backup cleanup prefixes check: %v", err)
-		} else if hasPrefixes > 0 {
-			if _, err := backupDB.Exec("DELETE FROM prefixes"); err != nil {
-				log.Printf("WARNING: backup cleanup DELETE prefixes: %v", err)
+		// The prefixes dictionary (schema >= 32) and the materialized
+		// catalog_mode_entries (schema >= 36) are recreatable too; on
+		// older-format DBs the tables don't exist yet. catalog_mode_entries
+		// must go whenever prefixes does — keeping it would leave rows with
+		// dangling prefix_ids in a restored backup.
+		for _, table := range []string{"prefixes", "catalog_mode_entries"} {
+			var hasTable int
+			if err := backupDB.QueryRow(
+				"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&hasTable); err != nil {
+				log.Printf("WARNING: backup cleanup %s check: %v", table, err)
+			} else if hasTable > 0 {
+				if _, err := backupDB.Exec("DELETE FROM " + table); err != nil { //nolint:gosec // table names from a fixed list above
+					log.Printf("WARNING: backup cleanup DELETE %s: %v", table, err)
+				}
 			}
 		}
 		if _, err := backupDB.Exec("VACUUM"); err != nil {

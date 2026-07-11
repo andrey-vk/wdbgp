@@ -1393,10 +1393,10 @@ func TestAdminSaveSelectionsPreservesHidden(t *testing.T) {
 	}
 
 	// 3. Assign both feeds to the mode
-	if err := st.AddFeedToMode(ctx, modeID, f1ID); err != nil {
+	if err := st.AddFeedToMode(ctx, modeID, f1ID, false); err != nil {
 		t.Fatalf("assign f1 to mode: %v", err)
 	}
-	if err := st.AddFeedToMode(ctx, modeID, f2ID); err != nil {
+	if err := st.AddFeedToMode(ctx, modeID, f2ID, false); err != nil {
 		t.Fatalf("assign f2 to mode: %v", err)
 	}
 

@@ -32,45 +32,32 @@ type userRoute struct {
 
 func (s *Store) DesiredPrefixes(ctx context.Context) (map[string][]int64, map[string]PrefixRouteInfo, error) {
 	rows, err := s.DB.QueryContext(ctx, `
--- Simpler UNION-based approach without CTEs
+-- catalog_mode_entries is the materialized per-mode merge (include feeds
+-- minus exclude feeds, enabled feeds only) maintained by RebuildModeEntries,
+-- so no feeds join and no include/exclude math happens on this hot path.
 SELECT DISTINCT p.ip, p.bits, u.id, u.filter_mode,
-       c.name, sv.name, cmf.mode_id
+       c.name, sv.name, cme.mode_id
 FROM users u
-JOIN catalog_mode_feeds cmf ON cmf.mode_id = u.catalog_mode_id
-JOIN feeds f ON f.id = cmf.feed_id
-JOIN catalog_modes m ON m.id = cmf.mode_id
-JOIN catalog_entries ce ON ce.feed_id = f.id
-JOIN services sv ON sv.id = ce.service_id
+JOIN catalog_modes m ON m.id = u.catalog_mode_id
+JOIN catalog_mode_entries cme ON cme.mode_id = u.catalog_mode_id
+JOIN services sv ON sv.id = cme.service_id
 JOIN categories c ON c.id = sv.category_id
-JOIN prefixes p ON p.id = ce.prefix_id
+JOIN prefixes p ON p.id = cme.prefix_id
 WHERE u.enabled = 1
-  AND f.enabled = 1
   AND m.enabled = 1
-  AND EXISTS (
-      SELECT 1 FROM selected_categories sc
-      WHERE sc.user_id = u.id
-        AND sc.mode_id = u.catalog_mode_id
-        AND sc.category_id = sv.category_id
-  )
-UNION
-SELECT DISTINCT p.ip, p.bits, u.id, u.filter_mode,
-       c.name, sv.name, cmf.mode_id
-FROM users u
-JOIN catalog_mode_feeds cmf ON cmf.mode_id = u.catalog_mode_id
-JOIN feeds f ON f.id = cmf.feed_id
-JOIN catalog_modes m ON m.id = cmf.mode_id
-JOIN catalog_entries ce ON ce.feed_id = f.id
-JOIN services sv ON sv.id = ce.service_id
-JOIN categories c ON c.id = sv.category_id
-JOIN prefixes p ON p.id = ce.prefix_id
-WHERE u.enabled = 1
-  AND f.enabled = 1
-  AND m.enabled = 1
-  AND EXISTS (
-      SELECT 1 FROM selected_services ss
-      WHERE ss.user_id = u.id
-        AND ss.mode_id = u.catalog_mode_id
-        AND ss.service_id = ce.service_id
+  AND (
+      EXISTS (
+          SELECT 1 FROM selected_categories sc
+          WHERE sc.user_id = u.id
+            AND sc.mode_id = u.catalog_mode_id
+            AND sc.category_id = sv.category_id
+      )
+      OR EXISTS (
+          SELECT 1 FROM selected_services ss
+          WHERE ss.user_id = u.id
+            AND ss.mode_id = u.catalog_mode_id
+            AND ss.service_id = cme.service_id
+      )
   )
 ORDER BY 1, 2, 3`)
 	if err != nil {

@@ -230,14 +230,17 @@ WHERE cc.mode_id = ? ORDER BY cc.community`,
 		// of a DISTINCT category query followed by a per-category DISTINCT
 		// service query — the per-category query was an N+1: one extra
 		// round trip for every category in the mode.
+		// Reads raw entries via include links (not the materialized
+		// catalog_mode_entries) so services of currently-disabled feeds
+		// keep their communities pre-generated; exclude links never mint
+		// communities — exclusion only subtracts prefixes.
 		entryRows, err := tx.QueryContext(ctx, `
 SELECT DISTINCT c.name, sv.name
 FROM catalog_entries ce
 JOIN services sv ON sv.id = ce.service_id
 JOIN categories c ON c.id = sv.category_id
-JOIN feeds f ON f.id = ce.feed_id
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = f.id
-WHERE cmf.mode_id = ?
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = ce.feed_id
+WHERE cmf.mode_id = ? AND cmf.exclude = 0
 ORDER BY c.name, sv.name`, mid)
 		if err != nil {
 			return 0, err
