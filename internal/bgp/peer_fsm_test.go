@@ -125,15 +125,18 @@ func TestMainLoopRouteRefreshTriggersFullResync(t *testing.T) {
 	defer clientSide.Close() //nolint:errcheck // test cleanup
 
 	prefix := netip.MustParsePrefix("10.0.0.0/8")
+	stale := netip.MustParsePrefix("172.16.0.0/12")
 	p := &Peer{
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		holdTime: 5 * time.Second,
 		spk:      SpeakerConfig{ASN: 64512},
 		routes:   []Route{{Prefix: prefix, NextHop: netip.MustParseAddr("192.0.2.1")}},
 	}
-	// Simulate a fully synced session: the remote already holds the set,
-	// so without the refresh nothing would be re-sent.
-	p.lastSent = []netip.Prefix{prefix}
+	// Simulate a synced session whose desired set has just shrunk: the
+	// remote holds both prefixes, but only one is still desired. The
+	// refresh handler must preserve lastSent — wiping it would lose the
+	// pending withdrawal of the stale prefix (Codex P2 on PR #37).
+	p.lastSent = []netip.Prefix{prefix, stale}
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- p.mainLoop(serverSide) }()
@@ -147,24 +150,27 @@ func TestMainLoopRouteRefreshTriggersFullResync(t *testing.T) {
 	if err := clientSide.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatalf("SetReadDeadline: %v", err)
 	}
-	var upd *UpdateMessage
-	for upd == nil {
+	announced := false
+	withdrawn := false
+	for !announced || !withdrawn {
 		msg, err := ReadMessage(clientSide)
 		if err != nil {
-			t.Fatalf("expected an UPDATE re-announcement, got read error: %v", err)
+			t.Fatalf("expected UPDATEs (announce %v, withdraw %v so far), got read error: %v", announced, withdrawn, err)
 		}
-		if u, ok := msg.(*UpdateMessage); ok {
-			upd = u
+		u, ok := msg.(*UpdateMessage)
+		if !ok {
+			continue // keepalive
 		}
-	}
-	found := false
-	for _, pf := range upd.NLRI {
-		if pf == prefix {
-			found = true
+		for _, pf := range u.NLRI {
+			if pf == prefix {
+				announced = true
+			}
 		}
-	}
-	if !found {
-		t.Errorf("UPDATE NLRI = %v, want it to contain %v", upd.NLRI, prefix)
+		for _, pf := range u.WithdrawnRoutes {
+			if pf == stale {
+				withdrawn = true
+			}
+		}
 	}
 
 	// The session must still be alive — the refresh itself is not an error.
