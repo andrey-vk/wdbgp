@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -240,8 +241,57 @@ func (s *Store) setBuiltInAdapterVersion(id int64, version int) {
 	s.builtInAdapterVersionByID[id] = version
 }
 
+// freeUpBuiltinName renames any pre-existing non-builtin adapter occupying
+// name, so a builtin can claim it below. Feeds reference adapters by id, so
+// the rename can never break an existing feed -> adapter link — it only
+// changes what the row is called. Without this, seeding a new builtin whose
+// name collides with a user's custom adapter would either silently skip
+// creating the builtin (INSERT OR IGNORE) or, worse, adopt the user's row
+// and reinterpret it as the builtin it never was.
+func (s *Store) freeUpBuiltinName(ctx context.Context, name string) error {
+	var id int64
+	err := s.DB.QueryRowContext(ctx,
+		"SELECT id FROM feed_adapters WHERE name = ? AND is_builtin = 0", name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	newName, err := s.nextAvailableAdapterName(ctx, name+" (custom)")
+	if err != nil {
+		return err
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"UPDATE feed_adapters SET name = ? WHERE id = ?", newName, id); err != nil {
+		return err
+	}
+	log.Printf("renamed custom feed adapter %q to %q to make room for builtin %q", name, newName, name)
+	return nil
+}
+
+// nextAvailableAdapterName returns base, or base with a growing numeric
+// suffix if base is already taken.
+func (s *Store) nextAvailableAdapterName(ctx context.Context, base string) (string, error) {
+	name := base
+	for i := 2; ; i++ {
+		var exists int
+		if err := s.DB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM feed_adapters WHERE name = ?", name).Scan(&exists); err != nil {
+			return "", err
+		}
+		if exists == 0 {
+			return name, nil
+		}
+		name = fmt.Sprintf("%s %d", base, i)
+	}
+}
+
 func (s *Store) seedBuiltInAdapters(ctx context.Context) error {
 	for name, adapter := range builtInAdapters {
+		if err := s.freeUpBuiltinName(ctx, name); err != nil {
+			return err
+		}
 		// First, INSERT OR IGNORE any built-in adapters that don't exist
 		// yet. is_builtin is set explicitly here (not left to a one-time
 		// migration backfill) so a built-in added to this map in a future
