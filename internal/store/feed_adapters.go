@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -142,6 +143,61 @@ function sync(feed, api) {
 }
 `
 
+const asAdapter = `
+function sync(feed, api) {
+    if (!feed.data || !feed.data.trim()) {
+        throw new Error("AS adapter: feed Data JSON is required ({asns, category, service})");
+    }
+    var cfg;
+    try {
+        cfg = JSON.parse(feed.data);
+    } catch (e) {
+        throw new Error("AS adapter: feed Data is not valid JSON: " + e.message);
+    }
+    if (!Array.isArray(cfg.asns) || cfg.asns.length === 0) {
+        throw new Error("AS adapter: 'asns' must be a non-empty array of AS numbers");
+    }
+    cfg.asns.forEach(function (asn) {
+        if (typeof asn !== "number" || !isFinite(asn) || asn <= 0 || asn !== Math.floor(asn)) {
+            throw new Error("AS adapter: 'asns' contains an invalid AS number: " + JSON.stringify(asn));
+        }
+    });
+    if (typeof cfg.category !== "string" || !cfg.category.trim()) {
+        throw new Error("AS adapter: 'category' must be a non-empty string");
+    }
+    if (typeof cfg.service !== "string" || !cfg.service.trim()) {
+        throw new Error("AS adapter: 'service' must be a non-empty string");
+    }
+
+    var seen = {};
+    var cidrs = [];
+    var now = Math.floor(Date.now() / 1000);
+    cfg.asns.forEach(function (asn) {
+        var url = "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS"
+            + asn + "&starttime=" + now + "&endtime=" + now
+            + "&min_peers_seeing=1&sourceapp=wdbgp";
+        var resp = JSON.parse(api.httpGet(url));
+        if (resp.status !== "ok" || !resp.data || !Array.isArray(resp.data.prefixes)) {
+            throw new Error("AS adapter: RIPEstat returned status " + JSON.stringify(resp.status) + " for AS" + asn);
+        }
+        var prefixes = resp.data.prefixes;
+        api.log("AS" + asn + ": " + prefixes.length + " announced prefixes");
+        prefixes.forEach(function (p) {
+            if (p && p.prefix && !seen[p.prefix]) {
+                seen[p.prefix] = true;
+                cidrs.push(p.prefix);
+            }
+        });
+    });
+
+    return [{
+        category: cfg.category,
+        service: cfg.service,
+        cidrs: cidrs
+    }];
+}
+`
+
 // builtInAdapter is keyed by the adapter's canonical name (feed_adapters.name
 // is NOT NULL UNIQUE) — combined with is_builtin, that's already a unique,
 // stable identifier for "which built-in is this DB row," so there's no need
@@ -170,6 +226,11 @@ var builtInAdapters = map[string]builtInAdapter{
 		source:         singboxSRSAdapter,
 		builtinVersion: 1,
 	},
+	"ASN": {
+		source:         asAdapter,
+		builtinVersion: 1,
+		allowedHosts:   "stat.ripe.net",
+	},
 }
 
 // setBuiltInAdapterVersion records the current builtin version for an
@@ -182,8 +243,57 @@ func (s *Store) setBuiltInAdapterVersion(id int64, version int) {
 	s.builtInAdapterVersionByID[id] = version
 }
 
+// freeUpBuiltinName renames any pre-existing non-builtin adapter occupying
+// name, so a builtin can claim it below. Feeds reference adapters by id, so
+// the rename can never break an existing feed -> adapter link — it only
+// changes what the row is called. Without this, seeding a new builtin whose
+// name collides with a user's custom adapter would either silently skip
+// creating the builtin (INSERT OR IGNORE) or, worse, adopt the user's row
+// and reinterpret it as the builtin it never was.
+func (s *Store) freeUpBuiltinName(ctx context.Context, name string) error {
+	var id int64
+	err := s.DB.QueryRowContext(ctx,
+		"SELECT id FROM feed_adapters WHERE name = ? AND is_builtin = 0", name).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	newName, err := s.nextAvailableAdapterName(ctx, name+" (custom)")
+	if err != nil {
+		return err
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"UPDATE feed_adapters SET name = ? WHERE id = ?", newName, id); err != nil {
+		return err
+	}
+	log.Printf("renamed custom feed adapter %q to %q to make room for builtin %q", name, newName, name)
+	return nil
+}
+
+// nextAvailableAdapterName returns base, or base with a growing numeric
+// suffix if base is already taken.
+func (s *Store) nextAvailableAdapterName(ctx context.Context, base string) (string, error) {
+	name := base
+	for i := 2; ; i++ {
+		var exists int
+		if err := s.DB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM feed_adapters WHERE name = ?", name).Scan(&exists); err != nil {
+			return "", err
+		}
+		if exists == 0 {
+			return name, nil
+		}
+		name = fmt.Sprintf("%s %d", base, i)
+	}
+}
+
 func (s *Store) seedBuiltInAdapters(ctx context.Context) error {
 	for name, adapter := range builtInAdapters {
+		if err := s.freeUpBuiltinName(ctx, name); err != nil {
+			return err
+		}
 		// First, INSERT OR IGNORE any built-in adapters that don't exist
 		// yet. is_builtin is set explicitly here (not left to a one-time
 		// migration backfill) so a built-in added to this map in a future
