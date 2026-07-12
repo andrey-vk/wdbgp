@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -875,7 +876,18 @@ func TestSyncASNFeedFetchesAnnouncedPrefixes(t *testing.T) {
 
 	syncer := NewSyncer(db, testSettings())
 	syncer.Client = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		switch request.URL.Query().Get("resource") {
+		q := request.URL.Query()
+		if q.Get("min_peers_seeing") != "1" {
+			t.Fatalf("min_peers_seeing = %q, want 1 (RIPEstat defaults to 10, which drops low-visibility announcements)", q.Get("min_peers_seeing"))
+		}
+		now := time.Now().Unix()
+		for _, param := range []string{"starttime", "endtime"} {
+			v, err := strconv.ParseInt(q.Get(param), 10, 64)
+			if err != nil || v < now-10 || v > now+10 {
+				t.Fatalf("%s = %q, want ~%d (query must be pinned to current announcements)", param, q.Get(param), now)
+			}
+		}
+		switch q.Get("resource") {
 		case "AS15169":
 			return &http.Response{
 				StatusCode: http.StatusOK,

@@ -171,9 +171,11 @@ function sync(feed, api) {
 
     var seen = {};
     var cidrs = [];
+    var now = Math.floor(Date.now() / 1000);
     cfg.asns.forEach(function (asn) {
         var url = "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS"
-            + asn + "&sourceapp=wdbgp";
+            + asn + "&starttime=" + now + "&endtime=" + now
+            + "&min_peers_seeing=1&sourceapp=wdbgp";
         var resp = JSON.parse(api.httpGet(url));
         if (resp.status !== "ok" || !resp.data || !Array.isArray(resp.data.prefixes)) {
             throw new Error("AS adapter: RIPEstat returned status " + JSON.stringify(resp.status) + " for AS" + asn);
