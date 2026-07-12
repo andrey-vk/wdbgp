@@ -174,7 +174,10 @@ function sync(feed, api) {
         var url = "https://stat.ripe.net/data/announced-prefixes/data.json?resource=AS"
             + asn + "&sourceapp=wdbgp";
         var resp = JSON.parse(api.httpGet(url));
-        var prefixes = (resp.data && resp.data.prefixes) || [];
+        if (resp.status !== "ok" || !resp.data || !Array.isArray(resp.data.prefixes)) {
+            throw new Error("AS adapter: RIPEstat returned status " + JSON.stringify(resp.status) + " for AS" + asn);
+        }
+        var prefixes = resp.data.prefixes;
         api.log("AS" + asn + ": " + prefixes.length + " announced prefixes");
         prefixes.forEach(function (p) {
             if (p && p.prefix && !seen[p.prefix]) {

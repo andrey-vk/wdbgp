@@ -879,13 +879,13 @@ func TestSyncASNFeedFetchesAnnouncedPrefixes(t *testing.T) {
 		case "AS15169":
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader(`{"data":{"prefixes":[{"prefix":"8.8.8.0/24"},{"prefix":"8.8.4.0/24"}]}}`)),
+				Body:       io.NopCloser(strings.NewReader(`{"status":"ok","data":{"prefixes":[{"prefix":"8.8.8.0/24"},{"prefix":"8.8.4.0/24"}]}}`)),
 				Header:     make(http.Header),
 			}, nil
 		case "AS32934":
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader(`{"data":{"prefixes":[{"prefix":"157.240.0.0/16"},{"prefix":"8.8.8.0/24"}]}}`)),
+				Body:       io.NopCloser(strings.NewReader(`{"status":"ok","data":{"prefixes":[{"prefix":"157.240.0.0/16"},{"prefix":"8.8.8.0/24"}]}}`)),
 				Header:     make(http.Header),
 			}, nil
 		default:
@@ -905,6 +905,71 @@ func TestSyncASNFeedFetchesAnnouncedPrefixes(t *testing.T) {
 	// 8.8.8.0/24 is announced by both ASNs and must be deduplicated.
 	if count != 3 {
 		t.Fatalf("catalog entries = %d, want 3 (deduped across both ASNs)", count)
+	}
+}
+
+// TestSyncASNFeedRejectsErrorEnvelope covers a RIPEstat response with a
+// non-"ok" status and no data.prefixes (e.g. "error" or "maintenance"): the
+// adapter must fail the sync rather than treat the missing field as "zero
+// prefixes announced," which would otherwise withdraw every route for the
+// feed on a transient upstream hiccup.
+func TestSyncASNFeedRejectsErrorEnvelope(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "asn-error.sqlite3"), false, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.DB.Exec("UPDATE feeds SET enabled = 0"); err != nil {
+		t.Fatal(err)
+	}
+	var adapterID int64
+	if err := db.DB.QueryRowContext(ctx,
+		"SELECT id FROM feed_adapters WHERE name = ?", "ASN").Scan(&adapterID); err != nil {
+		t.Fatal(err)
+	}
+	data := `{"asns":[15169],"category":"Cloud providers","service":"Google"}`
+	feedID, err := db.AddFeed(ctx, "asn-feed", "https://stat.ripe.net", adapterID, true, 0, data, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatal(err)
+	}
+	// Seed a pre-existing catalog entry to prove a failed sync leaves it alone.
+	if err := db.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "Cloud providers", Service: "Google", CIDR: "8.8.8.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	feedList, err := db.Feeds(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feedList) != 1 {
+		t.Fatalf("enabled feeds = %#v", feedList)
+	}
+	feed := feedList[0]
+
+	syncer := NewSyncer(db, testSettings())
+	syncer.Client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"status":"error","messages":[["error","No data"]]}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	if _, err := syncer.SyncOne(ctx, feed); err == nil || !strings.Contains(err.Error(), "RIPEstat returned status") {
+		t.Fatalf("SyncOne error = %v, want RIPEstat status error", err)
+	}
+
+	var count int
+	if err := db.DB.QueryRow(
+		"SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feed.ID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("catalog entries = %d, want 1 (failed sync must not wipe existing entries)", count)
 	}
 }
 
