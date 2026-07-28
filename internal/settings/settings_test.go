@@ -842,6 +842,12 @@ func TestFilterListValidation(t *testing.T) {
 	if err := s.FilterAllow.Set(context.Background(), "10.0.0.0/8\n10.0.0.0/33"); err == nil {
 		t.Error("expected error when one line of a multi-line list is invalid")
 	}
+	if err := s.FilterAllow.Set(context.Background(), "1.2.3.4\nfd00::1\n10.0.0.0/8"); err != nil {
+		t.Errorf("unexpected error for bare IP lines (single-host shorthand): %v", err)
+	}
+	if err := s.FilterAllow.Set(context.Background(), "1.2.3"); err == nil {
+		t.Error("expected error for a malformed bare address")
+	}
 }
 
 // TestRateLimitValidation guards against WDBGP_RATE_LIMIT_LOGIN=0 (or the

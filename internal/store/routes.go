@@ -491,10 +491,11 @@ func NormalizeRouteFilters(filters RouteFilters) (RouteFilters, error) {
 			if strings.TrimSpace(value) == "" {
 				continue
 			}
-			cidr, err := NormalizePrefix(value)
+			prefix, err := ParsePrefixOrAddr(strings.TrimSpace(value))
 			if err != nil {
 				return nil, err
 			}
+			cidr := prefix.Masked().String()
 			unique[cidr] = struct{}{}
 		}
 		result := make([]string, 0, len(unique))
@@ -519,7 +520,10 @@ func parseRouteFilters(filters RouteFilters) (prefixfilter.Lists, error) {
 	parse := func(values []string) ([]netip.Prefix, error) {
 		result := make([]netip.Prefix, 0, len(values))
 		for _, value := range values {
-			prefix, err := netip.ParsePrefix(value)
+			// Global filters arrive here as the raw text the user typed
+			// into filter_allow/filter_deny, so bare addresses must be
+			// accepted, same as at validation time (validateFilterList).
+			prefix, err := ParsePrefixOrAddr(value)
 			if err != nil {
 				return nil, err
 			}
