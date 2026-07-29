@@ -74,6 +74,33 @@ func TestEncodeDecodeAddrRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParsePrefixOrAddr(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  string
+	}{
+		{"10.0.0.0/8", "10.0.0.0/8"},
+		{"192.168.1.99/24", "192.168.1.99/24"},
+		{"1.2.3.4", "1.2.3.4/32"},
+		{"2001:db8::/32", "2001:db8::/32"},
+		{"fd00::1", "fd00::1/128"},
+	} {
+		got, err := ParsePrefixOrAddr(tc.input)
+		if err != nil {
+			t.Errorf("ParsePrefixOrAddr(%q): %v", tc.input, err)
+			continue
+		}
+		if got != netip.MustParsePrefix(tc.want) {
+			t.Errorf("ParsePrefixOrAddr(%q) = %s, want %s", tc.input, got, tc.want)
+		}
+	}
+	for _, input := range []string{"", "not-a-cidr", "10.0.0.0/33", "1.2.3.4/", "fd00::1/129", "1.2.3", "1.2.3.4 /32", "fe80::1%eth0", "fe80::1%eth0/128"} {
+		if _, err := ParsePrefixOrAddr(input); err == nil {
+			t.Errorf("ParsePrefixOrAddr(%q): expected error, got none", input)
+		}
+	}
+}
+
 func TestEncodePrefixString(t *testing.T) {
 	ip, bits, err := EncodePrefixString("10.1.2.3/16")
 	if err != nil {

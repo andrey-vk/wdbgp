@@ -174,14 +174,11 @@ func parseDebugPrefix(raw string) (netip.Prefix, error) {
 	if raw == "" {
 		return netip.Prefix{}, fmt.Errorf("CIDR or IP address is required")
 	}
-	if prefix, err := netip.ParsePrefix(raw); err == nil {
-		return prefix.Masked(), nil
-	}
-	addr, err := netip.ParseAddr(raw)
+	prefix, err := store.ParsePrefixOrAddr(raw)
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("invalid CIDR or IP address")
 	}
-	return netip.PrefixFrom(addr, addr.BitLen()), nil
+	return prefix.Masked(), nil
 }
 
 func prefixRange(prefix netip.Prefix) addressRange {

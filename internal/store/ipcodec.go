@@ -55,6 +55,25 @@ func EncodeAddrString(value string) ([]byte, error) {
 	return addr.AsSlice(), nil
 }
 
+// ParsePrefixOrAddr parses a textual CIDR ("10.0.0.0/8"), or a bare
+// address ("1.2.3.4", "fd00::1") as a single-host prefix (/32 or /128).
+func ParsePrefixOrAddr(value string) (netip.Prefix, error) {
+	if prefix, err := netip.ParsePrefix(value); err == nil {
+		return prefix, nil
+	}
+	addr, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("invalid CIDR or IP address %q", value)
+	}
+	// PrefixFrom silently drops an IPv6 zone ("fe80::1%eth0" would be
+	// stored as the unscoped fe80::1/128), so reject scoped literals —
+	// routing prefixes cannot represent interface zones.
+	if addr.Zone() != "" {
+		return netip.Prefix{}, fmt.Errorf("invalid CIDR or IP address %q: zoned addresses are not supported", value)
+	}
+	return netip.PrefixFrom(addr, addr.BitLen()), nil
+}
+
 // EncodePrefixString parses and encodes a textual CIDR in one step.
 func EncodePrefixString(cidr string) (ip []byte, bits int, err error) {
 	prefix, err := netip.ParsePrefix(cidr)

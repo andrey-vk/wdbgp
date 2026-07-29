@@ -684,10 +684,13 @@ func validateIPv6(v string) error {
 
 // validateFilterList checks that a newline-separated list of CIDRs (the
 // storage format for filter_allow/filter_deny) contains only well-formed
-// prefixes. Blank lines and #-prefixed comments are skipped, matching how
-// store.splitNewlines interprets the same value when building the filter
-// at reconcile time — an entry this validator accepts is guaranteed to
-// still parse there.
+// prefixes. A bare address is accepted as shorthand for a single-host
+// prefix (/32 or /128). Blank lines and #-prefixed comments are skipped,
+// matching how store.splitNewlines interprets the same value when building
+// the filter at reconcile time — an entry this validator accepts is
+// guaranteed to still parse there (store.ParsePrefixOrAddr applies the
+// same bare-address leniency; kept in sync by hand, settings doesn't
+// import store).
 func validateFilterList(v string) error {
 	for _, line := range strings.Split(v, "\n") {
 		line = strings.TrimSpace(line)
@@ -695,7 +698,16 @@ func validateFilterList(v string) error {
 			continue
 		}
 		if _, err := netip.ParsePrefix(line); err != nil {
-			return fmt.Errorf("invalid CIDR %q: %w", line, err)
+			addr, aerr := netip.ParseAddr(line)
+			if aerr != nil {
+				return fmt.Errorf("invalid CIDR or IP address %q: %w", line, err)
+			}
+			// Same restriction as store.ParsePrefixOrAddr: a zoned
+			// literal ("fe80::1%eth0") would silently lose its zone
+			// when converted to a prefix at reconcile time.
+			if addr.Zone() != "" {
+				return fmt.Errorf("invalid CIDR or IP address %q: zoned addresses are not supported", line)
+			}
 		}
 	}
 	return nil

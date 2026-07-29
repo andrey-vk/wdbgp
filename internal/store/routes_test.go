@@ -344,6 +344,58 @@ func TestSplitNewlines(t *testing.T) {
 	}
 }
 
+// TestNormalizeRouteFiltersBareIP — a bare address is shorthand for a
+// single-host prefix: it must normalize to /32 (or /128) and dedupe
+// against an explicit x.x.x.x/32 entry for the same host.
+func TestNormalizeRouteFiltersBareIP(t *testing.T) {
+	got, err := NormalizeRouteFilters(RouteFilters{
+		Allow: []string{"1.2.3.4", "1.2.3.4/32", "10.0.0.0/8"},
+		Deny:  []string{"fd00::1", " 192.168.1.1 "},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAllow := []string{"1.2.3.4/32", "10.0.0.0/8"}
+	wantDeny := []string{"192.168.1.1/32", "fd00::1/128"}
+	if len(got.Allow) != len(wantAllow) {
+		t.Fatalf("Allow = %v, want %v", got.Allow, wantAllow)
+	}
+	for i := range wantAllow {
+		if got.Allow[i] != wantAllow[i] {
+			t.Errorf("Allow[%d] = %q, want %q", i, got.Allow[i], wantAllow[i])
+		}
+	}
+	if len(got.Deny) != len(wantDeny) {
+		t.Fatalf("Deny = %v, want %v", got.Deny, wantDeny)
+	}
+	for i := range wantDeny {
+		if got.Deny[i] != wantDeny[i] {
+			t.Errorf("Deny[%d] = %q, want %q", i, got.Deny[i], wantDeny[i])
+		}
+	}
+
+	if _, err := NormalizeRouteFilters(RouteFilters{Allow: []string{"not-an-ip"}}); err == nil {
+		t.Error("expected error for malformed entry, got none")
+	}
+}
+
+// TestApplyRouteFiltersBareIP — global filter_allow/filter_deny reach
+// parseRouteFilters as the raw text the user typed, so a bare address must
+// work at apply time too, acting as the single-host prefix it abbreviates.
+func TestApplyRouteFiltersBareIP(t *testing.T) {
+	prefixes := []netip.Prefix{
+		netip.MustParsePrefix("1.2.3.4/32"),
+		netip.MustParsePrefix("8.8.8.0/24"),
+	}
+	got, err := applyRouteFiltersToPrefixes(prefixes, RouteFilters{Deny: []string{"1.2.3.4"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != netip.MustParsePrefix("8.8.8.0/24") {
+		t.Errorf("filtered prefixes = %v, want [8.8.8.0/24]", got)
+	}
+}
+
 // TestRouteFiltersJSONLowercaseKeys guards against RouteFilters marshaling
 // as "Allow"/"Deny" — the user SPA reads userData.filters?.allow/?.deny
 // (lowercase), so an untagged struct silently marshals to keys the frontend

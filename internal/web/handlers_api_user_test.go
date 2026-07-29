@@ -363,6 +363,48 @@ func TestUserSaveFiltersRejectsInvalidCIDR(t *testing.T) {
 }
 
 // =============================================================================
+// TestUserSaveFiltersAcceptsBareIP — a bare address is accepted as
+// single-host shorthand and persisted as the canonical /32 (or /128)
+// prefix, so it reads back in the form the filter editor displays.
+// =============================================================================
+
+func TestUserSaveFiltersAcceptsBareIP(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	userBody := `{"name":"filter-user","peer_ip":"10.0.0.1","peer_asn":65001,"networks":["10.5.5.0/24"],"web_auth":"network","enabled":true,"filter_editable":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create user: %d body=%s", w.Code, w.Body.String())
+	}
+
+	body := `{"allow":["1.2.3.4","10.0.0.0/8"],"deny":["fd00::1"]}`
+	req = httptest.NewRequest("POST", "/api/user/filters", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.5.5.1:1234"
+	addCSRF(req)
+	w = httptest.NewRecorder()
+	srv.requireUser(srv.apiUserSaveFilters).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save filters with bare IP: %d body=%s", w.Code, w.Body.String())
+	}
+
+	filters, err := st.UserRouteFilters(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filters.Allow) != 2 || filters.Allow[0] != "1.2.3.4/32" || filters.Allow[1] != "10.0.0.0/8" {
+		t.Errorf("Allow = %v, want [1.2.3.4/32 10.0.0.0/8]", filters.Allow)
+	}
+	if len(filters.Deny) != 1 || filters.Deny[0] != "fd00::1/128" {
+		t.Errorf("Deny = %v, want [fd00::1/128]", filters.Deny)
+	}
+}
+
+// =============================================================================
 // TestUserMeReturnsLowercaseFilterKeys — apiUserMe embeds store.RouteFilters
 // directly in the response; the user SPA reads userData.filters?.allow and
 // ?.deny (lowercase). Guards against the untagged-struct regression where

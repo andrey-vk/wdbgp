@@ -9,7 +9,7 @@ require (
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sys v0.46.0
-	golang.org/x/text v0.38.0
+	golang.org/x/text v0.39.0
 	modernc.org/sqlite v1.53.0
 )
 
