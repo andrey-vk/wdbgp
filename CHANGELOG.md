@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1-alpha] — 2026-07-29
+
+### Added
+- **Route filter entries accept a bare IP address.** The allow/deny CIDR lists — global (`filter_allow`/`filter_deny`), per-user, and the self-service user filter page — required every entry to carry an explicit prefix length, so pinning a single host meant writing it out as `1.2.3.4/32`. A bare address is now accepted as shorthand for its single-host prefix (`/32` for IPv4, `/128` for IPv6); full CIDR notation is unchanged, and malformed entries are still rejected before anything is stored. Per-user entries are normalized to the canonical masked prefix on save, so a bare address is stored and displayed back as `1.2.3.4/32`, while the global settings keep the raw text as typed and resolve the shorthand when the filter is built at reconcile time — the settings validator and that reconcile-time parse apply the same rule, so an entry the validator accepts is still guaranteed to parse there. Scoped IPv6 literals (`fe80::1%eth0`) are rejected rather than silently stripped of their zone, since a routing prefix cannot represent an interface zone. Feed adapters and user login networks are unaffected and still require full CIDR notation.
+
+### Security
+- `golang.org/x/text` bumped to v0.39.0 (GO-2026-5970: infinite loop on invalid input in `golang.org/x/text/unicode/norm`, reachable through the feed-adapter JavaScript runtime's exception formatting).
+
 ## [0.18.0-alpha] — 2026-07-12
 
 ### Added
