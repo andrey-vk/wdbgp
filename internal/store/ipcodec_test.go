@@ -94,7 +94,7 @@ func TestParsePrefixOrAddr(t *testing.T) {
 			t.Errorf("ParsePrefixOrAddr(%q) = %s, want %s", tc.input, got, tc.want)
 		}
 	}
-	for _, input := range []string{"", "not-a-cidr", "10.0.0.0/33", "1.2.3.4/", "fd00::1/129", "1.2.3", "1.2.3.4 /32"} {
+	for _, input := range []string{"", "not-a-cidr", "10.0.0.0/33", "1.2.3.4/", "fd00::1/129", "1.2.3", "1.2.3.4 /32", "fe80::1%eth0", "fe80::1%eth0/128"} {
 		if _, err := ParsePrefixOrAddr(input); err == nil {
 			t.Errorf("ParsePrefixOrAddr(%q): expected error, got none", input)
 		}

@@ -698,8 +698,15 @@ func validateFilterList(v string) error {
 			continue
 		}
 		if _, err := netip.ParsePrefix(line); err != nil {
-			if _, aerr := netip.ParseAddr(line); aerr != nil {
+			addr, aerr := netip.ParseAddr(line)
+			if aerr != nil {
 				return fmt.Errorf("invalid CIDR or IP address %q: %w", line, err)
+			}
+			// Same restriction as store.ParsePrefixOrAddr: a zoned
+			// literal ("fe80::1%eth0") would silently lose its zone
+			// when converted to a prefix at reconcile time.
+			if addr.Zone() != "" {
+				return fmt.Errorf("invalid CIDR or IP address %q: zoned addresses are not supported", line)
 			}
 		}
 	}

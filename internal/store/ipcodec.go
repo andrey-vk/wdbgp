@@ -65,6 +65,12 @@ func ParsePrefixOrAddr(value string) (netip.Prefix, error) {
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("invalid CIDR or IP address %q", value)
 	}
+	// PrefixFrom silently drops an IPv6 zone ("fe80::1%eth0" would be
+	// stored as the unscoped fe80::1/128), so reject scoped literals —
+	// routing prefixes cannot represent interface zones.
+	if addr.Zone() != "" {
+		return netip.Prefix{}, fmt.Errorf("invalid CIDR or IP address %q: zoned addresses are not supported", value)
+	}
 	return netip.PrefixFrom(addr, addr.BitLen()), nil
 }
 

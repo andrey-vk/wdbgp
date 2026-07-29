@@ -848,6 +848,9 @@ func TestFilterListValidation(t *testing.T) {
 	if err := s.FilterAllow.Set(context.Background(), "1.2.3"); err == nil {
 		t.Error("expected error for a malformed bare address")
 	}
+	if err := s.FilterAllow.Set(context.Background(), "fe80::1%eth0"); err == nil {
+		t.Error("expected error for a zoned IPv6 literal (zone cannot survive prefix conversion)")
+	}
 }
 
 // TestRateLimitValidation guards against WDBGP_RATE_LIMIT_LOGIN=0 (or the
