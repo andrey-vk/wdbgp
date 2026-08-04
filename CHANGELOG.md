@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `postcss` bumped to 8.5.24 in the `webgui` app (routine dependency update, no functional change).
 
+### Security
+- Dev-only transitive dependencies in `webgui` bumped within their parents' existing semver ranges to clear 7 open Dependabot alerts (3 high, 4 moderate): `undici` to 7.29.0 (via `jsdom`) and `brace-expansion` to 2.1.4/5.0.9 (via `eslint`/`@vue/test-utils`'s `minimatch` chains). None are part of the production bundle.
+
 ## [0.18.1-alpha] — 2026-07-29
 
 ### Added
