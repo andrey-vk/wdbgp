@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-08-04
+
+### Changed
+- `postcss` bumped to 8.5.24 in the `webgui` app (routine dependency update, no functional change).
+
 ## [0.18.1-alpha] — 2026-07-29
 
 ### Added
