@@ -3,7 +3,7 @@
 [![Tests](https://github.com/andrey-vk/wdbgp/actions/workflows/tests.yml/badge.svg)](https://github.com/andrey-vk/wdbgp/actions/workflows/tests.yml)
 [![Publish Docker Image](https://github.com/andrey-vk/wdbgp/actions/workflows/deploy.yml/badge.svg)](https://github.com/andrey-vk/wdbgp/actions/workflows/deploy.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Docker Alpha Version](https://img.shields.io/docker/v/wh1ted/wdbgp/alpha?label=docker%20alpha)](https://hub.docker.com/r/wh1ted/wdbgp/tags)
+[![Docker Image Version](https://img.shields.io/docker/v/wh1ted/wdbgp/latest?label=docker)](https://hub.docker.com/r/wh1ted/wdbgp/tags)
 [![Docker Pulls](https://img.shields.io/docker/pulls/wh1ted/wdbgp)](https://hub.docker.com/r/wh1ted/wdbgp)
 ![Go](https://img.shields.io/badge/Go-1.26-00ADD8)
 ![Alpine](https://img.shields.io/badge/Alpine-3.23-0d597f)
@@ -11,7 +11,7 @@
 ![RouterOS](https://img.shields.io/badge/RouterOS-container-blue)
 ![Dual Stack](https://img.shields.io/badge/IP-IPv4%20%2B%20IPv6-blueviolet)
 ![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D)
-![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6)
+![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6)
 
 [English version](README.md)
 
