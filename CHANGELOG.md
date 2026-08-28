@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-08-28
+
 ### Security
 - `nanoid` bumped to 3.3.18 in the `webgui` app (GHSA-2v37-7h3g-55p8 / CVE-2026-67213: infinite loop when `customAlphabet`/`customRandom` are called with `size=0`), within `postcss`'s existing `^3.3.16` range. Transitive build-tool dependency only (via `vite`/`postcss`), not part of the production bundle.
 - Build image bumped to `golang:1.26.6-alpine3.23`, clearing 6 Go stdlib CVEs flagged by Docker Scout against the published `wh1ted/wdbgp` image (CVE-2026-39821, CVE-2026-56862, CVE-2026-56859, CVE-2026-56853, CVE-2026-46600, CVE-2026-33818), all fixed upstream in Go 1.26.6.
