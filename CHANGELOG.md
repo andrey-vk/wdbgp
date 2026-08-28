@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `nanoid` bumped to 3.3.18 in the `webgui` app (GHSA-2v37-7h3g-55p8 / CVE-2026-67213: infinite loop when `customAlphabet`/`customRandom` are called with `size=0`), within `postcss`'s existing `^3.3.16` range. Transitive build-tool dependency only (via `vite`/`postcss`), not part of the production bundle.
+
 ## [1.0.0] — 2026-08-04
 
 ### Changed
