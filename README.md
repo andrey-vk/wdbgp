@@ -365,6 +365,21 @@ RouterOS:
   start-on-boot=yes logging=yes
 ```
 
+RouterOS 7.22+ has a known, currently-unresolved bug where the container
+runtime fails to read `ENTRYPOINT`/`CMD` from some image manifests (including
+this one, which is built `FROM scratch`), and the container fails to start
+with `start failed: no command specified, set cmd or entrypoint` (see
+[MikroTik forum thread](https://forum.mikrotik.com/t/hap-ax3-after-update-ros-from-7-19-2-to-7-23-1-all-containers-fail-to-start/271024)).
+Until MikroTik fixes this, work around it by setting `entrypoint` and `cmd`
+explicitly on the last `/container/add` line:
+
+```routeros
+/container/add remote-image=wh1ted/wdbgp:latest interface=veth-wdbgp \
+  root-dir=disk1/images/wdbgp mounts=wdbgp-data envlist=wdbgp \
+  entrypoint=/usr/local/bin/wdbgp cmd=serve \
+  start-on-boot=yes logging=yes
+```
+
 Allow HTTP port 8080 from user networks, TCP/179 between the container and BGP
 peers, and forwarding for the received destination prefixes. Add a container
 IPv6 address and `WDBGP_BGP_LOCAL_ADDRESS_V6` when using IPv6.

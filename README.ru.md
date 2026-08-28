@@ -336,6 +336,21 @@ docker build -t wdbgp:latest .
   start-on-boot=yes logging=yes
 ```
 
+В RouterOS 7.22+ есть известная и пока не исправленная ошибка: рантайм
+контейнеров не считывает `ENTRYPOINT`/`CMD` из манифеста некоторых образов
+(включая этот, собранный `FROM scratch`), и контейнер не запускается с
+ошибкой `start failed: no command specified, set cmd or entrypoint` (см.
+[обсуждение на форуме MikroTik](https://forum.mikrotik.com/t/hap-ax3-after-update-ros-from-7-19-2-to-7-23-1-all-containers-fail-to-start/271024)).
+Пока MikroTik не исправит это, обходите проблему явным указанием
+`entrypoint` и `cmd` в последней строке `/container/add`:
+
+```routeros
+/container/add remote-image=wh1ted/wdbgp:latest interface=veth-wdbgp \
+  root-dir=disk1/images/wdbgp mounts=wdbgp-data envlist=wdbgp \
+  entrypoint=/usr/local/bin/wdbgp cmd=serve \
+  start-on-boot=yes logging=yes
+```
+
 Разрешите в RouterOS firewall HTTP к порту 8080 из пользовательских сетей,
 TCP/179 между контейнером и BGP peers, а также forwarding к полученным
 destination-префиксам. Для IPv6 добавьте адрес контейнера и
