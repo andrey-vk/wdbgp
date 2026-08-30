@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-08-30
+
+### Security
+- Added an OpenVEX exception for CVE-2026-56854 (`golang.org/x/crypto/ssh` source-address enforcement bug), attached as an attestation on the published image. wdbgp imports only `golang.org/x/crypto/bcrypt` and runs no SSH client/server; the affected `ssh` package is not in the shipped binary's dependency graph (`go mod why`/`go list -deps` confirm it), so this bug cannot be reached regardless of the `x/crypto` version in use.
+
 ## [1.0.1] — 2026-08-28
 
 ### Security
