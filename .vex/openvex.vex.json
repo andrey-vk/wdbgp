@@ -2,8 +2,8 @@
   "@context": "https://openvex.dev/ns/v0.2.0",
   "@id": "https://github.com/andrey-vk/wdbgp/blob/main/.vex/openvex.vex.json",
   "author": "andr.vk@gmail.com",
-  "timestamp": "2026-07-09T12:00:00Z",
-  "version": 1,
+  "timestamp": "2026-08-30T00:00:00Z",
+  "version": 2,
   "statements": [
     {
       "vulnerability": {
@@ -18,6 +18,20 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path",
       "impact_statement": "wdbgp imports only golang.org/x/crypto/bcrypt (password hashing). The deprecated openpgp packages this advisory covers are not in the dependency graph of the shipped binary: `go mod why golang.org/x/crypto/openpgp` reports the main module does not need it, `go list -deps ./cmd/wdbgp` links zero openpgp packages, and govulncheck's symbol-level analysis in CI classifies this advisory as required-but-never-called. The advisory has no fixed version (the package is deprecated, not patched), so upgrading golang.org/x/crypto cannot clear it."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-56854",
+        "description": "golang.org/x/crypto/ssh: source-address restriction in returned Permissions not enforced for PasswordCallback/KeyboardInteractiveCallback/NoClientAuthCallback/GSSAPIWithMICConfig.AllowLogin"
+      },
+      "products": [
+        {
+          "@id": "pkg:docker/wh1ted/wdbgp"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "wdbgp imports only golang.org/x/crypto/bcrypt (password hashing) and runs no SSH client or server. The affected package golang.org/x/crypto/ssh is not in the dependency graph of the shipped binary: `go mod why golang.org/x/crypto/ssh` reports the main module does not need it, and `go list -deps ./cmd/wdbgp` links zero ssh packages. Fixed in 0.55.0, but wdbgp has no code path capable of exercising this bug regardless of the golang.org/x/crypto version in use."
     }
   ]
 }
