@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] — 2026-09-05
+
 ### Security
 - `golang.org/x/crypto` bumped to 0.56.0, clearing 3 HIGH CVEs flagged by Docker Scout against the published image (CVE-2026-78662, CVE-2026-56855, CVE-2026-56854 — all in `golang.org/x/crypto/ssh`, a package wdbgp does not link, but fixable by upgrade so handled as a real fix rather than a VEX exception). Removed the now-obsolete CVE-2026-56854 VEX exception accordingly; only the unfixable GO-2026-5932 (`openpgp`, deprecated with no fixed version) remains.
 
