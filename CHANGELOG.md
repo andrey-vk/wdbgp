@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GET /api/communities` exports the complete BGP large community map as JSON, for generating downstream router policies instead of copying numbers by hand ([#47](https://github.com/andrey-vk/wdbgp/issues/47)). Authorized like `/status` (`WDBGP_STATUS_ALLOWED` address or `WDBGP_STATUS_TOKEN` bearer token) so a config generator can poll it without an admin session; an admin session is also accepted, so the Communities page offers the same document as a download. Every mode is in one document, since community numbers are per-mode and a flat community→name map cannot express that. Carries `schema_version` and a content `ETag` (excluding `generated_at`) for `304`-based polling, per-category/service IPv4/IPv6 prefix counts, and the ASN the running speaker actually stamps onto routes — with a diverging `WDBGP_LOCAL_ASN` reported separately as `asn_configured` rather than presented as live.
+
+### Changed
+- Resetting a mode's communities now previews the renumbering and requires confirmation instead of applying immediately. A reset discards every assignment and renumbers from scratch, invalidating any downstream policy that matches the old values, and the breakage presents as a network fault rather than a config change — on an instance whose communities grew across several feed syncs it typically moves most of them. The API previews unless called with `{"confirm": true}`, and a confirmed reset is recorded in the admin action log. "Regenerate missing" is unaffected: it only ever fills gaps.
+
 ## [1.0.3] — 2026-09-05
 
 ### Security

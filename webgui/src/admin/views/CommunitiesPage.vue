@@ -2,11 +2,11 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
 import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
+import Dialog from 'primevue/dialog'
 import ErrorPage from '@/components/ErrorPage.vue'
 import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
 
@@ -14,10 +14,14 @@ interface CommunityItem {
   category: string; service: string; community: number; auto_community: number
 }
 
+// One assignment a reset would renumber, as reported by the server's preview.
+interface CommunityChange {
+  category: string; service: string; old: number; new: number
+}
+
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-const confirmDialog = useConfirm()
 const toast = useToast()
 
 // Reactive rather than a plain constant: if the router-view instance is
@@ -32,6 +36,10 @@ const originalValues = ref<Map<string, number>>(new Map())
 const loading = ref(true)
 const saving = ref(false)
 const isDirty = ref(false)
+const showResetDialog = ref(false)
+const resetChanges = ref<CommunityChange[]>([])
+const resetLoading = ref(false)
+const exporting = ref(false)
 // loadData() also runs after save/reset, where a failure is reported by
 // that action's own toast, not this page-level fallback — so only the
 // composable's error-catching (loadError, run) is used here, wrapping just
@@ -171,22 +179,79 @@ function handleCancel() {
   router.push({ name: 'modes' })
 }
 
-function handleReset() {
-  confirmDialog.require({
-    message: t('communities.reset_confirm'),
-    header: modeName.value,
-    acceptLabel: t('dialog.yes'),
-    rejectLabel: t('dialog.no'),
-    accept: async () => {
-      const resp = await apiClient.post('/admin/modes/' + modeId.value + '/communities/reset')
+// A reset renumbers values that downstream routers may have hardcoded into
+// their filter policies, so it is two-step: ask the server what would change,
+// show that, and only then apply. The server enforces the same thing — an
+// unconfirmed POST previews instead of writing.
+async function handleReset() {
+  resetLoading.value = true
+  try {
+    const resp = await apiClient.post('/admin/modes/' + modeId.value + '/communities/reset')
+    if (resp.data.ok) {
+      // Nothing needed confirming (no assignments yet); already applied.
       toast.add({
         severity: 'success',
         summary: t('communities.reset_done', { count: resp.data.generated || 0 }),
         life: 3000,
       })
       await loadData()
-    },
-  })
+      return
+    }
+    resetChanges.value = resp.data.changes || []
+    if (resetChanges.value.length === 0) {
+      toast.add({ severity: 'info', summary: t('communities.reset_no_changes'), life: 3000 })
+      return
+    }
+    showResetDialog.value = true
+  } catch {
+    toast.add({ severity: 'error', summary: t('communities.reset_failed'), life: 3000 })
+  } finally { resetLoading.value = false }
+}
+
+async function confirmReset() {
+  resetLoading.value = true
+  try {
+    const resp = await apiClient.post('/admin/modes/' + modeId.value + '/communities/reset', { confirm: true })
+    toast.add({
+      severity: 'success',
+      summary: t('communities.reset_done', { count: resp.data.generated || 0 }),
+      life: 3000,
+    })
+    showResetDialog.value = false
+    await loadData()
+  } catch {
+    toast.add({ severity: 'error', summary: t('communities.reset_failed'), life: 3000 })
+  } finally { resetLoading.value = false }
+}
+
+// The export covers every mode at once (community numbers are per-mode, so a
+// single-mode document could not express that) and is fetched through the
+// admin session here; scripts use the same URL with the status token.
+const exportUrl = window.location.origin + '/api/communities'
+
+async function handleExport() {
+  exporting.value = true
+  try {
+    const resp = await apiClient.get('/communities')
+    const text = JSON.stringify(resp.data, null, 2)
+    const blob = new Blob([text], { type: 'application/json' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = 'wdbgp-communities.json'
+    link.click()
+    URL.revokeObjectURL(link.href)
+  } catch {
+    toast.add({ severity: 'error', summary: t('communities.export_failed'), life: 3000 })
+  } finally { exporting.value = false }
+}
+
+async function copyExportUrl() {
+  try {
+    await navigator.clipboard.writeText(exportUrl)
+    toast.add({ severity: 'success', summary: t('communities.export_url_copied'), life: 2000 })
+  } catch {
+    toast.add({ severity: 'error', summary: t('communities.export_url_copy_failed'), life: 3000 })
+  }
 }
 </script>
 
@@ -197,7 +262,8 @@ function handleReset() {
       <Button icon="pi pi-arrow-left" severity="secondary" text rounded :aria-label="t('communities.back')" @click="handleCancel" />
       <span class="font-semibold truncate flex-1">{{ t('communities.title') }} — {{ modeName }}</span>
       <div class="flex gap-2">
-        <Button :label="t('communities.reset')" icon="pi pi-undo" severity="secondary" size="small" @click="handleReset" />
+        <Button :label="t('communities.export')" icon="pi pi-download" severity="secondary" size="small" :loading="exporting" @click="handleExport" />
+        <Button :label="t('communities.reset')" icon="pi pi-undo" severity="secondary" size="small" :loading="resetLoading" @click="handleReset" />
         <Button :label="t('modes.save')" icon="pi pi-check" severity="primary" size="small" :loading="saving" :disabled="duplicateValues.size > 0" @click="handleSave" />
         <Button :label="t('feeds.cancel')" icon="pi pi-times" severity="secondary" size="small" text @click="handleCancel" />
       </div>
@@ -232,7 +298,42 @@ function handleReset() {
           </div>
         </template>
       </div>
+
+      <!-- Export hint: the same document scripts poll, and how they reach it -->
+      <div v-if="!loading && !loadError" class="mt-4 text-sm text-gray-500 dark:text-gray-400">
+        <p class="mb-1">{{ t('communities.export_hint') }}</p>
+        <div class="flex items-center gap-2 flex-wrap">
+          <code class="px-2 py-1 rounded bg-gray-100 dark:bg-gray-800 break-all">GET {{ exportUrl }}</code>
+          <Button icon="pi pi-copy" severity="secondary" text size="small" :aria-label="t('communities.export_url_copy')" @click="copyExportUrl" />
+        </div>
+      </div>
     </div>
+
+    <!-- Reset preview: exactly what the renumbering would change -->
+    <Dialog v-model:visible="showResetDialog" modal :header="t('communities.reset_preview_title')" :style="{ width: '34rem' }">
+      <p class="mb-3">{{ t('communities.reset_preview_warning') }}</p>
+      <p class="mb-3 font-semibold">{{ t('communities.reset_preview_count', { count: resetChanges.length }) }}</p>
+      <div class="max-h-[50vh] overflow-y-auto border border-gray-200 dark:border-gray-700 rounded">
+        <div
+          v-for="change in resetChanges"
+          :key="change.category + '::' + change.service"
+          class="flex items-center gap-3 px-3 py-1.5 border-b border-gray-100 dark:border-gray-800 last:border-b-0 text-sm"
+        >
+          <span class="flex-1 truncate">
+            {{ change.category }}<span v-if="change.service" class="text-gray-500 dark:text-gray-400"> / {{ change.service }}</span>
+          </span>
+          <span class="shrink-0 tabular-nums">
+            <span class="text-gray-500 dark:text-gray-400 line-through">{{ change.old || '—' }}</span>
+            <i class="pi pi-arrow-right mx-2 text-xs" />
+            <span class="font-semibold">{{ change.new || '—' }}</span>
+          </span>
+        </div>
+      </div>
+      <template #footer>
+        <Button :label="t('dialog.no')" severity="secondary" text @click="showResetDialog = false" />
+        <Button :label="t('communities.reset_preview_apply')" severity="danger" :loading="resetLoading" @click="confirmReset" />
+      </template>
+    </Dialog>
   </div>
 </template>
 

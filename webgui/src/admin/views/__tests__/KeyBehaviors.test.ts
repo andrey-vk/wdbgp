@@ -88,6 +88,13 @@ function stubPrimeVueComponents() {
     Popover: { template: '<div class="stub-popover"><slot /></div>', inheritAttrs: false },
     Toast: { template: '<div class="stub-toast"></div>', inheritAttrs: false },
     ConfirmDialog: { template: '<div class="stub-confirm"></div>', inheritAttrs: false },
+    // Honours `visible` so a test can tell "dialog not shown yet" from
+    // "dialog shown"; the real Dialog teleports and would not appear in html().
+    Dialog: {
+      props: ['visible', 'header'],
+      template: '<div v-if="visible" class="stub-dialog">{{ header }}<slot /><slot name="footer" /></div>',
+      inheritAttrs: false,
+    },
     ProgressSpinner: { template: '<div class="stub-spinner"></div>', inheritAttrs: false },
     SelectButton: { template: '<div class="stub-selectbtn"><slot /></div>', inheritAttrs: false },
   }
@@ -210,6 +217,66 @@ describe('CommunitiesPage duplicate validation', () => {
     // Check that the duplicate is detected
     const html = wrapper.html()
     expect(html).toContain('has-duplicate')
+  })
+})
+
+// ============================================================
+// Test: CommunitiesPage two-step reset
+// ============================================================
+
+describe('CommunitiesPage reset confirmation', () => {
+  it('previews the renumbering and only applies after confirming', async () => {
+    // The server answers an unconfirmed reset with the changes it would make.
+    mockPost.mockImplementation((url: string, body?: Record<string, unknown>) => {
+      if (!url.endsWith('/communities/reset')) return Promise.resolve({ data: {} })
+      if (body?.confirm) return Promise.resolve({ data: { ok: true, generated: 3 } })
+      return Promise.resolve({
+        data: {
+          ok: false,
+          confirm: true,
+          affected: 1,
+          changes: [{ category: 'Cat1', service: 'Svc1', old: 101, new: 10001 }],
+        },
+      })
+    })
+
+    const CommunitiesPage = (await import('@/admin/views/CommunitiesPage.vue')).default
+    const wrapper = mount(CommunitiesPage, {
+      global: { stubs: stubPrimeVueComponents() },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    // Nothing is asked until the operator asks for it.
+    expect(wrapper.find('.stub-dialog').exists()).toBe(false)
+
+    const resetButton = wrapper.findAll('button').find(b => b.text().includes('communities.reset'))
+    expect(resetButton).toBeDefined()
+    await resetButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    // First click must only ask, never renumber.
+    const firstCall = mockPost.mock.calls.find(c => String(c[0]).endsWith('/communities/reset'))
+    expect(firstCall).toBeDefined()
+    expect(firstCall![1]).toBeUndefined()
+
+    // The preview must show the old → new values, not just a count.
+    const html = wrapper.html()
+    expect(html).toContain('communities.reset_preview_warning')
+    expect(html).toContain('101')
+    expect(html).toContain('10001')
+
+    const applyButton = wrapper.findAll('button').find(b => b.text().includes('communities.reset_preview_apply'))
+    expect(applyButton).toBeDefined()
+    await applyButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    const confirmedCall = mockPost.mock.calls.find(
+      c => String(c[0]).endsWith('/communities/reset') && (c[1] as Record<string, unknown>)?.confirm === true,
+    )
+    expect(confirmedCall).toBeDefined()
   })
 })
 

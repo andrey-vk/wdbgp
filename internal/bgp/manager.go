@@ -116,6 +116,20 @@ func (m *Manager) Status() (running bool, lastErr error) {
 	return m.speaker != nil, m.lastErr
 }
 
+// ActiveASN reports the ASN the running speaker stamps into announced
+// communities — the restart-only snapshot taken at Start, which stays in
+// effect until the session actually restarts and so can lag the LocalASN
+// setting. ok is false when no speaker is running, meaning nothing is on
+// the wire to report.
+func (m *Manager) ActiveASN() (asn uint32, ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.speaker == nil {
+		return 0, false
+	}
+	return m.localASN, true
+}
+
 func (m *Manager) startLocked(ctx context.Context) error {
 	logger := logging.FromContext(ctx)
 

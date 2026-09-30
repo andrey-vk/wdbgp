@@ -123,6 +123,21 @@ func (s *Server) apiAdminLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// hasAdminSession reports whether the request carries a valid admin session
+// cookie, without the renewal that apiRequireAdmin performs. For handlers
+// that accept an admin session as one of several credentials.
+func (s *Server) hasAdminSession(r *http.Request) bool {
+	cookie, err := r.Cookie("wdbgp_admin")
+	if err != nil {
+		return false
+	}
+	sessionMaxAge := time.Duration(s.settings.SessionMaxAge.Get()) * time.Second
+	if sessionMaxAge <= 0 {
+		sessionMaxAge = 8 * time.Hour
+	}
+	return validSession(s.settings.SessionSecret.Get(), cookie.Value, sessionMaxAge)
+}
+
 // apiRequireAdmin is middleware that validates the admin session cookie.
 // Returns JSON 401 instead of HTML redirect (unlike requireAdmin which is for legacy pages).
 func (s *Server) apiRequireAdmin(next http.HandlerFunc) http.HandlerFunc {

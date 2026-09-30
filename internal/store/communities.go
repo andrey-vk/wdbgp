@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
+	"sort"
 )
 
 // Community represents a catalog community assignment.
@@ -48,7 +50,27 @@ func AutoGroupCommunity(groupIndex int) uint32 {
 // Map key: category for groups, "category|service" for services.
 // service_id = 0 marks a category-wide (group-level) community.
 func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]uint32, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := communityRows(ctx, s.DB, modeID)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]uint32, len(rows))
+	for _, row := range rows {
+		if row.Service == "" {
+			result[row.Category] = row.Community
+		} else {
+			result[row.Category+"|"+row.Service] = row.Community
+		}
+	}
+	return result, nil
+}
+
+// communityRows reads a mode's community assignments as structured rows.
+// Unlike GetCommunities' map form, the (category, service) pair stays split,
+// so callers that diff assignments never have to re-parse a "category|service"
+// key — category names may legitimately contain "|".
+func communityRows(ctx context.Context, q queryer, modeID int64) ([]Community, error) {
+	rows, err := q.QueryContext(ctx, `
 SELECT c.name, COALESCE(sv.name, ''), cc.community
 FROM catalog_communities cc
 JOIN categories c ON c.id = cc.category_id
@@ -63,18 +85,13 @@ WHERE cc.mode_id = ? ORDER BY c.name, sv.name`,
 			log.Printf("WARNING: rows close: %v", err)
 		}
 	}()
-	result := make(map[string]uint32)
+	var result []Community
 	for rows.Next() {
-		var category, service string
-		var community uint32
-		if err := rows.Scan(&category, &service, &community); err != nil {
+		row := Community{ModeID: modeID}
+		if err := rows.Scan(&row.Category, &row.Service, &row.Community); err != nil {
 			return nil, err
 		}
-		if service == "" {
-			result[category] = community
-		} else {
-			result[category+"|"+service] = community
-		}
+		result = append(result, row)
 	}
 	return result, rows.Err()
 }
@@ -105,6 +122,111 @@ ON CONFLICT(mode_id, category_id, service_id) DO UPDATE SET community = excluded
 			modeID, categoryID, serviceID, community)
 		return err
 	})
+}
+
+// CommunityChange is one community assignment that a reset would alter.
+// Old == 0 means the pair had no assignment before; New == 0 means the reset
+// would leave it unassigned (its feed no longer contributes the service).
+type CommunityChange struct {
+	Category string `json:"category"`
+	Service  string `json:"service,omitempty"`
+	Old      uint32 `json:"old"`
+	New      uint32 `json:"new"`
+}
+
+// errResetPreviewDiscard aborts the preview transaction so its trial
+// regeneration is rolled back. Deliberately worded to avoid the substrings
+// retry.TransientError matches on, so the aborted transaction is never retried.
+var errResetPreviewDiscard = errors.New("community reset preview: discard trial")
+
+// PreviewCommunityReset reports how ResetCommunities would renumber a mode,
+// without writing anything. The trial runs the real generator inside a
+// transaction that is then rolled back, so the preview cannot drift from what
+// an actual reset would produce — the alternative, reimplementing the
+// allocation in memory, would be a second copy of findFirstFree to keep in
+// sync. Only pairs whose value actually changes are returned.
+func (s *Store) PreviewCommunityReset(ctx context.Context, modeID int64) ([]CommunityChange, error) {
+	before, err := communityRows(ctx, s.DB, modeID)
+	if err != nil {
+		return nil, err
+	}
+	var after []Community
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM catalog_communities WHERE mode_id = ?", modeID); err != nil {
+			return err
+		}
+		if _, err := genCommunitiesRuntime(ctx, tx, modeID); err != nil {
+			return err
+		}
+		after, err = communityRows(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		return errResetPreviewDiscard
+	})
+	if !errors.Is(err, errResetPreviewDiscard) {
+		if err != nil {
+			return nil, err
+		}
+		// Committing here would mean the trial regeneration was persisted.
+		return nil, fmt.Errorf("community reset preview committed unexpectedly")
+	}
+	return diffCommunities(before, after), nil
+}
+
+// diffCommunities returns the assignments that differ between two snapshots,
+// ordered by category then service.
+func diffCommunities(before, after []Community) []CommunityChange {
+	type key struct{ category, service string }
+	oldByKey := make(map[key]uint32, len(before))
+	for _, row := range before {
+		oldByKey[key{row.Category, row.Service}] = row.Community
+	}
+	newByKey := make(map[key]uint32, len(after))
+	for _, row := range after {
+		newByKey[key{row.Category, row.Service}] = row.Community
+	}
+	changes := make([]CommunityChange, 0)
+	for k, oldValue := range oldByKey {
+		if newValue := newByKey[k]; newValue != oldValue {
+			changes = append(changes, CommunityChange{
+				Category: k.category, Service: k.service, Old: oldValue, New: newValue,
+			})
+		}
+	}
+	for k, newValue := range newByKey {
+		if _, existed := oldByKey[k]; !existed {
+			changes = append(changes, CommunityChange{
+				Category: k.category, Service: k.service, Old: 0, New: newValue,
+			})
+		}
+	}
+	sort.Slice(changes, func(i, j int) bool {
+		if changes[i].Category == changes[j].Category {
+			return changes[i].Service < changes[j].Service
+		}
+		return changes[i].Category < changes[j].Category
+	})
+	return changes
+}
+
+// ResetCommunities discards a mode's community assignments and regenerates
+// them from scratch. This renumbers values that downstream routers may have
+// hardcoded in their policies, so callers must confirm intent first —
+// see PreviewCommunityReset.
+func (s *Store) ResetCommunities(ctx context.Context, modeID int64) (int, error) {
+	var generated int
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM catalog_communities WHERE mode_id = ?", modeID); err != nil {
+			return err
+		}
+		var err error
+		generated, err = genCommunitiesRuntime(ctx, tx, modeID)
+		return err
+	})
+	return generated, err
 }
 
 // DeleteCommunity removes a manual community override.

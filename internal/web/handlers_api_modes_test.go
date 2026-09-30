@@ -435,8 +435,52 @@ func TestModeCommunities(t *testing.T) {
 		t.Fatalf("service community not updated to %d", newSvcComm)
 	}
 
-	// --- Reset communities ---
+	// --- Reset without confirmation: previews, writes nothing ---
 	req = httptest.NewRequest("POST", "/api/admin/modes/1/communities/reset", nil)
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeCommunitiesReset(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset preview: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var previewResp struct {
+		OK       bool                    `json:"ok"`
+		Confirm  bool                    `json:"confirm"`
+		Affected int                     `json:"affected"`
+		Changes  []store.CommunityChange `json:"changes"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&previewResp); err != nil {
+		t.Fatalf("decode reset preview: %v", err)
+	}
+	if previewResp.OK || !previewResp.Confirm {
+		t.Fatalf("unconfirmed reset should not apply: ok=%v confirm=%v", previewResp.OK, previewResp.Confirm)
+	}
+	// The custom values set above are exactly what a reset would undo.
+	if previewResp.Affected == 0 || len(previewResp.Changes) != previewResp.Affected {
+		t.Fatalf("preview affected = %d, changes = %d, want equal and > 0",
+			previewResp.Affected, len(previewResp.Changes))
+	}
+	for _, change := range previewResp.Changes {
+		if change.Old == change.New {
+			t.Fatalf("preview listed an unchanged pair: %+v", change)
+		}
+	}
+
+	// The preview must not have persisted its trial regeneration.
+	stillCustom, err := st.GetCommunities(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read communities after preview: %v", err)
+	}
+	if stillCustom["test-category"] != newGroupComm {
+		t.Fatalf("preview mutated stored community: got %d, want %d",
+			stillCustom["test-category"], newGroupComm)
+	}
+
+	// --- Reset with confirmation ---
+	req = httptest.NewRequest("POST", "/api/admin/modes/1/communities/reset",
+		strings.NewReader(`{"confirm":true}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
 	w = httptest.NewRecorder()
 	srv.apiModeCommunitiesReset(w, req)

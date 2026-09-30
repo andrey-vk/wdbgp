@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -429,6 +430,12 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiModeCommunitiesReset handles POST /api/admin/modes/{id}/communities/reset.
+//
+// A reset renumbers assignments that downstream routers may have hardcoded
+// into their filter policies, and the resulting breakage looks like a network
+// fault rather than a config change. So the call is two-step: without
+// {"confirm": true} it writes nothing and returns the exact renumbering it
+// would perform, for the caller to show and approve.
 func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request) {
 	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	modeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -436,16 +443,37 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
 		return
 	}
-	if _, err := s.store.DB.ExecContext(r.Context(),
-		"DELETE FROM catalog_communities WHERE mode_id = ?", modeID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+	// An absent or empty body is treated as "not confirmed" rather than a
+	// parse error, so an unconfirmed reset always answers with the preview.
+	var body struct {
+		Confirm bool `json:"confirm"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck // absent body means not confirmed
+	}
+
+	if !body.Confirm {
+		changes, err := s.store.PreviewCommunityReset(r.Context(), modeID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":       false,
+			"confirm":  true,
+			"changes":  changes,
+			"affected": len(changes),
+		})
 		return
 	}
-	generated, err := s.store.GenerateCommunities(r.Context(), modeID)
+
+	generated, err := s.store.ResetCommunities(r.Context(), modeID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	s.logAdminAction(r, "COMMUNITIES_RESET",
+		fmt.Sprintf("mode_id=%d generated=%d", modeID, generated))
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community reset", "error", err)
