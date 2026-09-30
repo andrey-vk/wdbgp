@@ -350,10 +350,10 @@ describe('CommunitiesPage reset confirmation', () => {
     await new Promise(resolve => setTimeout(resolve, 50))
     await nextTick()
     expect(confirmAttempts).toBe(2)
-    const secondConfirm = mockPost.mock.calls
+    const confirmCalls = mockPost.mock.calls
       .filter(c => String(c[0]).endsWith('/communities/reset') && (c[1] as Record<string, unknown>)?.confirm === true)
-      .at(-1)
-    expect((secondConfirm![1] as Record<string, unknown>).digest).toBe('preview-digest-2')
+    const secondConfirm = confirmCalls[confirmCalls.length - 1]
+    expect((secondConfirm[1] as Record<string, unknown>).digest).toBe('preview-digest-2')
   })
 })
 
