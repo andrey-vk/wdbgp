@@ -296,6 +296,7 @@
   "communities.export_url_copy_failed": "Could not copy the URL.",
   "communities.reset_failed": "Failed to reset communities.",
   "communities.reset_no_changes": "A reset would not change any community value.",
+  "communities.reset_stale": "The mode changed since this preview was shown. Review the updated changes before applying.",
   "communities.reset_preview_title": "Reset communities",
   "communities.reset_preview_warning": "Downstream routers may match these community values in their filter policies. Renumbering them breaks those policies, and the failure looks like a network fault rather than a config change.",
   "communities.reset_preview_count": "{count} value(s) will change:",

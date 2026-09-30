@@ -278,6 +278,10 @@ per-mode numbering. Each category and service carries its number, the rendered w
 form (`<asn>:0:<number>`), and its current IPv4/IPv6 prefix counts — a category whose
 count collapses is an early signal that a feed broke.
 
+A feed sync publishes its catalog and generates communities for it as two separate
+steps; the export closes that window itself (generation is idempotent) rather than
+ever returning a service with no assignment yet.
+
 ```console
 $ curl -sH "Authorization: Bearer $WDBGP_STATUS_TOKEN" http://wdbgp:8080/api/communities
 {
@@ -334,6 +338,13 @@ downstream policy matching the old values, and the resulting breakage looks like
 network fault rather than a config change. It therefore asks first and shows exactly
 which values would change; on an instance whose communities were generated
 incrementally across several feed syncs, that is typically *most* of them.
+
+The preview's response carries a `digest` alongside the change list, fingerprinting the
+exact state it was computed from. Applying it (`{"confirm": true, "digest": "..."}`)
+must echo that digest back; if the mode changed in the meantime — a feed sync
+regenerated communities, or another admin edited one — the digest no longer matches and
+the reset is refused (`409`) with a fresh preview instead of silently renumbering
+something nobody actually reviewed.
 
 ### Validation and constraints
 

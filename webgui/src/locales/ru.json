@@ -295,6 +295,7 @@
   "communities.export_url_copy_failed": "Не удалось скопировать URL.",
   "communities.reset_failed": "Не удалось сбросить BGP communities.",
   "communities.reset_no_changes": "Сброс не изменит ни одного значения BGP community.",
+  "communities.reset_stale": "Режим изменился с момента показа предпросмотра. Проверьте обновлённые изменения перед применением.",
   "communities.reset_preview_title": "Сброс BGP communities",
   "communities.reset_preview_warning": "Нижестоящие роутеры могут сопоставлять эти значения BGP communities в своих политиках фильтрации. Перенумерация ломает такие политики, и отказ выглядит как сетевая авария, а не как изменение конфигурации.",
   "communities.reset_preview_count": "Изменится значений: {count}",

@@ -310,3 +310,169 @@ func TestCommunitiesExportAcceptsAdminSession(t *testing.T) {
 		t.Fatalf("admin session: status = %d, want 200, body=%s", w.Code, w.Body.String())
 	}
 }
+
+// TestCommunitiesExportHandlesPipeInCategoryName covers a real collision in
+// the naive "category|service" map key: a category literally named "a|b"
+// and the pair (category "a", service "b") both flatten to the string
+// "a|b" and would overwrite each other in a single map. The export must
+// build its lookup from structured rows instead, so both keep their own,
+// independently assigned community.
+func TestCommunitiesExportHandlesPipeInCategoryName(t *testing.T) {
+	srv, _, modeID := exportFixture(t)
+	ctx := context.Background()
+
+	feedID, err := srv.store.AddFeed(ctx, "Pipe Feed", "http://example.com/pipe.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := srv.store.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+		t.Fatalf("assign feed: %v", err)
+	}
+	if err := srv.store.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "a", Service: "b", CIDR: "172.16.0.0/24"},
+		{Category: "a|b", Service: "x", CIDR: "172.16.1.0/24"},
+	}); err != nil {
+		t.Fatalf("insert entries: %v", err)
+	}
+	if err := srv.store.RebuildModeEntries(ctx, modeID); err != nil {
+		t.Fatalf("rebuild mode entries: %v", err)
+	}
+	if _, err := srv.store.GenerateCommunities(ctx, modeID); err != nil {
+		t.Fatalf("generate communities: %v", err)
+	}
+
+	// Ground truth, from the same structured rows the export is supposed to
+	// use — not from the flattened GetCommunities map this test exists to
+	// route around.
+	rows, err := srv.store.CommunityRows(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read community rows: %v", err)
+	}
+	var wantGroupAB, wantServiceAB uint32
+	for _, row := range rows {
+		switch {
+		case row.Category == "a|b" && row.Service == "":
+			wantGroupAB = row.Community
+		case row.Category == "a" && row.Service == "b":
+			wantServiceAB = row.Community
+		}
+	}
+	if wantGroupAB == 0 || wantServiceAB == 0 {
+		t.Fatalf("fixture did not produce both assignments: group(a|b)=%d service(a,b)=%d",
+			wantGroupAB, wantServiceAB)
+	}
+	if wantGroupAB == wantServiceAB {
+		t.Fatalf("fixture produced colliding communities by coincidence: both %d", wantGroupAB)
+	}
+
+	w := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	doc := decodeExport(t, w.Body.Bytes())
+
+	var mode *communityExportMode
+	for i := range doc.Modes {
+		if doc.Modes[i].ModeID == modeID {
+			mode = &doc.Modes[i]
+		}
+	}
+	if mode == nil {
+		t.Fatalf("mode %d missing from export", modeID)
+	}
+
+	var gotGroupAB, gotServiceAB uint32
+	var foundGroupAB, foundServiceAB bool
+	for _, category := range mode.Categories {
+		if category.Name == "a|b" {
+			gotGroupAB = category.Community
+			foundGroupAB = true
+		}
+		if category.Name == "a" {
+			for _, service := range category.Services {
+				if service.Name == "b" {
+					gotServiceAB = service.Community
+					foundServiceAB = true
+				}
+			}
+		}
+	}
+	if !foundGroupAB || !foundServiceAB {
+		t.Fatalf("export missing one of the colliding pairs: group(a|b) found=%v, service(a,b) found=%v",
+			foundGroupAB, foundServiceAB)
+	}
+	if gotGroupAB != wantGroupAB {
+		t.Fatalf("category a|b community = %d, want %d (would be %d if collided with service a/b)",
+			gotGroupAB, wantGroupAB, wantServiceAB)
+	}
+	if gotServiceAB != wantServiceAB {
+		t.Fatalf("service a/b community = %d, want %d (would be %d if collided with group a|b)",
+			gotServiceAB, wantServiceAB, wantGroupAB)
+	}
+}
+
+// TestCommunitiesExportGeneratesMissingAssignments covers the window a feed
+// sync leaves open: it publishes the catalog (RebuildModeEntriesForFeedTx)
+// and generates communities (GenerateCommunities) as two separate
+// transactions, so a request landing in between would otherwise see a
+// service with no assignment yet. The export must ensure assignments exist
+// before it reads them rather than exporting community 0.
+func TestCommunitiesExportGeneratesMissingAssignments(t *testing.T) {
+	srv, _, modeID := exportFixture(t)
+	ctx := context.Background()
+
+	feedID, err := srv.store.AddFeed(ctx, "Midsync Feed", "http://example.com/midsync.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := srv.store.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+		t.Fatalf("assign feed: %v", err)
+	}
+	if err := srv.store.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "Midsync", Service: "NewSvc", CIDR: "172.20.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert entries: %v", err)
+	}
+	// Publish the catalog, deliberately without calling GenerateCommunities —
+	// this is exactly the state a request can observe between a feed sync's
+	// two separate transactions.
+	if err := srv.store.RebuildModeEntries(ctx, modeID); err != nil {
+		t.Fatalf("rebuild mode entries: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	doc := decodeExport(t, w.Body.Bytes())
+
+	var mode *communityExportMode
+	for i := range doc.Modes {
+		if doc.Modes[i].ModeID == modeID {
+			mode = &doc.Modes[i]
+		}
+	}
+	if mode == nil {
+		t.Fatalf("mode %d missing from export", modeID)
+	}
+	var found *communityExportCategory
+	for i := range mode.Categories {
+		if mode.Categories[i].Name == "Midsync" {
+			found = &mode.Categories[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("category added mid-sync is missing from the export")
+	}
+	if found.Community == 0 || found.LargeCommunity == "" {
+		t.Fatalf("category added mid-sync exported with no assignment: community=%d large_community=%q",
+			found.Community, found.LargeCommunity)
+	}
+	if len(found.Services) != 1 || found.Services[0].Community == 0 {
+		t.Fatalf("service added mid-sync exported with no assignment: %+v", found.Services)
+	}
+}

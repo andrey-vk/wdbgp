@@ -236,6 +236,7 @@ describe('CommunitiesPage reset confirmation', () => {
           confirm: true,
           affected: 1,
           changes: [{ category: 'Cat1', service: 'Svc1', old: 101, new: 10001 }],
+          digest: 'preview-digest-1',
         },
       })
     })
@@ -277,6 +278,82 @@ describe('CommunitiesPage reset confirmation', () => {
       c => String(c[0]).endsWith('/communities/reset') && (c[1] as Record<string, unknown>)?.confirm === true,
     )
     expect(confirmedCall).toBeDefined()
+    // The digest echoed back must be the one this exact preview issued, not
+    // an empty or stale value — the server relies on it to detect a mode
+    // that changed underneath the operator between preview and apply.
+    expect((confirmedCall![1] as Record<string, unknown>).digest).toBe('preview-digest-1')
+  })
+
+  it('shows the updated preview and does not apply when the server reports it as stale', async () => {
+    let confirmAttempts = 0
+    mockPost.mockImplementation((url: string, body?: Record<string, unknown>) => {
+      if (!url.endsWith('/communities/reset')) return Promise.resolve({ data: {} })
+      if (body?.confirm) {
+        confirmAttempts++
+        // The mode changed between preview and apply (a feed sync, or
+        // another admin's edit) — the server refuses to apply the stale
+        // digest and hands back what the mode looks like now instead.
+        return Promise.reject({
+          isAxiosError: true,
+          response: {
+            status: 409,
+            data: {
+              ok: false,
+              confirm: true,
+              stale: true,
+              affected: 1,
+              changes: [{ category: 'Cat1', service: 'Svc1', old: 101, new: 20001 }],
+              digest: 'preview-digest-2',
+            },
+          },
+        })
+      }
+      return Promise.resolve({
+        data: {
+          ok: false,
+          confirm: true,
+          affected: 1,
+          changes: [{ category: 'Cat1', service: 'Svc1', old: 101, new: 10001 }],
+          digest: 'preview-digest-1',
+        },
+      })
+    })
+
+    const CommunitiesPage = (await import('@/admin/views/CommunitiesPage.vue')).default
+    const wrapper = mount(CommunitiesPage, {
+      global: { stubs: stubPrimeVueComponents() },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    const resetButton = wrapper.findAll('button').find(b => b.text().includes('communities.reset'))
+    await resetButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    expect(wrapper.html()).toContain('10001')
+
+    const applyButton = wrapper.findAll('button').find(b => b.text().includes('communities.reset_preview_apply'))
+    await applyButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    expect(confirmAttempts).toBe(1)
+    // The dialog must stay open showing the fresh numbers, not close as if
+    // the reset had applied.
+    expect(wrapper.find('.stub-dialog').exists()).toBe(true)
+    expect(wrapper.html()).toContain('20001')
+    expect(wrapper.html()).not.toContain('10001')
+
+    // Applying again must use the fresh digest, not the stale one.
+    await applyButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+    expect(confirmAttempts).toBe(2)
+    const secondConfirm = mockPost.mock.calls
+      .filter(c => String(c[0]).endsWith('/communities/reset') && (c[1] as Record<string, unknown>)?.confirm === true)
+      .at(-1)
+    expect((secondConfirm![1] as Record<string, unknown>).digest).toBe('preview-digest-2')
   })
 })
 

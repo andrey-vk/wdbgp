@@ -447,14 +447,20 @@ func TestModeCommunities(t *testing.T) {
 	var previewResp struct {
 		OK       bool                    `json:"ok"`
 		Confirm  bool                    `json:"confirm"`
+		Stale    bool                    `json:"stale"`
 		Affected int                     `json:"affected"`
 		Changes  []store.CommunityChange `json:"changes"`
+		Digest   string                  `json:"digest"`
 	}
 	if err := json.NewDecoder(w.Body).Decode(&previewResp); err != nil {
 		t.Fatalf("decode reset preview: %v", err)
 	}
-	if previewResp.OK || !previewResp.Confirm {
-		t.Fatalf("unconfirmed reset should not apply: ok=%v confirm=%v", previewResp.OK, previewResp.Confirm)
+	if previewResp.OK || !previewResp.Confirm || previewResp.Stale {
+		t.Fatalf("unconfirmed reset should not apply: ok=%v confirm=%v stale=%v",
+			previewResp.OK, previewResp.Confirm, previewResp.Stale)
+	}
+	if previewResp.Digest == "" {
+		t.Fatal("preview response carried no digest")
 	}
 	// The custom values set above are exactly what a reset would undo.
 	if previewResp.Affected == 0 || len(previewResp.Changes) != previewResp.Affected {
@@ -477,9 +483,41 @@ func TestModeCommunities(t *testing.T) {
 			stillCustom["test-category"], newGroupComm)
 	}
 
-	// --- Reset with confirmation ---
+	// --- Reset confirmed with a stale digest: rejected, nothing written ---
 	req = httptest.NewRequest("POST", "/api/admin/modes/1/communities/reset",
-		strings.NewReader(`{"confirm":true}`))
+		strings.NewReader(`{"confirm":true,"digest":"not-the-real-digest"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeCommunitiesReset(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale-digest reset: status = %d, want 409, body=%s", w.Code, w.Body.String())
+	}
+	var staleResp struct {
+		OK      bool `json:"ok"`
+		Confirm bool `json:"confirm"`
+		Stale   bool `json:"stale"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&staleResp); err != nil {
+		t.Fatalf("decode stale response: %v", err)
+	}
+	if staleResp.OK || !staleResp.Confirm || !staleResp.Stale {
+		t.Fatalf("stale-digest reset response: ok=%v confirm=%v stale=%v, want false/true/true",
+			staleResp.OK, staleResp.Confirm, staleResp.Stale)
+	}
+	stillCustomAfterStale, err := st.GetCommunities(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read communities after stale-digest attempt: %v", err)
+	}
+	if stillCustomAfterStale["test-category"] != newGroupComm {
+		t.Fatalf("stale-digest reset mutated stored community: got %d, want %d",
+			stillCustomAfterStale["test-category"], newGroupComm)
+	}
+
+	// --- Reset with the digest the preview actually issued ---
+	req = httptest.NewRequest("POST", "/api/admin/modes/1/communities/reset",
+		strings.NewReader(`{"confirm":true,"digest":"`+previewResp.Digest+`"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
 	w = httptest.NewRecorder()

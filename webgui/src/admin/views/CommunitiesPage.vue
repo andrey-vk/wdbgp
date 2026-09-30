@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
+import axios from 'axios'
 import apiClient from '@/api/client'
 import InputNumber from 'primevue/inputnumber'
 import Button from 'primevue/button'
@@ -38,6 +39,12 @@ const saving = ref(false)
 const isDirty = ref(false)
 const showResetDialog = ref(false)
 const resetChanges = ref<CommunityChange[]>([])
+// Identifies the exact mode state the current resetChanges preview was
+// computed from. The server checks this again right before applying, and
+// rejects it (409, with a fresh preview) if the mode changed in the
+// meantime — so this must always be the digest from the preview actually
+// shown, never reused across a re-open of the dialog.
+const resetDigest = ref('')
 const resetLoading = ref(false)
 const exporting = ref(false)
 // loadData() also runs after save/reset, where a failure is reported by
@@ -198,6 +205,7 @@ async function handleReset() {
       return
     }
     resetChanges.value = resp.data.changes || []
+    resetDigest.value = resp.data.digest || ''
     if (resetChanges.value.length === 0) {
       toast.add({ severity: 'info', summary: t('communities.reset_no_changes'), life: 3000 })
       return
@@ -211,7 +219,10 @@ async function handleReset() {
 async function confirmReset() {
   resetLoading.value = true
   try {
-    const resp = await apiClient.post('/admin/modes/' + modeId.value + '/communities/reset', { confirm: true })
+    const resp = await apiClient.post('/admin/modes/' + modeId.value + '/communities/reset', {
+      confirm: true,
+      digest: resetDigest.value,
+    })
     toast.add({
       severity: 'success',
       summary: t('communities.reset_done', { count: resp.data.generated || 0 }),
@@ -219,7 +230,23 @@ async function confirmReset() {
     })
     showResetDialog.value = false
     await loadData()
-  } catch {
+  } catch (e: unknown) {
+    // The mode changed after this preview was shown (a feed sync, or
+    // another admin's edit) — the server refused to apply a renumbering
+    // the operator never actually reviewed, and sent back what it looks
+    // like now instead. Show that rather than a generic failure, so the
+    // operator re-reviews instead of just retrying into the same rejection.
+    if (axios.isAxiosError(e) && e.response?.status === 409 && e.response.data?.stale) {
+      resetChanges.value = e.response.data.changes || []
+      resetDigest.value = e.response.data.digest || ''
+      if (resetChanges.value.length === 0) {
+        showResetDialog.value = false
+        toast.add({ severity: 'info', summary: t('communities.reset_no_changes'), life: 3000 })
+      } else {
+        toast.add({ severity: 'warn', summary: t('communities.reset_stale'), life: 4000 })
+      }
+      return
+    }
     toast.add({ severity: 'error', summary: t('communities.reset_failed'), life: 3000 })
   } finally { resetLoading.value = false }
 }

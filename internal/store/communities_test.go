@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -111,9 +112,12 @@ func TestPreviewCommunityResetRollsBack(t *testing.T) {
 		t.Fatalf("set community: %v", err)
 	}
 
-	changes, err := s.PreviewCommunityReset(ctx, 1)
+	changes, digest, err := s.PreviewCommunityReset(ctx, 1)
 	if err != nil {
 		t.Fatalf("preview: %v", err)
+	}
+	if digest == "" {
+		t.Fatal("preview returned an empty digest")
 	}
 	var found *CommunityChange
 	for i := range changes {
@@ -145,8 +149,21 @@ func TestPreviewCommunityResetRollsBack(t *testing.T) {
 		t.Fatalf("stored community = %d after preview, want %d", after["cat-a|svc-1"], custom)
 	}
 
-	// An actual reset must land on exactly what the preview predicted.
-	if _, err := s.ResetCommunities(ctx, 1); err != nil {
+	// A stale digest must be rejected without writing anything.
+	if _, err := s.ResetCommunities(ctx, 1, "wrong-digest"); !errors.Is(err, ErrCommunityResetStale) {
+		t.Fatalf("reset with wrong digest: err = %v, want ErrCommunityResetStale", err)
+	}
+	stillCustom, err := s.GetCommunities(ctx, 1)
+	if err != nil {
+		t.Fatalf("read communities after rejected reset: %v", err)
+	}
+	if stillCustom["cat-a|svc-1"] != custom {
+		t.Fatalf("stored community = %d after rejected reset, want %d", stillCustom["cat-a|svc-1"], custom)
+	}
+
+	// An actual reset, given the digest the preview issued, must land on
+	// exactly what the preview predicted.
+	if _, err := s.ResetCommunities(ctx, 1, digest); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	applied, err := s.GetCommunities(ctx, 1)
@@ -156,5 +173,69 @@ func TestPreviewCommunityResetRollsBack(t *testing.T) {
 	if applied["cat-a|svc-1"] != found.New {
 		t.Fatalf("reset produced %d, preview predicted %d",
 			applied["cat-a|svc-1"], found.New)
+	}
+}
+
+// TestResetCommunitiesRejectsStaleDigestAfterConcurrentChange covers the race
+// a preview alone cannot close: an operator opens the preview, then (a feed
+// sync, or another admin) changes the mode's catalog before Apply is clicked.
+// The confirm must be rejected — applying it would renumber a state the
+// operator never actually reviewed — rather than silently reset whatever the
+// mode happens to look like by the time confirm arrives.
+func TestResetCommunitiesRejectsStaleDigestAfterConcurrentChange(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	feedID, err := s.AddFeed(ctx, "race-feed", "https://example.test/r.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
+	}
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "cat-a", Service: "svc-1", CIDR: "10.0.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert entries: %v", err)
+	}
+	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	_, digest, err := s.PreviewCommunityReset(ctx, 1)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+
+	// Simulate a feed sync landing a new service (and its community, as the
+	// real sync path does via GenerateCommunities) after the preview.
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "cat-a", Service: "svc-1", CIDR: "10.0.0.0/24"},
+		{Category: "cat-a", Service: "svc-2", CIDR: "10.0.1.0/24"},
+	}); err != nil {
+		t.Fatalf("insert additional entry: %v", err)
+	}
+	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+		t.Fatalf("generate after change: %v", err)
+	}
+
+	before, err := s.GetCommunities(ctx, 1)
+	if err != nil {
+		t.Fatalf("read communities before stale reset attempt: %v", err)
+	}
+
+	if _, err := s.ResetCommunities(ctx, 1, digest); !errors.Is(err, ErrCommunityResetStale) {
+		t.Fatalf("reset with pre-change digest: err = %v, want ErrCommunityResetStale", err)
+	}
+
+	after, err := s.GetCommunities(ctx, 1)
+	if err != nil {
+		t.Fatalf("read communities after rejected stale reset: %v", err)
+	}
+	for key, value := range before {
+		if after[key] != value {
+			t.Fatalf("rejected stale reset still changed %q: %d -> %d", key, value, after[key])
+		}
 	}
 }

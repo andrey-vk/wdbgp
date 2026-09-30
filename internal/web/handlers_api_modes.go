@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -435,7 +436,11 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 // into their filter policies, and the resulting breakage looks like a network
 // fault rather than a config change. So the call is two-step: without
 // {"confirm": true} it writes nothing and returns the exact renumbering it
-// would perform, for the caller to show and approve.
+// would perform, plus a digest of the state that preview was computed from.
+// Confirming must echo that digest back — if a feed sync or another admin
+// changed the mode in between, the digest no longer matches what confirm
+// would actually apply, and this hands back a fresh preview instead of
+// silently renumbering something the operator never reviewed.
 func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request) {
 	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	modeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -446,28 +451,23 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 	// An absent or empty body is treated as "not confirmed" rather than a
 	// parse error, so an unconfirmed reset always answers with the preview.
 	var body struct {
-		Confirm bool `json:"confirm"`
+		Confirm bool   `json:"confirm"`
+		Digest  string `json:"digest"`
 	}
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck // absent body means not confirmed
 	}
 
 	if !body.Confirm {
-		changes, err := s.store.PreviewCommunityReset(r.Context(), modeID)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":       false,
-			"confirm":  true,
-			"changes":  changes,
-			"affected": len(changes),
-		})
+		writePreview(w, r, s, modeID, false)
 		return
 	}
 
-	generated, err := s.store.ResetCommunities(r.Context(), modeID)
+	generated, err := s.store.ResetCommunities(r.Context(), modeID, body.Digest)
+	if errors.Is(err, store.ErrCommunityResetStale) {
+		writePreview(w, r, s, modeID, true)
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
@@ -482,6 +482,31 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":        true,
 		"generated": generated,
+	})
+}
+
+// writePreview answers an unconfirmed (or stale-confirmed) reset request with
+// the current renumbering preview and the digest a follow-up confirm must
+// echo. stale marks a confirm that was rejected because the mode changed
+// since its digest was issued, so the caller can tell "first look at this"
+// apart from "the ground moved, look again" and render accordingly.
+func writePreview(w http.ResponseWriter, r *http.Request, s *Server, modeID int64, stale bool) {
+	changes, digest, err := s.store.PreviewCommunityReset(r.Context(), modeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	status := http.StatusOK
+	if stale {
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, map[string]any{
+		"ok":       false,
+		"confirm":  true,
+		"stale":    stale,
+		"changes":  changes,
+		"affected": len(changes),
+		"digest":   digest,
 	})
 }
 

@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -65,10 +67,16 @@ func (s *Store) GetCommunities(ctx context.Context, modeID int64) (map[string]ui
 	return result, nil
 }
 
-// communityRows reads a mode's community assignments as structured rows.
+// CommunityRows reads a mode's community assignments as structured rows.
 // Unlike GetCommunities' map form, the (category, service) pair stays split,
-// so callers that diff assignments never have to re-parse a "category|service"
-// key — category names may legitimately contain "|".
+// so callers that diff or key assignments never have to re-parse a
+// "category|service" string — category names may legitimately contain "|",
+// so that join is not a safe map key (a group named "a|b" and service "b" in
+// category "a" would collide).
+func (s *Store) CommunityRows(ctx context.Context, modeID int64) ([]Community, error) {
+	return communityRows(ctx, s.DB, modeID)
+}
+
 func communityRows(ctx context.Context, q queryer, modeID int64) ([]Community, error) {
 	rows, err := q.QueryContext(ctx, `
 SELECT c.name, COALESCE(sv.name, ''), cc.community
@@ -139,19 +147,33 @@ type CommunityChange struct {
 // retry.TransientError matches on, so the aborted transaction is never retried.
 var errResetPreviewDiscard = errors.New("community reset preview: discard trial")
 
+// ErrCommunityResetStale is returned by ResetCommunities when the digest
+// passed to it no longer matches the mode's current state — the operator's
+// preview is stale (a feed sync regenerated communities, or another admin
+// edited one, after the preview was shown) and must not be applied blindly.
+var ErrCommunityResetStale = errors.New("community reset preview is stale")
+
 // PreviewCommunityReset reports how ResetCommunities would renumber a mode,
-// without writing anything. The trial runs the real generator inside a
-// transaction that is then rolled back, so the preview cannot drift from what
-// an actual reset would produce — the alternative, reimplementing the
-// allocation in memory, would be a second copy of findFirstFree to keep in
-// sync. Only pairs whose value actually changes are returned.
-func (s *Store) PreviewCommunityReset(ctx context.Context, modeID int64) ([]CommunityChange, error) {
-	before, err := communityRows(ctx, s.DB, modeID)
-	if err != nil {
-		return nil, err
-	}
-	var after []Community
-	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+// without writing anything, plus a digest identifying the exact state this
+// preview was computed from. Pass the digest back to ResetCommunities so it
+// refuses to apply a renumbering the operator never actually reviewed.
+//
+// The trial runs the real generator inside a transaction that is then rolled
+// back, so the preview cannot drift from what an actual reset would produce
+// — the alternative, reimplementing the allocation in memory, would be a
+// second copy of findFirstFree to keep in sync. Only pairs whose value
+// actually changes are returned in the change list; the digest still covers
+// the full before/after state, since a reset restricted to a fully
+// unchanged mode would otherwise stay "confirmable" forever regardless of
+// what else moved around it.
+func (s *Store) PreviewCommunityReset(ctx context.Context, modeID int64) ([]CommunityChange, string, error) {
+	var before, after []Community
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		var err error
+		before, err = communityRows(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			"DELETE FROM catalog_communities WHERE mode_id = ?", modeID); err != nil {
 			return err
@@ -167,12 +189,33 @@ func (s *Store) PreviewCommunityReset(ctx context.Context, modeID int64) ([]Comm
 	})
 	if !errors.Is(err, errResetPreviewDiscard) {
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		// Committing here would mean the trial regeneration was persisted.
-		return nil, fmt.Errorf("community reset preview committed unexpectedly")
+		return nil, "", fmt.Errorf("community reset preview committed unexpectedly")
 	}
-	return diffCommunities(before, after), nil
+	return diffCommunities(before, after), communityResetDigest(before, after), nil
+}
+
+// communityResetDigest fingerprints a mode's community state as observed
+// (before) and as a reset would leave it (after). "after" is fully
+// determined by the mode's current catalog shape (which categories/services
+// catalog_mode_feeds currently resolves to) — genCommunitiesRuntime assigns
+// deterministically in alphabetical order starting from an empty table — so
+// this digest changes if either the stored assignments or the catalog itself
+// has moved, without a separate query to hash the catalog shape directly.
+func communityResetDigest(before, after []Community) string {
+	h := sha256.New()
+	writeRows := func(rows []Community) {
+		for _, row := range rows {
+			//nolint:errcheck // hash.Hash.Write never returns an error
+			fmt.Fprintf(h, "%s\x00%s\x00%d\n", row.Category, row.Service, row.Community)
+		}
+		h.Write([]byte("--\n"))
+	}
+	writeRows(before)
+	writeRows(after)
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // diffCommunities returns the assignments that differ between two snapshots,
@@ -213,18 +256,40 @@ func diffCommunities(before, after []Community) []CommunityChange {
 
 // ResetCommunities discards a mode's community assignments and regenerates
 // them from scratch. This renumbers values that downstream routers may have
-// hardcoded in their policies, so callers must confirm intent first —
-// see PreviewCommunityReset.
-func (s *Store) ResetCommunities(ctx context.Context, modeID int64) (int, error) {
+// hardcoded in their policies, so callers must confirm intent first — see
+// PreviewCommunityReset.
+//
+// expectedDigest must be the digest PreviewCommunityReset returned for the
+// preview the caller is applying. Before committing, this recomputes the
+// same digest over what it is about to apply and rejects the whole
+// transaction with ErrCommunityResetStale if it does not match — closing the
+// window between an operator reviewing a preview and clicking apply, during
+// which a feed sync or another admin's edit could otherwise get silently
+// renumbered into something never shown to anyone.
+func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDigest string) (int, error) {
 	var generated int
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		before, err := communityRows(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			"DELETE FROM catalog_communities WHERE mode_id = ?", modeID); err != nil {
 			return err
 		}
-		var err error
 		generated, err = genCommunitiesRuntime(ctx, tx, modeID)
-		return err
+		if err != nil {
+			return err
+		}
+		after, err := communityRows(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		if communityResetDigest(before, after) != expectedDigest {
+			generated = 0
+			return ErrCommunityResetStale
+		}
+		return nil
 	})
 	return generated, err
 }
