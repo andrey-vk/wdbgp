@@ -281,7 +281,14 @@ count collapses is an early signal that a feed broke.
 A feed sync publishes its catalog and generates communities for it as two separate
 transactions; the export reads the catalog, assignments, and prefix counts as one
 consistent snapshot — generating any missing assignments inside that same
-transaction — rather than ever returning a service with no assignment yet.
+transaction — rather than ever returning a service with no assignment yet. That
+snapshot spans every mode in the document, not just each mode on its own: a feed
+shared by several modes publishes its update to all of them, so reading each mode
+independently could otherwise show the update applied to one mode but not yet to
+another. The ASN used to render every `large_community` string is likewise checked
+once after all of that database work finishes, not before, so a BGP restart
+completing while the export was still assembling data can never leave the response
+rendered from an ASN that already stopped matching the running speaker.
 
 ```console
 $ curl -sH "Authorization: Bearer $WDBGP_STATUS_TOKEN" http://wdbgp:8080/api/communities

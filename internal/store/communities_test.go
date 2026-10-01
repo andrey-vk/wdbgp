@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -313,5 +314,112 @@ func TestModeCommunitySnapshotIsSelfConsistent(t *testing.T) {
 	}
 	if groupComm2 != groupComm {
 		t.Fatalf("second snapshot renumbered cat-a: got %d, want %d (idempotent)", groupComm2, groupComm)
+	}
+}
+
+// TestAllModeCommunitySnapshotsIsConsistentAcrossModes covers the cross-mode
+// atomicity guarantee AllModeCommunitySnapshots adds over calling
+// ModeCommunitySnapshot once per mode: a feed sync whose catalog update
+// spans multiple modes must never be observed as committed for one mode but
+// not yet for another, even though each mode's own read is itself already
+// transactionally consistent (ModeCommunitySnapshot's own guarantee). Two
+// modes share one feed; a concurrent writer repeatedly republishes that
+// feed with one more service and rebuilds both modes, while reads run in a
+// tight loop against the real file-backed, WAL-mode database the other
+// store tests use — every read must see the same service count in both
+// modes, never a split.
+func TestAllModeCommunitySnapshotsIsConsistentAcrossModes(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	feedID, err := s.AddFeed(ctx, "shared-feed", "https://example.test/shared.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	modeB, err := s.AddCatalogMode(ctx, "mode-b", true)
+	if err != nil {
+		t.Fatalf("add mode: %v", err)
+	}
+	modeIDs := []int64{1, modeB}
+	for _, modeID := range modeIDs {
+		if _, err := s.DB.ExecContext(ctx,
+			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+			t.Fatalf("assign feed to mode %d: %v", modeID, err)
+		}
+	}
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "cat", Service: "svc-1", CIDR: "10.0.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert entries: %v", err)
+	}
+	for _, modeID := range modeIDs {
+		if err := s.RebuildModeEntries(ctx, modeID); err != nil {
+			t.Fatalf("rebuild mode entries for %d: %v", modeID, err)
+		}
+		if _, err := s.GenerateCommunities(ctx, modeID); err != nil {
+			t.Fatalf("generate for %d: %v", modeID, err)
+		}
+	}
+
+	stop := make(chan struct{})
+	writerErr := make(chan error, 1)
+	go func() {
+		defer close(writerErr)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			entries := []CatalogEntry{{Category: "cat", Service: "svc-1", CIDR: "10.0.0.0/24"}}
+			for j := 0; j <= i; j++ {
+				entries = append(entries, CatalogEntry{
+					Category: "cat",
+					Service:  fmt.Sprintf("svc-new-%d", j),
+					CIDR:     fmt.Sprintf("10.1.%d.0/24", j%256),
+				})
+			}
+			if err := s.InsertCatalogEntries(ctx, feedID, entries); err != nil {
+				writerErr <- fmt.Errorf("insert entries: %w", err)
+				return
+			}
+			// Republishing both modes, one after the other, is exactly what
+			// leaves the gap AllModeCommunitySnapshots closes: under the old
+			// one-transaction-per-mode code, a reader could land between
+			// these two calls and see the update for mode 1 but not yet for
+			// modeB.
+			for _, modeID := range modeIDs {
+				if err := s.RebuildModeEntries(ctx, modeID); err != nil {
+					writerErr <- fmt.Errorf("rebuild mode %d: %w", modeID, err)
+					return
+				}
+				if _, err := s.GenerateCommunities(ctx, modeID); err != nil {
+					writerErr <- fmt.Errorf("generate mode %d: %w", modeID, err)
+					return
+				}
+			}
+		}
+	}()
+
+	const iterations = 150
+	for i := 0; i < iterations; i++ {
+		_, snapshots, err := s.AllModeCommunitySnapshots(ctx, false)
+		if err != nil {
+			close(stop)
+			<-writerErr
+			t.Fatalf("snapshot: %v", err)
+		}
+		count1 := len(snapshots[1].Catalog["cat"])
+		count2 := len(snapshots[modeB].Catalog["cat"])
+		if count1 != count2 {
+			close(stop)
+			<-writerErr
+			t.Fatalf("iteration %d: mode 1 saw %d services, mode %d saw %d — snapshot split across modes",
+				i, count1, modeB, count2)
+		}
+	}
+	close(stop)
+	if err := <-writerErr; err != nil {
+		t.Fatalf("writer: %v", err)
 	}
 }

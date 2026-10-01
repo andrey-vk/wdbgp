@@ -109,44 +109,28 @@ func (s *Server) apiCommunitiesExport(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, error) {
 	ctx := r.Context()
-
-	activeASN, running := s.bgp.ActiveASN()
-	configured := s.settings.LocalASN.Get()
 	doc := communityExportDoc{
 		SchemaVersion: communityExportSchemaVersion,
-		ASN:           activeASN,
-		BGPRunning:    running,
 		Modes:         []communityExportMode{},
-	}
-	if !running {
-		// Nothing is announced, so there is no wire value to report; the
-		// configured ASN is what a restart would begin stamping.
-		doc.ASN = configured
-	} else if activeASN != configured {
-		doc.ASNConfigured = &configured
 	}
 
 	// Disabled modes are included: their communities still exist and a
 	// consumer generating policy wants the full map, not one that shifts
 	// when an operator toggles a mode.
-	modes, err := s.store.CatalogModes(ctx, false)
+	//
+	// The mode list and every mode's catalog/communities/counts come from
+	// one shared transaction (AllModeCommunitySnapshots), not one
+	// transaction per mode: a feed sync's catalog update can span several
+	// modes, and reading each mode independently could otherwise observe
+	// the update committed for one mode but not yet for another, even
+	// though the sync published both atomically.
+	modes, snapshots, err := s.store.AllModeCommunitySnapshots(ctx, false)
 	if err != nil {
-		return communityExportDoc{}, fmt.Errorf("load modes: %w", err)
+		return communityExportDoc{}, fmt.Errorf("read community snapshots: %w", err)
 	}
 
 	for _, mode := range modes {
-		// A feed sync publishes its catalog and generates communities for it
-		// as two separate transactions (internal/feeds/feeds.go), so reading
-		// the catalog, assignments, and counts as separate queries — even
-		// with a defensive generate first — leaves a window where a sync's
-		// commit lands between this read's own generate step and its later
-		// queries, and an entry still comes back with no assignment.
-		// ModeCommunitySnapshot does the generate-then-read entirely inside
-		// one transaction, which is what actually closes the window.
-		snap, err := s.store.ModeCommunitySnapshot(ctx, mode.ID)
-		if err != nil {
-			return communityExportDoc{}, fmt.Errorf("read community snapshot for mode %d: %w", mode.ID, err)
-		}
+		snap := snapshots[mode.ID]
 
 		// Structured rows, not GetCommunities' "category|service"-keyed map:
 		// a category legitimately containing "|" would collide with that key
@@ -181,28 +165,59 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 			copy(services, snap.Catalog[category])
 			sort.Strings(services)
 
-			groupValue := groupCommunities[category]
+			// LargeCommunity is deliberately left blank here: it is filled
+			// in below from an ASN read AFTER all database work finishes,
+			// so an admin changing the active ASN mid-request can never
+			// leave this response rendering every large_community string
+			// from an ASN that stopped being accurate before the response
+			// was even sent.
 			entry := communityExportCategory{
-				Name:           category,
-				Community:      groupValue,
-				LargeCommunity: largeCommunityString(doc.ASN, groupValue),
-				PrefixCountV4:  snap.CategoryPrefixV4[category],
-				PrefixCountV6:  snap.CategoryPrefixV6[category],
-				Services:       make([]communityExportService, 0, len(services)),
+				Name:          category,
+				Community:     groupCommunities[category],
+				PrefixCountV4: snap.CategoryPrefixV4[category],
+				PrefixCountV6: snap.CategoryPrefixV6[category],
+				Services:      make([]communityExportService, 0, len(services)),
 			}
 			for _, service := range services {
-				value := serviceCommunities[category][service]
 				entry.Services = append(entry.Services, communityExportService{
-					Name:           service,
-					Community:      value,
-					LargeCommunity: largeCommunityString(doc.ASN, value),
-					PrefixCountV4:  snap.ServicePrefixV4[category][service],
-					PrefixCountV6:  snap.ServicePrefixV6[category][service],
+					Name:          service,
+					Community:     serviceCommunities[category][service],
+					PrefixCountV4: snap.ServicePrefixV4[category][service],
+					PrefixCountV6: snap.ServicePrefixV6[category][service],
 				})
 			}
 			exported.Categories = append(exported.Categories, entry)
 		}
 		doc.Modes = append(doc.Modes, exported)
+	}
+
+	// Read last, after every mode's data, and used only to render the wire
+	// form of values already fixed above — never to decide which values are
+	// exported. A BGP restart changing the active ASN while the database
+	// reads above were still in flight would otherwise be rendered into
+	// large_community strings using the pre-restart ASN, which stops being
+	// accurate the moment the restart finishes — before this response is
+	// even sent.
+	activeASN, running := s.bgp.ActiveASN()
+	configured := s.settings.LocalASN.Get()
+	doc.ASN = activeASN
+	doc.BGPRunning = running
+	if !running {
+		// Nothing is announced, so there is no wire value to report; the
+		// configured ASN is what a restart would begin stamping.
+		doc.ASN = configured
+	} else if activeASN != configured {
+		doc.ASNConfigured = &configured
+	}
+	for m := range doc.Modes {
+		for c := range doc.Modes[m].Categories {
+			category := &doc.Modes[m].Categories[c]
+			category.LargeCommunity = largeCommunityString(doc.ASN, category.Community)
+			for sv := range category.Services {
+				service := &category.Services[sv]
+				service.LargeCommunity = largeCommunityString(doc.ASN, service.Community)
+			}
+		}
 	}
 
 	return doc, nil

@@ -135,26 +135,65 @@ type ModeCommunitySnapshot struct {
 func (s *Store) ModeCommunitySnapshot(ctx context.Context, modeID int64) (ModeCommunitySnapshot, error) {
 	var snap ModeCommunitySnapshot
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
-		if _, err := genCommunitiesRuntime(ctx, tx, modeID); err != nil {
-			return err
-		}
 		var err error
-		snap.Catalog, err = catalogForMode(ctx, tx, modeID, true)
-		if err != nil {
-			return err
-		}
-		snap.Communities, err = communityRows(ctx, tx, modeID)
-		if err != nil {
-			return err
-		}
-		snap.CategoryPrefixV4, snap.CategoryPrefixV6, err = categoryPrefixCounts(ctx, tx, modeID)
-		if err != nil {
-			return err
-		}
-		snap.ServicePrefixV4, snap.ServicePrefixV6, err = prefixCounts(ctx, tx, modeID)
+		snap, err = modeCommunitySnapshotTx(ctx, tx, modeID)
 		return err
 	})
 	return snap, err
+}
+
+// modeCommunitySnapshotTx is ModeCommunitySnapshot's per-mode work, against
+// an already-open transaction — shared with AllModeCommunitySnapshots, which
+// runs it for every mode inside one transaction instead of one per mode.
+func modeCommunitySnapshotTx(ctx context.Context, tx *sql.Tx, modeID int64) (ModeCommunitySnapshot, error) {
+	var snap ModeCommunitySnapshot
+	if _, err := genCommunitiesRuntime(ctx, tx, modeID); err != nil {
+		return snap, err
+	}
+	var err error
+	snap.Catalog, err = catalogForMode(ctx, tx, modeID, true)
+	if err != nil {
+		return snap, err
+	}
+	snap.Communities, err = communityRows(ctx, tx, modeID)
+	if err != nil {
+		return snap, err
+	}
+	snap.CategoryPrefixV4, snap.CategoryPrefixV6, err = categoryPrefixCounts(ctx, tx, modeID)
+	if err != nil {
+		return snap, err
+	}
+	snap.ServicePrefixV4, snap.ServicePrefixV6, err = prefixCounts(ctx, tx, modeID)
+	return snap, err
+}
+
+// AllModeCommunitySnapshots reads the mode list and every mode's community
+// snapshot from one shared transaction, unlike calling ModeCommunitySnapshot
+// per mode (each of which opens its own transaction): a feed sync whose
+// catalog update spans multiple modes could otherwise commit partway through
+// a caller's loop, so the document ends up reflecting the update for one
+// mode but not yet for another even though the sync published both
+// atomically. Reading the mode list inside the same transaction closes the
+// same gap for a mode added, removed, or toggled mid-read.
+func (s *Store) AllModeCommunitySnapshots(ctx context.Context, enabledOnly bool) ([]CatalogMode, map[int64]ModeCommunitySnapshot, error) {
+	var modes []CatalogMode
+	snapshots := make(map[int64]ModeCommunitySnapshot)
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		var err error
+		modes, err = catalogModes(ctx, tx, enabledOnly)
+		if err != nil {
+			return err
+		}
+		for _, mode := range modes {
+			snap, err := modeCommunitySnapshotTx(ctx, tx, mode.ID)
+			if err != nil {
+				return err
+			}
+			snapshots[mode.ID] = snap
+		}
+		return nil
+	})
+	return modes, snapshots, err
 }
 
 // SetCommunity upserts a community. service="" means group-level.

@@ -478,3 +478,58 @@ func TestCommunitiesExportGeneratesMissingAssignments(t *testing.T) {
 		t.Fatalf("service added mid-sync exported with no assignment: %+v", found.Services)
 	}
 }
+
+// TestCommunitiesExportReadsDataBeforeASN covers the ordering ActiveASN
+// reporting relies on: the ASN used to render every large_community string
+// must come from a check made AFTER all database reads finish, not before.
+// Otherwise a BGP restart changing the active ASN while those reads are
+// still in flight would be rendered into a response using the pre-restart
+// ASN — stale the moment the restart completes, before the response is
+// even sent.
+//
+// ActiveASN's test double writes a brand-new mode (with its own community)
+// to the database the instant it's called. If the database reads happened
+// after that call (the bug this covers), the new mode would show up in the
+// response; reading data first means it cannot — the snapshot was already
+// taken before the write ever happened.
+func TestCommunitiesExportReadsDataBeforeASN(t *testing.T) {
+	srv, bgp, _ := exportFixture(t)
+	ctx := context.Background()
+
+	bgp.beforeActiveASN = func() {
+		newModeID, err := srv.store.AddCatalogMode(ctx, "late-mode", true)
+		if err != nil {
+			t.Fatalf("add mode inside ActiveASN hook: %v", err)
+		}
+		feedID, err := srv.store.AddFeed(ctx, "late-feed", "http://example.com/late.json", 1, true, 0, "", "", true)
+		if err != nil {
+			t.Fatalf("add feed inside ActiveASN hook: %v", err)
+		}
+		if _, err := srv.store.DB.ExecContext(ctx,
+			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", newModeID, feedID); err != nil {
+			t.Fatalf("assign feed inside ActiveASN hook: %v", err)
+		}
+		if err := srv.store.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+			{Category: "Late", Service: "svc", CIDR: "172.30.0.0/24"},
+		}); err != nil {
+			t.Fatalf("insert entries inside ActiveASN hook: %v", err)
+		}
+		if err := srv.store.RebuildModeEntries(ctx, newModeID); err != nil {
+			t.Fatalf("rebuild mode entries inside ActiveASN hook: %v", err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	doc := decodeExport(t, w.Body.Bytes())
+
+	for _, mode := range doc.Modes {
+		if mode.ModeName == "late-mode" {
+			t.Fatalf("response includes a mode created inside the ActiveASN call — "+
+				"database reads ran after the ASN check, not before: %+v", mode)
+		}
+	}
+}
