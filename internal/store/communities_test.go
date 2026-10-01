@@ -445,3 +445,93 @@ func TestAllModeCommunitySnapshotsIsConsistentAcrossModes(t *testing.T) {
 		t.Fatalf("writer: %v", err)
 	}
 }
+
+// TestGenerateCommunitiesHandlesPipeInCategoryName covers a real collision
+// in genCommunitiesRuntime's in-memory bookkeeping: a category literally
+// containing "|" and an unrelated (category, service) pair can join to the
+// same "category|service" string — e.g. (category "a", service "b|c") and
+// (category "a|b", service "c") both joined to "a|b|c" under the old
+// string-keyed map. generateCommunitiesRuntime would then mistake the new
+// pair for the existing one already having a community, silently skip
+// allocating one for it, and leave it unassigned (community 0) forever.
+func TestGenerateCommunitiesHandlesPipeInCategoryName(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	feedID, err := s.AddFeed(ctx, "pipe-gen-feed", "https://example.test/pipe-gen.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
+	}
+
+	// First sync: only the pre-existing pair.
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "a", Service: "b|c", CIDR: "10.0.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert initial entries: %v", err)
+	}
+	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+		t.Fatalf("initial generate: %v", err)
+	}
+	before, err := s.CommunityRows(ctx, 1)
+	if err != nil {
+		t.Fatalf("read communities: %v", err)
+	}
+	var existingSvcComm uint32
+	for _, row := range before {
+		if row.Category == "a" && row.Service == "b|c" {
+			existingSvcComm = row.Community
+		}
+	}
+	if existingSvcComm == 0 {
+		t.Fatal("fixture did not generate a community for (a, b|c)")
+	}
+
+	// Second sync: a feed resync replaces the whole catalog, so the new
+	// entry is added alongside the pre-existing one, exactly like a real
+	// feed update.
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "a", Service: "b|c", CIDR: "10.0.0.0/24"},
+		{Category: "a|b", Service: "c", CIDR: "10.0.1.0/24"},
+	}); err != nil {
+		t.Fatalf("insert second entries: %v", err)
+	}
+	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+		t.Fatalf("second generate: %v", err)
+	}
+
+	after, err := s.CommunityRows(ctx, 1)
+	if err != nil {
+		t.Fatalf("read communities after second generate: %v", err)
+	}
+	var newGroupComm, newSvcComm, stillExistingSvcComm uint32
+	var foundNewGroup, foundNewSvc bool
+	for _, row := range after {
+		switch {
+		case row.Category == "a|b" && row.Service == "":
+			newGroupComm = row.Community
+			foundNewGroup = true
+		case row.Category == "a|b" && row.Service == "c":
+			newSvcComm = row.Community
+			foundNewSvc = true
+		case row.Category == "a" && row.Service == "b|c":
+			stillExistingSvcComm = row.Community
+		}
+	}
+	if !foundNewGroup || newGroupComm == 0 {
+		t.Fatalf("new category a|b got no group community: found=%v value=%d", foundNewGroup, newGroupComm)
+	}
+	if !foundNewSvc || newSvcComm == 0 {
+		t.Fatalf("new pair (a|b, c) got no community — mistaken for the existing (a, b|c) pair: found=%v value=%d",
+			foundNewSvc, newSvcComm)
+	}
+	if newSvcComm == existingSvcComm {
+		t.Fatalf("new pair (a|b, c) collided with existing (a, b|c): both got community %d", existingSvcComm)
+	}
+	if stillExistingSvcComm != existingSvcComm {
+		t.Fatalf("existing (a, b|c) community changed from %d to %d", existingSvcComm, stillExistingSvcComm)
+	}
+}

@@ -419,6 +419,16 @@ func resolveCommunityKey(ctx context.Context, tx *sql.Tx, category, service stri
 	return categoryID, serviceID, nil
 }
 
+// communityMapKey identifies a (category, service) pair unambiguously for
+// in-memory bookkeeping during generation. Unlike a "category|service"
+// string, it cannot collide with an unrelated pair when a category name
+// legitimately contains "|" — e.g. (category "a", service "b|c") and
+// (category "a|b", service "c") would otherwise both join to "a|b|c".
+type communityMapKey struct {
+	category string
+	service  string // "" marks the category's own group-level entry
+}
+
 // GenerateCommunities fills missing communities for all categories/services in a mode.
 // Uses the 10000*gap scheme. Skips categories/services that already have a community.
 // Returns count of newly generated communities.
@@ -478,7 +488,7 @@ WHERE cc.mode_id = ? ORDER BY cc.community`,
 			return 0, err
 		}
 		used := make(map[uint32]bool)
-		keyComm := make(map[string]uint32)
+		keyComm := make(map[communityMapKey]uint32)
 		for commRows.Next() {
 			var category, service string
 			var community uint32
@@ -489,11 +499,7 @@ WHERE cc.mode_id = ? ORDER BY cc.community`,
 				return 0, err
 			}
 			used[community] = true
-			if service == "" {
-				keyComm["grp:"+category] = community
-			} else {
-				keyComm["svc:"+category+"|"+service] = community
-			}
+			keyComm[communityMapKey{category: category, service: service}] = community
 		}
 		if err := commRows.Err(); err != nil {
 			if cerr := commRows.Close(); cerr != nil {
@@ -555,7 +561,7 @@ ORDER BY c.name, sv.name`, mid)
 
 		groupIndex := 0
 		for _, category := range categories {
-			groupKey := "grp:" + category
+			groupKey := communityMapKey{category: category}
 
 			groupCommunity, ok := keyComm[groupKey]
 			if !ok {
@@ -574,7 +580,7 @@ ORDER BY c.name, sv.name`, mid)
 			}
 
 			for _, service := range servicesByCategory[category] {
-				svcKey := "svc:" + category + "|" + service
+				svcKey := communityMapKey{category: category, service: service}
 				if _, ok := keyComm[svcKey]; ok {
 					continue
 				}
