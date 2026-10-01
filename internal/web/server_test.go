@@ -69,6 +69,9 @@ type fakeBGP struct {
 	// "never attempted", matching a bare &fakeBGP{}.
 	reconcileAt  time.Time
 	reconcileErr error
+
+	// beforeReconcileStatus, when set, runs at the start of ReconcileStatus.
+	beforeReconcileStatus func()
 }
 
 func (f *fakeBGP) Reconcile(context.Context) error {
@@ -126,7 +129,14 @@ func (f *fakeBGP) ActiveASN() (uint32, bool) {
 // ReconcileStatus defaults to "never attempted" (zero reconcileAt), matching
 // a bare &fakeBGP{} the way every existing test constructs one. Tests that
 // need a specific reconcile outcome set reconcileAt/reconcileErr directly.
+// beforeReconcileStatus, when set, runs just before the values are read —
+// for a test simulating a concurrent commit landing exactly when a caller
+// queries reconcile status, to pin down which side of that race the caller
+// observes.
 func (f *fakeBGP) ReconcileStatus() (bool, time.Time, error) {
+	if f.beforeReconcileStatus != nil {
+		f.beforeReconcileStatus()
+	}
 	return !f.reconcileAt.IsZero(), f.reconcileAt, f.reconcileErr
 }
 

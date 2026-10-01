@@ -563,3 +563,67 @@ func TestCommunitiesExportReconcileAtExcludedFromETag(t *testing.T) {
 		t.Fatal("ETag unchanged after reconcile_ok flipped from true to false")
 	}
 }
+
+// TestCommunitiesExportReconcileStatusReadAfterData covers the exact race
+// Codex found in the previous round's fix: reading reconcile status before
+// the mode snapshots let a commit landing in between present fresh,
+// never-reconciled assignments alongside an "ok" that was only ever true for
+// the older state. ReconcileStatus is simulated to fire a concurrent commit
+// (a community edit, standing in for an admin edit or feed sync) at the
+// precise moment it's called — if status were still read before the mode
+// data, the exported community would be the edited (post-commit) value next
+// to a stale "ok" that never covered it; reading status last means the
+// exported value is the pre-commit one the status genuinely applies to.
+func TestCommunitiesExportReconcileStatusReadAfterData(t *testing.T) {
+	srv, bgp, modeID := exportFixture(t)
+	ctx := context.Background()
+
+	before, err := srv.store.GetCommunities(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read communities: %v", err)
+	}
+	preCommitValue := before["AI|ChatGPT"]
+	if preCommitValue == 0 {
+		t.Fatal("fixture community not found")
+	}
+
+	bgp.reconcileAt = time.Now()
+	bgp.beforeReconcileStatus = func() {
+		if err := srv.store.SetCommunity(ctx, modeID, "AI", "ChatGPT", preCommitValue+500); err != nil {
+			t.Fatalf("concurrent commit: %v", err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	doc := decodeExport(t, w.Body.Bytes())
+
+	if doc.ReconcileOK == nil || !*doc.ReconcileOK {
+		t.Fatalf("reconcile_ok = %v, want true", doc.ReconcileOK)
+	}
+
+	var got uint32
+	for _, mode := range doc.Modes {
+		if mode.ModeID != modeID {
+			continue
+		}
+		for _, category := range mode.Categories {
+			if category.Name != "AI" {
+				continue
+			}
+			for _, service := range category.Services {
+				if service.Name == "ChatGPT" {
+					got = service.Community
+				}
+			}
+		}
+	}
+	if got != preCommitValue {
+		t.Fatalf("exported community = %d, want the pre-commit value %d — "+
+			"reconcile_ok=true is being shown next to a value no reconcile has ever attempted",
+			got, preCommitValue)
+	}
+}

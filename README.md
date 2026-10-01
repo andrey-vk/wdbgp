@@ -329,6 +329,15 @@ also `false` (starting the speaker performs one before reporting success). Treat
 document as provisional whenever `reconcile_ok` is `false`: the values are the intended
 state, not a confirmed description of what peers currently hold.
 
+Status is read last, after every mode's data, specifically so it can never be staler
+than what's shown: a database commit landing mid-request is reflected in both or neither,
+never in the exported values alone with a stale "ok" left over from before it happened.
+It can occasionally describe an even newer commit's reconcile than what's shown instead —
+safe, since that only makes `reconcile_ok` harder to claim, never easier. This is a
+best-effort ordering guarantee, not a literal per-value delivery receipt: nothing ties
+`reconcile_ok` to the exact revision of the data beside it, since doing that precisely
+would need a revision tracked through every write path that can affect announced routes.
+
 For polling, the response carries an `ETag` that covers the document's content but not
 `generated_at`/`reconcile_at`, so an unchanged map answers `304 Not Modified` — a
 reconcile re-running with the same outcome doesn't by itself bump the ETag, but a genuine

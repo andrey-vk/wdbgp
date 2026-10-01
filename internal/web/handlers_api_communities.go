@@ -156,15 +156,6 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, time
 		doc.ASNConfigured = &configured
 	}
 
-	attempted, reconcileAt, reconcileErr := s.bgp.ReconcileStatus()
-	if attempted {
-		ok := reconcileErr == nil
-		doc.ReconcileOK = &ok
-		if reconcileErr != nil {
-			doc.ReconcileError = reconcileErr.Error()
-		}
-	}
-
 	// Disabled modes are included: their communities still exist and a
 	// consumer generating policy wants the full map, not one that shifts
 	// when an operator toggles a mode.
@@ -242,6 +233,24 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, time
 			exported.Categories = append(exported.Categories, entry)
 		}
 		doc.Modes = append(doc.Modes, exported)
+	}
+
+	// Read last, after every mode's data: a commit landing between this
+	// read and the mode-snapshot reads above would otherwise let the
+	// document show assignments newer than anything a reconcile has ever
+	// attempted, alongside an "ok" that was only ever true for the older
+	// state — reading status first let exactly that happen. Reading it
+	// last instead means the reported status is always at least as new as
+	// the exported data; it can occasionally describe an even newer
+	// commit's reconcile (safe — it only ever makes "ok" harder to claim,
+	// never easier), but can never be stale relative to what's shown.
+	attempted, reconcileAt, reconcileErr := s.bgp.ReconcileStatus()
+	if attempted {
+		ok := reconcileErr == nil
+		doc.ReconcileOK = &ok
+		if reconcileErr != nil {
+			doc.ReconcileError = reconcileErr.Error()
+		}
 	}
 	return doc, reconcileAt, nil
 }
