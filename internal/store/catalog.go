@@ -19,6 +19,14 @@ func (s *Store) Catalog(ctx context.Context) (map[string][]string, error) {
 }
 
 func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisabled bool) (map[string][]string, error) {
+	return catalogForMode(ctx, s.DB, modeID, includeDisabled)
+}
+
+// catalogForMode is CatalogForMode's implementation, parameterized on
+// queryer so a caller that needs it inside a larger transaction (e.g. a
+// consistent snapshot alongside communities and prefix counts) can pass a
+// *sql.Tx instead of going through the Store's own connection.
+func catalogForMode(ctx context.Context, q queryer, modeID int64, includeDisabled bool) (map[string][]string, error) {
 	// The materialized catalog_mode_entries only carries enabled include
 	// feeds (minus excludes). The includeDisabled admin view wants disabled
 	// feeds' services listed too, so it reads the raw entries — still
@@ -41,7 +49,7 @@ JOIN catalog_mode_feeds cmf ON cmf.feed_id = ce.feed_id
 WHERE cmf.mode_id = ? AND cmf.exclude = 0
 ORDER BY c.name, sv.name`
 	}
-	rows, err := s.DB.QueryContext(ctx, query, modeID)
+	rows, err := q.QueryContext(ctx, query, modeID)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +107,13 @@ ORDER BY c.name, sv.name, p.ip, p.bits`, modeID)
 
 // CategoryPrefixCounts returns the number of distinct IPv4 and IPv6 CIDRs per category.
 func (s *Store) CategoryPrefixCounts(ctx context.Context, modeID int64) (v4 map[string]int, v6 map[string]int, err error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	return categoryPrefixCounts(ctx, s.DB, modeID)
+}
+
+// categoryPrefixCounts is CategoryPrefixCounts' implementation, parameterized
+// on queryer — see catalogForMode's doc comment for why.
+func categoryPrefixCounts(ctx context.Context, q queryer, modeID int64) (v4 map[string]int, v6 map[string]int, err error) {
+	rows, err := q.QueryContext(ctx, `
 SELECT c.name, length(p.ip), COUNT(DISTINCT cme.prefix_id)
 FROM catalog_mode_entries cme
 JOIN services sv ON sv.id = cme.service_id
@@ -134,7 +148,13 @@ GROUP BY c.name, length(p.ip)`, modeID)
 
 // PrefixCounts returns the number of distinct IPv4 and IPv6 CIDR prefixes for each service in each category.
 func (s *Store) PrefixCounts(ctx context.Context, modeID int64) (v4 map[string]map[string]int, v6 map[string]map[string]int, err error) {
-	rows, err := s.DB.QueryContext(ctx, `
+	return prefixCounts(ctx, s.DB, modeID)
+}
+
+// prefixCounts is PrefixCounts' implementation, parameterized on queryer —
+// see catalogForMode's doc comment for why.
+func prefixCounts(ctx context.Context, q queryer, modeID int64) (v4 map[string]map[string]int, v6 map[string]map[string]int, err error) {
+	rows, err := q.QueryContext(ctx, `
 SELECT c.name, sv.name, length(p.ip), COUNT(DISTINCT cme.prefix_id)
 FROM catalog_mode_entries cme
 JOIN services sv ON sv.id = cme.service_id

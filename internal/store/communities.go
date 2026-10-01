@@ -104,6 +104,59 @@ WHERE cc.mode_id = ? ORDER BY c.name, sv.name`,
 	return result, rows.Err()
 }
 
+// ModeCommunitySnapshot bundles everything the community export needs for
+// one mode, all read from a single transaction.
+type ModeCommunitySnapshot struct {
+	// Catalog maps category -> services, including services of disabled
+	// feeds (as CatalogForMode(..., includeDisabled=true) does) so a mode
+	// toggle or feed disablement doesn't make an exported assignment vanish.
+	Catalog          map[string][]string
+	Communities      []Community
+	CategoryPrefixV4 map[string]int
+	CategoryPrefixV6 map[string]int
+	ServicePrefixV4  map[string]map[string]int
+	ServicePrefixV6  map[string]map[string]int
+}
+
+// ModeCommunitySnapshot reads a mode's catalog shape, community assignments,
+// and prefix counts as one consistent snapshot — generating any missing
+// assignments first, in the same transaction.
+//
+// A feed sync publishes its catalog and generates communities for it as two
+// separate transactions (see internal/feeds/feeds.go), so reading those
+// pieces with separate queries — even with a defensive GenerateCommunities
+// call first — leaves a window where a sync's catalog commit lands between
+// this snapshot's own generate step and its later reads, and an entry still
+// comes back with no assignment. SQLite serializes writers against a
+// snapshot already in progress (the sync's commit either lands fully before
+// this transaction starts or fully after it, never partway through), so
+// doing the generate-then-read entirely inside one transaction is what
+// actually closes the window, not just narrows it.
+func (s *Store) ModeCommunitySnapshot(ctx context.Context, modeID int64) (ModeCommunitySnapshot, error) {
+	var snap ModeCommunitySnapshot
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := genCommunitiesRuntime(ctx, tx, modeID); err != nil {
+			return err
+		}
+		var err error
+		snap.Catalog, err = catalogForMode(ctx, tx, modeID, true)
+		if err != nil {
+			return err
+		}
+		snap.Communities, err = communityRows(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		snap.CategoryPrefixV4, snap.CategoryPrefixV6, err = categoryPrefixCounts(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		snap.ServicePrefixV4, snap.ServicePrefixV6, err = prefixCounts(ctx, tx, modeID)
+		return err
+	})
+	return snap, err
+}
+
 // SetCommunity upserts a community. service="" means group-level.
 func (s *Store) SetCommunity(ctx context.Context, modeID int64, category, service string, community uint32) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {

@@ -135,36 +135,25 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 	}
 
 	for _, mode := range modes {
-		// A feed sync publishes its catalog (RebuildModeEntriesForFeedTx) and
-		// generates communities for it (GenerateCommunities) as two separate
-		// transactions, so a request landing between them would otherwise see
-		// a service with no assignment yet and export community 0. Closing
-		// that window here — rather than in the sync path — keeps this fix
-		// local to the one place that turns "no assignment yet" into a
-		// published, machine-consumed contract; GenerateCommunities is
-		// idempotent and a no-op once the sync's own call has run.
-		if _, err := s.store.GenerateCommunities(ctx, mode.ID); err != nil {
-			return communityExportDoc{}, fmt.Errorf("ensure communities generated for mode %d: %w", mode.ID, err)
+		// A feed sync publishes its catalog and generates communities for it
+		// as two separate transactions (internal/feeds/feeds.go), so reading
+		// the catalog, assignments, and counts as separate queries — even
+		// with a defensive generate first — leaves a window where a sync's
+		// commit lands between this read's own generate step and its later
+		// queries, and an entry still comes back with no assignment.
+		// ModeCommunitySnapshot does the generate-then-read entirely inside
+		// one transaction, which is what actually closes the window.
+		snap, err := s.store.ModeCommunitySnapshot(ctx, mode.ID)
+		if err != nil {
+			return communityExportDoc{}, fmt.Errorf("read community snapshot for mode %d: %w", mode.ID, err)
 		}
 
-		// includeDisabled: services of a disabled feed keep their assigned
-		// community, and omitting them would make a policy break the moment
-		// the feed is re-enabled. Their prefix counts come out as 0, which
-		// is also the signal that the feed is not currently contributing.
-		catalog, err := s.store.CatalogForMode(ctx, mode.ID, true)
-		if err != nil {
-			return communityExportDoc{}, fmt.Errorf("load catalog for mode %d: %w", mode.ID, err)
-		}
 		// Structured rows, not GetCommunities' "category|service"-keyed map:
 		// a category legitimately containing "|" would collide with that key
 		// scheme (e.g. category "a" service "b" vs. group "a|b").
-		communityList, err := s.store.CommunityRows(ctx, mode.ID)
-		if err != nil {
-			return communityExportDoc{}, fmt.Errorf("load communities for mode %d: %w", mode.ID, err)
-		}
-		groupCommunities := make(map[string]uint32, len(communityList))
-		serviceCommunities := make(map[string]map[string]uint32, len(communityList))
-		for _, row := range communityList {
+		groupCommunities := make(map[string]uint32, len(snap.Communities))
+		serviceCommunities := make(map[string]map[string]uint32, len(snap.Communities))
+		for _, row := range snap.Communities {
 			if row.Service == "" {
 				groupCommunities[row.Category] = row.Community
 				continue
@@ -174,17 +163,9 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 			}
 			serviceCommunities[row.Category][row.Service] = row.Community
 		}
-		catV4, catV6, err := s.store.CategoryPrefixCounts(ctx, mode.ID)
-		if err != nil {
-			return communityExportDoc{}, fmt.Errorf("load category counts for mode %d: %w", mode.ID, err)
-		}
-		svcV4, svcV6, err := s.store.PrefixCounts(ctx, mode.ID)
-		if err != nil {
-			return communityExportDoc{}, fmt.Errorf("load service counts for mode %d: %w", mode.ID, err)
-		}
 
-		categories := make([]string, 0, len(catalog))
-		for category := range catalog {
+		categories := make([]string, 0, len(snap.Catalog))
+		for category := range snap.Catalog {
 			categories = append(categories, category)
 		}
 		sort.Strings(categories)
@@ -196,8 +177,8 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 			Categories: make([]communityExportCategory, 0, len(categories)),
 		}
 		for _, category := range categories {
-			services := make([]string, len(catalog[category]))
-			copy(services, catalog[category])
+			services := make([]string, len(snap.Catalog[category]))
+			copy(services, snap.Catalog[category])
 			sort.Strings(services)
 
 			groupValue := groupCommunities[category]
@@ -205,8 +186,8 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 				Name:           category,
 				Community:      groupValue,
 				LargeCommunity: largeCommunityString(doc.ASN, groupValue),
-				PrefixCountV4:  catV4[category],
-				PrefixCountV6:  catV6[category],
+				PrefixCountV4:  snap.CategoryPrefixV4[category],
+				PrefixCountV6:  snap.CategoryPrefixV6[category],
 				Services:       make([]communityExportService, 0, len(services)),
 			}
 			for _, service := range services {
@@ -215,8 +196,8 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 					Name:           service,
 					Community:      value,
 					LargeCommunity: largeCommunityString(doc.ASN, value),
-					PrefixCountV4:  svcV4[category][service],
-					PrefixCountV6:  svcV6[category][service],
+					PrefixCountV4:  snap.ServicePrefixV4[category][service],
+					PrefixCountV6:  snap.ServicePrefixV6[category][service],
 				})
 			}
 			exported.Categories = append(exported.Categories, entry)

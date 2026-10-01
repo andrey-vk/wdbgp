@@ -279,8 +279,9 @@ form (`<asn>:0:<number>`), and its current IPv4/IPv6 prefix counts — a categor
 count collapses is an early signal that a feed broke.
 
 A feed sync publishes its catalog and generates communities for it as two separate
-steps; the export closes that window itself (generation is idempotent) rather than
-ever returning a service with no assignment yet.
+transactions; the export reads the catalog, assignments, and prefix counts as one
+consistent snapshot — generating any missing assignments inside that same
+transaction — rather than ever returning a service with no assignment yet.
 
 ```console
 $ curl -sH "Authorization: Bearer $WDBGP_STATUS_TOKEN" http://wdbgp:8080/api/communities

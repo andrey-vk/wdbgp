@@ -414,11 +414,13 @@ func TestCommunitiesExportHandlesPipeInCategoryName(t *testing.T) {
 }
 
 // TestCommunitiesExportGeneratesMissingAssignments covers the window a feed
-// sync leaves open: it publishes the catalog (RebuildModeEntriesForFeedTx)
-// and generates communities (GenerateCommunities) as two separate
-// transactions, so a request landing in between would otherwise see a
-// service with no assignment yet. The export must ensure assignments exist
-// before it reads them rather than exporting community 0.
+// sync leaves open: it publishes the catalog and generates communities for
+// it as two separate transactions, so a request landing in between would
+// otherwise see a service with no assignment yet. This reproduces exactly
+// that intermediate state (catalog published via RebuildModeEntries,
+// GenerateCommunities deliberately not called) and asserts the export's
+// atomic ModeCommunitySnapshot (generate-then-read in one transaction)
+// still returns a real assignment rather than community 0.
 func TestCommunitiesExportGeneratesMissingAssignments(t *testing.T) {
 	srv, _, modeID := exportFixture(t)
 	ctx := context.Background()

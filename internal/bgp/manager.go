@@ -448,13 +448,21 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 		}
 	}
 
-	// Load communities for every mode seen across prefixes.
-	modeCommunities := make(map[int64]map[string]uint32)
+	// Load communities for every mode seen across prefixes. Structured rows,
+	// not GetCommunities' "category|service"-flattened map: a category
+	// legitimately containing "|" would collide with that key scheme (e.g.
+	// category "a" service "b" vs. group "a|b"), announcing the wrong
+	// community on the wire for one of the two.
+	modeCommunities := make(map[int64]map[communityKey]uint32)
 	for _, info := range prefixMeta {
 		if _, ok := modeCommunities[info.ModeID]; !ok {
-			comms, err := m.store.GetCommunities(ctx, info.ModeID)
+			rows, err := m.store.CommunityRows(ctx, info.ModeID)
 			if err != nil {
 				logger.Warn("get communities failed", "mode", info.ModeID, "error", err)
+			}
+			comms := make(map[communityKey]uint32, len(rows))
+			for _, row := range rows {
+				comms[communityKey{Category: row.Category, Service: row.Service}] = row.Community
 			}
 			modeCommunities[info.ModeID] = comms
 		}
@@ -493,7 +501,7 @@ func (m *Manager) reconcileLocked(ctx context.Context) error {
 			}
 			metaKey := rawPrefix + ":" + strconv.FormatInt(user.ID, 10)
 			meta, hasMeta := prefixMeta[metaKey]
-			comms := map[string]uint32{}
+			comms := map[communityKey]uint32{}
 			if hasMeta {
 				comms = modeCommunities[meta.ModeID]
 			}

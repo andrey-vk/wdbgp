@@ -12,8 +12,17 @@ type instPrefix struct {
 	Signature string
 }
 
+// communityKey identifies one community assignment unambiguously. Unlike a
+// "category|service" string, it cannot collide with an unrelated pair when a
+// category name itself legitimately contains "|" — a group named "a|b" and
+// service "b" in category "a" would otherwise flatten to the same key.
+type communityKey struct {
+	Category string
+	Service  string // "" selects the category's own group-level community
+}
+
 // buildRoute creates a Route for a single prefix for a specific peer.
-func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, service string, communities map[string]uint32) (Route, error) {
+func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, service string, communities map[communityKey]uint32) (Route, error) {
 	// Guard against user IDs that overflow uint32 (community LocalData1 field).
 	if user.ID > int64(^uint32(0)) {
 		return Route{}, fmt.Errorf("user ID %d exceeds max uint32", user.ID)
@@ -33,13 +42,13 @@ func (m *Manager) buildRoute(prefix netip.Prefix, user store.User, category, ser
 	})
 	// Category and service communities if available
 	if category != "" {
-		if c, ok := communities[category]; ok {
+		if c, ok := communities[communityKey{Category: category}]; ok {
 			comms = append(comms, LargeCommunity{
 				GlobalAdmin: globalAdmin, LocalData1: 0, LocalData2: c,
 			})
 		}
 		if service != "" {
-			if c, ok := communities[category+"|"+service]; ok {
+			if c, ok := communities[communityKey{Category: category, Service: service}]; ok {
 				comms = append(comms, LargeCommunity{
 					GlobalAdmin: globalAdmin, LocalData1: 0, LocalData2: c,
 				})

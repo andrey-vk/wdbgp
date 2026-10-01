@@ -239,3 +239,79 @@ func TestResetCommunitiesRejectsStaleDigestAfterConcurrentChange(t *testing.T) {
 		}
 	}
 }
+
+// TestModeCommunitySnapshotIsSelfConsistent covers the atomicity guarantee
+// the export relies on: catalog, communities, and prefix counts must all
+// reflect the same point in time, with no entry whose community is missing
+// because it was added after generation ran but before the read did. This
+// reproduces the intermediate state a feed sync leaves between publishing
+// its catalog and generating communities for it (two separate transactions
+// in the real sync path) and asserts the snapshot closes that gap by
+// generating inside its own transaction rather than relying on a prior
+// caller having done so.
+func TestModeCommunitySnapshotIsSelfConsistent(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	feedID, err := s.AddFeed(ctx, "snapshot-feed", "https://example.test/s.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
+	}
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "cat-a", Service: "svc-1", CIDR: "10.1.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert entries: %v", err)
+	}
+	// Publish the catalog without generating communities for it — exactly
+	// the state a request can observe mid-sync.
+	if err := s.RebuildModeEntries(ctx, 1); err != nil {
+		t.Fatalf("rebuild mode entries: %v", err)
+	}
+
+	snap, err := s.ModeCommunitySnapshot(ctx, 1)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	services, ok := snap.Catalog["cat-a"]
+	if !ok || len(services) != 1 || services[0] != "svc-1" {
+		t.Fatalf("snapshot catalog missing cat-a/svc-1: %+v", snap.Catalog)
+	}
+	var groupComm, svcComm uint32
+	for _, row := range snap.Communities {
+		switch {
+		case row.Category == "cat-a" && row.Service == "":
+			groupComm = row.Community
+		case row.Category == "cat-a" && row.Service == "svc-1":
+			svcComm = row.Community
+		}
+	}
+	if groupComm == 0 || svcComm == 0 {
+		t.Fatalf("snapshot returned catalog without matching assignments: group=%d service=%d",
+			groupComm, svcComm)
+	}
+	if snap.CategoryPrefixV4["cat-a"] != 1 {
+		t.Fatalf("category prefix count = %d, want 1", snap.CategoryPrefixV4["cat-a"])
+	}
+	if snap.ServicePrefixV4["cat-a"]["svc-1"] != 1 {
+		t.Fatalf("service prefix count = %d, want 1", snap.ServicePrefixV4["cat-a"]["svc-1"])
+	}
+
+	// A second call must be a no-op on top of what the first one generated.
+	snap2, err := s.ModeCommunitySnapshot(ctx, 1)
+	if err != nil {
+		t.Fatalf("second snapshot: %v", err)
+	}
+	var groupComm2 uint32
+	for _, row := range snap2.Communities {
+		if row.Category == "cat-a" && row.Service == "" {
+			groupComm2 = row.Community
+		}
+	}
+	if groupComm2 != groupComm {
+		t.Fatalf("second snapshot renumbered cat-a: got %d, want %d (idempotent)", groupComm2, groupComm)
+	}
+}

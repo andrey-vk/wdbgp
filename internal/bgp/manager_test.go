@@ -54,7 +54,7 @@ func TestBuildRouteCarriesCommunities(t *testing.T) {
 		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
 	}, nil)
 	prefix := netip.MustParsePrefix("149.154.160.0/20")
-	comms := map[string]uint32{"testcat": 10000, "testcat|testsvc": 10001}
+	comms := map[communityKey]uint32{{Category: "testcat"}: 10000, {Category: "testcat", Service: "testsvc"}: 10001}
 	user := store.User{ID: 7}
 	route, err := manager.buildRoute(prefix, user, "testcat", "testsvc", comms)
 	if err != nil {
@@ -95,6 +95,52 @@ func TestBuildRouteCarriesCommunities(t *testing.T) {
 	}
 }
 
+// TestBuildRouteHandlesPipeInCategoryName covers a real collision a
+// "category|service" string key would hit: a category literally named
+// "a|b" and the pair (category "a", service "b") both flatten to the
+// string "a|b" and would share one map entry. communityKey keeps them
+// distinct.
+func TestBuildRouteHandlesPipeInCategoryName(t *testing.T) {
+	manager := newTestManager(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1",
+	}, nil)
+	prefix := netip.MustParsePrefix("8.8.8.0/24")
+	comms := map[communityKey]uint32{
+		{Category: "a|b"}:             50000, // group-level community of category "a|b"
+		{Category: "a", Service: "b"}: 60000, // service-level community of (category "a", service "b")
+	}
+
+	groupRoute, err := manager.buildRoute(prefix, store.User{ID: 1}, "a|b", "", comms)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceRoute, err := manager.buildRoute(prefix, store.User{ID: 1}, "a", "b", comms)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hasCommunity := func(route Route, value uint32) bool {
+		for _, c := range route.Communities {
+			if c.LocalData1 == 0 && c.LocalData2 == value {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasCommunity(groupRoute, 50000) {
+		t.Fatalf("category a|b: expected community 50000, got %#v", groupRoute.Communities)
+	}
+	if hasCommunity(groupRoute, 60000) {
+		t.Fatalf("category a|b: picked up the colliding service community: %#v", groupRoute.Communities)
+	}
+	if !hasCommunity(serviceRoute, 60000) {
+		t.Fatalf("service a/b: expected community 60000, got %#v", serviceRoute.Communities)
+	}
+	if hasCommunity(serviceRoute, 50000) {
+		t.Fatalf("service a/b: picked up the colliding group community: %#v", serviceRoute.Communities)
+	}
+}
+
 func TestBuildRouteHonorsUserNextHop(t *testing.T) {
 	manager := newTestManager(t, map[string]string{
 		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
@@ -103,7 +149,7 @@ func TestBuildRouteHonorsUserNextHop(t *testing.T) {
 	// IPv4 prefix with user.NextHop override
 	user := store.User{ID: 7, NextHop: "10.0.0.1"}
 	v4prefix := netip.MustParsePrefix("8.8.8.0/24")
-	v4route, err := manager.buildRoute(v4prefix, user, "cat", "svc", map[string]uint32{"cat": 10000, "cat|svc": 10001})
+	v4route, err := manager.buildRoute(v4prefix, user, "cat", "svc", map[communityKey]uint32{{Category: "cat"}: 10000, {Category: "cat", Service: "svc"}: 10001})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +160,7 @@ func TestBuildRouteHonorsUserNextHop(t *testing.T) {
 	// IPv6 prefix with user.NextHop override
 	userV6 := store.User{ID: 8, NextHop: "fd00::2"}
 	v6prefix := netip.MustParsePrefix("2001:db8::/32")
-	v6route, err := manager.buildRoute(v6prefix, userV6, "cat", "svc", map[string]uint32{"cat": 10000, "cat|svc": 10001})
+	v6route, err := manager.buildRoute(v6prefix, userV6, "cat", "svc", map[communityKey]uint32{{Category: "cat"}: 10000, {Category: "cat", Service: "svc"}: 10001})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +170,7 @@ func TestBuildRouteHonorsUserNextHop(t *testing.T) {
 
 	// User without NextHop set should still use config default
 	userDefault := store.User{ID: 9}
-	v4routeDefault, err := manager.buildRoute(v4prefix, userDefault, "cat", "svc", map[string]uint32{"cat": 10000, "cat|svc": 10001})
+	v4routeDefault, err := manager.buildRoute(v4prefix, userDefault, "cat", "svc", map[communityKey]uint32{{Category: "cat"}: 10000, {Category: "cat", Service: "svc"}: 10001})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +298,7 @@ func TestBuildRouteHasUserCommunityButNotOtherUser(t *testing.T) {
 		"local_asn": "64512", "local_address_v4": "172.16.0.1",
 	}, nil)
 	prefix := netip.MustParsePrefix("8.8.8.0/24")
-	comms := map[string]uint32{"cat": 10000, "cat|svc": 10001}
+	comms := map[communityKey]uint32{{Category: "cat"}: 10000, {Category: "cat", Service: "svc"}: 10001}
 
 	// Build route for user A (ID=1)
 	routeA, err := manager.buildRoute(prefix, store.User{ID: 1}, "cat", "svc", comms)
@@ -289,7 +335,7 @@ func TestBuildRouteIncludesCategoryAndServiceCommunities(t *testing.T) {
 		"local_asn": "64512", "local_address_v4": "172.16.0.1",
 	}, nil)
 	prefix := netip.MustParsePrefix("149.154.160.0/20")
-	comms := map[string]uint32{"Messengers": 20000, "Messengers|Telegram": 20001}
+	comms := map[communityKey]uint32{{Category: "Messengers"}: 20000, {Category: "Messengers", Service: "Telegram"}: 20001}
 
 	route, err := manager.buildRoute(prefix, store.User{ID: 5}, "Messengers", "Telegram", comms)
 	if err != nil {
@@ -323,7 +369,7 @@ func TestBuildRouteSkipsCommunityForUnknownCategory(t *testing.T) {
 	}, nil)
 	prefix := netip.MustParsePrefix("1.1.1.0/24")
 	// Category "Unknown" has no community in the map
-	comms := map[string]uint32{"Known": 10000}
+	comms := map[communityKey]uint32{{Category: "Known"}: 10000}
 
 	route, err := manager.buildRoute(prefix, store.User{ID: 3}, "Unknown", "unknown-svc", comms)
 	if err != nil {
@@ -345,7 +391,7 @@ func TestBuildRouteIPv6NoPanic(t *testing.T) {
 		"local_asn": "64512", "local_address_v4": "172.16.0.1", "local_address_v6": "fd00::1",
 	}, nil)
 	prefix := netip.MustParsePrefix("2001:db8::/32")
-	comms := map[string]uint32{"cat": 10000}
+	comms := map[communityKey]uint32{{Category: "cat"}: 10000}
 	route, err := manager.buildRoute(prefix, store.User{ID: 1}, "cat", "svc", comms)
 	if err != nil {
 		t.Fatal(err)
