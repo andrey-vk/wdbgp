@@ -28,6 +28,10 @@ type BGP interface {
 	// communities, which can lag the LocalASN setting until a restart.
 	// ok is false when no speaker is running.
 	ActiveASN() (asn uint32, ok bool)
+	// ReconcileStatus reports the outcome of the most recent attempt to push
+	// the database's desired routes/communities onto the wire. attempted is
+	// false before any reconcile has ever run.
+	ReconcileStatus() (attempted bool, at time.Time, err error)
 }
 
 type Server struct {

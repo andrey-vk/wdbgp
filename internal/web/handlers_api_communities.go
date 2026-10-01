@@ -28,9 +28,27 @@ type communityExportDoc struct {
 	// ASN — i.e. a BGP restart is pending and the new ASN is not announced
 	// yet. Without this a consumer could not tell the document is reporting
 	// the older, still-live value on purpose.
-	ASNConfigured *uint32               `json:"asn_configured,omitempty"`
-	BGPRunning    bool                  `json:"bgp_running"`
-	Modes         []communityExportMode `json:"modes"`
+	ASNConfigured *uint32 `json:"asn_configured,omitempty"`
+	BGPRunning    bool    `json:"bgp_running"`
+	// ReconcileOK is the outcome of the most recent attempt to push the
+	// database's communities/routes onto the wire — distinct from
+	// bgp_running, which only says a speaker process exists. A community
+	// edit, reset, or feed sync commits to the database and reconciles
+	// best-effort; if that reconcile fails (or hasn't completed yet), peers
+	// still carry the previous values while this document already reports
+	// the new ones. nil when no reconcile has ever run (only possible while
+	// bgp_running is false — Start performs one before it reports success).
+	// A consumer generating policy from this document should treat it as
+	// provisional whenever this is false: the values are the intended
+	// state, not a confirmed description of what peers currently hold.
+	ReconcileOK *bool `json:"reconcile_ok,omitempty"`
+	// ReconcileAt is when that attempt happened (RFC3339), present whenever
+	// ReconcileOK is.
+	ReconcileAt string `json:"reconcile_at,omitempty"`
+	// ReconcileError is that attempt's error, present only when
+	// ReconcileOK is false.
+	ReconcileError string                `json:"reconcile_error,omitempty"`
+	Modes          []communityExportMode `json:"modes"`
 }
 
 type communityExportMode struct {
@@ -76,15 +94,19 @@ func (s *Server) apiCommunitiesExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := s.buildCommunityExport(r)
+	doc, reconcileAt, err := s.buildCommunityExport(r)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
 
-	// Hash the document before stamping GeneratedAt: with the timestamp
-	// included every response would be a new ETag and the 304 path — the
-	// whole point for a consumer polling on a timer — could never hit.
+	// Hash the document before stamping GeneratedAt (and ReconcileAt, set
+	// below alongside it): with either timestamp included every response
+	// would be a new ETag and the 304 path — the whole point for a
+	// consumer polling on a timer — could never hit. ReconcileOK and
+	// ReconcileError stay in the hash: unlike a plain timestamp, a
+	// transition in whether the last reconcile succeeded is meaningful
+	// content a poller must not silently miss behind a 304.
 	payload, err := json.Marshal(doc)
 	if err != nil {
 		s.internalError(w, r, err)
@@ -101,13 +123,21 @@ func (s *Server) apiCommunitiesExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	doc.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	if doc.ReconcileOK != nil {
+		doc.ReconcileAt = reconcileAt.UTC().Format(time.RFC3339)
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if err := json.NewEncoder(w).Encode(doc); err != nil {
 		logging.Error("failed to write community export", "error", err)
 	}
 }
 
-func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, error) {
+// buildCommunityExport assembles the document, leaving ReconcileAt unset —
+// the caller stamps it after hashing, the same way it stamps GeneratedAt,
+// so a reconcile re-running with an unchanged outcome doesn't churn the
+// ETag. The returned time.Time is that reconcile attempt's timestamp, for
+// the caller to use once it's safe to let into the response.
+func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, time.Time, error) {
 	ctx := r.Context()
 
 	activeASN, running := s.bgp.ActiveASN()
@@ -126,12 +156,21 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 		doc.ASNConfigured = &configured
 	}
 
+	attempted, reconcileAt, reconcileErr := s.bgp.ReconcileStatus()
+	if attempted {
+		ok := reconcileErr == nil
+		doc.ReconcileOK = &ok
+		if reconcileErr != nil {
+			doc.ReconcileError = reconcileErr.Error()
+		}
+	}
+
 	// Disabled modes are included: their communities still exist and a
 	// consumer generating policy wants the full map, not one that shifts
 	// when an operator toggles a mode.
 	modes, err := s.store.CatalogModes(ctx, false)
 	if err != nil {
-		return communityExportDoc{}, fmt.Errorf("load modes: %w", err)
+		return communityExportDoc{}, time.Time{}, fmt.Errorf("load modes: %w", err)
 	}
 
 	for _, mode := range modes {
@@ -145,7 +184,7 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 		// one transaction, which is what actually closes the window.
 		snap, err := s.store.ModeCommunitySnapshot(ctx, mode.ID)
 		if err != nil {
-			return communityExportDoc{}, fmt.Errorf("read community snapshot for mode %d: %w", mode.ID, err)
+			return communityExportDoc{}, time.Time{}, fmt.Errorf("read community snapshot for mode %d: %w", mode.ID, err)
 		}
 
 		// Structured rows, not GetCommunities' "category|service"-keyed map:
@@ -204,7 +243,7 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 		}
 		doc.Modes = append(doc.Modes, exported)
 	}
-	return doc, nil
+	return doc, reconcileAt, nil
 }
 
 // largeCommunityString renders the wire form of a catalog community, matching

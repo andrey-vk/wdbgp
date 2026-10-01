@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/settings"
@@ -36,6 +37,16 @@ type Manager struct {
 	activeDial  bool
 
 	lastErr error // last error from Start/ReloadPeers; nil when speaker is healthy
+
+	// Tracks the outcome of the most recent reconcile attempt — distinct
+	// from lastErr, which only covers Start/ReloadPeers. A community edit,
+	// reset, or feed sync commits to the database and then calls Reconcile
+	// best-effort: the HTTP handler only logs a failure, so without this a
+	// caller reading announced-state-derived data (e.g. the community
+	// export) would have no way to know the database and the actual
+	// announced routes have diverged.
+	lastReconcileAt  time.Time
+	lastReconcileErr error
 }
 
 func NewManager(s *settings.Settings, db *store.Store) *Manager {
@@ -128,6 +139,16 @@ func (m *Manager) ActiveASN() (asn uint32, ok bool) {
 		return 0, false
 	}
 	return m.localASN, true
+}
+
+// ReconcileStatus reports the outcome of the most recent attempt to push the
+// database's desired routes/communities onto the wire, and when it ran.
+// attempted is false before any reconcile has ever run (a freshly created,
+// never-started Manager).
+func (m *Manager) ReconcileStatus() (attempted bool, at time.Time, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.lastReconcileAt.IsZero(), m.lastReconcileAt, m.lastReconcileErr
 }
 
 func (m *Manager) startLocked(ctx context.Context) error {
@@ -429,7 +450,16 @@ func (m *Manager) buildPeerConfigs() ([]PeerConfig, error) {
 	return configs, nil
 }
 
-func (m *Manager) reconcileLocked(ctx context.Context) error {
+func (m *Manager) reconcileLocked(ctx context.Context) (err error) {
+	// Recorded regardless of which return path below is taken — including
+	// the early "speaker not running" one, since that is itself an accurate
+	// outcome for "did the last attempt to push the database's communities
+	// onto the wire succeed."
+	defer func() {
+		m.lastReconcileAt = time.Now()
+		m.lastReconcileErr = err
+	}()
+
 	logger := logging.FromContext(ctx)
 	if m.speaker == nil {
 		return fmt.Errorf("BGP speaker is not running")

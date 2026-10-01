@@ -1007,3 +1007,36 @@ func TestReconcileFailureInvalidatesCacheAndReturnsError(t *testing.T) {
 		t.Fatal("Reconcile with an empty desired set skipped the announce retry after a failed delivery")
 	}
 }
+
+// TestReconcileStatusTracksOutcome covers the export's "did the last push to
+// BGP peers actually succeed" signal: ReconcileStatus must report nothing
+// until a reconcile has actually been attempted, and then the real outcome
+// of that attempt — distinct from lastErr, which only covers Start/
+// ReloadPeers and says nothing about a later reconcile failing on its own.
+func TestReconcileStatusTracksOutcome(t *testing.T) {
+	manager := newTestManager(t, map[string]string{
+		"local_asn": "64512", "local_address_v4": "172.16.0.1",
+	}, nil)
+
+	if attempted, _, _ := manager.ReconcileStatus(); attempted {
+		t.Fatal("ReconcileStatus reports an attempt before Reconcile was ever called")
+	}
+
+	// No speaker configured in this test manager, so Reconcile fails — but
+	// it must still be recorded as an attempt with that failure, not left
+	// looking like nothing happened.
+	err := manager.Reconcile(context.Background())
+	if err == nil {
+		t.Fatal("expected Reconcile to fail with no speaker running")
+	}
+	attempted, at, recErr := manager.ReconcileStatus()
+	if !attempted {
+		t.Fatal("ReconcileStatus reports no attempt after Reconcile ran")
+	}
+	if at.IsZero() {
+		t.Fatal("ReconcileStatus returned a zero timestamp for an attempted reconcile")
+	}
+	if recErr == nil || recErr.Error() != err.Error() {
+		t.Fatalf("ReconcileStatus error = %v, want %v", recErr, err)
+	}
+}

@@ -3,9 +3,11 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
@@ -476,5 +478,88 @@ func TestCommunitiesExportGeneratesMissingAssignments(t *testing.T) {
 	}
 	if len(found.Services) != 1 || found.Services[0].Community == 0 {
 		t.Fatalf("service added mid-sync exported with no assignment: %+v", found.Services)
+	}
+}
+
+// TestCommunitiesExportReconcileStatus covers the honesty requirement the
+// previous ASN fix established, extended to community values themselves: a
+// community edit/reset commits to the database and reconciles best-effort,
+// so the document must disclose whether that last push to BGP peers
+// actually succeeded rather than silently presenting database state as if
+// it were already confirmed live.
+func TestCommunitiesExportReconcileStatus(t *testing.T) {
+	srv, bgp, _ := exportFixture(t)
+
+	// Never attempted (e.g. a speaker that hasn't completed its first
+	// reconcile) must omit the field entirely, not report a false "ok".
+	w := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	doc := decodeExport(t, w.Body.Bytes())
+	if doc.ReconcileOK != nil {
+		t.Fatalf("reconcile_ok = %v, want omitted when never attempted", *doc.ReconcileOK)
+	}
+	if doc.ReconcileAt != "" || doc.ReconcileError != "" {
+		t.Fatalf("reconcile_at/reconcile_error set despite no attempt: at=%q error=%q",
+			doc.ReconcileAt, doc.ReconcileError)
+	}
+
+	// A successful reconcile reports ok with a timestamp, no error.
+	bgp.reconcileAt = time.Now()
+	w = httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	doc = decodeExport(t, w.Body.Bytes())
+	if doc.ReconcileOK == nil || !*doc.ReconcileOK {
+		t.Fatalf("reconcile_ok = %v, want true", doc.ReconcileOK)
+	}
+	if doc.ReconcileAt == "" {
+		t.Fatal("reconcile_at missing on a successful reconcile")
+	}
+	if doc.ReconcileError != "" {
+		t.Fatalf("reconcile_error = %q, want empty on success", doc.ReconcileError)
+	}
+
+	// A failed reconcile — the database has moved ahead of what peers
+	// actually received — must report ok=false with the error, not silently
+	// look identical to a healthy document.
+	bgp.reconcileErr = fmt.Errorf("announce to 10.0.0.1 AS65001: write: broken pipe")
+	w = httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	doc = decodeExport(t, w.Body.Bytes())
+	if doc.ReconcileOK == nil || *doc.ReconcileOK {
+		t.Fatalf("reconcile_ok = %v, want false after a failed reconcile", doc.ReconcileOK)
+	}
+	if doc.ReconcileError == "" {
+		t.Fatal("reconcile_error missing after a failed reconcile")
+	}
+}
+
+// TestCommunitiesExportReconcileAtExcludedFromETag covers the same
+// no-timestamp-churn contract GeneratedAt already has: a reconcile that
+// re-runs with an unchanged outcome (still ok, or still the same error)
+// must not change the ETag just because the clock moved, or a poller would
+// never see a 304 on an otherwise-idle instance. A genuine ok -> not-ok
+// transition must still change it, since that is meaningful content.
+func TestCommunitiesExportReconcileAtExcludedFromETag(t *testing.T) {
+	srv, bgp, _ := exportFixture(t)
+	bgp.reconcileAt = time.Now()
+
+	w := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	etag := w.Header().Get("ETag")
+
+	// Same outcome, later timestamp: ETag must not change.
+	bgp.reconcileAt = time.Now().Add(time.Minute)
+	w2 := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w2, exportRequest("secret"))
+	if got := w2.Header().Get("ETag"); got != etag {
+		t.Fatalf("ETag changed from a later reconcile_at with the same outcome: %q -> %q", etag, got)
+	}
+
+	// Outcome actually changes: ETag must change.
+	bgp.reconcileErr = fmt.Errorf("announce failed")
+	w3 := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w3, exportRequest("secret"))
+	if got := w3.Header().Get("ETag"); got == etag {
+		t.Fatal("ETag unchanged after reconcile_ok flipped from true to false")
 	}
 }

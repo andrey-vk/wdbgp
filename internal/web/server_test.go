@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/feeds"
 	"github.com/andrey-vk/wdbgp/internal/settings"
@@ -63,6 +64,11 @@ type fakeBGP struct {
 	// activeASN is the speaker's start-time ASN snapshot reported by
 	// ActiveASN, for tests that need it to differ from the LocalASN setting.
 	activeASN uint32
+
+	// reconcileAt/reconcileErr back ReconcileStatus. Zero reconcileAt means
+	// "never attempted", matching a bare &fakeBGP{}.
+	reconcileAt  time.Time
+	reconcileErr error
 }
 
 func (f *fakeBGP) Reconcile(context.Context) error {
@@ -115,6 +121,13 @@ func (f *fakeBGP) ActiveASN() (uint32, bool) {
 		return 0, false
 	}
 	return f.activeASN, true
+}
+
+// ReconcileStatus defaults to "never attempted" (zero reconcileAt), matching
+// a bare &fakeBGP{} the way every existing test constructs one. Tests that
+// need a specific reconcile outcome set reconcileAt/reconcileErr directly.
+func (f *fakeBGP) ReconcileStatus() (bool, time.Time, error) {
+	return !f.reconcileAt.IsZero(), f.reconcileAt, f.reconcileErr
 }
 
 // adminCookie returns a valid admin session cookie for API tests.

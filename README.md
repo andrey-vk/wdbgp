@@ -319,8 +319,21 @@ been changed without restarting BGP, the new value appears separately as
 `asn_configured` — so a generated policy always matches what is on the wire. When no
 speaker is running, `bgp_running` is `false` and `asn` reports the configured value.
 
+A community edit, reset, or feed sync commits to the database and then pushes that
+change to BGP peers best-effort; `bgp_running` only says a speaker process exists, not
+that this push succeeded. `reconcile_ok` reports the outcome of the most recent one —
+`true`/`false` with `reconcile_at` (and `reconcile_error` on failure) — so a consumer can
+tell "the database has this value" apart from "peers were confirmed to receive it". It's
+absent only before any reconcile has ever run, which in practice means `bgp_running` is
+also `false` (starting the speaker performs one before reporting success). Treat the
+document as provisional whenever `reconcile_ok` is `false`: the values are the intended
+state, not a confirmed description of what peers currently hold.
+
 For polling, the response carries an `ETag` that covers the document's content but not
-`generated_at`, so an unchanged map answers `304 Not Modified`:
+`generated_at`/`reconcile_at`, so an unchanged map answers `304 Not Modified` — a
+reconcile re-running with the same outcome doesn't by itself bump the ETag, but a genuine
+`reconcile_ok` flip does, since that's meaningful content a poller must not miss behind a
+304:
 
 ```console
 $ curl -sD- -o/dev/null -H "Authorization: Bearer $TOKEN" \
