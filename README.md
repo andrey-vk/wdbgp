@@ -319,30 +319,16 @@ been changed without restarting BGP, the new value appears separately as
 `asn_configured` — so a generated policy always matches what is on the wire. When no
 speaker is running, `bgp_running` is `false` and `asn` reports the configured value.
 
-A community edit, reset, or feed sync commits to the database and then pushes that
-change to BGP peers best-effort; `bgp_running` only says a speaker process exists, not
-that this push succeeded. `reconcile_ok` reports the outcome of the most recent one —
-`true`/`false` with `reconcile_at` (and `reconcile_error` on failure) — so a consumer can
-tell "the database has this value" apart from "peers were confirmed to receive it". It's
-absent only before any reconcile has ever run, which in practice means `bgp_running` is
-also `false` (starting the speaker performs one before reporting success). Treat the
-document as provisional whenever `reconcile_ok` is `false`: the values are the intended
-state, not a confirmed description of what peers currently hold.
-
-Status is read last, after every mode's data, specifically so it can never be staler
-than what's shown: a database commit landing mid-request is reflected in both or neither,
-never in the exported values alone with a stale "ok" left over from before it happened.
-It can occasionally describe an even newer commit's reconcile than what's shown instead —
-safe, since that only makes `reconcile_ok` harder to claim, never easier. This is a
-best-effort ordering guarantee, not a literal per-value delivery receipt: nothing ties
-`reconcile_ok` to the exact revision of the data beside it, since doing that precisely
-would need a revision tracked through every write path that can affect announced routes.
+This document reflects the database's intended state. BGP delivery to peers is
+asynchronous and best-effort (a community edit, reset, or feed sync commits first and
+reconciles afterward), and this endpoint has no way to tie a specific exported value to
+confirmation that it actually reached peers — doing that precisely would need a revision
+tracked through every write path that can affect announced routes, which is a larger
+change than this endpoint attempts. `/api/admin/bgp/status` and the per-peer state on the
+Users page are the existing way to check the BGP session itself is healthy.
 
 For polling, the response carries an `ETag` that covers the document's content but not
-`generated_at`/`reconcile_at`, so an unchanged map answers `304 Not Modified` — a
-reconcile re-running with the same outcome doesn't by itself bump the ETag, but a genuine
-`reconcile_ok` flip does, since that's meaningful content a poller must not miss behind a
-304:
+`generated_at`, so an unchanged map answers `304 Not Modified`:
 
 ```console
 $ curl -sD- -o/dev/null -H "Authorization: Bearer $TOKEN" \
