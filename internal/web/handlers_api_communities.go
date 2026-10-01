@@ -85,13 +85,20 @@ func (s *Server) apiCommunitiesExport(w http.ResponseWriter, r *http.Request) {
 	// Hash the document before stamping GeneratedAt: with the timestamp
 	// included every response would be a new ETag and the 304 path — the
 	// whole point for a consumer polling on a timer — could never hit.
+	// Because of that, two responses sharing this ETag are not byte-for-byte
+	// identical (generated_at differs) — only semantically equivalent, so
+	// this must be a weak validator (RFC 7232 §2.1): a strong one asserts
+	// exact byte equality, which caches and clients are entitled to rely on
+	// (e.g. to satisfy a Range request from a cached copy without
+	// re-fetching). Weak comparison is exactly what If-None-Match uses for
+	// cache revalidation, so this changes nothing about the 304 behavior.
 	payload, err := json.Marshal(doc)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
 	sum := sha256.Sum256(payload)
-	etag := `"` + hex.EncodeToString(sum[:]) + `"`
+	etag := `W/"` + hex.EncodeToString(sum[:]) + `"`
 
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "no-cache")

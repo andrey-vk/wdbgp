@@ -335,11 +335,14 @@ change than this endpoint attempts. `/api/admin/bgp/status` and the per-peer sta
 Users page are the existing way to check the BGP session itself is healthy.
 
 For polling, the response carries an `ETag` that covers the document's content but not
-`generated_at`, so an unchanged map answers `304 Not Modified`:
+`generated_at`, so an unchanged map answers `304 Not Modified`. It's a weak validator
+(`W/"…"`) rather than a strong one — two responses sharing it are semantically
+equivalent, not byte-for-byte identical (`generated_at` differs), which is exactly what
+weak comparison is for; it makes no difference to `If-None-Match`-based polling:
 
 ```console
 $ curl -sD- -o/dev/null -H "Authorization: Bearer $TOKEN" \
-    -H 'If-None-Match: "b178345bbd…"' http://wdbgp:8080/api/communities
+    -H 'If-None-Match: W/"b178345bbd…"' http://wdbgp:8080/api/communities
 HTTP/1.1 304 Not Modified
 ```
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/andrey-vk/wdbgp/internal/store"
@@ -171,6 +172,13 @@ func TestCommunitiesExportETag(t *testing.T) {
 	etag := w.Header().Get("ETag")
 	if etag == "" {
 		t.Fatal("no ETag on first response")
+	}
+	// Must be a weak validator (RFC 7232 §2.1): two responses sharing this
+	// value are not byte-for-byte identical (generated_at differs), only
+	// semantically equivalent — a strong ETag would wrongly assert the
+	// former to caches and clients entitled to rely on it.
+	if !strings.HasPrefix(etag, `W/"`) {
+		t.Fatalf("ETag = %q, want a weak validator (W/\"...\")", etag)
 	}
 
 	w2 := httptest.NewRecorder()

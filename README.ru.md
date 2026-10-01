@@ -326,11 +326,14 @@ $ curl -sH "Authorization: Bearer $WDBGP_STATUS_TOKEN" http://wdbgp:8080/api/com
 способ проверить здоровье самой BGP-сессии.
 
 Для опроса в ответе есть `ETag`, покрывающий содержимое документа, но не `generated_at`,
-поэтому неизменившаяся карта отвечает `304 Not Modified`:
+поэтому неизменившаяся карта отвечает `304 Not Modified`. Это слабый валидатор (`W/"…"`),
+а не сильный — два ответа с одинаковым ETag семантически эквивалентны, но не побайтово
+идентичны (`generated_at` отличается), именно для этого и существует слабое сравнение;
+на работу опроса через `If-None-Match` это никак не влияет:
 
 ```console
 $ curl -sD- -o/dev/null -H "Authorization: Bearer $TOKEN" \
-    -H 'If-None-Match: "b178345bbd…"' http://wdbgp:8080/api/communities
+    -H 'If-None-Match: W/"b178345bbd…"' http://wdbgp:8080/api/communities
 HTTP/1.1 304 Not Modified
 ```
 
