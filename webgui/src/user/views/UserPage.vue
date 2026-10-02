@@ -407,6 +407,11 @@ async function saveSelections(): Promise<void> {
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
+    // The backend commits the selection before it can fail on a later step
+    // (BGP reconciliation), the same way switchMode's save can — a rejected
+    // request here doesn't mean nothing changed, so the lookup can't be
+    // trusted to still describe the current selection either.
+    invalidateLookup()
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
   } finally {
     saving.value = false
@@ -432,6 +437,11 @@ async function saveFilters(): Promise<void> {
     toast.add({ severity: 'success', summary: t('user.filters_saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
+    // The backend commits the filters before it can fail on a later step
+    // (BGP reconciliation), the same way switchMode's save can — a
+    // rejected request here doesn't mean nothing changed, so the lookup
+    // can't be trusted to still describe the current filters either.
+    invalidateLookup()
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
   } finally {
     savingFilters.value = false

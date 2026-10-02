@@ -975,5 +975,61 @@ describe('UserPage', () => {
 
       expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
     })
+
+    it('invalidates a lookup result even when a save reports failure, since the backend may have committed before failing on reconciliation', async () => {
+      // apiUserSaveSelections/apiUserSaveFilters persist the submitted
+      // configuration before BGP reconciliation runs, so a 500 here (like
+      // switchMode's own documented "saved but reconciliation failed" case)
+      // doesn't mean the selection didn't change.
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
+        if (url === '/user/debug') return Promise.resolve({
+          data: {
+            query: '8.8.8.0/24',
+            matches: [{ category: 'AI', service: 'ChatGPT', percentage: 100, selected: true }],
+            before_percentage: 100,
+            after_percentage: 100,
+            in_tunnel: true,
+          },
+        })
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/user/selections') {
+          return Promise.reject({
+            isAxiosError: true,
+            response: { status: 500, data: { error: 'Selection saved but BGP reconciliation failed: ...' } },
+          })
+        }
+        return Promise.resolve({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+      })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(true)
+
+      await wrapper.find('[data-testid="save-selections"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // The save itself rejected, but the previous lookup answer may now
+      // describe a configuration that no longer applies.
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+    })
   })
 })
