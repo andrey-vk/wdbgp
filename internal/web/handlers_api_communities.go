@@ -4,13 +4,22 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
 )
+
+// errCommunityExportASNUnstable is returned when the ASN kept changing
+// across every render attempt in buildCommunityExport's retry budget. It
+// signals a transient condition (an unusually fast burst of BGP restarts or
+// setting saves), not a permanent failure, so apiCommunitiesExport answers
+// 503 rather than 500: a consumer polling this endpoint should just retry.
+var errCommunityExportASNUnstable = errors.New("community export: asn did not stabilize")
 
 // communityExportSchemaVersion identifies the document layout. Bump it only
 // for a breaking change to the shape, so a consumer pinning a version can
@@ -78,6 +87,10 @@ func (s *Server) apiCommunitiesExport(w http.ResponseWriter, r *http.Request) {
 
 	doc, err := s.buildCommunityExport(r)
 	if err != nil {
+		if errors.Is(err, errCommunityExportASNUnstable) {
+			s.httpError(w, r, "error.asn_unstable", http.StatusServiceUnavailable)
+			return
+		}
 		s.internalError(w, r, err)
 		return
 	}
@@ -102,7 +115,7 @@ func (s *Server) apiCommunitiesExport(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "no-cache")
-	if match := r.Header.Get("If-None-Match"); match == etag {
+	if ifNoneMatchHit(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -218,15 +231,29 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 	// pathological burst of restarts can't wedge the request, not because
 	// convergence is expected to need them.
 	const maxASNRenderAttempts = 5
-	for attempt := 1; ; attempt++ {
+	stable := false
+	for attempt := 1; attempt <= maxASNRenderAttempts; attempt++ {
 		activeASN, running := s.bgp.ActiveASN()
 		configured := s.settings.LocalASN.Get()
 		renderCommunityExportASN(&doc, activeASN, running, configured)
 
+		// Both values are rechecked: LocalASN can change from an ordinary
+		// settings save with no BGP reload at all, independently of
+		// ActiveASN, so a render is only genuinely final once neither one
+		// moved between the read it was rendered from and this recheck.
 		recheckASN, recheckRunning := s.bgp.ActiveASN()
-		if recheckASN == activeASN && recheckRunning == running || attempt >= maxASNRenderAttempts {
+		recheckConfigured := s.settings.LocalASN.Get()
+		if recheckASN == activeASN && recheckRunning == running && recheckConfigured == configured {
+			stable = true
 			break
 		}
+	}
+	if !stable {
+		// Every attempt in the budget still saw the ASN move between render
+		// and recheck. Publishing the last attempt's document anyway would
+		// mean knowingly returning a snapshot already known to be stale —
+		// worse than telling the caller to retry.
+		return communityExportDoc{}, errCommunityExportASNUnstable
 	}
 
 	return doc, nil
@@ -257,6 +284,31 @@ func renderCommunityExportASN(doc *communityExportDoc, activeASN uint32, running
 			}
 		}
 	}
+}
+
+// ifNoneMatchHit reports whether an If-None-Match header matches etag, per
+// RFC 7232 §2.3: a GET uses weak comparison (so a "W/" prefix on either side
+// is ignored for the match), the header may carry a comma-separated list of
+// validators, and "*" matches any current representation. Comparing the raw
+// header to the single weak etag string directly — this handler's original
+// approach — satisfies none of the three, and a conforming cache honoring
+// any of them would get a full 200 on every poll instead of the 304 this
+// endpoint's whole polling contract depends on.
+func ifNoneMatchHit(header, etag string) bool {
+	if header == "" {
+		return false
+	}
+	if strings.TrimSpace(header) == "*" {
+		return true
+	}
+	target := strings.TrimPrefix(etag, "W/")
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimPrefix(strings.TrimSpace(candidate), "W/")
+		if candidate == target {
+			return true
+		}
+	}
+	return false
 }
 
 // largeCommunityString renders the wire form of a catalog community, matching

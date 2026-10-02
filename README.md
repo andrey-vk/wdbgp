@@ -285,11 +285,15 @@ transaction — rather than ever returning a service with no assignment yet. Tha
 snapshot spans every mode in the document, not just each mode on its own: a feed
 shared by several modes publishes its update to all of them, so reading each mode
 independently could otherwise show the update applied to one mode but not yet to
-another. The ASN used to render every `large_community` string is likewise checked
-after all of that database work finishes, not before — and rechecked again right after
-rendering, redoing the render if it moved, so a BGP restart completing while the export
-was still assembling data (or even during the render itself) can never leave the
-response describing an ASN that already stopped matching the running speaker.
+another. The ASN and configured-ASN values used to render every `large_community`
+string and `asn_configured` are likewise read after all of that database work finishes,
+not before — and both rechecked again right after rendering, redoing the render if
+either moved (an ordinary settings save changes the configured value with no BGP
+restart at all), so a change completing while the export was still assembling data (or
+even during the render itself) can never leave the response describing values that
+already stopped matching reality. If every attempt in the retry budget still sees one of
+them move, the endpoint answers `503 Service Unavailable` rather than publish a
+document already known to be stale — poll again once the config or restart settles.
 
 ```console
 $ curl -sH "Authorization: Bearer $WDBGP_STATUS_TOKEN" http://wdbgp:8080/api/communities
@@ -339,7 +343,9 @@ For polling, the response carries an `ETag` that covers the document's content b
 `generated_at`, so an unchanged map answers `304 Not Modified`. It's a weak validator
 (`W/"…"`) rather than a strong one — two responses sharing it are semantically
 equivalent, not byte-for-byte identical (`generated_at` differs), which is exactly what
-weak comparison is for; it makes no difference to `If-None-Match`-based polling:
+weak comparison is for. `If-None-Match` is matched per RFC 7232 §2.3: weakly (ignoring
+any `W/` prefix on either side), against every validator in a comma-separated list, and
+`*` always matches — not just the single exact string this endpoint itself emits:
 
 ```console
 $ curl -sD- -o/dev/null -H "Authorization: Bearer $TOKEN" \

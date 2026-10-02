@@ -608,3 +608,97 @@ func TestCommunitiesExportReRendersOnASNChange(t *testing.T) {
 			found.LargeCommunity, wantLarge)
 	}
 }
+
+// TestCommunitiesExportRerendersOnConfiguredASNChange covers the other half
+// of the recheck: LocalASN can change from an ordinary settings save with no
+// BGP reload at all, independently of ActiveASN. If only ActiveASN were
+// rechecked, a configured-value change landing in that same window would be
+// rendered with a missing or stale asn_configured.
+func TestCommunitiesExportRerendersOnConfiguredASNChange(t *testing.T) {
+	srv, bgp, _ := exportFixture(t)
+	ctx := context.Background()
+
+	configured := srv.settings.LocalASN.Get()
+	bgp.activeASN = configured
+	newConfigured := configured + 1
+	calls := 0
+	bgp.beforeActiveASN = func() {
+		calls++
+		if calls == 2 {
+			if err := srv.settings.LocalASN.Set(ctx, newConfigured); err != nil {
+				t.Fatalf("set local asn: %v", err)
+			}
+		}
+	}
+
+	w := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	doc := decodeExport(t, w.Body.Bytes())
+
+	if doc.ASNConfigured == nil || *doc.ASNConfigured != newConfigured {
+		t.Fatalf("asn_configured = %v, want %d (the post-save value) — the response was rendered "+
+			"from a configured ASN that was already stale by the time it was computed",
+			doc.ASNConfigured, newConfigured)
+	}
+}
+
+// TestCommunitiesExportErrorsOnUnstableASN covers retry exhaustion: if the
+// ASN keeps moving on every single recheck for the whole retry budget, the
+// handler must refuse to publish the last attempt's document — it is known,
+// at the moment of return, to already be stale — and answer 503 instead so
+// a polling consumer retries rather than silently acting on bad data.
+func TestCommunitiesExportErrorsOnUnstableASN(t *testing.T) {
+	srv, bgp, _ := exportFixture(t)
+
+	bgp.activeASN = 64512
+	bgp.beforeActiveASN = func() {
+		bgp.activeASN++
+	}
+
+	w := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (ASN never stabilized), body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestCommunitiesExportIfNoneMatchWeakComparison covers RFC 7232 §2.3: a GET
+// conditional request uses weak comparison, so a strong-spelled copy of the
+// same opaque tag, a comma-separated validator list, and "*" must all be
+// accepted as a match — not just the exact "W/"-prefixed string this
+// handler itself emits.
+func TestCommunitiesExportIfNoneMatchWeakComparison(t *testing.T) {
+	srv, _, _ := exportFixture(t)
+
+	w := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	etag := w.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("no ETag on first response")
+	}
+	strong := strings.TrimPrefix(etag, "W/")
+
+	cases := []struct {
+		name   string
+		header string
+	}{
+		{"strong spelling of the same tag", strong},
+		{"validator list with the match second", `"deadbeef", ` + etag},
+		{"validator list with the match first", etag + `, "deadbeef"`},
+		{"wildcard", "*"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := exportRequest("secret")
+			req.Header.Set("If-None-Match", tc.header)
+			w := httptest.NewRecorder()
+			srv.apiCommunitiesExport(w, req)
+			if w.Code != http.StatusNotModified {
+				t.Fatalf("If-None-Match %q: status = %d, want 304", tc.header, w.Code)
+			}
+		})
+	}
+}
