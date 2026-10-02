@@ -976,6 +976,68 @@ describe('UserPage', () => {
       expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
     })
 
+    it('invalidates a lookup result when the mode switch commits but the subsequent reload fails', async () => {
+      // reloadUserData catches its own /user/me failure internally and
+      // never reaches loadUserData on that path — so loadUserData's own
+      // invalidation can't be relied on here. The /user/mode PUT above it
+      // may have already committed the switch server-side regardless.
+      const lookupResultData = {
+        query: '8.8.8.0/24',
+        matches: [{ category: 'AI', service: 'ChatGPT', percentage: 100, selected: true }],
+        before_percentage: 100,
+        after_percentage: 100,
+        in_tunnel: true,
+      }
+      const modeAData = {
+        ...baseUserData,
+        user: { ...baseUserData.user, catalog_mode_id: 1, catalog_editable: true },
+        modes: [
+          { id: 1, name: 'Mode A', enabled: true, feed_count: 0 },
+          { id: 2, name: 'Mode B', enabled: true, feed_count: 0 },
+        ],
+      }
+      let meCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') {
+          meCalls++
+          // First call (initial mount) succeeds; the reload triggered by
+          // the mode switch fails.
+          if (meCalls === 1) return Promise.resolve({ data: modeAData })
+          return Promise.reject({ isAxiosError: true, response: { status: 500 } })
+        }
+        if (url === '/user/debug') return Promise.resolve({ data: lookupResultData })
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      mockPut.mockResolvedValue({ data: { ok: true } }) // the mode PUT itself succeeds
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(true)
+
+      await wrapper.find('select').setValue('2')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // The mode PUT succeeded even though the reload that followed it
+      // failed — the stale, pre-switch lookup answer must still be gone.
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+    })
+
     it('invalidates a lookup result even when a save reports failure, since the backend may have committed before failing on reconciliation', async () => {
       // apiUserSaveSelections/apiUserSaveFilters persist the submitted
       // configuration before BGP reconciliation runs, so a 500 here (like

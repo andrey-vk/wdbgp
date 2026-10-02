@@ -263,16 +263,26 @@ async function switchMode(modeId: number): Promise<void> {
   if (modeId === selectedModeId.value) return
   try {
     await userApi.put('/user/mode', { mode_id: modeId })
+    // Invalidated here, unconditionally, rather than relying solely on
+    // loadUserData's own invalidation inside reloadUserData below:
+    // reloadUserData catches its own /user/me failure internally and never
+    // reaches loadUserData on that path, which would otherwise leave a
+    // lookup computed for the old mode in place even though the PUT above
+    // already committed the switch server-side.
+    invalidateLookup()
     selectedModeId.value = modeId
     await reloadUserData()
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
-    toast.add({ severity: 'error', summary: t('user.save_error'), life: 5000 })
     // The backend commits the mode change before it can fail on a later
     // step (e.g. BGP reconciliation), so an error here doesn't mean the
     // switch didn't happen — resync from the server's true state rather
-    // than leaving the UI showing pre-switch mode/catalog/selections.
+    // than leaving the UI showing pre-switch mode/catalog/selections, and
+    // invalidate the lookup for the same reason as above regardless of
+    // whether the PUT itself or the resync is what failed.
+    invalidateLookup()
+    toast.add({ severity: 'error', summary: t('user.save_error'), life: 5000 })
     try {
       await reloadUserData()
     } catch {
