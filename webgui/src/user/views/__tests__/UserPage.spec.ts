@@ -702,5 +702,177 @@ describe('UserPage', () => {
       expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
       expect(wrapper.find('[data-testid="lookup-input"]').exists()).toBe(false)
     })
+
+    it('shows a distinct partial verdict instead of a binary "in tunnel" when only part of the queried range is delivered', async () => {
+      // A /24 with only one selected /25 inside it: after_percentage lands
+      // strictly between 0 and 100. Collapsing that to the same green
+      // "in your tunnel" verdict as a fully-delivered query would imply the
+      // whole queried range is routed when only half of it is.
+      const result = {
+        query: '8.8.8.0/24',
+        matches: [{ category: 'AI', service: 'ChatGPT', percentage: 50, selected: true }],
+        before_percentage: 50,
+        after_percentage: 50,
+        in_tunnel: true,
+      }
+      const wrapper = await mountWithLookup(() => Promise.resolve({ data: result }))
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      const verdict = wrapper.find('[data-testid="lookup-in-tunnel"]')
+      // i18n messages are empty in this test setup, so the component falls
+      // back to the raw key — asserting on that confirms the partial branch
+      // rendered, not the plain "full" in-tunnel one.
+      expect(verdict.text()).toContain('user.lookup_partially_in_tunnel')
+      expect(verdict.text()).not.toBe('user.lookup_in_tunnel')
+    })
+
+    it('ignores a stale lookup response that arrives after a newer one, instead of clobbering it', async () => {
+      let resolveFirst: (v: { data: unknown }) => void = () => {}
+      let resolveSecond: (v: { data: unknown }) => void = () => {}
+      let calls = 0
+      const wrapper = await mountWithLookup(() => {
+        calls++
+        if (calls === 1) return new Promise((resolve) => { resolveFirst = resolve })
+        return new Promise((resolve) => { resolveSecond = resolve })
+      })
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click') // call 1 (slow)
+
+      // Edit the query and re-trigger via Enter while call 1 is still
+      // pending — the button is disabled by then, but the input's Enter
+      // handler is not gated on lookupLoading, which is exactly the gap
+      // this test covers.
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.9.0/24')
+      await wrapper.find('[data-testid="lookup-input"]').trigger('keyup.enter') // call 2 (fresh)
+
+      // Resolve the NEWER request first, then the stale one arrives late.
+      resolveSecond({
+        data: { query: '8.8.9.0/24', matches: [], before_percentage: 0, after_percentage: 0, in_tunnel: false },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      resolveFirst({
+        data: {
+          query: '8.8.8.0/24',
+          matches: [{ category: 'AI', service: 'ChatGPT', percentage: 100, selected: true }],
+          before_percentage: 100,
+          after_percentage: 100,
+          in_tunnel: true,
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Must still show the second (newer, empty-match) query's result, not
+      // overwritten by the first request's late-arriving response.
+      expect(wrapper.findAll('[data-testid="lookup-match"]')).toHaveLength(0)
+      expect(wrapper.find('[data-testid="lookup-result"]').text()).toContain('user.lookup_no_match')
+    })
+
+    it('clears a stale lookup result after selections are saved', async () => {
+      const lookupResultData = {
+        query: '8.8.8.0/24',
+        matches: [{ category: 'AI', service: 'ChatGPT', percentage: 100, selected: true }],
+        before_percentage: 100,
+        after_percentage: 100,
+        in_tunnel: true,
+      }
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
+        if (url === '/user/debug') return Promise.resolve({ data: lookupResultData })
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      mockPost.mockResolvedValue({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(true)
+
+      await wrapper.find('[data-testid="save-selections"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // The selection save may have changed what this address resolves to
+      // — the previous answer is no longer trustworthy and must be gone.
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+    })
+
+    it('clears a stale lookup result after a successful catalog mode switch', async () => {
+      const lookupResultData = {
+        query: '8.8.8.0/24',
+        matches: [{ category: 'AI', service: 'ChatGPT', percentage: 100, selected: true }],
+        before_percentage: 100,
+        after_percentage: 100,
+        in_tunnel: true,
+      }
+      const modeAData = {
+        ...baseUserData,
+        user: { ...baseUserData.user, catalog_mode_id: 1, catalog_editable: true },
+        modes: [
+          { id: 1, name: 'Mode A', enabled: true, feed_count: 0 },
+          { id: 2, name: 'Mode B', enabled: true, feed_count: 0 },
+        ],
+      }
+      let meCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') {
+          meCalls++
+          return Promise.resolve({ data: modeAData })
+        }
+        if (url === '/user/debug') return Promise.resolve({ data: lookupResultData })
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      mockPut.mockResolvedValue({ data: { ok: true } })
+      mockPost.mockResolvedValue({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(true)
+      expect(meCalls).toBe(1)
+
+      await wrapper.find('select').setValue('2')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      expect(meCalls).toBeGreaterThan(1) // reloadUserData refetched /user/me
+      // The switch succeeded and reloaded data for a different mode — the
+      // previous mode's lookup answer no longer applies.
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+    })
   })
 })

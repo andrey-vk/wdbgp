@@ -41,6 +41,7 @@ const countData = ref<{ v4: number; v6: number; delta_v4: number; delta_v6: numb
 const countLoading = ref(false)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 const countRequest = useSequencedRequest()
+const lookupRequest = useSequencedRequest()
 
 // ── Save state ──────────────────────────────────────────────
 const saving = ref(false)
@@ -233,6 +234,14 @@ async function loadUserData(userData: UserDataResponse): Promise<void> {
   filterAllow.value = (userData.filters?.allow || []).join('\n')
   filterDeny.value = (userData.filters?.deny || []).join('\n')
 
+  // A previous lookup result describes the catalog mode and selections at
+  // the time it ran. This function reloads both (called after a mode
+  // switch, on login, and on initial auth check), so any prior answer may
+  // no longer be accurate — clear it rather than leave a stale verdict
+  // displayed under a now-different configuration.
+  lookupResult.value = null
+  lookupError.value = ''
+
   // Fetch live counts
   await fetchCounts()
 }
@@ -391,6 +400,10 @@ async function saveSelections(): Promise<void> {
     // be measured against — without this, the delta badge keeps showing
     // the pre-save delta as if it were still unsaved.
     await fetchCounts()
+    // A previous lookup result reflects selections as they were before this
+    // save — clear it rather than leave a now-possibly-wrong verdict shown.
+    lookupResult.value = null
+    lookupError.value = ''
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
@@ -412,6 +425,10 @@ async function saveFilters(): Promise<void> {
       .map((l) => l.trim())
       .filter(Boolean)
     await userApi.post('/user/filters', { allow, deny })
+    // A previous lookup result reflects filters as they were before this
+    // save — clear it rather than leave a now-possibly-wrong verdict shown.
+    lookupResult.value = null
+    lookupError.value = ''
     toast.add({ severity: 'success', summary: t('user.filters_saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
@@ -427,20 +444,59 @@ const lookupLoading = ref(false)
 const lookupError = ref('')
 const lookupResult = ref<UserCIDRLookupResult | null>(null)
 
+// A query can be a CIDR block only partly covered by what's actually
+// delivered (e.g. a /24 with one selected /25) — after_percentage can
+// legitimately land strictly between 0 and 100, and collapsing that to
+// the same "in your tunnel" verdict as a fully-delivered /32 would imply
+// the whole queried range is routed when only part of it is.
+const lookupVerdict = computed<'none' | 'partial' | 'full'>(() => {
+  const after = lookupResult.value?.after_percentage ?? 0
+  if (after <= 0) return 'none'
+  if (after >= 100) return 'full'
+  return 'partial'
+})
+const lookupVerdictText = computed(() => {
+  switch (lookupVerdict.value) {
+    case 'full':
+      return t('user.lookup_in_tunnel')
+    case 'partial':
+      return t('user.lookup_partially_in_tunnel', { pct: Math.round(lookupResult.value?.after_percentage ?? 0) })
+    default:
+      return t('user.lookup_not_in_tunnel')
+  }
+})
+const lookupVerdictClass = computed(() => {
+  switch (lookupVerdict.value) {
+    case 'full':
+      return 'text-green-600 dark:text-green-400'
+    case 'partial':
+      return 'text-amber-600 dark:text-amber-400'
+    default:
+      return 'text-red-600 dark:text-red-400'
+  }
+})
+
 async function runLookup(): Promise<void> {
   if (!lookupQuery.value.trim()) return
+  // The button disables while loading, but Enter in the input can still
+  // fire a second request after editing the query mid-flight — sequence
+  // responses so a slower, now-superseded request can never overwrite a
+  // newer one's result, matching fetchCounts' countRequest pattern.
+  const token = lookupRequest.next()
   lookupLoading.value = true
   lookupError.value = ''
   lookupResult.value = null
   try {
     const resp = await userApi.get('/user/debug', { params: { cidr: lookupQuery.value.trim() } })
+    if (!lookupRequest.isCurrent(token)) return
     lookupResult.value = resp.data
   } catch (err) {
+    if (!lookupRequest.isCurrent(token)) return
     if (handleAuthError(err)) return
     const e = err as { response?: { data?: { error?: string } } }
     lookupError.value = e.response?.data?.error || t('user.lookup_error')
   } finally {
-    lookupLoading.value = false
+    if (lookupRequest.isCurrent(token)) lookupLoading.value = false
   }
 }
 
@@ -766,11 +822,8 @@ onMounted(() => {
                 </div>
               </div>
               <div class="text-sm text-gray-600 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 pt-3">
-                <span
-                  data-testid="lookup-in-tunnel"
-                  :class="lookupResult.in_tunnel ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'"
-                >
-                  {{ lookupResult.in_tunnel ? t('user.lookup_in_tunnel') : t('user.lookup_not_in_tunnel') }}
+                <span data-testid="lookup-in-tunnel" :class="lookupVerdictClass">
+                  {{ lookupVerdictText }}
                 </span>
                 <span v-if="lookupResult.before_percentage !== lookupResult.after_percentage" class="ml-2">
                   ({{ t('user.lookup_filtered_note') }})

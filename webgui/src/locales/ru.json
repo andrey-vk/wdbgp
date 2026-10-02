@@ -467,6 +467,7 @@
   "user.lookup_selected": "Выбрано",
   "user.lookup_not_selected": "Не выбрано",
   "user.lookup_in_tunnel": "В вашем туннеле",
+  "user.lookup_partially_in_tunnel": "Частично в вашем туннеле ({pct}%)",
   "user.lookup_not_in_tunnel": "Не в вашем туннеле",
   "user.lookup_filtered_note": "уменьшено вашими фильтрами маршрутов",
   "user.loading": "Загрузка...",

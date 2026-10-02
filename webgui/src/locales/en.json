@@ -468,6 +468,7 @@
   "user.lookup_selected": "Selected",
   "user.lookup_not_selected": "Not selected",
   "user.lookup_in_tunnel": "In your tunnel",
+  "user.lookup_partially_in_tunnel": "Partially in your tunnel ({pct}%)",
   "user.lookup_not_in_tunnel": "Not in your tunnel",
   "user.lookup_filtered_note": "reduced by your route filters",
   "user.loading": "Loading...",
