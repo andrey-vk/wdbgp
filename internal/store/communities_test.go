@@ -535,3 +535,87 @@ func TestGenerateCommunitiesHandlesPipeInCategoryName(t *testing.T) {
 		t.Fatalf("existing (a, b|c) community changed from %d to %d", existingSvcComm, stillExistingSvcComm)
 	}
 }
+
+// TestResetDigestDoesNotCollideAcrossModes covers a real cross-mode
+// confusion: two modes backed by identical feeds can legitimately converge
+// to the exact same category/service/community rows. If the digest only
+// covered those rows (not which mode they belong to), a preview computed
+// for mode A would also validate a confirm request against mode B, applying
+// a reset the operator reviewed for a different mode than the one it
+// actually got applied to.
+func TestResetDigestDoesNotCollideAcrossModes(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	feedID, err := s.AddFeed(ctx, "shared-feed", "https://example.test/shared.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	modeB, err := s.AddCatalogMode(ctx, "mode-b", true)
+	if err != nil {
+		t.Fatalf("add mode: %v", err)
+	}
+	modeIDs := []int64{1, modeB}
+	for _, modeID := range modeIDs {
+		if _, err := s.DB.ExecContext(ctx,
+			"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+			t.Fatalf("assign feed to mode %d: %v", modeID, err)
+		}
+	}
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "cat-a", Service: "svc-1", CIDR: "10.0.0.0/24"},
+		{Category: "cat-a", Service: "svc-2", CIDR: "10.0.1.0/24"},
+	}); err != nil {
+		t.Fatalf("insert entries: %v", err)
+	}
+	for _, modeID := range modeIDs {
+		if err := s.RebuildModeEntries(ctx, modeID); err != nil {
+			t.Fatalf("rebuild mode entries for %d: %v", modeID, err)
+		}
+		if _, err := s.GenerateCommunities(ctx, modeID); err != nil {
+			t.Fatalf("generate for %d: %v", modeID, err)
+		}
+	}
+
+	// Both modes share the same feed and were generated from a clean slate,
+	// so their allocator output is identical — confirming the premise this
+	// bug depends on, not just assuming it.
+	commsA, err := s.GetCommunities(ctx, 1)
+	if err != nil {
+		t.Fatalf("read mode 1 communities: %v", err)
+	}
+	commsB, err := s.GetCommunities(ctx, modeB)
+	if err != nil {
+		t.Fatalf("read mode %d communities: %v", modeB, err)
+	}
+	if len(commsA) == 0 || len(commsA) != len(commsB) {
+		t.Fatalf("fixture did not converge: mode 1 = %v, mode %d = %v", commsA, modeB, commsB)
+	}
+	for k, v := range commsA {
+		if commsB[k] != v {
+			t.Fatalf("fixture did not converge on %q: mode 1 = %d, mode %d = %d", k, v, modeB, commsB[k])
+		}
+	}
+
+	_, digestA, err := s.PreviewCommunityReset(ctx, 1)
+	if err != nil {
+		t.Fatalf("preview mode 1: %v", err)
+	}
+	_, digestB, err := s.PreviewCommunityReset(ctx, modeB)
+	if err != nil {
+		t.Fatalf("preview mode %d: %v", modeB, err)
+	}
+	if digestA == digestB {
+		t.Fatalf("modes with identical community state produced the same digest: %q", digestA)
+	}
+
+	// Mode 1's own preview must never authorize applying to mode B.
+	if _, err := s.ResetCommunities(ctx, modeB, digestA); !errors.Is(err, ErrCommunityResetStale) {
+		t.Fatalf("reset mode %d with mode 1's digest: err = %v, want ErrCommunityResetStale", modeB, err)
+	}
+
+	// Its own digest must still work correctly.
+	if _, err := s.ResetCommunities(ctx, modeB, digestB); err != nil {
+		t.Fatalf("reset mode %d with its own digest: %v", modeB, err)
+	}
+}

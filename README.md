@@ -359,11 +359,13 @@ which values would change; on an instance whose communities were generated
 incrementally across several feed syncs, that is typically *most* of them.
 
 The preview's response carries a `digest` alongside the change list, fingerprinting the
-exact state it was computed from. Applying it (`{"confirm": true, "digest": "..."}`)
-must echo that digest back; if the mode changed in the meantime — a feed sync
-regenerated communities, or another admin edited one — the digest no longer matches and
-the reset is refused (`409`) with a fresh preview instead of silently renumbering
-something nobody actually reviewed.
+exact state it was computed from — including the mode's own ID, so two modes that
+happen to share identical community assignments (common when they share feeds) never
+share a digest; a preview for one can't be used to authorize a reset on the other.
+Applying it (`{"confirm": true, "digest": "..."}`) must echo that digest back; if the
+mode changed in the meantime — a feed sync regenerated communities, or another admin
+edited one — the digest no longer matches and the reset is refused (`409`) with a fresh
+preview instead of silently renumbering something nobody actually reviewed.
 
 ### Validation and constraints
 

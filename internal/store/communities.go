@@ -286,18 +286,26 @@ func (s *Store) PreviewCommunityReset(ctx context.Context, modeID int64) ([]Comm
 		// Committing here would mean the trial regeneration was persisted.
 		return nil, "", fmt.Errorf("community reset preview committed unexpectedly")
 	}
-	return diffCommunities(before, after), communityResetDigest(before, after), nil
+	return diffCommunities(before, after), communityResetDigest(modeID, before, after), nil
 }
 
-// communityResetDigest fingerprints a mode's community state as observed
+// communityResetDigest fingerprints one mode's community state as observed
 // (before) and as a reset would leave it (after). "after" is fully
 // determined by the mode's current catalog shape (which categories/services
 // catalog_mode_feeds currently resolves to) — genCommunitiesRuntime assigns
 // deterministically in alphabetical order starting from an empty table — so
 // this digest changes if either the stored assignments or the catalog itself
 // has moved, without a separate query to hash the catalog shape directly.
-func communityResetDigest(before, after []Community) string {
+//
+// modeID is hashed explicitly rather than relied on implicitly via the rows'
+// own ModeID field: two different modes backed by the same feeds can
+// legitimately converge to identical category/service/community rows, which
+// would otherwise give them the same digest and let a preview for one mode
+// pass the stale-preview check on a reset request for the other.
+func communityResetDigest(modeID int64, before, after []Community) string {
 	h := sha256.New()
+	//nolint:errcheck // hash.Hash.Write never returns an error
+	fmt.Fprintf(h, "mode:%d\n", modeID)
 	writeRows := func(rows []Community) {
 		for _, row := range rows {
 			//nolint:errcheck // hash.Hash.Write never returns an error
@@ -377,7 +385,7 @@ func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDige
 		if err != nil {
 			return err
 		}
-		if communityResetDigest(before, after) != expectedDigest {
+		if communityResetDigest(modeID, before, after) != expectedDigest {
 			generated = 0
 			return ErrCommunityResetStale
 		}
