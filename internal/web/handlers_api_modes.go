@@ -318,11 +318,19 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load mode"})
 		return
 	}
-	// Load existing communities
-	communities, err := s.store.GetCommunities(r.Context(), modeID)
+	// Load existing communities. Structured rows, not GetCommunities'
+	// "category|service"-flattened map: a category legitimately containing
+	// "|" would collide with that key scheme (e.g. category "a" service
+	// "b" vs. group "a|b"), silently showing the wrong number for one of
+	// the two in this list.
+	rows, err := s.store.CommunityRows(r.Context(), modeID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load communities"})
 		return
+	}
+	communities := make(map[store.ServiceKey]uint32, len(rows))
+	for _, row := range rows {
+		communities[store.ServiceKey{Category: row.Category, Service: row.Service}] = row.Community
 	}
 	// Load catalog (categories and services) for this mode
 	catalog, err := s.store.CatalogForMode(r.Context(), modeID, false)
@@ -342,7 +350,7 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 		services := catalog[category]
 		sort.Strings(services)
 		// Group-level community
-		grpComm := communities[category]
+		grpComm := communities[store.ServiceKey{Category: category}]
 		items = append(items, communityItemJSON{
 			Category:      category,
 			Service:       "",
@@ -351,8 +359,7 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 		})
 		// Service-level communities
 		for svcIndex, service := range services {
-			key := category + "|" + service
-			svcComm := communities[key]
+			svcComm := communities[store.ServiceKey{Category: category, Service: service}]
 			items = append(items, communityItemJSON{
 				Category:      category,
 				Service:       service,
@@ -387,17 +394,22 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	// Validate no duplicate community numbers within the mode
-	used := make(map[uint32]string) // community value -> "category|service"
+	// Validate no duplicate community numbers within the mode. Keyed by
+	// store.ServiceKey, not a "category|service"-joined string: a category
+	// legitimately containing "|" could otherwise make two genuinely
+	// different (category, service) pairs compare equal, letting a real
+	// duplicate community number through unflagged.
+	used := make(map[uint32]store.ServiceKey, len(body.Communities))
 	for _, c := range body.Communities {
-		key := c.Category + "|" + c.Service
 		if c.Community == 0 {
 			continue
 		}
+		key := store.ServiceKey{Category: c.Category, Service: c.Service}
 		if existing, ok := used[c.Community]; ok && existing != key {
 			writeJSON(w, http.StatusBadRequest, apiResponse{
-				OK:    false,
-				Error: "duplicate community " + strconv.FormatUint(uint64(c.Community), 10) + " between " + existing + " and " + key,
+				OK: false,
+				Error: "duplicate community " + strconv.FormatUint(uint64(c.Community), 10) + " between " +
+					existing.Category + "/" + existing.Service + " and " + c.Category + "/" + c.Service,
 			})
 			return
 		}

@@ -688,9 +688,17 @@ func normalize(value string) (string, error) {
 }
 
 func deduplicate(entries []Entry) []Entry {
-	unique := map[string]Entry{}
+	// A struct key, not a "\x00"-joined string: parsing only trims
+	// whitespace off feed-provided category/service names, so a name
+	// containing a literal NUL byte is valid input, and two distinct
+	// (category, service) pairs can join to the same delimited string
+	// (e.g. category="a" service="b\x00c" vs. category="a\x00b"
+	// service="c"). A struct key compares each field independently, so it
+	// cannot conflate two different pairs the way a joined string can.
+	type entryKey struct{ category, service, cidr string }
+	unique := map[entryKey]Entry{}
 	for _, entry := range entries {
-		key := entry.Category + "\x00" + entry.Service + "\x00" + entry.CIDR
+		key := entryKey{entry.Category, entry.Service, entry.CIDR}
 		unique[key] = entry
 	}
 	result := make([]Entry, 0, len(unique))

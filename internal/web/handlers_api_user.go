@@ -116,13 +116,16 @@ func (s *Server) apiUserMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	// Build sets of visible categories/services from catalog
+	// Build sets of visible categories/services from catalog. Keyed by
+	// store.ServiceKey, not a "category|service"-joined string: a category
+	// legitimately containing "|" could otherwise make an unrelated
+	// (category, service) pair look visible when it wasn't.
 	visibleCats := make(map[string]bool)
-	visibleSvcs := make(map[string]bool)
+	visibleSvcs := make(map[store.ServiceKey]bool)
 	for cat, svcList := range catalog {
 		visibleCats[cat] = true
 		for _, svc := range svcList {
-			visibleSvcs[cat+"|"+svc] = true
+			visibleSvcs[store.ServiceKey{Category: cat, Service: svc}] = true
 		}
 	}
 	catList := make([]string, 0)
@@ -133,7 +136,7 @@ func (s *Server) apiUserMe(w http.ResponseWriter, r *http.Request) {
 	}
 	svcList := make([]store.ServiceKey, 0)
 	for k := range services {
-		if visibleSvcs[k.Category+"|"+k.Service] {
+		if visibleSvcs[k] {
 			svcList = append(svcList, k)
 		}
 	}
@@ -263,11 +266,11 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	visibleCats := make(map[string]bool)
-	visibleSvcs := make(map[string]bool)
+	visibleSvcs := make(map[store.ServiceKey]bool)
 	for cat, svcList := range loginCatalog {
 		visibleCats[cat] = true
 		for _, svc := range svcList {
-			visibleSvcs[cat+"|"+svc] = true
+			visibleSvcs[store.ServiceKey{Category: cat, Service: svc}] = true
 		}
 	}
 	loginCatList := make([]string, 0)
@@ -278,7 +281,7 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	loginSvcList := make([]store.ServiceKey, 0)
 	for k := range loginServices {
-		if visibleSvcs[k.Category+"|"+k.Service] {
+		if visibleSvcs[k] {
 			loginSvcList = append(loginSvcList, k)
 		}
 	}

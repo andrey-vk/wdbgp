@@ -619,3 +619,24 @@ func TestResetDigestDoesNotCollideAcrossModes(t *testing.T) {
 		t.Fatalf("reset mode %d with its own digest: %v", modeB, err)
 	}
 }
+
+// TestResetDigestHandlesNulByteInNames covers a real collision in a naive
+// NUL-joined digest encoding: feed parsing only trims whitespace, so a
+// category or service name containing a NUL byte is valid input, and two
+// distinct (category, service) pairs can join to the same delimited bytes
+// (category "a" service "b\x00c" vs. category "a\x00b" service "c"). If a
+// feed switches between these pairs after a preview but before confirmation,
+// a digest that cannot tell them apart would accept a reset the operator
+// never actually reviewed. communityResetDigest must produce different
+// digests for the two.
+func TestResetDigestHandlesNulByteInNames(t *testing.T) {
+	rowsA := []Community{{Category: "a", Service: "b\x00c", Community: 100}}
+	rowsB := []Community{{Category: "a\x00b", Service: "c", Community: 100}}
+
+	digestA := communityResetDigest(1, nil, rowsA)
+	digestB := communityResetDigest(1, nil, rowsB)
+	if digestA == digestB {
+		t.Fatalf("distinct (category, service) pairs joining to the same NUL-delimited bytes "+
+			"produced the same digest: %q", digestA)
+	}
+}

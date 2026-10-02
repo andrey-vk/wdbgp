@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -455,6 +456,80 @@ func TestUserMeReturnsLowercaseFilterKeys(t *testing.T) {
 	deny, ok := filters["deny"].([]any)
 	if !ok || len(deny) != 1 || deny[0] != "192.168.0.0/16" {
 		t.Errorf("filters.deny = %v, want [\"192.168.0.0/16\"]", filters["deny"])
+	}
+}
+
+// =============================================================================
+// TestUserMeFiltersSelectionsByStructuredKeyNotJoinedString covers a real
+// collision in the naive "category|service"-joined visibility check:
+// catalog pair (category "a", service "b|c") and the unrelated, nonexistent
+// pair (category "a|b", service "c") both join to "a|b|c". A selection
+// stored for the nonexistent pair (e.g. left over from a feed that used to
+// have it) must not be resurrected as "visible" just because it collides
+// with a real catalog entry's joined string.
+// =============================================================================
+
+func TestUserMeFiltersSelectionsByStructuredKeyNotJoinedString(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	userBody := `{"name":"collision-user","peer_ip":"10.0.0.1","peer_asn":65001,"networks":["10.6.6.0/24"],"web_auth":"network","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create user: %d body=%s", w.Code, w.Body.String())
+	}
+
+	feedID, err := st.AddFeed(ctx, "Collision Feed", "http://example.com/collision.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "a", Service: "b|c", CIDR: "172.20.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert catalog entries: %v", err)
+	}
+	if err := st.RebuildModeEntries(ctx, 1); err != nil {
+		t.Fatalf("rebuild mode entries: %v", err)
+	}
+
+	// A selection for a pair that is NOT in the catalog, but joins to the
+	// same string as the real catalog pair above ("a|b" + "|" + "c" ==
+	// "a" + "|" + "b|c" == "a|b|c").
+	if err := st.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserModeSelection(ctx, tx, 1, 1, nil,
+			[]store.ServiceKey{{Category: "a|b", Service: "c"}})
+	}); err != nil {
+		t.Fatalf("set selection: %v", err)
+	}
+
+	req = httptest.NewRequest("GET", "/api/user/me", nil)
+	req.RemoteAddr = "10.6.6.1:1234"
+	w = httptest.NewRecorder()
+	srv.requireUser(srv.apiUserMe).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("apiUserMe: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Selections struct {
+			Services []store.ServiceKey `json:"services"`
+		} `json:"selections"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, svc := range resp.Selections.Services {
+		if svc.Category == "a|b" && svc.Service == "c" {
+			t.Fatalf("selection for a nonexistent pair was resurrected as visible via a "+
+				"joined-string collision with a real catalog pair: %+v", resp.Selections.Services)
+		}
 	}
 }
 

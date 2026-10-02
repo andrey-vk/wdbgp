@@ -308,8 +308,21 @@ func communityResetDigest(modeID int64, before, after []Community) string {
 	fmt.Fprintf(h, "mode:%d\n", modeID)
 	writeRows := func(rows []Community) {
 		for _, row := range rows {
+			// Length-prefixed, not NUL-joined: feed parsing only trims
+			// whitespace, so a category or service name containing a NUL
+			// byte is valid input, and two different (category, service)
+			// pairs can join to the same NUL-delimited bytes (e.g.
+			// category="a" service="b\x00c" vs. category="a\x00b"
+			// service="c"). A decimal length followed by exactly that many
+			// bytes has no such ambiguity: the digit run terminates only at
+			// the literal ':' (never itself a digit), and the content that
+			// follows is consumed as an exact byte count rather than
+			// rescanned for delimiters, so it cannot be confused with
+			// framing. Community terminates on '\n' (also never a digit),
+			// so it can't blend into the next row's length prefix either.
 			//nolint:errcheck // hash.Hash.Write never returns an error
-			fmt.Fprintf(h, "%s\x00%s\x00%d\n", row.Category, row.Service, row.Community)
+			fmt.Fprintf(h, "%d:%s%d:%s%d\n",
+				len(row.Category), row.Category, len(row.Service), row.Service, row.Community)
 		}
 		h.Write([]byte("--\n"))
 	}
