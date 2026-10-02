@@ -339,3 +339,37 @@ func TestUserDebugCIDRBareIPInput(t *testing.T) {
 		t.Fatalf("matches = %+v, want one 100%% match", resp.Matches)
 	}
 }
+
+// TestUserDebugCIDRBackendFailureIsNotExposedAsBadRequest covers the
+// classification a backend failure (a DB outage, stored filter data that
+// fails to parse) must get: 500 with a sanitized message, never a 400
+// carrying the raw error — unlike an actually-invalid cidr, which is safe
+// to echo back because it never contains anything derived from the
+// database.
+func TestUserDebugCIDRBackendFailureIsNotExposedAsBadRequest(t *testing.T) {
+	srv, st, userID := userDebugFixture(t)
+	ctx := context.Background()
+	user, err := st.User(ctx, userID)
+	if err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+
+	// Call the handler directly rather than through requireUser: the
+	// middleware's own IP/session lookup would otherwise also fail once
+	// the DB is closed below, masking the thing this test actually covers
+	// (a backend failure inside userDebugCIDR itself, past authentication).
+	req := userDebugRequest("8.8.8.0/24")
+	req = req.WithContext(context.WithValue(req.Context(), userCtxKey{}, user))
+	if err := st.DB.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.apiUserDebugCIDR(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500, body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "sql") || strings.Contains(w.Body.String(), "database") {
+		t.Fatalf("response leaked a raw backend error: %s", w.Body.String())
+	}
+}

@@ -85,3 +85,23 @@ func TestDebugCIDRValid(t *testing.T) {
 		t.Fatal("response should have query field")
 	}
 }
+
+// TestDebugCIDRBackendFailureIsNotMisclassifiedAsBadRequest covers the
+// same distinction the user-facing lookup endpoint draws: a backend
+// failure (a DB outage, stored filter data that fails to parse) must be a
+// 500, not a 400 — a 400 here would tell an operator debugging a real
+// outage that their own request was malformed when it wasn't.
+func TestDebugCIDRBackendFailureIsNotMisclassifiedAsBadRequest(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	if err := st.DB.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/admin/debug?cidr=10.0.0.0/8&mode=1", nil)
+	w := httptest.NewRecorder()
+	srv.apiDebugCIDR(w, req)
+
+	if w.Code != 500 {
+		t.Fatalf("status = %d, want 500, body=%s", w.Code, w.Body.String())
+	}
+}

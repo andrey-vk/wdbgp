@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -635,7 +636,12 @@ func (s *Server) apiUserDebugCIDR(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.userDebugCIDR(r.Context(), *user, cidr)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+		var inputErr invalidLookupInputError
+		if errors.As(err, &inputErr) {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: inputErr.Error()})
+			return
+		}
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

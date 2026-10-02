@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -26,7 +27,12 @@ func (s *Server) apiDebugCIDR(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.debugCIDR(r.Context(), cidr, modeID)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+		var inputErr invalidLookupInputError
+		if errors.As(err, &inputErr) {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: inputErr.Error()})
+			return
+		}
+		s.internalError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)

@@ -35,6 +35,17 @@ type addressRange struct {
 	end   *big.Int
 }
 
+// invalidLookupInputError marks a debugCIDR/userDebugCIDR failure as caused
+// by bad client input (the cidr query parameter itself) rather than a
+// backend failure (a DB read, or stored filter data that fails to parse).
+// Msg is always a plain validation message — never anything derived from
+// the database or another user's data — so it's always safe to return
+// as-is in a 400; everything else must not be, especially to the
+// unprivileged caller of the user-facing endpoint, and is a 500 instead.
+type invalidLookupInputError struct{ msg string }
+
+func (e invalidLookupInputError) Error() string { return e.msg }
+
 func (s *Server) debugCIDR(
 	ctx context.Context,
 	raw string,
@@ -46,7 +57,7 @@ func (s *Server) debugCIDR(
 	}
 	target, err := parseDebugPrefix(raw)
 	if err != nil {
-		return cidrDebugResult{}, err
+		return cidrDebugResult{}, invalidLookupInputError{msg: err.Error()}
 	}
 	coverage, err := s.coverageForTarget(ctx, target, modeID)
 	if err != nil {
@@ -261,7 +272,7 @@ type userCIDRLookupResult struct {
 func (s *Server) userDebugCIDR(ctx context.Context, user store.User, raw string) (userCIDRLookupResult, error) {
 	target, err := parseDebugPrefix(raw)
 	if err != nil {
-		return userCIDRLookupResult{}, err
+		return userCIDRLookupResult{}, invalidLookupInputError{msg: err.Error()}
 	}
 	coverage, err := s.coverageForTarget(ctx, target, user.CatalogModeID)
 	if err != nil {
