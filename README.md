@@ -286,9 +286,10 @@ snapshot spans every mode in the document, not just each mode on its own: a feed
 shared by several modes publishes its update to all of them, so reading each mode
 independently could otherwise show the update applied to one mode but not yet to
 another. The ASN used to render every `large_community` string is likewise checked
-once after all of that database work finishes, not before, so a BGP restart
-completing while the export was still assembling data can never leave the response
-rendered from an ASN that already stopped matching the running speaker.
+after all of that database work finishes, not before — and rechecked again right after
+rendering, redoing the render if it moved, so a BGP restart completing while the export
+was still assembling data (or even during the render itself) can never leave the
+response describing an ASN that already stopped matching the running speaker.
 
 ```console
 $ curl -sH "Authorization: Bearer $WDBGP_STATUS_TOKEN" http://wdbgp:8080/api/communities

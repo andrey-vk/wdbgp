@@ -500,11 +500,22 @@ func TestCommunitiesExportGeneratesMissingAssignments(t *testing.T) {
 // after that call (the bug this covers), the new mode would show up in the
 // response; reading data first means it cannot — the snapshot was already
 // taken before the write ever happened.
+//
+// The hook only performs its write on its first invocation: the export's
+// recheck-and-retry loop (see TestCommunitiesExportReRendersOnASNChange)
+// legitimately calls ActiveASN more than once per request, and this test
+// only cares that none of those calls can happen before the one-and-only
+// mode-data read, not how many of them there are.
 func TestCommunitiesExportReadsDataBeforeASN(t *testing.T) {
 	srv, bgp, _ := exportFixture(t)
 	ctx := context.Background()
 
+	calls := 0
 	bgp.beforeActiveASN = func() {
+		calls++
+		if calls > 1 {
+			return
+		}
 		newModeID, err := srv.store.AddCatalogMode(ctx, "late-mode", true)
 		if err != nil {
 			t.Fatalf("add mode inside ActiveASN hook: %v", err)
@@ -539,5 +550,61 @@ func TestCommunitiesExportReadsDataBeforeASN(t *testing.T) {
 			t.Fatalf("response includes a mode created inside the ActiveASN call — "+
 				"database reads ran after the ASN check, not before: %+v", mode)
 		}
+	}
+}
+
+// TestCommunitiesExportReRendersOnASNChange covers the recheck-and-retry
+// loop: if a BGP restart completes between the first ActiveASN read and the
+// recheck immediately after rendering, the response must reflect the new,
+// post-restart ASN — not the one that was already stale by the time
+// rendering finished. ActiveASN's test double returns the old value on its
+// first call and flips to the new one starting with the second (the
+// recheck), simulating a restart landing exactly in that gap.
+func TestCommunitiesExportReRendersOnASNChange(t *testing.T) {
+	srv, bgp, modeID := exportFixture(t)
+
+	const oldASN, newASN = 64512, 65001
+	bgp.activeASN = oldASN
+	calls := 0
+	bgp.beforeActiveASN = func() {
+		calls++
+		if calls == 2 {
+			bgp.activeASN = newASN
+		}
+	}
+
+	w := httptest.NewRecorder()
+	srv.apiCommunitiesExport(w, exportRequest("secret"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	doc := decodeExport(t, w.Body.Bytes())
+
+	if doc.ASN != newASN {
+		t.Fatalf("asn = %d, want %d (the post-restart value) — the response was rendered "+
+			"from an ASN that was already stale by the time it was computed", doc.ASN, newASN)
+	}
+	if calls < 2 {
+		t.Fatalf("ActiveASN called %d times, want at least 2 (initial read + recheck)", calls)
+	}
+
+	var found *communityExportCategory
+	for _, mode := range doc.Modes {
+		if mode.ModeID != modeID {
+			continue
+		}
+		for i := range mode.Categories {
+			if mode.Categories[i].Name == "AI" {
+				found = &mode.Categories[i]
+			}
+		}
+	}
+	if found == nil {
+		t.Fatal("expected category missing from export")
+	}
+	wantLarge := largeCommunityString(newASN, found.Community)
+	if found.LargeCommunity != wantLarge {
+		t.Fatalf("large_community = %q, want %q (rendered with the stale pre-restart ASN instead)",
+			found.LargeCommunity, wantLarge)
 	}
 }

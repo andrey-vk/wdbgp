@@ -205,10 +205,41 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 	// large_community strings using the pre-restart ASN, which stops being
 	// accurate the moment the restart finishes — before this response is
 	// even sent.
-	activeASN, running := s.bgp.ActiveASN()
-	configured := s.settings.LocalASN.Get()
+	//
+	// Rendering itself takes a little time (one pass over every mode), so a
+	// restart could in principle complete during that pass too. Unlike
+	// correlating against Reconcile (an unrelated, asynchronously-batched
+	// background process with no bound on when it next runs), ActiveASN is
+	// a cheap in-memory read behind a mutex in this same process, and it
+	// only ever changes on a full, synchronous BGP restart — an event far
+	// rarer and slower than one render pass. So re-checking it after
+	// rendering and redoing the pass if it moved actually converges, rather
+	// than chasing an ever-receding window: bounded to a few attempts so a
+	// pathological burst of restarts can't wedge the request, not because
+	// convergence is expected to need them.
+	const maxASNRenderAttempts = 5
+	for attempt := 1; ; attempt++ {
+		activeASN, running := s.bgp.ActiveASN()
+		configured := s.settings.LocalASN.Get()
+		renderCommunityExportASN(&doc, activeASN, running, configured)
+
+		recheckASN, recheckRunning := s.bgp.ActiveASN()
+		if recheckASN == activeASN && recheckRunning == running || attempt >= maxASNRenderAttempts {
+			break
+		}
+	}
+
+	return doc, nil
+}
+
+// renderCommunityExportASN stamps doc.ASN/BGPRunning/ASNConfigured and every
+// category/service's LargeCommunity string from the given ASN snapshot.
+// Factored out so buildCommunityExport can redo the render in place if a
+// recheck finds the ASN moved mid-render, without re-reading any mode data.
+func renderCommunityExportASN(doc *communityExportDoc, activeASN uint32, running bool, configured uint32) {
 	doc.ASN = activeASN
 	doc.BGPRunning = running
+	doc.ASNConfigured = nil
 	if !running {
 		// Nothing is announced, so there is no wire value to report; the
 		// configured ASN is what a restart would begin stamping.
@@ -226,8 +257,6 @@ func (s *Server) buildCommunityExport(r *http.Request) (communityExportDoc, erro
 			}
 		}
 	}
-
-	return doc, nil
 }
 
 // largeCommunityString renders the wire form of a catalog community, matching
