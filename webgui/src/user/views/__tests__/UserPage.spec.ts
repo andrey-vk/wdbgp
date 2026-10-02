@@ -521,4 +521,186 @@ describe('UserPage', () => {
     // Service "c" under category "a|b" must show its own community (20002).
     expect(badgeTexts).toContain('20002')
   })
+
+  describe('address lookup', () => {
+    const baseUserData = {
+      user: {
+        id: 1,
+        name: 'Alice',
+        catalog_mode_id: 1,
+        catalog_mode_name: 'Mode A',
+        selection_locked: false,
+        filter_editable: false,
+        filter_override: false,
+        filter_mode: 'allow',
+        catalog_editable: true,
+        networks: [],
+      },
+      catalog: {},
+      selections: { categories: [], services: [] },
+      communities: [],
+      prefix_counts: { v4: {}, v6: {} },
+      filters: { allow: [], deny: [] },
+      modes: [],
+    }
+
+    async function mountWithLookup(lookupHandler: (url: string) => Promise<{ data: unknown }>) {
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') return Promise.resolve({ data: baseUserData })
+        if (url === '/user/debug') return lookupHandler(url)
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      return wrapper
+    }
+
+    it('runs an address lookup via the shared apiClient and renders matches', async () => {
+      const result = {
+        query: '8.8.8.0/24',
+        matches: [{ category: 'AI', service: 'ChatGPT', percentage: 100, selected: true }],
+        before_percentage: 100,
+        after_percentage: 100,
+        in_tunnel: true,
+      }
+      const wrapper = await mountWithLookup(() => Promise.resolve({ data: result }))
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      const debugCall = mockGet.mock.calls.find((c) => c[0] === '/user/debug')
+      expect(debugCall).toBeDefined()
+      expect(debugCall![1]).toEqual({ params: { cidr: '8.8.8.0/24' } })
+
+      const resultEl = wrapper.find('[data-testid="lookup-result"]')
+      expect(resultEl.exists()).toBe(true)
+      expect(wrapper.findAll('[data-testid="lookup-match"]')).toHaveLength(1)
+    })
+
+    it('shows an error message when the lookup request fails', async () => {
+      const wrapper = await mountWithLookup(() =>
+        Promise.reject({ response: { status: 400, data: { error: 'invalid CIDR or IP address' } } }),
+      )
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('not-an-ip')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.find('[data-testid="lookup-error"]').text()).toBe('invalid CIDR or IP address')
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+    })
+
+    it('treats a 401 from the lookup the same as any other session expiry', async () => {
+      const wrapper = await mountWithLookup(() =>
+        Promise.reject({ isAxiosError: true, response: { status: 401 } }),
+      )
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // handleAuthError recognized it and flipped back to the login view —
+      // not a local lookup error.
+      expect(wrapper.find('[data-testid="lookup-error"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="lookup-input"]').exists()).toBe(false)
+    })
+
+    it('disables the check button until a query is entered', async () => {
+      const wrapper = await mountWithLookup(() => Promise.resolve({ data: { query: '', matches: [], before_percentage: 0, after_percentage: 0, in_tunnel: false } }))
+
+      const button = wrapper.find('[data-testid="lookup-button"]')
+      expect((button.element as HTMLButtonElement).disabled).toBe(true)
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      expect((button.element as HTMLButtonElement).disabled).toBe(false)
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('   ')
+      expect((button.element as HTMLButtonElement).disabled).toBe(true)
+    })
+
+    it('shows no-match message when matches is empty', async () => {
+      const result = { query: '8.8.9.0/24', matches: [], before_percentage: 0, after_percentage: 0, in_tunnel: false }
+      const wrapper = await mountWithLookup(() => Promise.resolve({ data: result }))
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.9.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.findAll('[data-testid="lookup-match"]')).toHaveLength(0)
+      // i18n messages are empty in this test setup, so the component
+      // renders the raw key as fallback text — asserting on that confirms
+      // the no-match branch rendered instead of the match list.
+      expect(wrapper.find('[data-testid="lookup-result"]').text()).toContain('user.lookup_no_match')
+    })
+
+    it('renders two matches independently when category/service strings collide under a joined-string key', async () => {
+      // (category "a", service "b::c") and (category "a::b", service "c")
+      // join to the same string under a naive "category::service" key — the
+      // component must iterate the matches array directly rather than
+      // building any joined-string map, so both render independently.
+      const result = {
+        query: '8.8.8.0/24',
+        matches: [
+          { category: 'a', service: 'b::c', percentage: 100, selected: true },
+          { category: 'a::b', service: 'c', percentage: 50, selected: false },
+        ],
+        before_percentage: 100,
+        after_percentage: 100,
+        in_tunnel: true,
+      }
+      const wrapper = await mountWithLookup(() => Promise.resolve({ data: result }))
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      const rows = wrapper.findAll('[data-testid="lookup-match"]')
+      expect(rows).toHaveLength(2)
+      expect(rows[0].text()).toContain('a / b::c')
+      expect(rows[1].text()).toContain('a::b / c')
+    })
+
+    it('resets lookup state on logout', async () => {
+      const result = {
+        query: '8.8.8.0/24',
+        matches: [{ category: 'AI', service: 'ChatGPT', percentage: 100, selected: true }],
+        before_percentage: 100,
+        after_percentage: 100,
+        in_tunnel: true,
+      }
+      const wrapper = await mountWithLookup(() => Promise.resolve({ data: result }))
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(true)
+
+      mockPost.mockResolvedValue({ data: { ok: true } })
+      await wrapper.find('[data-testid="logout-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Logged out: the whole authenticated view (including the lookup
+      // section) is gone, replaced by the login form.
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="lookup-input"]').exists()).toBe(false)
+    })
+  })
 })

@@ -11,6 +11,7 @@ import { getCurrentLocale } from '@/plugins/i18n'
 import userApi from '@/api/client'
 import { useSequencedRequest } from '@/composables/useSequencedRequest'
 import type { UserDataResponse } from '@/types/user-page'
+import type { UserCIDRLookupResult } from '@/types/user-debug'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -202,6 +203,9 @@ async function handleLogout(): Promise<void> {
   countData.value = null
   checkedCategories.value = new Set()
   checkedServices.value = new Set()
+  lookupQuery.value = ''
+  lookupError.value = ''
+  lookupResult.value = null
   loginForm.login = ''
   loginForm.password = ''
 }
@@ -417,6 +421,29 @@ async function saveFilters(): Promise<void> {
   }
 }
 
+// ── Address lookup state ───────────────────────────────────
+const lookupQuery = ref('')
+const lookupLoading = ref(false)
+const lookupError = ref('')
+const lookupResult = ref<UserCIDRLookupResult | null>(null)
+
+async function runLookup(): Promise<void> {
+  if (!lookupQuery.value.trim()) return
+  lookupLoading.value = true
+  lookupError.value = ''
+  lookupResult.value = null
+  try {
+    const resp = await userApi.get('/user/debug', { params: { cidr: lookupQuery.value.trim() } })
+    lookupResult.value = resp.data
+  } catch (err) {
+    if (handleAuthError(err)) return
+    const e = err as { response?: { data?: { error?: string } } }
+    lookupError.value = e.response?.data?.error || t('user.lookup_error')
+  } finally {
+    lookupLoading.value = false
+  }
+}
+
 // ── Lifecycle ───────────────────────────────────────────────
 onMounted(() => {
   checkAuth()
@@ -499,6 +526,7 @@ onMounted(() => {
             <i :class="themeStore.isDark ? 'pi pi-sun' : 'pi pi-moon'" class="text-gray-500 dark:text-gray-400" />
           </button>
           <button
+            data-testid="logout-button"
             @click="handleLogout"
             class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors"
           >
@@ -680,6 +708,75 @@ onMounted(() => {
               <i v-if="savingFilters" class="pi pi-spin pi-spinner" />
               {{ t('user.save_filters') }}
             </button>
+          </div>
+        </div>
+
+        <!-- Address lookup section -->
+        <div class="p-6 rounded-border shadow-sm mb-6 bg-white dark:bg-gray-900">
+          <h2 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">{{ t('user.lookup_title') }}</h2>
+          <div class="flex items-end gap-3">
+            <div class="flex-1">
+              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{{ t('user.lookup_cidr') }}</label>
+              <input
+                v-model="lookupQuery"
+                type="text"
+                data-testid="lookup-input"
+                @keyup.enter="runLookup"
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+              >
+              <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">{{ t('user.lookup_hint') }}</p>
+            </div>
+            <button
+              data-testid="lookup-button"
+              @click="runLookup"
+              :disabled="lookupLoading || !lookupQuery.trim()"
+              class="px-4 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg transition-colors flex items-center gap-1.5"
+            >
+              <i v-if="lookupLoading" class="pi pi-spin pi-spinner" />
+              {{ t('user.lookup_button') }}
+            </button>
+          </div>
+
+          <div v-if="lookupError" data-testid="lookup-error" class="mt-3 text-sm text-red-500 dark:text-red-400">
+            {{ lookupError }}
+          </div>
+
+          <div v-else-if="lookupResult" data-testid="lookup-result" class="mt-4">
+            <div v-if="!lookupResult.matches.length" class="text-sm text-gray-400 dark:text-gray-500">
+              {{ t('user.lookup_no_match') }}
+            </div>
+            <template v-else>
+              <div class="flex flex-col gap-1 mb-3">
+                <div
+                  v-for="(m, index) in lookupResult.matches"
+                  :key="index"
+                  class="flex items-center justify-between text-sm py-1"
+                  data-testid="lookup-match"
+                >
+                  <span class="text-gray-700 dark:text-gray-300">{{ m.category }} / {{ m.service }}</span>
+                  <span class="flex items-center gap-2">
+                    <span
+                      class="text-xs px-1.5 py-0.5 rounded"
+                      :class="m.selected ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'"
+                    >
+                      {{ m.selected ? t('user.lookup_selected') : t('user.lookup_not_selected') }}
+                    </span>
+                    <span class="text-gray-400 dark:text-gray-500">{{ Math.round(m.percentage) }}%</span>
+                  </span>
+                </div>
+              </div>
+              <div class="text-sm text-gray-600 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 pt-3">
+                <span
+                  data-testid="lookup-in-tunnel"
+                  :class="lookupResult.in_tunnel ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'"
+                >
+                  {{ lookupResult.in_tunnel ? t('user.lookup_in_tunnel') : t('user.lookup_not_in_tunnel') }}
+                </span>
+                <span v-if="lookupResult.before_percentage !== lookupResult.after_percentage" class="ml-2">
+                  ({{ t('user.lookup_filtered_note') }})
+                </span>
+              </div>
+            </template>
           </div>
         </div>
       </template>

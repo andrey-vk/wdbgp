@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/store"
@@ -615,4 +616,27 @@ func (s *Server) apiUserSwitchMode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// apiUserDebugCIDR handles GET /api/user/debug?cidr=...
+//
+// Mode and user are always derived from the authenticated session — unlike
+// the admin debug endpoint there is no mode or user query parameter, so a
+// caller cannot probe another user's selections or another catalog mode.
+func (s *Server) apiUserDebugCIDR(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	cidr := strings.TrimSpace(r.URL.Query().Get("cidr"))
+	if cidr == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "cidr query parameter is required"})
+		return
+	}
+	result, err := s.userDebugCIDR(r.Context(), *user, cidr)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
