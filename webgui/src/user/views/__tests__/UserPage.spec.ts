@@ -1038,6 +1038,72 @@ describe('UserPage', () => {
       expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
     })
 
+    it('invalidates a lookup result as soon as the selections save commits, without waiting for the count refresh that follows it', async () => {
+      // fetchCounts is a second, independent network request issued after
+      // the save already committed — if invalidation waited for it, a slow
+      // or never-settling count refresh would leave the stale result
+      // visible (and an in-flight lookup able to repopulate it) for as
+      // long as that second request takes.
+      let resolveCounts: (v: { data: unknown }) => void = () => {}
+      let countCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
+        if (url === '/user/debug') return Promise.resolve({
+          data: {
+            query: '8.8.8.0/24',
+            matches: [{ category: 'AI', service: 'ChatGPT', percentage: 100, selected: true }],
+            before_percentage: 100,
+            after_percentage: 100,
+            in_tunnel: true,
+          },
+        })
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/user/selections') return Promise.resolve({ data: { ok: true } })
+        if (url === '/user/count-prefixes') {
+          countCalls++
+          // The initial load's own count fetch must resolve normally —
+          // only the one triggered by the save below is left pending.
+          if (countCalls === 1) return Promise.resolve({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+          return new Promise((resolve) => { resolveCounts = resolve })
+        }
+        return Promise.resolve({ data: {} })
+      })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(true)
+
+      await wrapper.find('[data-testid="save-selections"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // The count refresh triggered by the save is still pending — but the
+      // selections POST has already resolved, which is all invalidation
+      // should need.
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+
+      resolveCounts({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+    })
+
     it('invalidates a lookup result even when a save reports failure, since the backend may have committed before failing on reconciliation', async () => {
       // apiUserSaveSelections/apiUserSaveFilters persist the submitted
       // configuration before BGP reconciliation runs, so a 500 here (like

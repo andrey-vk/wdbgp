@@ -406,14 +406,17 @@ async function saveSelections(): Promise<void> {
   saving.value = true
   try {
     await userApi.post('/user/selections', buildSelectionPayload())
+    // Invalidated immediately once the save itself has committed, before
+    // awaiting the count refresh below — that's a second, independent
+    // network request, and if it's slow (or never settles) the previous
+    // lookup result would otherwise stay visible, and a lookup already in
+    // flight could still complete and repopulate a verdict based on the
+    // old selections, for as long as fetchCounts takes.
+    invalidateLookup()
     // The just-saved selection is now the baseline delta_v4/delta_v6 should
     // be measured against — without this, the delta badge keeps showing
     // the pre-save delta as if it were still unsaved.
     await fetchCounts()
-    // A previous or in-flight lookup reflects selections as they were
-    // before this save — invalidate it rather than leave a now-possibly
-    // -wrong verdict shown, or let a request still in flight repopulate it.
-    invalidateLookup()
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
