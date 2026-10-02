@@ -262,14 +262,7 @@ async function reloadUserData(): Promise<void> {
 async function switchMode(modeId: number): Promise<void> {
   if (modeId === selectedModeId.value) return
   try {
-    await userApi.put('/user/mode', { mode_id: modeId })
-    // Invalidated here, unconditionally, rather than relying solely on
-    // loadUserData's own invalidation inside reloadUserData below:
-    // reloadUserData catches its own /user/me failure internally and never
-    // reaches loadUserData on that path, which would otherwise leave a
-    // lookup computed for the old mode in place even though the PUT above
-    // already committed the switch server-side.
-    invalidateLookup()
+    await invalidatingLookup(userApi.put('/user/mode', { mode_id: modeId }))
     selectedModeId.value = modeId
     await reloadUserData()
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
@@ -278,10 +271,7 @@ async function switchMode(modeId: number): Promise<void> {
     // The backend commits the mode change before it can fail on a later
     // step (e.g. BGP reconciliation), so an error here doesn't mean the
     // switch didn't happen — resync from the server's true state rather
-    // than leaving the UI showing pre-switch mode/catalog/selections, and
-    // invalidate the lookup for the same reason as above regardless of
-    // whether the PUT itself or the resync is what failed.
-    invalidateLookup()
+    // than leaving the UI showing pre-switch mode/catalog/selections.
     toast.add({ severity: 'error', summary: t('user.save_error'), life: 5000 })
     try {
       await reloadUserData()
@@ -405,14 +395,7 @@ function buildSelectionPayload() {
 async function saveSelections(): Promise<void> {
   saving.value = true
   try {
-    await userApi.post('/user/selections', buildSelectionPayload())
-    // Invalidated immediately once the save itself has committed, before
-    // awaiting the count refresh below — that's a second, independent
-    // network request, and if it's slow (or never settles) the previous
-    // lookup result would otherwise stay visible, and a lookup already in
-    // flight could still complete and repopulate a verdict based on the
-    // old selections, for as long as fetchCounts takes.
-    invalidateLookup()
+    await invalidatingLookup(userApi.post('/user/selections', buildSelectionPayload()))
     // The just-saved selection is now the baseline delta_v4/delta_v6 should
     // be measured against — without this, the delta badge keeps showing
     // the pre-save delta as if it were still unsaved.
@@ -420,11 +403,6 @@ async function saveSelections(): Promise<void> {
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
-    // The backend commits the selection before it can fail on a later step
-    // (BGP reconciliation), the same way switchMode's save can — a rejected
-    // request here doesn't mean nothing changed, so the lookup can't be
-    // trusted to still describe the current selection either.
-    invalidateLookup()
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
   } finally {
     saving.value = false
@@ -442,19 +420,10 @@ async function saveFilters(): Promise<void> {
       .split('\n')
       .map((l) => l.trim())
       .filter(Boolean)
-    await userApi.post('/user/filters', { allow, deny })
-    // A previous or in-flight lookup reflects filters as they were before
-    // this save — invalidate it rather than leave a now-possibly-wrong
-    // verdict shown, or let a request still in flight repopulate it.
-    invalidateLookup()
+    await invalidatingLookup(userApi.post('/user/filters', { allow, deny }))
     toast.add({ severity: 'success', summary: t('user.filters_saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
-    // The backend commits the filters before it can fail on a later step
-    // (BGP reconciliation), the same way switchMode's save can — a
-    // rejected request here doesn't mean nothing changed, so the lookup
-    // can't be trusted to still describe the current filters either.
-    invalidateLookup()
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
   } finally {
     savingFilters.value = false
@@ -522,6 +491,24 @@ function invalidateLookup(): void {
   lookupLoading.value = false
   lookupError.value = ''
   lookupResult.value = null
+}
+
+// Invalidates the lookup the instant `request` settles — success or
+// failure, before anything awaited after it at the call site. Several of
+// the requests this wraps (save selections, save filters, switch mode)
+// commit on the backend before they can fail on a later step (BGP
+// reconciliation), so even a rejected request doesn't mean nothing
+// changed; and invalidating in a `finally` here, rather than duplicated in
+// a try block and its catch block at every call site, means a mutating
+// request can't be added later without its invalidation, and an await
+// placed after this one (a count refresh, a resync) can never delay or
+// skip it, however slow or how it resolves.
+async function invalidatingLookup<T>(request: Promise<T>): Promise<T> {
+  try {
+    return await request
+  } finally {
+    invalidateLookup()
+  }
 }
 
 // The result panel shows lookupResult, not lookupQuery — editing the input
