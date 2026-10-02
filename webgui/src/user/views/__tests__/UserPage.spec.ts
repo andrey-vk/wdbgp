@@ -80,7 +80,7 @@ describe('UserPage', () => {
       },
       catalog: {},
       selections: { categories: [], services: [] },
-      communities: {},
+      communities: [],
       prefix_counts: { v4: {}, v6: {} },
       filters: { allow: [], deny: [] },
       modes: [
@@ -131,7 +131,7 @@ describe('UserPage', () => {
       },
       catalog: {},
       selections: { categories: [], services: [] },
-      communities: {},
+      communities: [],
       prefix_counts: { v4: {}, v6: {} },
       filters: { allow: [], deny: [] },
       modes: [],
@@ -177,7 +177,7 @@ describe('UserPage', () => {
       },
       catalog: { CategoryA: ['svc1'] },
       selections: { categories: [], services: [] },
-      communities: {},
+      communities: [],
       prefix_counts: { v4: {}, v6: {} },
       filters: { allow: [], deny: [] },
       modes: [],
@@ -228,7 +228,7 @@ describe('UserPage', () => {
       },
       catalog: { CategoryA: ['svc1'] },
       selections: { categories: [], services: [] },
-      communities: {},
+      communities: [],
       prefix_counts: { v4: {}, v6: {} },
       filters: { allow: [], deny: [] },
       modes: [],
@@ -285,7 +285,7 @@ describe('UserPage', () => {
       },
       catalog: { CategoryA: ['svc1'] },
       selections: { categories: [], services: [] },
-      communities: {},
+      communities: [],
       // The full catalog has 500 IPv4 prefixes available — but the user
       // hasn't selected any of it, and the live selection-aware count
       // (countData) failed to load. The summary must not show 500 as if
@@ -332,7 +332,7 @@ describe('UserPage', () => {
         },
         catalog: { CategoryA: ['svc1'], CategoryB: ['svc2'] },
         selections: { categories: [], services: [] },
-        communities: {},
+        communities: [],
         prefix_counts: { v4: {}, v6: {} },
         filters: { allow: [], deny: [] },
         modes: [],
@@ -418,7 +418,7 @@ describe('UserPage', () => {
       },
       catalog: { a: ['b::c'], 'a::b': ['c'] },
       selections: { categories: [], services: [{ category: 'a', service: 'b::c' }] },
-      communities: {},
+      communities: [],
       prefix_counts: { v4: {}, v6: {} },
       filters: { allow: [], deny: [] },
       modes: [],
@@ -463,5 +463,62 @@ describe('UserPage', () => {
 
     expect(sent('a', 'b::c')).toBe(true)
     expect(sent('a::b', 'c')).toBe(false)
+  })
+
+  it('shows the right community badge for each of two category/service pairs that collide under a joined-string key', async () => {
+    // (category "a", service "b|c") and (category "a|b", service "c")
+    // would join to the same "a|b|c" under the old "category|service" key
+    // scheme GetCommunities used — this is the same collision class as the
+    // "::"-joined test above, but exercising the badges this field exists
+    // to drive rather than selection tracking.
+    const userData = {
+      user: {
+        id: 1,
+        name: 'Alice',
+        catalog_mode_id: 1,
+        catalog_mode_name: 'Mode A',
+        selection_locked: false,
+        filter_editable: false,
+        filter_override: false,
+        filter_mode: 'allow',
+        catalog_editable: true,
+        networks: [],
+      },
+      catalog: { a: ['b|c'], 'a|b': ['c'] },
+      selections: { categories: [], services: [] },
+      communities: [
+        { category: 'a', service: 'b|c', community: 10001 },
+        { category: 'a|b', service: 'c', community: 20002 },
+        { category: 'a|b', service: '', community: 20000 },
+      ],
+      prefix_counts: { v4: {}, v6: {} },
+      filters: { allow: [], deny: [] },
+      modes: [],
+    }
+    mockGet.mockResolvedValue({ data: userData })
+    mockPost.mockResolvedValue({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+
+    const UserPage = (await import('../UserPage.vue')).default
+    const wrapper = mount(UserPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+          Toast: { template: '<div class="stub-toast" />' },
+        },
+      },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.vm.$nextTick()
+
+    const badgeTexts = wrapper.findAll('span[title]').map((s) => s.text())
+    // Service "b|c" under category "a" must show its own community (10001),
+    // not the one belonging to the colliding group "a|b" (20000).
+    expect(badgeTexts).toContain('10001')
+    // Group "a|b" must show its own group-level community (20000), not the
+    // one belonging to the colliding service pair (a, b|c) -> 10001.
+    expect(badgeTexts).toContain('20000')
+    // Service "c" under category "a|b" must show its own community (20002).
+    expect(badgeTexts).toContain('20002')
   })
 })

@@ -265,6 +265,10 @@ Community numbers are assigned **per catalog mode**: the same category can hold 
 different number in a different mode, so a user moved between modes changes the
 meaning of every community-matching rule on their router.
 
+The end-user selection page also shows each category's and service's community number
+next to it, so a user configuring their own router's filtering doesn't need to ask an
+administrator for the numbers.
+
 #### Community export
 
 `GET /api/communities` returns the complete community map as JSON, for generating

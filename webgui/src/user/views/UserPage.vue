@@ -76,6 +76,26 @@ function getServiceCount(service: string, category: string): number {
   return v4 + v6
 }
 
+// Keyed the same collision-free way as checkedServices: the backend sends a
+// flat list rather than a "category|service"-joined map for exactly this
+// reason (a category containing "|" could otherwise make this map show the
+// wrong number next to one of two colliding entries).
+const communityMap = computed<Map<string, number>>(() => {
+  const map = new Map<string, number>()
+  for (const c of data.value?.communities || []) {
+    map.set(serviceKey(c.category, c.service), c.community)
+  }
+  return map
+})
+
+function getCategoryCommunity(category: string): number | undefined {
+  return communityMap.value.get(serviceKey(category, ''))
+}
+
+function getServiceCommunity(service: string, category: string): number | undefined {
+  return communityMap.value.get(serviceKey(category, service))
+}
+
 function isCategoryFullyChecked(category: string): boolean {
   return checkedCategories.value.has(category)
 }
@@ -553,6 +573,13 @@ onMounted(() => {
               >
                 {{ category }}
               </span>
+              <span
+                v-if="getCategoryCommunity(category)"
+                :title="t('user.community_group')"
+                class="text-xs font-mono px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300"
+              >
+                {{ getCategoryCommunity(category) }}
+              </span>
               <span class="text-xs text-gray-400 dark:text-gray-500">
                 (+{{ getCategoryCounts(category).v4 + getCategoryCounts(category).v6 }})
               </span>
@@ -586,6 +613,13 @@ onMounted(() => {
                 @click="!data.user.selection_locked && toggleService(service, category)"
               >
                 {{ service }}
+              </span>
+              <span
+                v-if="getServiceCommunity(service, category)"
+                :title="t('user.community_service')"
+                class="text-xs font-mono px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300"
+              >
+                {{ getServiceCommunity(service, category) }}
               </span>
               <span class="text-xs text-gray-400 dark:text-gray-500">
                 {{ getServiceCount(service, category).toLocaleString() }} {{ t('user.prefixes') }}

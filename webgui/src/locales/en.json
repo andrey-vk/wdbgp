@@ -443,6 +443,8 @@
   "user.catalog_mode": "Catalog",
   "user.category": "Category",
   "user.service": "Service",
+  "user.community_group": "Group community",
+  "user.community_service": "Service community",
   "user.prefixes": "prefixes",
   "user.ipv4": "IPv4",
   "user.ipv6": "IPv6",

@@ -442,6 +442,8 @@
   "user.catalog_mode": "Каталог",
   "user.category": "Категория",
   "user.service": "Сервис",
+  "user.community_group": "BGP community группы",
+  "user.community_service": "BGP community сервиса",
   "user.prefixes": "префиксов",
   "user.ipv4": "IPv4",
   "user.ipv6": "IPv6",
