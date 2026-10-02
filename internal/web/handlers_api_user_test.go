@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -456,6 +457,229 @@ func TestUserMeReturnsLowercaseFilterKeys(t *testing.T) {
 	if !ok || len(deny) != 1 || deny[0] != "192.168.0.0/16" {
 		t.Errorf("filters.deny = %v, want [\"192.168.0.0/16\"]", filters["deny"])
 	}
+}
+
+// =============================================================================
+// TestUserMeFiltersSelectionsByStructuredKeyNotJoinedString covers a real
+// collision in the naive "category|service"-joined visibility check:
+// catalog pair (category "a", service "b|c") and the unrelated, nonexistent
+// pair (category "a|b", service "c") both join to "a|b|c". A selection
+// stored for the nonexistent pair (e.g. left over from a feed that used to
+// have it) must not be resurrected as "visible" just because it collides
+// with a real catalog entry's joined string.
+// =============================================================================
+
+func TestUserMeFiltersSelectionsByStructuredKeyNotJoinedString(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	userBody := `{"name":"collision-user","peer_ip":"10.0.0.1","peer_asn":65001,"networks":["10.6.6.0/24"],"web_auth":"network","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create user: %d body=%s", w.Code, w.Body.String())
+	}
+
+	feedID, err := st.AddFeed(ctx, "Collision Feed", "http://example.com/collision.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "a", Service: "b|c", CIDR: "172.20.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert catalog entries: %v", err)
+	}
+	if err := st.RebuildModeEntries(ctx, 1); err != nil {
+		t.Fatalf("rebuild mode entries: %v", err)
+	}
+
+	// A selection for a pair that is NOT in the catalog, but joins to the
+	// same string as the real catalog pair above ("a|b" + "|" + "c" ==
+	// "a" + "|" + "b|c" == "a|b|c").
+	if err := st.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.SetUserModeSelection(ctx, tx, 1, 1, nil,
+			[]store.ServiceKey{{Category: "a|b", Service: "c"}})
+	}); err != nil {
+		t.Fatalf("set selection: %v", err)
+	}
+
+	req = httptest.NewRequest("GET", "/api/user/me", nil)
+	req.RemoteAddr = "10.6.6.1:1234"
+	w = httptest.NewRecorder()
+	srv.requireUser(srv.apiUserMe).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("apiUserMe: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Selections struct {
+			Services []store.ServiceKey `json:"services"`
+		} `json:"selections"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	for _, svc := range resp.Selections.Services {
+		if svc.Category == "a|b" && svc.Service == "c" {
+			t.Fatalf("selection for a nonexistent pair was resurrected as visible via a "+
+				"joined-string collision with a real catalog pair: %+v", resp.Selections.Services)
+		}
+	}
+}
+
+// =============================================================================
+// TestUserMeAndLoginReportCommunitiesWithoutPipeCollision — the end-user
+// page shows each category/service's community number next to its catalog
+// entry (restoring a feature the legacy server-rendered page had). Both
+// /api/user/me and /api/user/login must report it, and from structured
+// rows rather than GetCommunities' "category|service"-flattened map: a
+// category literally named "a|b" and the pair (category "a", service "b")
+// both flatten to the string "a|b" and would overwrite each other in that
+// single map.
+// =============================================================================
+
+func TestUserMeAndLoginReportCommunitiesWithoutPipeCollision(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	srv.loginLimiter = newRateLimiter(time.Minute, 1000)
+	ctx := context.Background()
+
+	userBody := `{"name":"comm-user","peer_ip":"10.7.7.1","peer_asn":65007,"networks":["10.7.7.0/24"],"web_auth":"login","enabled":true}`
+	req := httptest.NewRequest("POST", "/api/admin/users", strings.NewReader(userBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiUsersCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create user: %d body=%s", w.Code, w.Body.String())
+	}
+	credBody := `{"login":"comm-login","password":"test"}` //nolint:gosec // test credentials, not real
+	req = httptest.NewRequest("PUT", "/api/admin/users/1/credentials", strings.NewReader(credBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", "1")
+	w = httptest.NewRecorder()
+	srv.apiUserCredentialsSet(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("set credentials: %d", w.Code)
+	}
+
+	feedID, err := st.AddFeed(ctx, "Comm Feed", "http://example.com/comm.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "a", Service: "b", CIDR: "172.22.0.0/24"},
+		{Category: "a|b", Service: "x", CIDR: "172.22.1.0/24"},
+	}); err != nil {
+		t.Fatalf("insert catalog entries: %v", err)
+	}
+	if err := st.RebuildModeEntries(ctx, 1); err != nil {
+		t.Fatalf("rebuild mode entries: %v", err)
+	}
+	if _, err := st.GenerateCommunities(ctx, 1); err != nil {
+		t.Fatalf("generate communities: %v", err)
+	}
+
+	rows, err := st.CommunityRows(ctx, 1)
+	if err != nil {
+		t.Fatalf("read community rows: %v", err)
+	}
+	var wantGroupAB, wantServiceAB uint32
+	for _, row := range rows {
+		switch {
+		case row.Category == "a|b" && row.Service == "":
+			wantGroupAB = row.Community
+		case row.Category == "a" && row.Service == "b":
+			wantServiceAB = row.Community
+		}
+	}
+	if wantGroupAB == 0 || wantServiceAB == 0 {
+		t.Fatalf("fixture did not produce both assignments: group(a|b)=%d service(a,b)=%d",
+			wantGroupAB, wantServiceAB)
+	}
+	if wantGroupAB == wantServiceAB {
+		t.Fatalf("fixture produced colliding communities by coincidence: both %d", wantGroupAB)
+	}
+
+	checkCommunities := func(t *testing.T, items []userCommunityJSON) {
+		t.Helper()
+		var gotGroupAB, gotServiceAB uint32
+		var foundGroupAB, foundServiceAB bool
+		for _, c := range items {
+			if c.Category == "a|b" && c.Service == "" {
+				gotGroupAB = c.Community
+				foundGroupAB = true
+			}
+			if c.Category == "a" && c.Service == "b" {
+				gotServiceAB = c.Community
+				foundServiceAB = true
+			}
+		}
+		if !foundGroupAB || !foundServiceAB {
+			t.Fatalf("response missing one of the colliding pairs: group(a|b) found=%v, service(a,b) found=%v",
+				foundGroupAB, foundServiceAB)
+		}
+		if gotGroupAB != wantGroupAB {
+			t.Fatalf("group a|b community = %d, want %d (would be %d if collided with service a/b)",
+				gotGroupAB, wantGroupAB, wantServiceAB)
+		}
+		if gotServiceAB != wantServiceAB {
+			t.Fatalf("service a/b community = %d, want %d (would be %d if collided with group a|b)",
+				gotServiceAB, wantServiceAB, wantGroupAB)
+		}
+	}
+
+	// /api/user/login must include it (the SPA hydrates straight from this
+	// response, without a follow-up /api/user/me call).
+	loginBody := `{"login":"comm-login","password":"test"}` //nolint:gosec // test credentials, not real
+	req = httptest.NewRequest("POST", "/api/user/login", strings.NewReader(loginBody))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	srv.apiUserLogin(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login: %d body=%s", w.Code, w.Body.String())
+	}
+	var loginResp struct {
+		Communities []userCommunityJSON `json:"communities"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&loginResp); err != nil {
+		t.Fatal(err)
+	}
+	checkCommunities(t, loginResp.Communities)
+
+	var sessionCookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == userSessionCookieName {
+			sessionCookie = c
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("login did not set a session cookie")
+	}
+
+	// /api/user/me must include it too.
+	req = httptest.NewRequest("GET", "/api/user/me", nil)
+	req.AddCookie(sessionCookie)
+	w = httptest.NewRecorder()
+	srv.requireUser(srv.apiUserMe).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("apiUserMe: %d body=%s", w.Code, w.Body.String())
+	}
+	var meResp struct {
+		Communities []userCommunityJSON `json:"communities"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&meResp); err != nil {
+		t.Fatal(err)
+	}
+	checkCommunities(t, meResp.Communities)
 }
 
 // =============================================================================

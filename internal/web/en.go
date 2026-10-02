@@ -8,4 +8,5 @@ var enTranslations = map[string]string{
 	"title.db_mismatch":          "Database Version Mismatch",
 	"error.database_unavailable": "database unavailable",
 	"error.internal":             "internal server error",
+	"error.asn_unstable":         "ASN did not stabilize in time, retry",
 }

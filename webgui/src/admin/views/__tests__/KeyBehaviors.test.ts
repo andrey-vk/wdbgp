@@ -88,6 +88,13 @@ function stubPrimeVueComponents() {
     Popover: { template: '<div class="stub-popover"><slot /></div>', inheritAttrs: false },
     Toast: { template: '<div class="stub-toast"></div>', inheritAttrs: false },
     ConfirmDialog: { template: '<div class="stub-confirm"></div>', inheritAttrs: false },
+    // Honours `visible` so a test can tell "dialog not shown yet" from
+    // "dialog shown"; the real Dialog teleports and would not appear in html().
+    Dialog: {
+      props: ['visible', 'header'],
+      template: '<div v-if="visible" class="stub-dialog">{{ header }}<slot /><slot name="footer" /></div>',
+      inheritAttrs: false,
+    },
     ProgressSpinner: { template: '<div class="stub-spinner"></div>', inheritAttrs: false },
     SelectButton: { template: '<div class="stub-selectbtn"><slot /></div>', inheritAttrs: false },
   }
@@ -210,6 +217,143 @@ describe('CommunitiesPage duplicate validation', () => {
     // Check that the duplicate is detected
     const html = wrapper.html()
     expect(html).toContain('has-duplicate')
+  })
+})
+
+// ============================================================
+// Test: CommunitiesPage two-step reset
+// ============================================================
+
+describe('CommunitiesPage reset confirmation', () => {
+  it('previews the renumbering and only applies after confirming', async () => {
+    // The server answers an unconfirmed reset with the changes it would make.
+    mockPost.mockImplementation((url: string, body?: Record<string, unknown>) => {
+      if (!url.endsWith('/communities/reset')) return Promise.resolve({ data: {} })
+      if (body?.confirm) return Promise.resolve({ data: { ok: true, generated: 3 } })
+      return Promise.resolve({
+        data: {
+          ok: false,
+          confirm: true,
+          affected: 1,
+          changes: [{ category: 'Cat1', service: 'Svc1', old: 101, new: 10001 }],
+          digest: 'preview-digest-1',
+        },
+      })
+    })
+
+    const CommunitiesPage = (await import('@/admin/views/CommunitiesPage.vue')).default
+    const wrapper = mount(CommunitiesPage, {
+      global: { stubs: stubPrimeVueComponents() },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    // Nothing is asked until the operator asks for it.
+    expect(wrapper.find('.stub-dialog').exists()).toBe(false)
+
+    const resetButton = wrapper.findAll('button').find(b => b.text().includes('communities.reset'))
+    expect(resetButton).toBeDefined()
+    await resetButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    // First click must only ask, never renumber.
+    const firstCall = mockPost.mock.calls.find(c => String(c[0]).endsWith('/communities/reset'))
+    expect(firstCall).toBeDefined()
+    expect(firstCall![1]).toBeUndefined()
+
+    // The preview must show the old → new values, not just a count.
+    const html = wrapper.html()
+    expect(html).toContain('communities.reset_preview_warning')
+    expect(html).toContain('101')
+    expect(html).toContain('10001')
+
+    const applyButton = wrapper.findAll('button').find(b => b.text().includes('communities.reset_preview_apply'))
+    expect(applyButton).toBeDefined()
+    await applyButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    const confirmedCall = mockPost.mock.calls.find(
+      c => String(c[0]).endsWith('/communities/reset') && (c[1] as Record<string, unknown>)?.confirm === true,
+    )
+    expect(confirmedCall).toBeDefined()
+    // The digest echoed back must be the one this exact preview issued, not
+    // an empty or stale value — the server relies on it to detect a mode
+    // that changed underneath the operator between preview and apply.
+    expect((confirmedCall![1] as Record<string, unknown>).digest).toBe('preview-digest-1')
+  })
+
+  it('shows the updated preview and does not apply when the server reports it as stale', async () => {
+    let confirmAttempts = 0
+    mockPost.mockImplementation((url: string, body?: Record<string, unknown>) => {
+      if (!url.endsWith('/communities/reset')) return Promise.resolve({ data: {} })
+      if (body?.confirm) {
+        confirmAttempts++
+        // The mode changed between preview and apply (a feed sync, or
+        // another admin's edit) — the server refuses to apply the stale
+        // digest and hands back what the mode looks like now instead.
+        return Promise.reject({
+          isAxiosError: true,
+          response: {
+            status: 409,
+            data: {
+              ok: false,
+              confirm: true,
+              stale: true,
+              affected: 1,
+              changes: [{ category: 'Cat1', service: 'Svc1', old: 101, new: 20001 }],
+              digest: 'preview-digest-2',
+            },
+          },
+        })
+      }
+      return Promise.resolve({
+        data: {
+          ok: false,
+          confirm: true,
+          affected: 1,
+          changes: [{ category: 'Cat1', service: 'Svc1', old: 101, new: 10001 }],
+          digest: 'preview-digest-1',
+        },
+      })
+    })
+
+    const CommunitiesPage = (await import('@/admin/views/CommunitiesPage.vue')).default
+    const wrapper = mount(CommunitiesPage, {
+      global: { stubs: stubPrimeVueComponents() },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    const resetButton = wrapper.findAll('button').find(b => b.text().includes('communities.reset'))
+    await resetButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    expect(wrapper.html()).toContain('10001')
+
+    const applyButton = wrapper.findAll('button').find(b => b.text().includes('communities.reset_preview_apply'))
+    await applyButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    expect(confirmAttempts).toBe(1)
+    // The dialog must stay open showing the fresh numbers, not close as if
+    // the reset had applied.
+    expect(wrapper.find('.stub-dialog').exists()).toBe(true)
+    expect(wrapper.html()).toContain('20001')
+    expect(wrapper.html()).not.toContain('10001')
+
+    // Applying again must use the fresh digest, not the stale one.
+    await applyButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+    expect(confirmAttempts).toBe(2)
+    const confirmCalls = mockPost.mock.calls
+      .filter(c => String(c[0]).endsWith('/communities/reset') && (c[1] as Record<string, unknown>)?.confirm === true)
+    const secondConfirm = confirmCalls[confirmCalls.length - 1]
+    expect((secondConfirm[1] as Record<string, unknown>).digest).toBe('preview-digest-2')
   })
 })
 
@@ -372,5 +516,68 @@ describe('UserSelectionsPage stray count request', () => {
 
     await new Promise(resolve => setTimeout(resolve, 400))
     expect(mockPost).not.toHaveBeenCalled()
+  })
+})
+
+// ============================================================
+// Test: UserSelectionsPage service-key collision
+// ============================================================
+
+describe('UserSelectionsPage service identity', () => {
+  it('tracks two services independently even when category+service strings collide', async () => {
+    mockRouteParams = { id: '5' }
+    // (category "a", service "b::c") and (category "a::b", service "c")
+    // joined with "::" to the same string under the old key scheme. Only
+    // the first is pre-selected.
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/users/5/catalog') {
+        return Promise.resolve({
+          data: {
+            user: { id: 5, name: 'Collision User', catalog_mode_id: 1 },
+            modes: [{ id: 1, name: 'Default' }],
+            catalog: { a: ['b::c'], 'a::b': ['c'] },
+            prefix_counts: { v4: {}, v6: {} },
+            selections: { categories: [], services: [{ category: 'a', service: 'b::c' }] },
+          },
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+    mockPost.mockResolvedValue({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+    mockPut.mockResolvedValue({ data: {} })
+
+    const UserSelectionsPage = (await import('@/admin/views/UserSelectionsPage.vue')).default
+    const wrapper = mount(UserSelectionsPage, {
+      global: { stubs: stubPrimeVueComponents() },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    const selectedCheck = wrapper.findAll('span').find((s) => s.text() === 'b::c')
+    const collidingCheck = wrapper.findAll('span').find((s) => s.text() === 'c')
+    expect(selectedCheck).toBeDefined()
+    expect(collidingCheck).toBeDefined()
+
+    // The checkbox is the sibling div right before the label span.
+    const checkboxFor = (label: typeof selectedCheck) =>
+      label!.element.parentElement!.querySelector('div')!
+
+    expect(checkboxFor(selectedCheck).classList.contains('bg-blue-500')).toBe(true)
+    // Must NOT appear checked just because the colliding string is.
+    expect(checkboxFor(collidingCheck).classList.contains('bg-blue-500')).toBe(false)
+
+    const saveButton = wrapper.findAll('button').find((b) => b.text().includes('user.save'))
+    expect(saveButton).toBeDefined()
+    await saveButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    const putCall = mockPut.mock.calls.find((c) => String(c[0]).endsWith('/selections'))
+    expect(putCall).toBeDefined()
+    const services = (putCall![1] as { services: { category: string; service: string; checked: boolean }[] }).services
+    const sent = (category: string, service: string) =>
+      services.find((s) => s.category === category && s.service === service)?.checked
+
+    expect(sent('a', 'b::c')).toBe(true)
+    expect(sent('a::b', 'c')).toBe(false)
   })
 })

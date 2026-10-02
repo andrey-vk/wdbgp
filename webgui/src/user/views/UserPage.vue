@@ -76,6 +76,26 @@ function getServiceCount(service: string, category: string): number {
   return v4 + v6
 }
 
+// Keyed the same collision-free way as checkedServices: the backend sends a
+// flat list rather than a "category|service"-joined map for exactly this
+// reason (a category containing "|" could otherwise make this map show the
+// wrong number next to one of two colliding entries).
+const communityMap = computed<Map<string, number>>(() => {
+  const map = new Map<string, number>()
+  for (const c of data.value?.communities || []) {
+    map.set(serviceKey(c.category, c.service), c.community)
+  }
+  return map
+})
+
+function getCategoryCommunity(category: string): number | undefined {
+  return communityMap.value.get(serviceKey(category, ''))
+}
+
+function getServiceCommunity(service: string, category: string): number | undefined {
+  return communityMap.value.get(serviceKey(category, service))
+}
+
 function isCategoryFullyChecked(category: string): boolean {
   return checkedCategories.value.has(category)
 }
@@ -87,9 +107,17 @@ function isCategoryPartiallyChecked(category: string): boolean {
   return checkedCount > 0 && checkedCount < services.length
 }
 
+// JSON-encoded rather than joined with a separator: a category legitimately
+// containing "::" could collide with an unrelated pair (e.g. category "a"
+// service "b::c" vs. category "a::b" service "c"), corrupting checkedServices
+// membership checks and silently flipping which pair gets saved as checked.
+function serviceKey(category: string, service: string): string {
+  return JSON.stringify([category, service])
+}
+
 function isServiceChecked(service: string, category: string): boolean {
   if (checkedCategories.value.has(category)) return true
-  return checkedServices.value.has(`${category}::${service}`)
+  return checkedServices.value.has(serviceKey(category, service))
 }
 
 // countData holds the live, selection-aware count from
@@ -191,7 +219,7 @@ async function loadUserData(userData: UserDataResponse): Promise<void> {
     catSet.add(cat)
   }
   for (const svc of userData.selections?.services || []) {
-    svcSet.add(`${svc.category}::${svc.service}`)
+    svcSet.add(serviceKey(svc.category, svc.service))
   }
 
   checkedCategories.value = catSet
@@ -250,13 +278,13 @@ function toggleCategory(category: string): void {
     // Uncheck: remove category and all its services
     newCats.delete(category)
     for (const svc of services) {
-      newSvcs.delete(`${category}::${svc}`)
+      newSvcs.delete(serviceKey(category, svc))
     }
   } else {
     // Check: add category, remove individual service selections (they're implied)
     newCats.add(category)
     for (const svc of services) {
-      newSvcs.delete(`${category}::${svc}`)
+      newSvcs.delete(serviceKey(category, svc))
     }
   }
 
@@ -268,7 +296,7 @@ function toggleCategory(category: string): void {
 function toggleService(service: string, category: string): void {
   const newCats = new Set(checkedCategories.value)
   const newSvcs = new Set(checkedServices.value)
-  const key = `${category}::${service}`
+  const key = serviceKey(category, service)
   const services = catalog.value[category] || []
 
   if (isServiceChecked(service, category)) {
@@ -277,7 +305,7 @@ function toggleService(service: string, category: string): void {
       // Category was fully checked → remove from categories, add all OTHER services individually
       newCats.delete(category)
       for (const svc of services) {
-        const k = `${category}::${svc}`
+        const k = serviceKey(category, svc)
         if (svc !== service) {
           newSvcs.add(k)
         }
@@ -293,10 +321,10 @@ function toggleService(service: string, category: string): void {
     }
     newSvcs.add(key)
     // If now all services are checked, convert to category
-    if (services.every((s) => newSvcs.has(`${category}::${s}`))) {
+    if (services.every((s) => newSvcs.has(serviceKey(category, s)))) {
       newCats.add(category)
       for (const svc of services) {
-        newSvcs.delete(`${category}::${svc}`)
+        newSvcs.delete(serviceKey(category, svc))
       }
     }
   }
@@ -342,7 +370,7 @@ function buildSelectionPayload() {
       services.push({
         category: cat,
         service: svc,
-        checked: checkedServices.value.has(`${cat}::${svc}`),
+        checked: checkedServices.value.has(serviceKey(cat, svc)),
       })
     }
   }
@@ -545,6 +573,13 @@ onMounted(() => {
               >
                 {{ category }}
               </span>
+              <span
+                v-if="getCategoryCommunity(category)"
+                :title="t('user.community_group')"
+                class="text-xs font-mono px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300"
+              >
+                {{ getCategoryCommunity(category) }}
+              </span>
               <span class="text-xs text-gray-400 dark:text-gray-500">
                 (+{{ getCategoryCounts(category).v4 + getCategoryCounts(category).v6 }})
               </span>
@@ -578,6 +613,13 @@ onMounted(() => {
                 @click="!data.user.selection_locked && toggleService(service, category)"
               >
                 {{ service }}
+              </span>
+              <span
+                v-if="getServiceCommunity(service, category)"
+                :title="t('user.community_service')"
+                class="text-xs font-mono px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300"
+              >
+                {{ getServiceCommunity(service, category) }}
               </span>
               <span class="text-xs text-gray-400 dark:text-gray-500">
                 {{ getServiceCount(service, category).toLocaleString() }} {{ t('user.prefixes') }}

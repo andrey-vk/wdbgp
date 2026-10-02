@@ -2,6 +2,8 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -316,11 +318,19 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load mode"})
 		return
 	}
-	// Load existing communities
-	communities, err := s.store.GetCommunities(r.Context(), modeID)
+	// Load existing communities. Structured rows, not GetCommunities'
+	// "category|service"-flattened map: a category legitimately containing
+	// "|" would collide with that key scheme (e.g. category "a" service
+	// "b" vs. group "a|b"), silently showing the wrong number for one of
+	// the two in this list.
+	rows, err := s.store.CommunityRows(r.Context(), modeID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load communities"})
 		return
+	}
+	communities := make(map[store.ServiceKey]uint32, len(rows))
+	for _, row := range rows {
+		communities[store.ServiceKey{Category: row.Category, Service: row.Service}] = row.Community
 	}
 	// Load catalog (categories and services) for this mode
 	catalog, err := s.store.CatalogForMode(r.Context(), modeID, false)
@@ -340,7 +350,7 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 		services := catalog[category]
 		sort.Strings(services)
 		// Group-level community
-		grpComm := communities[category]
+		grpComm := communities[store.ServiceKey{Category: category}]
 		items = append(items, communityItemJSON{
 			Category:      category,
 			Service:       "",
@@ -349,8 +359,7 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 		})
 		// Service-level communities
 		for svcIndex, service := range services {
-			key := category + "|" + service
-			svcComm := communities[key]
+			svcComm := communities[store.ServiceKey{Category: category, Service: service}]
 			items = append(items, communityItemJSON{
 				Category:      category,
 				Service:       service,
@@ -385,17 +394,22 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	// Validate no duplicate community numbers within the mode
-	used := make(map[uint32]string) // community value -> "category|service"
+	// Validate no duplicate community numbers within the mode. Keyed by
+	// store.ServiceKey, not a "category|service"-joined string: a category
+	// legitimately containing "|" could otherwise make two genuinely
+	// different (category, service) pairs compare equal, letting a real
+	// duplicate community number through unflagged.
+	used := make(map[uint32]store.ServiceKey, len(body.Communities))
 	for _, c := range body.Communities {
-		key := c.Category + "|" + c.Service
 		if c.Community == 0 {
 			continue
 		}
+		key := store.ServiceKey{Category: c.Category, Service: c.Service}
 		if existing, ok := used[c.Community]; ok && existing != key {
 			writeJSON(w, http.StatusBadRequest, apiResponse{
-				OK:    false,
-				Error: "duplicate community " + strconv.FormatUint(uint64(c.Community), 10) + " between " + existing + " and " + key,
+				OK: false,
+				Error: "duplicate community " + strconv.FormatUint(uint64(c.Community), 10) + " between " +
+					existing.Category + "/" + existing.Service + " and " + c.Category + "/" + c.Service,
 			})
 			return
 		}
@@ -429,6 +443,16 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiModeCommunitiesReset handles POST /api/admin/modes/{id}/communities/reset.
+//
+// A reset renumbers assignments that downstream routers may have hardcoded
+// into their filter policies, and the resulting breakage looks like a network
+// fault rather than a config change. So the call is two-step: without
+// {"confirm": true} it writes nothing and returns the exact renumbering it
+// would perform, plus a digest of the state that preview was computed from.
+// Confirming must echo that digest back — if a feed sync or another admin
+// changed the mode in between, the digest no longer matches what confirm
+// would actually apply, and this hands back a fresh preview instead of
+// silently renumbering something the operator never reviewed.
 func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request) {
 	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	modeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -436,16 +460,32 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
 		return
 	}
-	if _, err := s.store.DB.ExecContext(r.Context(),
-		"DELETE FROM catalog_communities WHERE mode_id = ?", modeID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+	// An absent or empty body is treated as "not confirmed" rather than a
+	// parse error, so an unconfirmed reset always answers with the preview.
+	var body struct {
+		Confirm bool   `json:"confirm"`
+		Digest  string `json:"digest"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body) //nolint:errcheck // absent body means not confirmed
+	}
+
+	if !body.Confirm {
+		writePreview(w, r, s, modeID, false)
 		return
 	}
-	generated, err := s.store.GenerateCommunities(r.Context(), modeID)
+
+	generated, err := s.store.ResetCommunities(r.Context(), modeID, body.Digest)
+	if errors.Is(err, store.ErrCommunityResetStale) {
+		writePreview(w, r, s, modeID, true)
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	s.logAdminAction(r, "COMMUNITIES_RESET",
+		fmt.Sprintf("mode_id=%d generated=%d", modeID, generated))
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community reset", "error", err)
@@ -454,6 +494,31 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":        true,
 		"generated": generated,
+	})
+}
+
+// writePreview answers an unconfirmed (or stale-confirmed) reset request with
+// the current renumbering preview and the digest a follow-up confirm must
+// echo. stale marks a confirm that was rejected because the mode changed
+// since its digest was issued, so the caller can tell "first look at this"
+// apart from "the ground moved, look again" and render accordingly.
+func writePreview(w http.ResponseWriter, r *http.Request, s *Server, modeID int64, stale bool) {
+	changes, digest, err := s.store.PreviewCommunityReset(r.Context(), modeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	status := http.StatusOK
+	if stale {
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, map[string]any{
+		"ok":       false,
+		"confirm":  true,
+		"stale":    stale,
+		"changes":  changes,
+		"affected": len(changes),
+		"digest":   digest,
 	})
 }
 

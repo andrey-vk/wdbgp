@@ -1043,3 +1043,22 @@ func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error)
 // Batch-boundary coverage for catalog entry insertion lives with the
 // implementation now: see store.ReplaceCatalogEntries and its tests in
 // internal/store/dictionaries_test.go.
+
+// TestDeduplicateHandlesNulByteInNames covers a real collision in a naive
+// "category\x00service"-joined map key: feed parsing only trims whitespace,
+// so a NUL byte in a feed-provided name is valid input, and two distinct
+// (category, service) pairs can join to the same delimited string (category
+// "a" service "b\x00c" vs. category "a\x00b" service "c"). A map keyed by
+// the joined string would merge the two into one entry, silently dropping
+// whichever CIDR lost the race. deduplicate must keep both.
+func TestDeduplicateHandlesNulByteInNames(t *testing.T) {
+	entries := []Entry{
+		{Category: "a", Service: "b\x00c", CIDR: "10.0.0.0/24"},
+		{Category: "a\x00b", Service: "c", CIDR: "10.0.0.0/24"},
+	}
+	result := deduplicate(entries)
+	if len(result) != 2 {
+		t.Fatalf("deduplicate collapsed distinct (category, service) pairs: got %d entries, want 2: %+v",
+			len(result), result)
+	}
+}

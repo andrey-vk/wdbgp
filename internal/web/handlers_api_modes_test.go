@@ -435,8 +435,90 @@ func TestModeCommunities(t *testing.T) {
 		t.Fatalf("service community not updated to %d", newSvcComm)
 	}
 
-	// --- Reset communities ---
+	// --- Reset without confirmation: previews, writes nothing ---
 	req = httptest.NewRequest("POST", "/api/admin/modes/1/communities/reset", nil)
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeCommunitiesReset(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset preview: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var previewResp struct {
+		OK       bool                    `json:"ok"`
+		Confirm  bool                    `json:"confirm"`
+		Stale    bool                    `json:"stale"`
+		Affected int                     `json:"affected"`
+		Changes  []store.CommunityChange `json:"changes"`
+		Digest   string                  `json:"digest"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&previewResp); err != nil {
+		t.Fatalf("decode reset preview: %v", err)
+	}
+	if previewResp.OK || !previewResp.Confirm || previewResp.Stale {
+		t.Fatalf("unconfirmed reset should not apply: ok=%v confirm=%v stale=%v",
+			previewResp.OK, previewResp.Confirm, previewResp.Stale)
+	}
+	if previewResp.Digest == "" {
+		t.Fatal("preview response carried no digest")
+	}
+	// The custom values set above are exactly what a reset would undo.
+	if previewResp.Affected == 0 || len(previewResp.Changes) != previewResp.Affected {
+		t.Fatalf("preview affected = %d, changes = %d, want equal and > 0",
+			previewResp.Affected, len(previewResp.Changes))
+	}
+	for _, change := range previewResp.Changes {
+		if change.Old == change.New {
+			t.Fatalf("preview listed an unchanged pair: %+v", change)
+		}
+	}
+
+	// The preview must not have persisted its trial regeneration.
+	stillCustom, err := st.GetCommunities(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read communities after preview: %v", err)
+	}
+	if stillCustom["test-category"] != newGroupComm {
+		t.Fatalf("preview mutated stored community: got %d, want %d",
+			stillCustom["test-category"], newGroupComm)
+	}
+
+	// --- Reset confirmed with a stale digest: rejected, nothing written ---
+	req = httptest.NewRequest("POST", "/api/admin/modes/1/communities/reset",
+		strings.NewReader(`{"confirm":true,"digest":"not-the-real-digest"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeCommunitiesReset(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("stale-digest reset: status = %d, want 409, body=%s", w.Code, w.Body.String())
+	}
+	var staleResp struct {
+		OK      bool `json:"ok"`
+		Confirm bool `json:"confirm"`
+		Stale   bool `json:"stale"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&staleResp); err != nil {
+		t.Fatalf("decode stale response: %v", err)
+	}
+	if staleResp.OK || !staleResp.Confirm || !staleResp.Stale {
+		t.Fatalf("stale-digest reset response: ok=%v confirm=%v stale=%v, want false/true/true",
+			staleResp.OK, staleResp.Confirm, staleResp.Stale)
+	}
+	stillCustomAfterStale, err := st.GetCommunities(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read communities after stale-digest attempt: %v", err)
+	}
+	if stillCustomAfterStale["test-category"] != newGroupComm {
+		t.Fatalf("stale-digest reset mutated stored community: got %d, want %d",
+			stillCustomAfterStale["test-category"], newGroupComm)
+	}
+
+	// --- Reset with the digest the preview actually issued ---
+	req = httptest.NewRequest("POST", "/api/admin/modes/1/communities/reset",
+		strings.NewReader(`{"confirm":true,"digest":"`+previewResp.Digest+`"}`))
+	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
 	w = httptest.NewRecorder()
 	srv.apiModeCommunitiesReset(w, req)
@@ -473,6 +555,181 @@ func TestModeCommunities(t *testing.T) {
 		}
 		if c.Category == "test-category" && c.Service == "test-service" && c.Community == newSvcComm {
 			t.Fatal("service community should have been reset from custom value")
+		}
+	}
+}
+
+// TestModeCommunitiesGetHandlesPipeInCategoryName covers a real collision in
+// the naive "category|service"-keyed map GetCommunities returns: a category
+// literally named "a|b" and the pair (category "a", service "b") both
+// flatten to the string "a|b" and would overwrite each other in that single
+// map. apiModeCommunitiesGet must build its lookup from CommunityRows
+// instead, so both keep their own, independently assigned community.
+func TestModeCommunitiesGetHandlesPipeInCategoryName(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	createBody := strings.NewReader(`{"name":"Pipe Mode","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/modes", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiModesCreate(w, req)
+	var created modeJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	modeID := created.ID
+
+	feedID, err := st.AddFeed(ctx, "Pipe Feed", "http://example.com/pipe.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "a", Service: "b", CIDR: "172.16.0.0/24"},
+		{Category: "a|b", Service: "x", CIDR: "172.16.1.0/24"},
+	}); err != nil {
+		t.Fatalf("insert catalog entries: %v", err)
+	}
+
+	req = httptest.NewRequest("POST", "/api/admin/modes/1/communities/generate", nil)
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeCommunitiesGenerate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("generate communities: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	rows, err := st.CommunityRows(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read community rows: %v", err)
+	}
+	var wantGroupAB, wantServiceAB uint32
+	for _, row := range rows {
+		switch {
+		case row.Category == "a|b" && row.Service == "":
+			wantGroupAB = row.Community
+		case row.Category == "a" && row.Service == "b":
+			wantServiceAB = row.Community
+		}
+	}
+	if wantGroupAB == 0 || wantServiceAB == 0 {
+		t.Fatalf("fixture did not produce both assignments: group(a|b)=%d service(a,b)=%d",
+			wantGroupAB, wantServiceAB)
+	}
+	if wantGroupAB == wantServiceAB {
+		t.Fatalf("fixture produced colliding communities by coincidence: both %d", wantGroupAB)
+	}
+
+	req = httptest.NewRequest("GET", "/api/admin/modes/1/communities", nil)
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeCommunitiesGet(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get communities: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var getCommResp struct {
+		Communities []communityItemJSON `json:"communities"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&getCommResp); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotGroupAB, gotServiceAB uint32
+	var foundGroupAB, foundServiceAB bool
+	for _, c := range getCommResp.Communities {
+		if c.Category == "a|b" && c.Service == "" {
+			gotGroupAB = c.Community
+			foundGroupAB = true
+		}
+		if c.Category == "a" && c.Service == "b" {
+			gotServiceAB = c.Community
+			foundServiceAB = true
+		}
+	}
+	if !foundGroupAB || !foundServiceAB {
+		t.Fatalf("response missing one of the colliding pairs: group(a|b) found=%v, service(a,b) found=%v",
+			foundGroupAB, foundServiceAB)
+	}
+	if gotGroupAB != wantGroupAB {
+		t.Fatalf("group a|b community = %d, want %d (would be %d if collided with service a/b)",
+			gotGroupAB, wantGroupAB, wantServiceAB)
+	}
+	if gotServiceAB != wantServiceAB {
+		t.Fatalf("service a/b community = %d, want %d (would be %d if collided with group a|b)",
+			gotServiceAB, wantServiceAB, wantGroupAB)
+	}
+}
+
+// TestModeCommunitiesPutDetectsDuplicateAcrossPipeCollision covers a real
+// collision in the naive "category|service"-joined comparison the duplicate
+// -community check used: category "a" service "b|c" and category "a|b"
+// service "c" both join to "a|b|c", so the check treated them as the same
+// pair and never flagged the genuine duplicate up front. A real duplicate
+// still ends up rejected either way (SetCommunity enforces uniqueness by
+// normalized category/service ID, independent of this string join), but
+// without the up-front check the first entry in the request is written to
+// the database before the second one's SetCommunity call discovers the
+// clash and the request as a whole fails — leaving a partial write behind
+// a 400 response. The fix must catch it before any write happens.
+func TestModeCommunitiesPutDetectsDuplicateAcrossPipeCollision(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	createBody := strings.NewReader(`{"name":"Pipe Dup Mode","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/modes", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiModesCreate(w, req)
+	var created modeJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	modeID := created.ID
+
+	feedID, err := st.AddFeed(ctx, "Pipe Dup Feed", "http://example.com/pipedup.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("create feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "a", Service: "b|c", CIDR: "172.18.0.0/24"},
+		{Category: "a|b", Service: "c", CIDR: "172.18.1.0/24"},
+	}); err != nil {
+		t.Fatalf("insert catalog entries: %v", err)
+	}
+
+	putBody := `{"communities":[
+		{"category":"a","service":"b|c","community":20000},
+		{"category":"a|b","service":"c","community":20000}
+	]}`
+	req = httptest.NewRequest("PUT", "/api/admin/modes/1/communities", strings.NewReader(putBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeCommunitiesPut(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("put with a real duplicate hidden behind a \"|\"-join collision: "+
+			"status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+
+	// The up-front check must catch the collision before either SetCommunity
+	// call runs, so the rejected request leaves no partial write behind —
+	// neither pair should have been moved to the rejected value.
+	rows, err := st.CommunityRows(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read community rows: %v", err)
+	}
+	for _, row := range rows {
+		if row.Community == 20000 {
+			t.Fatalf("rejected duplicate PUT left a partial write: %+v", row)
 		}
 	}
 }

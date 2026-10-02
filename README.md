@@ -261,6 +261,123 @@ services: group+1, group+2…) and can be edited by the administrator at `/admin
 These communities are attached to every announced BGP prefix, allowing per-category
 and per-service traffic engineering on the router side.
 
+Community numbers are assigned **per catalog mode**: the same category can hold a
+different number in a different mode, so a user moved between modes changes the
+meaning of every community-matching rule on their router.
+
+The end-user selection page also shows each category's and service's community number
+next to it, so a user configuring their own router's filtering doesn't need to ask an
+administrator for the numbers.
+
+#### Community export
+
+`GET /api/communities` returns the complete community map as JSON, for generating
+downstream router policies instead of copying numbers by hand. It is authorized the
+same way as `/status` (a client IP in `WDBGP_STATUS_ALLOWED`, or
+`Authorization: Bearer <WDBGP_STATUS_TOKEN>`); an admin session is also accepted, so
+the Communities page can offer the same document as a download.
+
+Every mode is in one document, because a flat community→name map cannot express
+per-mode numbering. Each category and service carries its number, the rendered wire
+form (`<asn>:0:<number>`), and its current IPv4/IPv6 prefix counts — a category whose
+count collapses is an early signal that a feed broke.
+
+A feed sync publishes its catalog and generates communities for it as two separate
+transactions; the export reads the catalog, assignments, and prefix counts as one
+consistent snapshot — generating any missing assignments inside that same
+transaction — rather than ever returning a service with no assignment yet. That
+snapshot spans every mode in the document, not just each mode on its own: a feed
+shared by several modes publishes its update to all of them, so reading each mode
+independently could otherwise show the update applied to one mode but not yet to
+another. The ASN and configured-ASN values used to render every `large_community`
+string and `asn_configured` are likewise read after all of that database work finishes,
+not before — and both rechecked again right after rendering, redoing the render if
+either moved (an ordinary settings save changes the configured value with no BGP
+restart at all), so a change completing while the export was still assembling data (or
+even during the render itself) can never leave the response describing values that
+already stopped matching reality. If every attempt in the retry budget still sees one of
+them move, the endpoint answers `503 Service Unavailable` rather than publish a
+document already known to be stale — poll again once the config or restart settles.
+
+```console
+$ curl -sH "Authorization: Bearer $WDBGP_STATUS_TOKEN" http://wdbgp:8080/api/communities
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-30T18:33:53Z",
+  "asn": 64512,
+  "bgp_running": true,
+  "modes": [
+    {
+      "mode_id": 1,
+      "mode_name": "OpenCCK",
+      "enabled": true,
+      "categories": [
+        {
+          "name": "adobe",
+          "community": 10000,
+          "large_community": "64512:0:10000",
+          "prefix_count_v4": 352,
+          "prefix_count_v6": 33,
+          "services": [
+            { "name": "adobe.com", "community": 10001, "large_community": "64512:0:10001",
+              "prefix_count_v4": 143, "prefix_count_v6": 13 }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+`asn` is the value the running speaker actually stamps onto routes, which is its
+start-time snapshot rather than the live `WDBGP_LOCAL_ASN` setting. If the setting has
+been changed without restarting BGP, the new value appears separately as
+`asn_configured` — so a generated policy always matches what is on the wire. When no
+speaker is running, `bgp_running` is `false` and `asn` reports the configured value.
+
+This document reflects the database's intended state. BGP delivery to peers is
+asynchronous and best-effort (a community edit, reset, or feed sync commits first and
+reconciles afterward), and this endpoint has no way to tie a specific exported value to
+confirmation that it actually reached peers — doing that precisely would need a revision
+tracked through every write path that can affect announced routes, which is a larger
+change than this endpoint attempts. `/api/admin/bgp/status` and the per-peer state on the
+Users page are the existing way to check the BGP session itself is healthy.
+
+For polling, the response carries an `ETag` that covers the document's content but not
+`generated_at`, so an unchanged map answers `304 Not Modified`. It's a weak validator
+(`W/"…"`) rather than a strong one — two responses sharing it are semantically
+equivalent, not byte-for-byte identical (`generated_at` differs), which is exactly what
+weak comparison is for. `If-None-Match` is matched per RFC 7232 §2.3: weakly (ignoring
+any `W/` prefix on either side), against every validator in a comma-separated list, and
+`*` always matches — not just the single exact string this endpoint itself emits:
+
+```console
+$ curl -sD- -o/dev/null -H "Authorization: Bearer $TOKEN" \
+    -H 'If-None-Match: W/"b178345bbd…"' http://wdbgp:8080/api/communities
+HTTP/1.1 304 Not Modified
+```
+
+`schema_version` changes only if the document's shape changes incompatibly.
+
+#### Renumbering
+
+"Regenerate missing" only fills gaps — existing assignments are never moved, so it is
+safe to run after a feed sync adds services. "Reset to defaults" is different: it
+discards every assignment and renumbers from scratch, which silently invalidates any
+downstream policy matching the old values, and the resulting breakage looks like a
+network fault rather than a config change. It therefore asks first and shows exactly
+which values would change; on an instance whose communities were generated
+incrementally across several feed syncs, that is typically *most* of them.
+
+The preview's response carries a `digest` alongside the change list, fingerprinting the
+exact state it was computed from — including the mode's own ID, so two modes that
+happen to share identical community assignments (common when they share feeds) never
+share a digest; a preview for one can't be used to authorize a reset on the other.
+Applying it (`{"confirm": true, "digest": "..."}`) must echo that digest back; if the
+mode changed in the meantime — a feed sync regenerated communities, or another admin
+edited one — the digest no longer matches and the reset is refused (`409`) with a fresh
+preview instead of silently renumbering something nobody actually reviewed.
+
 ### Validation and constraints
 
 All values are validated on startup with helpful error messages. If not specified, defaults apply.

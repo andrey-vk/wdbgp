@@ -94,6 +94,41 @@ type userPublic struct {
 	Networks        []string `json:"networks"`
 }
 
+// userCommunityJSON is one category or service's community number, as shown
+// to the end user next to its catalog entry so they can match it in their
+// own router's filtering policy.
+type userCommunityJSON struct {
+	Category  string `json:"category"`
+	Service   string `json:"service"`
+	Community uint32 `json:"community"`
+}
+
+// userCommunities lists a mode's community assignments for display on the
+// user-facing selection page. Structured rows, not GetCommunities'
+// "category|service"-flattened map: a category legitimately containing "|"
+// would collide with that key scheme (e.g. category "a" service "b" vs.
+// group "a|b"), showing the wrong number next to one of the two. Unfiltered
+// by catalog visibility, same as the legacy server-rendered page this
+// mirrors: the template only ever looked up a community for an item it was
+// already iterating from the live catalog, so a stale row for an item no
+// longer in the catalog was simply never looked up — no separate filtering
+// was needed there, and none is needed here.
+func (s *Server) userCommunities(ctx context.Context, modeID int64) ([]userCommunityJSON, error) {
+	rows, err := s.store.CommunityRows(ctx, modeID)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]userCommunityJSON, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, userCommunityJSON{
+			Category:  row.Category,
+			Service:   row.Service,
+			Community: row.Community,
+		})
+	}
+	return items, nil
+}
+
 // apiUserMe handles GET /api/user/me.
 // Returns the authenticated user's full data: user info, catalog, selections, communities, prefix counts, filters.
 func (s *Server) apiUserMe(w http.ResponseWriter, r *http.Request) {
@@ -116,13 +151,16 @@ func (s *Server) apiUserMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	// Build sets of visible categories/services from catalog
+	// Build sets of visible categories/services from catalog. Keyed by
+	// store.ServiceKey, not a "category|service"-joined string: a category
+	// legitimately containing "|" could otherwise make an unrelated
+	// (category, service) pair look visible when it wasn't.
 	visibleCats := make(map[string]bool)
-	visibleSvcs := make(map[string]bool)
+	visibleSvcs := make(map[store.ServiceKey]bool)
 	for cat, svcList := range catalog {
 		visibleCats[cat] = true
 		for _, svc := range svcList {
-			visibleSvcs[cat+"|"+svc] = true
+			visibleSvcs[store.ServiceKey{Category: cat, Service: svc}] = true
 		}
 	}
 	catList := make([]string, 0)
@@ -133,13 +171,13 @@ func (s *Server) apiUserMe(w http.ResponseWriter, r *http.Request) {
 	}
 	svcList := make([]store.ServiceKey, 0)
 	for k := range services {
-		if visibleSvcs[k.Category+"|"+k.Service] {
+		if visibleSvcs[k] {
 			svcList = append(svcList, k)
 		}
 	}
 
 	// Communities
-	communities, err := s.store.GetCommunities(ctx, user.CatalogModeID)
+	communities, err := s.userCommunities(ctx, user.CatalogModeID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
@@ -263,11 +301,11 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	visibleCats := make(map[string]bool)
-	visibleSvcs := make(map[string]bool)
+	visibleSvcs := make(map[store.ServiceKey]bool)
 	for cat, svcList := range loginCatalog {
 		visibleCats[cat] = true
 		for _, svc := range svcList {
-			visibleSvcs[cat+"|"+svc] = true
+			visibleSvcs[store.ServiceKey{Category: cat, Service: svc}] = true
 		}
 	}
 	loginCatList := make([]string, 0)
@@ -278,11 +316,20 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	loginSvcList := make([]store.ServiceKey, 0)
 	for k := range loginServices {
-		if visibleSvcs[k.Category+"|"+k.Service] {
+		if visibleSvcs[k] {
 			loginSvcList = append(loginSvcList, k)
 		}
 	}
 	loginFilters, err := s.store.UserRouteFilters(ctx, user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	// Communities (same as /api/user/me) — the login response hydrates the
+	// page directly, without a follow-up /api/user/me call, so it needs the
+	// same fields.
+	loginCommunities, err := s.userCommunities(ctx, user.CatalogModeID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
@@ -317,6 +364,7 @@ func (s *Server) apiUserLogin(w http.ResponseWriter, r *http.Request) {
 		},
 		"catalog":       loginCatalog,
 		"selections":    map[string]any{"categories": loginCatList, "services": loginSvcList},
+		"communities":   loginCommunities,
 		"filters":       loginFilters,
 		"prefix_counts": map[string]any{"v4": v4Prefixes, "v6": v6Prefixes},
 		"modes":         modes,

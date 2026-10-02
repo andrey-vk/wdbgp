@@ -59,6 +59,13 @@ type fakeBGP struct {
 	// started) without disturbing the default fake entry every other test
 	// relies on.
 	peerStates map[string]string
+
+	// activeASN is the speaker's start-time ASN snapshot reported by
+	// ActiveASN, for tests that need it to differ from the LocalASN setting.
+	activeASN uint32
+
+	// beforeActiveASN, when set, runs at the start of ActiveASN.
+	beforeActiveASN func()
 }
 
 func (f *fakeBGP) Reconcile(context.Context) error {
@@ -101,6 +108,23 @@ func (f *fakeBGP) DeletePeer(context.Context, string, int64) error {
 
 func (f *fakeBGP) Status() (bool, error) {
 	return !f.down, f.downErr
+}
+
+// ActiveASN mirrors Status' running check. activeASN lets a test simulate a
+// speaker whose start-time snapshot has diverged from the LocalASN setting;
+// zero means "same as configured", which is what every existing test wants.
+// beforeActiveASN, when set, runs just before activeASN is read — for a
+// test simulating a BGP restart (changing the active ASN) landing exactly
+// when a caller checks it, to verify the caller used the value from
+// *before* or *after* that restart consistently, never a mix of both.
+func (f *fakeBGP) ActiveASN() (uint32, bool) {
+	if f.beforeActiveASN != nil {
+		f.beforeActiveASN()
+	}
+	if f.down {
+		return 0, false
+	}
+	return f.activeASN, true
 }
 
 // adminCookie returns a valid admin session cookie for API tests.

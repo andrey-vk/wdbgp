@@ -8,4 +8,5 @@ var ruTranslations = map[string]string{
 	"title.db_mismatch":          "Несоответствие версии базы данных",
 	"error.database_unavailable": "база данных недоступна",
 	"error.internal":             "внутренняя ошибка сервера",
+	"error.asn_unstable":         "ASN не успел стабилизироваться, повторите запрос",
 }

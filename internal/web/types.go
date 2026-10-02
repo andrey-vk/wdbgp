@@ -24,6 +24,10 @@ type BGP interface {
 	// error from the last failed Start/ReloadPeers attempt (nil when
 	// running is true).
 	Status() (running bool, lastErr error)
+	// ActiveASN reports the ASN the running speaker stamps into announced
+	// communities, which can lag the LocalASN setting until a restart.
+	// ok is false when no speaker is running.
+	ActiveASN() (asn uint32, ok bool)
 }
 
 type Server struct {

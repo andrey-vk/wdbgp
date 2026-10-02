@@ -15,12 +15,18 @@ type CatalogMode struct {
 }
 
 func (s *Store) CatalogModes(ctx context.Context, enabledOnly bool) ([]CatalogMode, error) {
+	return catalogModes(ctx, s.DB, enabledOnly)
+}
+
+// catalogModes is CatalogModes' implementation, parameterized on queryer —
+// see catalogForMode's doc comment for why.
+func catalogModes(ctx context.Context, q queryer, enabledOnly bool) ([]CatalogMode, error) {
 	query := "SELECT id, name, enabled FROM catalog_modes"
 	if enabledOnly {
 		query += " WHERE enabled = 1"
 	}
 	query += " ORDER BY id"
-	rows, err := s.DB.QueryContext(ctx, query)
+	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}

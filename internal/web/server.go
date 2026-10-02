@@ -51,6 +51,9 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.HandleFunc("GET /status", server.status)
+	// Machine-readable community map. Token/CIDR-gated like /status rather
+	// than session-gated, so it is pollable from a config generator.
+	mux.HandleFunc("GET /api/communities", server.apiCommunitiesExport)
 
 	// === SPA static file serving ===
 	if server.spaFS != nil {

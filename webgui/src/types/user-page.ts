@@ -20,6 +20,16 @@ export interface RouteFilters {
   deny: string[]
 }
 
+// A flat list, not a "category|service"-keyed map: a category legitimately
+// containing "|" would collide with that key scheme (e.g. category "a"
+// service "b" vs. group "a|b"), showing the wrong number next to one of the
+// two. service is "" for a category (group)-level community.
+export interface UserCommunity {
+  category: string
+  service: string
+  community: number
+}
+
 export interface UserDataResponse {
   user: UserPublic
   catalog: Catalog
@@ -27,7 +37,7 @@ export interface UserDataResponse {
     categories: string[]
     services: Array<{ category: string; service: string }>
   }
-  communities: Record<string, number>
+  communities: UserCommunity[]
   prefix_counts: {
     v4: Record<string, Record<string, number>>
     v6: Record<string, Record<string, number>>
@@ -43,6 +53,7 @@ export interface LoginResponse {
     categories: string[]
     services: Array<{ category: string; service: string }>
   }
+  communities: UserCommunity[]
   filters: RouteFilters
   prefix_counts: {
     v4: Record<string, Record<string, number>>
