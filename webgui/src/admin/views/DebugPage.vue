@@ -160,9 +160,13 @@ function pct(v: number | undefined | null): string {
             <h2 class="m-0 text-base font-semibold">{{ t('debug.full_coverage') }}</h2>
           </div>
           <div class="flex flex-col gap-1">
+            <!-- Index as key: a category legitimately containing "-"
+                 could collide with an unrelated pair under a joined
+                 string key, and result is always replaced wholesale on
+                 each lookup, so the index is a safe identity here. -->
             <div
-              v-for="item in result.full_services"
-              :key="`full-${item.category}-${item.service}`"
+              v-for="(item, index) in result.full_services"
+              :key="index"
               class="flex justify-between items-center py-1.5"
             >
               <span class="text-color">{{ item.category }} / {{ item.service }}</span>
@@ -180,8 +184,8 @@ function pct(v: number | undefined | null): string {
           </div>
           <div class="flex flex-col gap-1">
             <div
-              v-for="item in result.partial_services"
-              :key="`partial-${item.category}-${item.service}`"
+              v-for="(item, index) in result.partial_services"
+              :key="index"
               class="flex justify-between items-center py-1.5"
             >
               <span class="text-color">{{ item.category }} / {{ item.service }}</span>

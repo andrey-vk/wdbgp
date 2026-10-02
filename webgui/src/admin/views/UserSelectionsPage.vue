@@ -54,6 +54,14 @@ function getCategoryCounts(category: string): { v4: number; v6: number } {
   }
 }
 
+// JSON-encoded rather than joined with a separator: a category legitimately
+// containing "::" could collide with an unrelated pair (e.g. category "a"
+// service "b::c" vs. category "a::b" service "c"), corrupting checkedServices
+// membership checks and silently flipping which pair gets saved as checked.
+function serviceKey(category: string, service: string): string {
+  return JSON.stringify([category, service])
+}
+
 function getServiceCount(service: string, category: string): number {
   if (!data.value?.prefix_counts) return 0
   const v4 = data.value.prefix_counts.v4?.[category]?.[service] || 0
@@ -74,7 +82,7 @@ function isCategoryPartiallyChecked(category: string): boolean {
 
 function isServiceChecked(service: string, category: string): boolean {
   if (checkedCategories.value.has(category)) return true
-  return checkedServices.value.has(`${category}::${service}`)
+  return checkedServices.value.has(serviceKey(category, service))
 }
 
 const totalV4 = computed(() => {
@@ -136,7 +144,7 @@ async function loadData(): Promise<void> {
       catSet.add(cat)
     }
     for (const svc of resp.data.selections?.services || []) {
-      svcSet.add(`${svc.category}::${svc.service}`)
+      svcSet.add(serviceKey(svc.category, svc.service))
     }
 
     checkedCategories.value = catSet
@@ -167,12 +175,12 @@ function toggleCategory(category: string): void {
   if (newCats.has(category)) {
     newCats.delete(category)
     for (const svc of services) {
-      newSvcs.delete(`${category}::${svc}`)
+      newSvcs.delete(serviceKey(category, svc))
     }
   } else {
     newCats.add(category)
     for (const svc of services) {
-      newSvcs.delete(`${category}::${svc}`)
+      newSvcs.delete(serviceKey(category, svc))
     }
   }
 
@@ -184,14 +192,14 @@ function toggleCategory(category: string): void {
 function toggleService(service: string, category: string): void {
   const newCats = new Set(checkedCategories.value)
   const newSvcs = new Set(checkedServices.value)
-  const key = `${category}::${service}`
+  const key = serviceKey(category, service)
   const services = catalog.value[category] || []
 
   if (isServiceChecked(service, category)) {
     if (newCats.has(category)) {
       newCats.delete(category)
       for (const svc of services) {
-        const k = `${category}::${svc}`
+        const k = serviceKey(category, svc)
         if (svc !== service) {
           newSvcs.add(k)
         }
@@ -204,10 +212,10 @@ function toggleService(service: string, category: string): void {
       return
     }
     newSvcs.add(key)
-    if (services.every((s) => newSvcs.has(`${category}::${s}`))) {
+    if (services.every((s) => newSvcs.has(serviceKey(category, s)))) {
       newCats.add(category)
       for (const svc of services) {
-        newSvcs.delete(`${category}::${svc}`)
+        newSvcs.delete(serviceKey(category, svc))
       }
     }
   }

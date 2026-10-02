@@ -88,8 +88,19 @@ const duplicateValues = computed<Set<number>>(() => {
   return dups
 })
 
+// JSON-encoded rather than joined with a separator: a category legitimately
+// containing "::" could collide with an unrelated pair (e.g. category "a"
+// service "b::c" vs. category "a::b" service "c"), corrupting the dirty
+// check and the originalValues lookup this keys into.
 function communityKey(item: CommunityItem): string {
-  return item.category + '::' + item.service
+  return JSON.stringify([item.category, item.service])
+}
+
+// Same collision as communityKey, but for an HTML id attribute: two
+// InputNumbers sharing one id is invalid markup, so this needs to be
+// unique too, just URL/id-safe rather than raw JSON.
+function communityInputId(item: CommunityItem): string {
+  return 'comm-svc-' + encodeURIComponent(communityKey(item))
 }
 
 function markDirty() {
@@ -319,7 +330,7 @@ async function copyExportUrl() {
           <div v-for="item in group.serviceItems" :key="communityKey(item)" class="flex items-center gap-4 px-4 py-2 border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors last:border-b-0 max-md:flex-col max-md:items-start max-md:gap-1 max-md:px-3">
             <span class="flex-1 truncate text-gray-500 dark:text-gray-400 pl-6">{{ item.service }}</span>
             <div class="flex items-center gap-2 shrink-0" :class="{ 'has-duplicate': duplicateValues.has(item.community) && item.community !== 0 }">
-              <InputNumber :input-id="'comm-svc-' + item.category + '-' + item.service" v-model="item.community" :min="0" class="w-28" @update:model-value="markDirty" />
+              <InputNumber :input-id="communityInputId(item)" v-model="item.community" :min="0" class="w-28" @update:model-value="markDirty" />
               <span class="text-gray-400 dark:text-gray-500 text-sm whitespace-nowrap min-w-[5rem]">auto {{ item.auto_community }}</span>
             </div>
           </div>
@@ -341,9 +352,14 @@ async function copyExportUrl() {
       <p class="mb-3">{{ t('communities.reset_preview_warning') }}</p>
       <p class="mb-3 font-semibold">{{ t('communities.reset_preview_count', { count: resetChanges.length }) }}</p>
       <div class="max-h-[50vh] overflow-y-auto border border-gray-200 dark:border-gray-700 rounded">
+        <!-- Index as key, not category/service: a category legitimately
+             containing "::" could collide with an unrelated pair (e.g.
+             category "a" service "b::c" vs. category "a::b" service "c").
+             resetChanges is always replaced wholesale (never spliced), so
+             the index is a safe, collision-free identity for this list. -->
         <div
-          v-for="change in resetChanges"
-          :key="change.category + '::' + change.service"
+          v-for="(change, index) in resetChanges"
+          :key="index"
           class="flex items-center gap-3 px-3 py-1.5 border-b border-gray-100 dark:border-gray-800 last:border-b-0 text-sm"
         >
           <span class="flex-1 truncate">

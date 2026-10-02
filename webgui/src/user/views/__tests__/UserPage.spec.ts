@@ -398,4 +398,70 @@ describe('UserPage', () => {
       vi.useRealTimers()
     }
   })
+
+  it('tracks two services independently even when category+service strings collide', async () => {
+    // (category "a", service "b::c") and (category "a::b", service "c")
+    // joined with "::" to the same string under the old key scheme. Only
+    // the first is pre-selected.
+    const userData = {
+      user: {
+        id: 1,
+        name: 'Alice',
+        catalog_mode_id: 1,
+        catalog_mode_name: 'Mode A',
+        selection_locked: false,
+        filter_editable: false,
+        filter_override: false,
+        filter_mode: 'allow',
+        catalog_editable: true,
+        networks: [],
+      },
+      catalog: { a: ['b::c'], 'a::b': ['c'] },
+      selections: { categories: [], services: [{ category: 'a', service: 'b::c' }] },
+      communities: {},
+      prefix_counts: { v4: {}, v6: {} },
+      filters: { allow: [], deny: [] },
+      modes: [],
+    }
+    mockGet.mockResolvedValue({ data: userData })
+    mockPost.mockResolvedValue({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+
+    const UserPage = (await import('../UserPage.vue')).default
+    const wrapper = mount(UserPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+          Toast: { template: '<div class="stub-toast" />' },
+        },
+      },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.vm.$nextTick()
+
+    const selectedLabel = wrapper.findAll('span').find((s) => s.text() === 'b::c')
+    const collidingLabel = wrapper.findAll('span').find((s) => s.text() === 'c')
+    expect(selectedLabel).toBeDefined()
+    expect(collidingLabel).toBeDefined()
+
+    const checkboxFor = (label: typeof selectedLabel) =>
+      label!.element.parentElement!.querySelector('div')!
+
+    expect(checkboxFor(selectedLabel).classList.contains('bg-blue-500')).toBe(true)
+    // Must NOT appear checked just because the colliding string is.
+    expect(checkboxFor(collidingLabel).classList.contains('bg-blue-500')).toBe(false)
+
+    mockPost.mockClear()
+    await wrapper.find('[data-testid="save-selections"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+
+    const saveCall = mockPost.mock.calls.find((c) => c[0] === '/user/selections')
+    expect(saveCall).toBeDefined()
+    const services = (saveCall![1] as { services: { category: string; service: string; checked: boolean }[] }).services
+    const sent = (category: string, service: string) =>
+      services.find((s) => s.category === category && s.service === service)?.checked
+
+    expect(sent('a', 'b::c')).toBe(true)
+    expect(sent('a::b', 'c')).toBe(false)
+  })
 })

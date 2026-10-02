@@ -518,3 +518,66 @@ describe('UserSelectionsPage stray count request', () => {
     expect(mockPost).not.toHaveBeenCalled()
   })
 })
+
+// ============================================================
+// Test: UserSelectionsPage service-key collision
+// ============================================================
+
+describe('UserSelectionsPage service identity', () => {
+  it('tracks two services independently even when category+service strings collide', async () => {
+    mockRouteParams = { id: '5' }
+    // (category "a", service "b::c") and (category "a::b", service "c")
+    // joined with "::" to the same string under the old key scheme. Only
+    // the first is pre-selected.
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/users/5/catalog') {
+        return Promise.resolve({
+          data: {
+            user: { id: 5, name: 'Collision User', catalog_mode_id: 1 },
+            modes: [{ id: 1, name: 'Default' }],
+            catalog: { a: ['b::c'], 'a::b': ['c'] },
+            prefix_counts: { v4: {}, v6: {} },
+            selections: { categories: [], services: [{ category: 'a', service: 'b::c' }] },
+          },
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+    mockPost.mockResolvedValue({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+    mockPut.mockResolvedValue({ data: {} })
+
+    const UserSelectionsPage = (await import('@/admin/views/UserSelectionsPage.vue')).default
+    const wrapper = mount(UserSelectionsPage, {
+      global: { stubs: stubPrimeVueComponents() },
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    const selectedCheck = wrapper.findAll('span').find((s) => s.text() === 'b::c')
+    const collidingCheck = wrapper.findAll('span').find((s) => s.text() === 'c')
+    expect(selectedCheck).toBeDefined()
+    expect(collidingCheck).toBeDefined()
+
+    // The checkbox is the sibling div right before the label span.
+    const checkboxFor = (label: typeof selectedCheck) =>
+      label!.element.parentElement!.querySelector('div')!
+
+    expect(checkboxFor(selectedCheck).classList.contains('bg-blue-500')).toBe(true)
+    // Must NOT appear checked just because the colliding string is.
+    expect(checkboxFor(collidingCheck).classList.contains('bg-blue-500')).toBe(false)
+
+    const saveButton = wrapper.findAll('button').find((b) => b.text().includes('user.save'))
+    expect(saveButton).toBeDefined()
+    await saveButton!.trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    const putCall = mockPut.mock.calls.find((c) => String(c[0]).endsWith('/selections'))
+    expect(putCall).toBeDefined()
+    const services = (putCall![1] as { services: { category: string; service: string; checked: boolean }[] }).services
+    const sent = (category: string, service: string) =>
+      services.find((s) => s.category === category && s.service === service)?.checked
+
+    expect(sent('a', 'b::c')).toBe(true)
+    expect(sent('a::b', 'c')).toBe(false)
+  })
+})
