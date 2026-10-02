@@ -874,5 +874,106 @@ describe('UserPage', () => {
       // previous mode's lookup answer no longer applies.
       expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
     })
+
+    it('formats a boundary-adjacent partial percentage without rounding to 0% or 100%, which would contradict the partial verdict', async () => {
+      // A /24 minus one denied /32 is 99.609375% delivered; a single
+      // covered /32 out of a /24 is 0.390625%. Plain Math.round would
+      // render these as "100%" and "0%" respectively — each flatly
+      // contradicting a "partial" label sitting right next to it.
+      const result = {
+        query: '8.8.8.0/24',
+        matches: [
+          { category: 'AI', service: 'ChatGPT', percentage: 99.609375, selected: true },
+          { category: 'Other', service: 'Thing', percentage: 0.390625, selected: true },
+        ],
+        before_percentage: 100,
+        after_percentage: 99.609375,
+        in_tunnel: true,
+      }
+      const wrapper = await mountWithLookup(() => Promise.resolve({ data: result }))
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      const rows = wrapper.findAll('[data-testid="lookup-match"]')
+      expect(rows[0].text()).toContain('>99%')
+      expect(rows[0].text()).not.toContain('100%')
+      expect(rows[1].text()).toContain('<1%')
+      expect(rows[1].text()).not.toContain('0%')
+    })
+
+    it('invalidates an in-flight lookup when a selection save succeeds while it is still pending', async () => {
+      let resolveLookup: (v: { data: unknown }) => void = () => {}
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
+        if (url === '/user/debug') return new Promise((resolve) => { resolveLookup = resolve })
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      mockPost.mockResolvedValue({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click') // left pending, unresolved
+
+      await wrapper.find('[data-testid="save-selections"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+
+      // The stale in-flight lookup finally resolves AFTER the save already
+      // cleared the state — without bumping the sequence, this would
+      // silently repopulate it with the pre-save answer.
+      resolveLookup({
+        data: {
+          query: '8.8.8.0/24',
+          matches: [{ category: 'AI', service: 'ChatGPT', percentage: 100, selected: true }],
+          before_percentage: 100,
+          after_percentage: 100,
+          in_tunnel: true,
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+    })
+
+    it('clears the displayed result as soon as the query is edited, before resubmitting', async () => {
+      const result = {
+        query: '8.8.8.0/24',
+        matches: [{ category: 'AI', service: 'ChatGPT', percentage: 100, selected: true }],
+        before_percentage: 100,
+        after_percentage: 100,
+        in_tunnel: true,
+      }
+      const wrapper = await mountWithLookup(() => Promise.resolve({ data: result }))
+
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.8.0/24')
+      await wrapper.find('[data-testid="lookup-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(true)
+
+      // Edit without resubmitting: the old answer no longer describes
+      // what's in the box and must not linger underneath it.
+      await wrapper.find('[data-testid="lookup-input"]').setValue('8.8.9.0/24')
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+    })
   })
 })

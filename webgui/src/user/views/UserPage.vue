@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
 import axios from 'axios'
@@ -205,8 +205,7 @@ async function handleLogout(): Promise<void> {
   checkedCategories.value = new Set()
   checkedServices.value = new Set()
   lookupQuery.value = ''
-  lookupError.value = ''
-  lookupResult.value = null
+  invalidateLookup()
   loginForm.login = ''
   loginForm.password = ''
 }
@@ -234,13 +233,14 @@ async function loadUserData(userData: UserDataResponse): Promise<void> {
   filterAllow.value = (userData.filters?.allow || []).join('\n')
   filterDeny.value = (userData.filters?.deny || []).join('\n')
 
-  // A previous lookup result describes the catalog mode and selections at
-  // the time it ran. This function reloads both (called after a mode
-  // switch, on login, and on initial auth check), so any prior answer may
-  // no longer be accurate — clear it rather than leave a stale verdict
-  // displayed under a now-different configuration.
-  lookupResult.value = null
-  lookupError.value = ''
+  // A previous (or still in-flight) lookup describes the catalog mode and
+  // selections at the time it ran. This function reloads both (called
+  // after a mode switch, on login, and on initial auth check), so any
+  // prior or pending answer may no longer be accurate — invalidate it
+  // rather than leave a stale verdict displayed, or let an in-flight
+  // request that resolves afterward repopulate it, under a now-different
+  // configuration.
+  invalidateLookup()
 
   // Fetch live counts
   await fetchCounts()
@@ -400,10 +400,10 @@ async function saveSelections(): Promise<void> {
     // be measured against — without this, the delta badge keeps showing
     // the pre-save delta as if it were still unsaved.
     await fetchCounts()
-    // A previous lookup result reflects selections as they were before this
-    // save — clear it rather than leave a now-possibly-wrong verdict shown.
-    lookupResult.value = null
-    lookupError.value = ''
+    // A previous or in-flight lookup reflects selections as they were
+    // before this save — invalidate it rather than leave a now-possibly
+    // -wrong verdict shown, or let a request still in flight repopulate it.
+    invalidateLookup()
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
@@ -425,10 +425,10 @@ async function saveFilters(): Promise<void> {
       .map((l) => l.trim())
       .filter(Boolean)
     await userApi.post('/user/filters', { allow, deny })
-    // A previous lookup result reflects filters as they were before this
-    // save — clear it rather than leave a now-possibly-wrong verdict shown.
-    lookupResult.value = null
-    lookupError.value = ''
+    // A previous or in-flight lookup reflects filters as they were before
+    // this save — invalidate it rather than leave a now-possibly-wrong
+    // verdict shown, or let a request still in flight repopulate it.
+    invalidateLookup()
     toast.add({ severity: 'success', summary: t('user.filters_saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
@@ -455,12 +455,23 @@ const lookupVerdict = computed<'none' | 'partial' | 'full'>(() => {
   if (after >= 100) return 'full'
   return 'partial'
 })
+// Math.round alone can round a genuinely-partial value to a boundary that
+// contradicts the partial verdict next to it (99.6% rounding to "100%", or
+// 0.4% rounding to "0%") — bound it instead so the number shown can never
+// read as "none" or "full" when the verdict says otherwise.
+function formatLookupPercentage(pct: number): string {
+  if (pct > 0 && pct < 1) return '<1%'
+  if (pct > 99 && pct < 100) return '>99%'
+  return Math.round(pct) + '%'
+}
 const lookupVerdictText = computed(() => {
   switch (lookupVerdict.value) {
     case 'full':
       return t('user.lookup_in_tunnel')
     case 'partial':
-      return t('user.lookup_partially_in_tunnel', { pct: Math.round(lookupResult.value?.after_percentage ?? 0) })
+      return t('user.lookup_partially_in_tunnel', {
+        pct: formatLookupPercentage(lookupResult.value?.after_percentage ?? 0),
+      })
     default:
       return t('user.lookup_not_in_tunnel')
   }
@@ -475,6 +486,26 @@ const lookupVerdictClass = computed(() => {
       return 'text-red-600 dark:text-red-400'
   }
 })
+
+// Bumps the sequence so any in-flight lookup response is no longer
+// current, then clears the displayed state. Used whenever something other
+// than a fresh runLookup invalidates the previous answer (editing the
+// query, or a mode switch/selection save/filter save/logout succeeding) —
+// without bumping the sequence here, a request that was already in flight
+// when one of those happened would still pass its own isCurrent check when
+// it resolves, silently repopulating the state this just cleared.
+function invalidateLookup(): void {
+  lookupRequest.next()
+  lookupLoading.value = false
+  lookupError.value = ''
+  lookupResult.value = null
+}
+
+// The result panel shows lookupResult, not lookupQuery — editing the input
+// without resubmitting (or a request resolving after the input changed
+// again) must not leave an old query's answer displayed under a different,
+// unsubmitted query string.
+watch(lookupQuery, () => invalidateLookup())
 
 async function runLookup(): Promise<void> {
   if (!lookupQuery.value.trim()) return
@@ -817,7 +848,7 @@ onMounted(() => {
                     >
                       {{ m.selected ? t('user.lookup_selected') : t('user.lookup_not_selected') }}
                     </span>
-                    <span class="text-gray-400 dark:text-gray-500">{{ Math.round(m.percentage) }}%</span>
+                    <span class="text-gray-400 dark:text-gray-500">{{ formatLookupPercentage(m.percentage) }}</span>
                   </span>
                 </div>
               </div>
