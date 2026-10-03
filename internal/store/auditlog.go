@@ -109,7 +109,7 @@ func (s *Store) ListAuditLog(ctx context.Context, filter AuditLogFilter, limit, 
 
 // PurgeAuditLog deletes entries older than `days`.
 func (s *Store) PurgeAuditLog(ctx context.Context, days int) error {
-	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Unix()
+	cutoff := daysCutoff(days)
 	_, err := s.DB.ExecContext(ctx, "DELETE FROM audit_log WHERE recorded_at < ?", cutoff)
 	return err
 }

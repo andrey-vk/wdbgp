@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 )
@@ -184,5 +185,33 @@ func TestPurgeAuditLog(t *testing.T) {
 	}
 	if total != 1 || len(entries) != 1 || entries[0].Action != "recent" {
 		t.Fatalf("after purge: entries = %+v, want only \"recent\" to survive", entries)
+	}
+}
+
+// TestPurgeAuditLogExtremeRetentionDoesNotDeleteEverything guards against
+// time.Duration(days)*24*time.Hour overflowing int64 for an absurdly large
+// days value (e.g. a fat-fingered retention-days setting) — an overflow
+// can flip the sign, turning a "purge older than N days" cutoff into one
+// in the future, which would delete every row on the next purge.
+func TestPurgeAuditLogExtremeRetentionDoesNotDeleteEverything(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if err := s.RecordAuditLog(ctx, AuditLogEntry{
+		RecordedAt: time.Now().UTC(), Actor: "a", Action: "recent", ObjectType: "t", ObjectID: "1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.PurgeAuditLog(ctx, math.MaxInt); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+
+	_, total, err := s.ListAuditLog(ctx, AuditLogFilter{}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1 (an absurd retention-days value must not delete everything via integer overflow)", total)
 	}
 }

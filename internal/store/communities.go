@@ -212,28 +212,66 @@ func (s *Store) AllModeCommunitySnapshots(ctx context.Context, enabledOnly bool)
 // SetCommunity upserts a community. service="" means group-level.
 func (s *Store) SetCommunity(ctx context.Context, modeID int64, category, service string, community uint32) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
-		categoryID, serviceID, err := resolveCommunityKey(ctx, tx, category, service)
-		if err != nil {
-			return err
-		}
-		// Check for duplicate community value
-		var existing int
-		err = tx.QueryRowContext(ctx,
-			`SELECT COUNT(*) FROM catalog_communities
-			WHERE mode_id = ? AND community = ? AND NOT (category_id = ? AND service_id = ?)`,
-			modeID, community, categoryID, serviceID).Scan(&existing)
-		if err != nil {
-			return err
-		}
-		if existing > 0 {
-			return fmt.Errorf("community %d is already used by another category or service in this mode", community)
-		}
-		// Upsert
-		_, err = tx.ExecContext(ctx,
-			`INSERT INTO catalog_communities(mode_id, category_id, service_id, community) VALUES (?, ?, ?, ?)
-ON CONFLICT(mode_id, category_id, service_id) DO UPDATE SET community = excluded.community`,
-			modeID, categoryID, serviceID, community)
+		return setCommunityTx(ctx, tx, modeID, category, service, community)
+	})
+}
+
+func setCommunityTx(ctx context.Context, tx *sql.Tx, modeID int64, category, service string, community uint32) error {
+	categoryID, serviceID, err := resolveCommunityKey(ctx, tx, category, service)
+	if err != nil {
 		return err
+	}
+	// Check for duplicate community value
+	var existing int
+	err = tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM catalog_communities
+		WHERE mode_id = ? AND community = ? AND NOT (category_id = ? AND service_id = ?)`,
+		modeID, community, categoryID, serviceID).Scan(&existing)
+	if err != nil {
+		return err
+	}
+	if existing > 0 {
+		return fmt.Errorf("community %d is already used by another category or service in this mode", community)
+	}
+	// Upsert
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO catalog_communities(mode_id, category_id, service_id, community) VALUES (?, ?, ?, ?)
+ON CONFLICT(mode_id, category_id, service_id) DO UPDATE SET community = excluded.community`,
+		modeID, categoryID, serviceID, community)
+	return err
+}
+
+// CommunityUpdate is one entry in a SetCommunities batch: Community == 0
+// clears a manual override (the auto value takes over) for the pair,
+// otherwise it sets that exact value.
+type CommunityUpdate struct {
+	Category  string
+	Service   string
+	Community uint32
+}
+
+// SetCommunities applies a batch of community assignments/clears
+// atomically: either every update lands, or (e.g. a later item's community
+// conflicts with an existing assignment the batch doesn't otherwise touch)
+// none do. Without this, an admin PUT that applies several items via
+// separate per-item transactions could partially commit before a later
+// item fails, leaving the database mutated with nothing to show for it in
+// the response or (since the caller only records an audit entry for a
+// request that succeeds end to end) the audit trail either.
+func (s *Store) SetCommunities(ctx context.Context, modeID int64, updates []CommunityUpdate) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		for _, u := range updates {
+			if u.Community == 0 {
+				if err := deleteCommunityTx(ctx, tx, modeID, u.Category, u.Service); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := setCommunityTx(ctx, tx, modeID, u.Category, u.Service, u.Community); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -424,15 +462,19 @@ func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDige
 // After deletion, GenerateCommunities fills the auto value.
 func (s *Store) DeleteCommunity(ctx context.Context, modeID int64, category, service string) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
-		categoryID, serviceID, err := resolveCommunityKey(ctx, tx, category, service)
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx,
-			`DELETE FROM catalog_communities WHERE mode_id = ? AND category_id = ? AND service_id = ?`,
-			modeID, categoryID, serviceID)
-		return err
+		return deleteCommunityTx(ctx, tx, modeID, category, service)
 	})
+}
+
+func deleteCommunityTx(ctx context.Context, tx *sql.Tx, modeID int64, category, service string) error {
+	categoryID, serviceID, err := resolveCommunityKey(ctx, tx, category, service)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx,
+		`DELETE FROM catalog_communities WHERE mode_id = ? AND category_id = ? AND service_id = ?`,
+		modeID, categoryID, serviceID)
+	return err
 }
 
 // resolveCommunityKey maps a (category, service) name pair to dictionary

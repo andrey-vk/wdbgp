@@ -9,6 +9,25 @@ import (
 	"time"
 )
 
+// daysCutoff returns the Unix timestamp `days` days before now, clamping
+// days to a safe range first: time.Duration(days)*24*time.Hour silently
+// overflows int64 for a large enough days value (e.g. an admin fat-fingering
+// a retention-days setting), which can flip the sign and turn a "purge
+// anything older than N days" cutoff into one in the future — deleting
+// everything on the next purge. 36500 days (100 years) is effectively
+// "keep forever" for any real use of this function, well short of where
+// the multiplication would overflow.
+func daysCutoff(days int) int64 {
+	const maxDays = 36500
+	if days < 0 {
+		days = 0
+	}
+	if days > maxDays {
+		days = maxDays
+	}
+	return time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Unix()
+}
+
 // UserSnapshot is a point-in-time capture of user metrics.
 type UserSnapshot struct {
 	RecordedAt     time.Time `json:"recorded_at"`
@@ -142,7 +161,7 @@ func insertFeedSnapshotCounts(ctx context.Context, tx *sql.Tx, snapshotID int64,
 
 // GetUserSnapshots returns user metrics for the last N days.
 func (s *Store) GetUserSnapshots(ctx context.Context, days int) ([]UserSnapshot, error) {
-	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Unix()
+	cutoff := daysCutoff(days)
 	rows, err := s.DB.QueryContext(ctx,
 		"SELECT recorded_at, users_disabled, users_connected, users_total FROM user_snapshots WHERE recorded_at >= ? ORDER BY recorded_at",
 		cutoff)
@@ -169,7 +188,7 @@ func (s *Store) GetUserSnapshots(ctx context.Context, days int) ([]UserSnapshot,
 
 // GetFeedSnapshots returns feed prefix counts for the last N days.
 func (s *Store) GetFeedSnapshots(ctx context.Context, days int) ([]FeedSnapshot, error) {
-	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Unix()
+	cutoff := daysCutoff(days)
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT fs.id, fs.recorded_at, fsc.feed_id, fsc.prefix_count
 FROM feed_snapshots fs
@@ -209,7 +228,7 @@ ORDER BY fs.recorded_at, fs.id`, cutoff)
 // PurgeUserSnapshots deletes user snapshots older than N days,
 // keeping the newest record just outside the window for graph continuity.
 func (s *Store) PurgeUserSnapshots(ctx context.Context, days int) error {
-	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Unix()
+	cutoff := daysCutoff(days)
 	_, err := s.DB.ExecContext(ctx, `
 		DELETE FROM user_snapshots
 		WHERE recorded_at < ?
@@ -271,7 +290,7 @@ func (s *Store) RecordUserSnapshot(ctx context.Context, metricsEnabled bool, pee
 // PurgeFeedSnapshots deletes feed snapshots older than N days,
 // keeping the newest record just outside the window.
 func (s *Store) PurgeFeedSnapshots(ctx context.Context, days int) error {
-	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Unix()
+	cutoff := daysCutoff(days)
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		// Child rows first — explicit rather than relying on the FK
 		// cascade, so the purge works the same regardless of the

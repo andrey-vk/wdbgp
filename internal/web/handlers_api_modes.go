@@ -450,22 +450,18 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 		}
 		used[c.Community] = key
 	}
-	// Save each community
-	updated := 0
+	// Save every community in one transaction — either they all land or
+	// (e.g. a later item conflicts with an assignment this batch doesn't
+	// otherwise touch) none do, so a failure partway through can never
+	// leave some items committed with nothing to show for it in the
+	// response or the audit entry below.
+	updates := make([]store.CommunityUpdate, 0, len(body.Communities))
 	for _, c := range body.Communities {
-		if c.Community == 0 {
-			// Clear the manual override — delete row so auto value takes over.
-			if err := s.store.DeleteCommunity(r.Context(), modeID, c.Category, c.Service); err != nil {
-				writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-				return
-			}
-			continue
-		}
-		if err := s.store.SetCommunity(r.Context(), modeID, c.Category, c.Service, c.Community); err != nil {
-			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
-			return
-		}
-		updated++
+		updates = append(updates, store.CommunityUpdate{Category: c.Category, Service: c.Service, Community: c.Community})
+	}
+	if err := s.store.SetCommunities(r.Context(), modeID, updates); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+		return
 	}
 	// Auto-generate communities for any cleared or missing entries.
 	s.store.GenerateCommunities(r.Context(), modeID) //nolint:errcheck,gosec // best-effort, already called elsewhere

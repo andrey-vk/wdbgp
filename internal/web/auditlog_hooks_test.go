@@ -137,6 +137,62 @@ func TestAuditHookCommunitiesPut(t *testing.T) {
 	}
 }
 
+// TestAuditHookCommunitiesPutIsAtomic guards against a batch PUT partially
+// committing: the first item in the batch is a real, otherwise-valid
+// change; the second conflicts with a pre-existing assignment the batch
+// doesn't otherwise touch. Before SetCommunities made the whole batch one
+// transaction, the first item's own per-call transaction would already
+// have committed by the time the second one failed — leaving the database
+// mutated with no audit entry to show for it (and no indication in the
+// error response that anything had already changed).
+func TestAuditHookCommunitiesPutIsAtomic(t *testing.T) {
+	srv, st, modeID := modeWithCatalogFixture(t)
+	ctx := context.Background()
+	feedID, err := st.AddFeed(ctx, "atomic-feed", "http://example.com/atomic.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+		t.Fatalf("assign feed: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "cat-b", Service: "svc-b", CIDR: "10.60.0.0/16"},
+		{Category: "cat-c", Service: "svc-c", CIDR: "10.61.0.0/16"},
+	}); err != nil {
+		t.Fatalf("insert catalog: %v", err)
+	}
+	// cat-b/svc-b already holds community 999, untouched by the batch below.
+	if err := st.SetCommunity(ctx, modeID, "cat-b", "svc-b", 999); err != nil {
+		t.Fatalf("pre-set community: %v", err)
+	}
+
+	body := `{"communities":[` +
+		`{"category":"cat-a","service":"svc-a","community":111},` +
+		`{"category":"cat-c","service":"svc-c","community":999}` +
+		`]}`
+	req := httptest.NewRequest("PUT", "/api/admin/modes/x/communities", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w := httptest.NewRecorder()
+	srv.apiModeCommunitiesPut(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("put: %d body=%s, want 400 (cat-c/svc-c's community 999 collides with cat-b/svc-b)", w.Code, w.Body.String())
+	}
+
+	rows, err := st.CommunityRows(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read rows: %v", err)
+	}
+	for _, row := range rows {
+		if row.Category == "cat-a" && row.Service == "svc-a" && row.Community == 111 {
+			t.Fatalf("cat-a/svc-a was set to 111 despite the batch failing on a later item — the batch is not atomic")
+		}
+	}
+	if n := auditLogCount(t, st, "communities.updated"); n != 0 {
+		t.Fatalf("audit log count = %d, want 0 (the failed batch must not be silently partially applied, with or without an audit trail)", n)
+	}
+}
+
 func TestAuditHookCommunitiesReset(t *testing.T) {
 	srv, st, modeID := modeWithCatalogFixture(t)
 	ctx := context.Background()
