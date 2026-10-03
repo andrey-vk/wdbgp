@@ -35,6 +35,12 @@ type feedJSON struct {
 	SyncAttemptedAt string `json:"sync_attempted_at,omitempty"`
 }
 
+// feedUpdatePostAuditHook, if set, runs in apiFeedsUpdate right after the
+// audit entry is recorded but before the post-update Feed lookup — a test
+// seam used to force that lookup to fail deterministically, to verify the
+// audit write already committed and doesn't depend on the lookup.
+var feedUpdatePostAuditHook func(id int64)
+
 func feedToJSON(f store.Feed) feedJSON {
 	// last_success is stored as Unix epoch seconds (schema >= 34); the
 	// JSON API keeps the RFC3339 string shape the frontend renders.
@@ -226,18 +232,21 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	// Record the transition right away: prevEnabled and f.Enabled already
+	// describe the committed write and don't depend on the lookup below, so
+	// recording here means a later failure (e.g. the Feed read failing)
+	// can't leave a committed change unaudited.
+	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "feed.enabled_changed", "feed", strconv.FormatInt(id, 10),
+		map[string]bool{"enabled": prevEnabled}, map[string]bool{"enabled": f.Enabled})
+	if feedUpdatePostAuditHook != nil {
+		feedUpdatePostAuditHook(id)
+	}
 	updated, err := s.store.Feed(r.Context(), id)
 	if err != nil {
 		logging.FromContext(r.Context()).Debug("feed lookup after update failed", "error", err, "feed_id", id)
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to read updated feed"})
 		return
 	}
-	// "after" is f.Enabled (what this request itself submitted and
-	// UpdateFeed just persisted), not updated.Enabled — the latter is a
-	// separate read after the transaction commits, which a third
-	// concurrent request could still change in between.
-	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "feed.enabled_changed", "feed", strconv.FormatInt(id, 10),
-		map[string]bool{"enabled": prevEnabled}, map[string]bool{"enabled": f.Enabled})
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after feed update", "error", err)

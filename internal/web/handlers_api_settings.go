@@ -20,6 +20,12 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 // run again with the new value already persisted, no speaker restart.
 var filterKeysAffectBGP = map[string]bool{"filter_allow": true, "filter_deny": true}
 
+// settingsPutFilterApplyHook, if set, runs once per apiSettingsPut call,
+// inside the globalFilterMu-guarded section right after beforeFilters is
+// captured — a test seam used to force two concurrent calls to overlap
+// deterministically and verify the lock actually serializes them.
+var settingsPutFilterApplyHook func()
+
 // apiSettingsPut handles PUT /api/admin/settings.
 func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	extendRequestDeadlines(w, r) // large filter upload + reconcile can outlive Read/WriteTimeout
@@ -30,10 +36,6 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	beforeFilters := map[string]string{
-		"filter_allow": s.settings.FilterAllow.Get(),
-		"filter_deny":  s.settings.FilterDeny.Get(),
-	}
 
 	// Validate every key before applying any of them. Without this, a
 	// request with one valid and one invalid field could persist the valid
@@ -48,32 +50,55 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reconcileNeeded := false
-	for key, raw := range body {
-		if string(raw) == "null" {
-			// Reset to default
-			if err := s.resetSetting(ctx, key); err != nil {
-				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
-				return
-			}
-		} else {
-			// Set new value
-			if err := s.setSetting(ctx, key, raw); err != nil {
-				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
-				return
-			}
-		}
-		if filterKeysAffectBGP[key] {
-			reconcileNeeded = true
-		}
-	}
+	// The filter_allow/filter_deny before-capture, apply, and after-capture
+	// (for the audit entry below) run under globalFilterMu so two
+	// overlapping PUTs can't interleave — without it, both could capture
+	// the same "before" and each report its own "after", turning a real
+	// A->B->C sequence into misattributed or duplicated audit rows. The
+	// lock is released before Reconcile, which doesn't need to be
+	// serialized by it and can be comparatively slow.
+	applyErr := func() error {
+		s.globalFilterMu.Lock()
+		defer s.globalFilterMu.Unlock()
 
-	if reconcileNeeded {
-		afterFilters := map[string]string{
+		beforeFilters := map[string]string{
 			"filter_allow": s.settings.FilterAllow.Get(),
 			"filter_deny":  s.settings.FilterDeny.Get(),
 		}
-		s.recordAuditIfChanged(ctx, r, s.adminActor(r), "route_filters.global_updated", "settings", "",
-			beforeFilters, afterFilters)
+		if settingsPutFilterApplyHook != nil {
+			settingsPutFilterApplyHook()
+		}
+
+		for key, raw := range body {
+			if string(raw) == "null" {
+				// Reset to default
+				if err := s.resetSetting(ctx, key); err != nil {
+					return err
+				}
+			} else {
+				// Set new value
+				if err := s.setSetting(ctx, key, raw); err != nil {
+					return err
+				}
+			}
+			if filterKeysAffectBGP[key] {
+				reconcileNeeded = true
+			}
+		}
+
+		if reconcileNeeded {
+			afterFilters := map[string]string{
+				"filter_allow": s.settings.FilterAllow.Get(),
+				"filter_deny":  s.settings.FilterDeny.Get(),
+			}
+			s.recordAuditIfChanged(ctx, r, s.adminActor(r), "route_filters.global_updated", "settings", "",
+				beforeFilters, afterFilters)
+		}
+		return nil
+	}()
+	if applyErr != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: applyErr.Error()})
+		return
 	}
 
 	// Global route filters change what DesiredPrefixes() computes, so a

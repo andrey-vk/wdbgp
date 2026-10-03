@@ -24,12 +24,14 @@ const first = ref(0)
 const rows = ref(50)
 const expanded = ref<Set<number>>(new Set())
 
-const { loading, loadError, run } = useAsyncPageLoad()
+const { loading, loadError } = useAsyncPageLoad()
 const loadRequest = useSequencedRequest()
 
 async function load(): Promise<void> {
   const token = loadRequest.next()
-  await run(async () => {
+  loading.value = true
+  loadError.value = false
+  try {
     const params: Record<string, string | number> = { limit: rows.value, offset: first.value }
     if (actor.value.trim()) params.actor = actor.value.trim()
     if (action.value.trim()) params.action = action.value.trim()
@@ -38,12 +40,18 @@ async function load(): Promise<void> {
     const resp = await apiClient.get<AuditLogListResponse>('/admin/audit-log', { params })
     // A newer load (a later filter change or page turn) may have already
     // started and could still finish after this one — applying this
-    // response then would show entries matching the controls' old state
-    // under whatever filters/page are now displayed.
+    // response, or the loading/error flags below on the catch/finally
+    // paths, would show entries or an error state matching the controls'
+    // old state under whatever filters/page are now displayed.
     if (!loadRequest.isCurrent(token)) return
     entries.value = resp.data.entries
     total.value = resp.data.total
-  })
+  } catch {
+    if (!loadRequest.isCurrent(token)) return
+    loadError.value = true
+  } finally {
+    if (loadRequest.isCurrent(token)) loading.value = false
+  }
 }
 
 function applyFilters(): void {

@@ -4,11 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
@@ -347,6 +350,104 @@ func TestAuditHookGlobalRouteFiltersNoopWhenSameValueResubmitted(t *testing.T) {
 	}
 }
 
+// TestAuditHookGlobalRouteFiltersConcurrentPutsAreSerialized forces two
+// apiSettingsPut calls to genuinely overlap (A pauses mid-critical-section
+// while holding globalFilterMu; B is launched while A is paused) and checks
+// the resulting audit chain is coherent: entry 2's "before" equals entry 1's
+// "after". Without the lock, both calls can capture the same "before" and
+// each report their own "after", producing two rows that don't chain —
+// exactly the misattribution this guards against.
+func TestAuditHookGlobalRouteFiltersConcurrentPutsAreSerialized(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	// bgp is irrelevant to this test (it only checks audit serialization)
+	// and fakeBGP isn't safe for genuinely concurrent calls, which this
+	// test makes for real.
+	srv.bgp = nil
+
+	// Baseline: filter_allow = 10.0.0.0/8 ("A").
+	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"filter_allow":"10.0.0.0/8"}`))
+	req.Header.Set("Content-Type", "application/json")
+	srv.apiSettingsPut(httptest.NewRecorder(), req)
+	if n := auditLogCount(t, st, "route_filters.global_updated"); n != 1 {
+		t.Fatalf("baseline audit count = %d, want 1", n)
+	}
+
+	var hookCalls int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	settingsPutFilterApplyHook = func() {
+		if atomic.AddInt32(&hookCalls, 1) == 1 {
+			close(entered)
+			<-release
+		}
+	}
+	t.Cleanup(func() { settingsPutFilterApplyHook = nil })
+
+	put := func(body string) error {
+		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.apiSettingsPut(w, req)
+		if w.Code != http.StatusOK {
+			return fmt.Errorf("settings put: %d body=%s", w.Code, w.Body.String())
+		}
+		return nil
+	}
+
+	aDone := make(chan error, 1)
+	go func() { aDone <- put(`{"filter_allow":"192.168.0.0/16"}`) }() // A -> B
+	<-entered
+
+	// A must hold globalFilterMu while paused: a TryLock from here must fail.
+	if srv.globalFilterMu.TryLock() {
+		srv.globalFilterMu.Unlock()
+		t.Fatal("globalFilterMu was not held while A was paused mid-update")
+	}
+
+	bDone := make(chan error, 1)
+	go func() { bDone <- put(`{"filter_allow":"172.16.0.0/12"}`) }() // B -> C, once unblocked
+
+	// B must not be able to complete while A still holds the lock.
+	select {
+	case err := <-bDone:
+		t.Fatalf("B completed (err=%v) before A released the lock — not serialized", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+
+	if err := <-aDone; err != nil {
+		t.Fatalf("A: %v", err)
+	}
+	select {
+	case err := <-bDone:
+		if err != nil {
+			t.Fatalf("B: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("B never completed after A released the lock")
+	}
+
+	entries, total, err := st.ListAuditLog(context.Background(), store.AuditLogFilter{Action: "route_filters.global_updated"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 { // baseline + A + B
+		t.Fatalf("total = %d, want 3", total)
+	}
+	// Newest first: entries[0] is B, entries[1] is A, entries[2] is baseline.
+	bEntry, aEntry := entries[0], entries[1]
+	if !strings.Contains(aEntry.Before, "10.0.0.0/8") || !strings.Contains(aEntry.After, "192.168.0.0/16") {
+		t.Fatalf("A entry: before=%q after=%q, want 10.0.0.0/8 -> 192.168.0.0/16", aEntry.Before, aEntry.After)
+	}
+	if aEntry.After != bEntry.Before {
+		t.Fatalf("chain broken: A.after=%q != B.before=%q (two overlapping requests raced)", aEntry.After, bEntry.Before)
+	}
+	if !strings.Contains(bEntry.After, "172.16.0.0/12") {
+		t.Fatalf("B entry after=%q, want it to mention 172.16.0.0/12", bEntry.After)
+	}
+}
+
 // --- Feed enable/disable ---------------------------------------------------
 
 func feedFixture(t *testing.T) (*Server, *store.Store, int64) {
@@ -453,6 +554,42 @@ func TestAuditHookFeedEnabledChangedTwoToggles(t *testing.T) {
 	}
 	if entries[1].Before != `{"enabled":true}` || entries[1].After != `{"enabled":false}` {
 		t.Fatalf("first toggle: before=%q after=%q, want true->false", entries[1].Before, entries[1].After)
+	}
+}
+
+// TestAuditHookFeedEnabledChangedSurvivesPostLookupFailure forces the
+// post-UpdateFeed Feed() lookup (used only to build the HTTP response) to
+// fail, and checks the audit entry for the already-committed enabled change
+// was still recorded. Before the fix, the audit call sat after that lookup,
+// so a failure there made the handler return before ever recording the
+// committed transition.
+func TestAuditHookFeedEnabledChangedSurvivesPostLookupFailure(t *testing.T) {
+	srv, st, feedID := feedFixture(t)
+	idStr := strconv.FormatInt(feedID, 10)
+
+	feedUpdatePostAuditHook = func(id int64) {
+		if err := st.DeleteFeed(context.Background(), id); err != nil {
+			t.Fatalf("delete feed mid-update: %v", err)
+		}
+	}
+	t.Cleanup(func() { feedUpdatePostAuditHook = nil })
+
+	req := httptest.NewRequest("PUT", "/api/admin/feeds/"+idStr, strings.NewReader(
+		`{"name":"audit-feed","url":"http://example.com/feed.json","enabled":false,"sync_interval":3600,"mode_id":1,"adapter_id":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w := httptest.NewRecorder()
+	srv.apiFeedsUpdate(w, req)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("update: %d body=%s, want 500 (forced post-lookup failure)", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "feed.enabled_changed")
+	if e.ObjectType != "feed" || e.ObjectID != idStr {
+		t.Fatalf("entry = %+v, want feed/%s", e, idStr)
+	}
+	if e.Before != `{"enabled":true}` || e.After != `{"enabled":false}` {
+		t.Fatalf("before=%q after=%q, want true->false", e.Before, e.After)
 	}
 }
 
