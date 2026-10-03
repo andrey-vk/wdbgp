@@ -70,6 +70,26 @@ func (s *Store) UpdateCatalogMode(ctx context.Context, mode CatalogMode) error {
 	return nil
 }
 
+// SaveModeWithFeeds renames/enables a mode and replaces its feed membership in
+// one transaction, so a failure part-way can't leave a renamed or re-fed mode
+// behind a save that reported failure.
+func (s *Store) SaveModeWithFeeds(ctx context.Context, mode CatalogMode, links []ModeFeedLink) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx,
+			"UPDATE catalog_modes SET name = ?, enabled = ? WHERE id = ?",
+			mode.Name, mode.Enabled, mode.ID)
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		} else if count == 0 {
+			return sql.ErrNoRows
+		}
+		return replaceModeFeedsTx(ctx, tx, mode.ID, links)
+	})
+}
+
 func (s *Store) AddCatalogMode(ctx context.Context, name string, enabled bool) (int64, error) {
 	result, err := s.DB.ExecContext(ctx,
 		"INSERT INTO catalog_modes(name, enabled) VALUES (?, ?)",

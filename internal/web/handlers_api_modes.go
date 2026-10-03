@@ -196,6 +196,59 @@ func (s *Server) apiModesUpdate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// apiModeSave handles PUT /api/admin/modes/{id}/save: renames, enables or
+// disables the mode, and replaces its feed membership as one atomic change.
+func (s *Server) apiModeSave(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
+		return
+	}
+	var body struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+		Feeds   []struct {
+			ID      int64 `json:"id"`
+			Exclude bool  `json:"exclude"`
+		} `json:"feeds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Mode name is required"})
+		return
+	}
+	if _, err := s.store.CatalogMode(r.Context(), id); store.IsNotFound(err) {
+		writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Mode not found"})
+		return
+	}
+	links := make([]store.ModeFeedLink, 0, len(body.Feeds))
+	for _, f := range body.Feeds {
+		links = append(links, store.ModeFeedLink{FeedID: f.ID, Exclude: f.Exclude})
+	}
+	if err := s.store.SaveModeWithFeeds(r.Context(), store.CatalogMode{ID: id, Name: body.Name, Enabled: body.Enabled}, links); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	_, _ = s.store.GenerateCommunitiesCount(r.Context(), id) //nolint:errcheck,gosec // best-effort community generation
+	if s.bgp != nil {
+		if err := s.bgp.Reconcile(r.Context()); err != nil {
+			logging.FromContext(r.Context()).Debug("bgp reconcile failed after mode save", "error", err)
+		}
+	}
+	mode, _ := s.store.CatalogMode(r.Context(), id)      //nolint:errcheck // just updated, must exist
+	feedCounts, _ := s.store.ModeFeedCounts(r.Context()) //nolint:errcheck // best-effort lookup for display
+	writeJSON(w, http.StatusOK, modeJSON{
+		ID:        mode.ID,
+		Name:      mode.Name,
+		Enabled:   mode.Enabled,
+		FeedCount: feedCounts[mode.ID],
+	})
+}
+
 // apiModesDelete handles DELETE /api/admin/modes/{id}.
 func (s *Server) apiModesDelete(w http.ResponseWriter, r *http.Request) {
 	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout

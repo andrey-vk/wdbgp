@@ -262,6 +262,127 @@ describe('SettingsPage', () => {
     expect(body.bgp_port).toBe(179)
   })
 
+  it('previews a filter_allow/filter_deny change and gates the real PUT behind Apply', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    vm.values = { filter_deny: '21.0.0.0/8' }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    const postMock = apiClient.post as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    postMock.mockClear()
+    postMock.mockResolvedValueOnce({
+      data: {
+        affected_users: [{ user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }],
+        total_delta_v4: -1, total_delta_v6: 0,
+      },
+    })
+
+    const savePromise = vm.handleSave()
+    await new Promise(r => setTimeout(r, 0))
+
+    // The real settings PUT must not fire until the admin confirms the
+    // preview dialog — that's the whole point of gating the save on it.
+    expect(postMock).toHaveBeenCalledWith('/admin/settings/preview-filters', { filter_allow: '', filter_deny: '21.0.0.0/8' })
+    expect(putMock).not.toHaveBeenCalled()
+    expect(vm.blastRadiusVisible).toBe(true)
+
+    vm.applyBlastRadius()
+    await savePromise
+
+    expect(putMock).toHaveBeenCalled()
+    expect(vm.blastRadiusVisible).toBe(false)
+  })
+
+  it('aborts the save when a setting is edited while the filter preview is pending', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: { props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'], template: '<div></div>' },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div><slot /></div>' },
+          Tag: { template: '<span><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    vm.values = { filter_deny: '21.0.0.0/8' }
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    const postMock = apiClient.post as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    postMock.mockClear()
+    postMock.mockResolvedValueOnce({
+      data: { affected_users: [{ user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }], total_delta_v4: -1, total_delta_v6: 0 },
+    })
+
+    const savePromise = vm.handleSave()
+    await new Promise(r => setTimeout(r, 0))
+    // Edited while the dialog is up — the captured PUT body is now stale.
+    vm.values = { filter_deny: '21.0.0.0/8', bgp_port: 9999 }
+    vm.applyBlastRadius()
+    await savePromise
+
+    expect(putMock).not.toHaveBeenCalled()
+  })
+
+  it('does not call the preview endpoint when filter_allow/filter_deny are unchanged', async () => {
+    const SettingsPage = (await import('../SettingsPage.vue')).default
+    const wrapper = mount(SettingsPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          SettingField: {
+            props: ['fieldKey', 'meta', 'value', 'defaultValue', 'envOverride'],
+            template: '<div class="stub-settingfield">{{ meta.label }}</div>',
+          },
+          Textarea: { props: ['modelValue'], template: '<textarea></textarea>' },
+          Button: { props: ['label', 'loading', 'severity'], template: '<button>{{ label }}</button>' },
+          Message: { props: ['severity'], template: '<div class="stub-message"><slot /></div>' },
+          Tag: { template: '<span class="stub-tag"><slot /></span>' },
+        },
+      },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise(r => setTimeout(r, 50))
+
+    const vm = wrapper.vm as InstanceType<typeof SettingsPage>
+    vm.values = { bgp_port: 9090 }
+
+    const putMock = apiClient.put as ReturnType<typeof vi.fn>
+    const postMock = apiClient.post as ReturnType<typeof vi.fn>
+    putMock.mockClear()
+    postMock.mockClear()
+
+    await vm.handleSave()
+
+    expect(postMock).not.toHaveBeenCalledWith('/admin/settings/preview-filters', expect.anything())
+    expect(putMock).toHaveBeenCalled()
+  })
+
   it('skips readonly fields in PUT body even when not env-overridden', async () => {
     const SettingsPage = (await import('../SettingsPage.vue')).default
     const wrapper = mount(SettingsPage, {
@@ -527,9 +648,13 @@ describe('SettingsPage', () => {
 
     const putMock = apiClient.put as ReturnType<typeof vi.fn>
     const getMock = apiClient.get as ReturnType<typeof vi.fn>
+    const postMock = apiClient.post as ReturnType<typeof vi.fn>
     putMock.mockClear()
     getMock.mockClear()
     toastAdd.mockClear()
+    // No blast-radius impact, so the preview gate doesn't interrupt this
+    // save — this test is about the PUT's own warning handling.
+    postMock.mockResolvedValueOnce({ data: { affected_users: [], total_delta_v4: 0, total_delta_v6: 0 } })
     putMock.mockResolvedValueOnce({
       data: { ok: true, warning: 'Settings saved, but BGP reconciliation failed: bgp speaker is not running' },
     })

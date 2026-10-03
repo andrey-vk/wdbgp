@@ -89,7 +89,7 @@ func (s *Server) bodyLimit(path string) int64 {
 	case strings.HasPrefix(path, "/api/admin/users/") &&
 		(strings.HasSuffix(path, "/selections") || strings.HasSuffix(path, "/count-selections")):
 		return selectionBodyLimit
-	case path == "/api/admin/settings" || path == "/api/user/filters" ||
+	case strings.HasPrefix(path, "/api/admin/settings") || path == "/api/user/filters" ||
 		strings.HasPrefix(path, "/api/admin/users"):
 		return routeFilterBodyLimit
 	default:

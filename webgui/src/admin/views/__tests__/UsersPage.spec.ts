@@ -308,3 +308,169 @@ describe('UsersPage filter_mode / filter_editable independence', () => {
     expect(vm.form.filter_editable).toBe(true)
   })
 })
+
+describe('UsersPage blast-radius preview', () => {
+  const existingUser = {
+    id: 1, name: 'Test User', peer_ip: '10.0.0.1', peer_asn: 65001,
+    has_password: false, next_hop: '', web_auth: 'network',
+    enabled: true, active_dial: false, catalog_mode_id: 1, catalog_mode_name: 'Default',
+    networks: ['192.168.0.0/24'], selection_locked: false, catalog_editable: true,
+    filter_editable: false, filter_override: false, filter_mode: 'global',
+    filter_allow: [], filter_deny: [], peer_state: '',
+  }
+
+  function mockCombinedPreview(affectedUsers: Array<Record<string, unknown>>) {
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/admin/users/1/preview') {
+        return Promise.resolve({
+          data: { affected_users: affectedUsers, total_delta_v4: -1, total_delta_v6: 0 },
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+  }
+
+  it('previews a route-filter change and gates the real PUT behind Apply', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    vm.form.filter_deny_text = '21.0.0.0/8'
+
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }])
+    mockPut.mockResolvedValue({ data: { ...existingUser, filter_deny: ['21.0.0.0/8'] } })
+
+    const savePromise = vm.handleSave()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', {
+      enabled: true,
+      filter_mode: 'global', filter_override: false, allow: [], deny: ['21.0.0.0/8'], catalog_mode_id: 1,
+    })
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(vm.blastRadiusVisible).toBe(true)
+
+    vm.applyBlastRadius()
+    await savePromise
+
+    expect(mockPut).toHaveBeenCalledWith('/admin/users/1', expect.objectContaining({ filter_deny: ['21.0.0.0/8'] }))
+  })
+
+  it('previews a catalog-mode move and gates the real PUT behind Apply', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    vm.form.catalog_mode_id = 2
+
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }])
+    mockPut.mockResolvedValue({ data: { ...existingUser, catalog_mode_id: 2 } })
+
+    const savePromise = vm.handleSave()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', {
+      enabled: true,
+      filter_mode: 'global', filter_override: false, allow: [], deny: [], catalog_mode_id: 2,
+    })
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(vm.blastRadiusVisible).toBe(true)
+
+    vm.applyBlastRadius()
+    await savePromise
+
+    expect(mockPut).toHaveBeenCalledWith('/admin/users/1', expect.objectContaining({ catalog_mode_id: 2 }))
+  })
+
+  // Regression: the gate used to check only the allow/deny arrays, so
+  // changing just filter_mode (e.g. Global -> Override) skipped the preview
+  // entirely even though it can change effective routes just as much as an
+  // allow/deny edit.
+  it('previews a filter_mode-only change (no allow/deny or mode edit)', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    vm.filterModeSelect = 'override'
+
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 5, after_v6: 0, lost_routes: false, changed: true }])
+    mockPut.mockResolvedValue({ data: { ...existingUser, filter_mode: 'override', filter_override: true } })
+
+    const savePromise = vm.handleSave()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', {
+      enabled: true,
+      filter_mode: 'override', filter_override: true, allow: [], deny: [], catalog_mode_id: 1,
+    })
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(vm.blastRadiusVisible).toBe(true)
+
+    vm.applyBlastRadius()
+    await savePromise
+
+    expect(mockPut).toHaveBeenCalled()
+  })
+
+  it('previews an enabled-flag change on its own', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    vm.form.enabled = false
+
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }])
+    mockPut.mockResolvedValue({ data: { ...existingUser, enabled: false } })
+
+    const savePromise = vm.handleSave()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', expect.objectContaining({ enabled: false }))
+    expect(mockPut).not.toHaveBeenCalled()
+
+    vm.applyBlastRadius()
+    await savePromise
+    expect(mockPut).toHaveBeenCalled()
+  })
+
+  it('does not call the preview endpoint when nothing route-affecting changed', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    vm.form.name = 'Test User renamed'
+
+    mockPut.mockResolvedValue({ data: { ...existingUser, name: 'Test User renamed' } })
+    mockPost.mockClear()
+
+    await vm.handleSave()
+
+    expect(mockPost).not.toHaveBeenCalledWith('/admin/users/1/preview', expect.anything())
+    expect(mockPut).toHaveBeenCalled()
+  })
+
+  it('previews the header enable switch before persisting', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }])
+    mockPut.mockResolvedValue({ data: { ...existingUser, enabled: false } })
+
+    const togglePromise = vm.toggleEnabled()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', expect.objectContaining({ enabled: false, catalog_mode_id: 1 }))
+    expect(mockPut).not.toHaveBeenCalled()
+
+    vm.applyBlastRadius()
+    await togglePromise
+    expect(mockPut).toHaveBeenCalledWith('/admin/users/1', { enabled: false })
+  })
+})

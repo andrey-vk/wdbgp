@@ -8,6 +8,9 @@ import { settingsSchema } from '@/types/settings'
 import { sections } from '@/admin/settingsMeta'
 import type { SettingMeta } from '@/admin/settingsMeta'
 import SettingField from '@/components/SettingField.vue'
+import BlastRadiusPreviewDialog from '@/admin/components/BlastRadiusPreviewDialog.vue'
+import { useBlastRadiusConfirm } from '@/composables/useBlastRadiusConfirm'
+import type { BlastRadiusPreview } from '@/types/blast-radius'
 
 const metaMap: Record<string, SettingMeta> = {}
 for (const s of sections) {
@@ -20,6 +23,7 @@ import Message from 'primevue/message'
 
 const { t } = useI18n()
 const toast = useToast()
+const { dialogVisible: blastRadiusVisible, preview: blastRadiusPreview, confirm: confirmBlastRadius, onApply: applyBlastRadius, onCancel: cancelBlastRadius } = useBlastRadiusConfirm()
 
 const loading = ref(true)
 const saving = ref(false)
@@ -108,26 +112,57 @@ onBeforeUnmount(() => {
 
 async function handleSave() {
   saved.value = false
+
+  const body: Record<string, boolean | number | string | null> = {}
+  for (const [key, val] of Object.entries(values.value)) {
+    const meta = metaMap[key]
+    // Whitelist: only forward keys we have metadata for and know are
+    // writable. A key with no metaMap entry — e.g. the backend started
+    // returning a field settingsMeta.ts was never updated for — is never
+    // safe to send, since we can't tell if the backend accepts a write.
+    if (!meta || meta.readonly || envOverrides.value[key]) continue
+    // Skip password fields with empty value (no change)
+    if ((val === '' || val == null) && meta.type === 'password') continue
+    // Skip fields whose value hasn't actually changed since the last
+    // load — the backend fires each setting's OnChange on every
+    // Set/Reset, so forwarding an untouched value here can spuriously
+    // mark e.g. a BGP restart as pending for a field the admin never
+    // edited.
+    if (val === savedValues.value[key]) continue
+    body[key] = val
+  }
+
+  // Deliberately before saving.value/the save try-finally below: that
+  // finally's loadSettings() replaces `values` with the persisted
+  // snapshot, which is right after a real save attempt but would also
+  // silently discard every unsaved edit in the form — not just the filter
+  // draft — the moment the admin merely declines this dialog.
+  if ('filter_allow' in body || 'filter_deny' in body) {
+    const newAllow = (body.filter_allow ?? values.value.filter_allow ?? '') as string
+    const newDeny = (body.filter_deny ?? values.value.filter_deny ?? '') as string
+    // The PUT below sends `body` as captured here, so edits made while the
+    // preview is pending would be silently overwritten by loadSettings().
+    const valuesBeforePreview = JSON.stringify(values.value)
+    try {
+      const ok = await confirmBlastRadius(async () => {
+        const resp = await apiClient.post<BlastRadiusPreview>('/admin/settings/preview-filters', {
+          filter_allow: newAllow, filter_deny: newDeny,
+        })
+        return resp.data
+      })
+      if (!ok) return
+    } catch {
+      toast.add({ severity: 'error', summary: t('blast_radius.preview_failed'), life: 3000 })
+      return
+    }
+    if (JSON.stringify(values.value) !== valuesBeforePreview) {
+      toast.add({ severity: 'warn', summary: t('blast_radius.changed_during_preview'), life: 4000 })
+      return
+    }
+  }
+
   saving.value = true
   try {
-    const body: Record<string, boolean | number | string | null> = {}
-    for (const [key, val] of Object.entries(values.value)) {
-      const meta = metaMap[key]
-      // Whitelist: only forward keys we have metadata for and know are
-      // writable. A key with no metaMap entry — e.g. the backend started
-      // returning a field settingsMeta.ts was never updated for — is never
-      // safe to send, since we can't tell if the backend accepts a write.
-      if (!meta || meta.readonly || envOverrides.value[key]) continue
-      // Skip password fields with empty value (no change)
-      if ((val === '' || val == null) && meta.type === 'password') continue
-      // Skip fields whose value hasn't actually changed since the last
-      // load — the backend fires each setting's OnChange on every
-      // Set/Reset, so forwarding an untouched value here can spuriously
-      // mark e.g. a BGP restart as pending for a field the admin never
-      // edited.
-      if (val === savedValues.value[key]) continue
-      body[key] = val
-    }
     const resp = await apiClient.put('/admin/settings', body)
     dirty.value = false
     if (resp.data?.warning) {
@@ -167,7 +202,7 @@ async function handlePurgeMetrics() {
 // Exposed for SettingsPage.spec.ts, which drives saves and inspects local
 // state directly rather than through the DOM — without this, a rename here
 // would silently break those tests with no static warning.
-defineExpose({ values, envOverrides, saving, dirty, saved, handleSave })
+defineExpose({ values, envOverrides, saving, dirty, saved, handleSave, blastRadiusVisible, applyBlastRadius, cancelBlastRadius })
 </script>
 
 <template>
@@ -239,6 +274,14 @@ defineExpose({ values, envOverrides, saving, dirty, saved, handleSave })
         />
       </div>
     </div>
+
+    <BlastRadiusPreviewDialog
+      v-if="blastRadiusPreview"
+      v-model:visible="blastRadiusVisible"
+      :preview="blastRadiusPreview"
+      @apply="applyBlastRadius"
+      @cancel="cancelBlastRadius"
+    />
   </div>
 </template>
 

@@ -5,7 +5,6 @@ import { useI18n } from 'vue-i18n'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
-import type { AxiosResponse } from 'axios'
 import type { Mode, ModesListResponse } from '@/types/modes'
 import InputText from 'primevue/inputtext'
 import ToggleSwitch from 'primevue/toggleswitch'
@@ -15,6 +14,10 @@ import Checkbox from 'primevue/checkbox'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
 import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
+import { useSequencedRequest } from '@/composables/useSequencedRequest'
+import BlastRadiusPreviewDialog from '@/admin/components/BlastRadiusPreviewDialog.vue'
+import { useBlastRadiusConfirm } from '@/composables/useBlastRadiusConfirm'
+import type { BlastRadiusPreview } from '@/types/blast-radius'
 
 interface FeedItem {
   id: number; name: string; url: string; enabled: boolean; adapter_name: string; exclude?: boolean
@@ -25,6 +28,7 @@ const router = useRouter()
 const confirmDialog = useConfirm()
 const toast = useToast()
 const { loading, loadError, run } = useAsyncPageLoad()
+const { dialogVisible: blastRadiusVisible, preview: blastRadiusPreview, confirm: confirmBlastRadius, onApply: applyBlastRadius, onCancel: cancelBlastRadius } = useBlastRadiusConfirm()
 
 const modes = ref<Mode[]>([])
 const selected = ref<Mode | null>(null)
@@ -38,7 +42,31 @@ const allFeeds = ref<FeedItem[]>([])
 const assignedFeedIds = ref<number[]>([])
 const excludedFeedIds = ref<number[]>([])
 const loadingFeeds = ref(false)
+// False until the selected mode's persisted feeds have loaded successfully —
+// the header switch and save previews diff against those, so they must not
+// run off a snapshot left over from a previous mode or a failed load.
+const persistedFeedsKnown = ref(false)
+// The header switch keeps its own on/off state after a click; bumping this
+// re-renders it from the persisted value when the change isn't saved.
+const headerSwitchKey = ref(0)
+const loadingAllFeeds = ref(false)
+// Overlapping loads (quick successive selections) must not let an older
+// mode's response overwrite the feed snapshots of the one now selected.
+const feedsRequests = useSequencedRequest()
 const savingFeeds = ref(false)
+// Snapshot of assignedFeedIds/excludedFeedIds as last loaded from the
+// server — handleSave diffs the current form against this to decide
+// whether the feed membership actually changed and a blast-radius preview
+// is worth showing, rather than previewing every save unconditionally.
+const originalAssignedFeedIds = ref<number[]>([])
+const originalExcludedFeedIds = ref<number[]>([])
+
+function sameFeedSet(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false
+  const sa = [...a].sort((x, y) => x - y)
+  const sb = [...b].sort((x, y) => x - y)
+  return sa.every((v, i) => v === sb[i])
+}
 
 onMounted(async () => {
   await run(async () => {
@@ -63,6 +91,8 @@ function startNew() {
   allFeeds.value = []
   assignedFeedIds.value = []
   excludedFeedIds.value = []
+  originalAssignedFeedIds.value = []
+  originalExcludedFeedIds.value = []
   loadAllFeeds()
 }
 
@@ -84,50 +114,151 @@ function openCommunities() {
 }
 
 async function toggleModeEnabled() {
-  if (!selected.value) return
+  let saved = false
+  try {
+  // Feeds still loading means the persisted feed set this preview relies on
+  // isn't known yet, so previewing now could report a false 0 -> 0.
+  if (!selected.value || loadingFeeds.value || !persistedFeedsKnown.value) return
+  const modeId = selected.value.id
   const newEnabled = !selected.value.enabled
   try {
-    await apiClient.put('/admin/modes/' + selected.value.id, { enabled: newEnabled })
+    // Previewed against the persisted feed set, not the form's in-progress
+    // edits — this switch saves only the enabled flag.
+    const ok = await confirmBlastRadius(async () => {
+      const resp = await apiClient.post<BlastRadiusPreview>(
+        '/admin/modes/' + selected.value!.id + '/feeds/preview',
+        {
+          feeds: originalAssignedFeedIds.value.map((id) => ({
+            id,
+            exclude: originalExcludedFeedIds.value.includes(id),
+          })),
+          enabled: newEnabled,
+        },
+      )
+      return resp.data
+    })
+    if (!ok) return
+    if (selected.value?.id !== modeId) {
+      toast.add({ severity: 'warn', summary: t('blast_radius.changed_during_preview'), life: 4000 })
+      return
+    }
+    await apiClient.put('/admin/modes/' + modeId, { enabled: newEnabled })
+    saved = true
     selected.value.enabled = newEnabled
     await loadList()
     toast.add({ severity: 'success', summary: newEnabled ? 'Mode enabled' : 'Mode disabled', life: 2000 })
   } catch {
     toast.add({ severity: 'error', summary: 'Failed', life: 3000 })
+  }  } finally {
+    if (!saved) headerSwitchKey.value++
   }
 }
 
+// What a preview was computed from, so a save can tell whether the mode or
+// its form changed while the preview was pending.
+const editSnapshot = () => JSON.stringify({
+  id: selected.value?.id,
+  form: form.value,
+  assigned: assignedFeedIds.value,
+  excluded: excludedFeedIds.value,
+})
+
+const feedsBody = () => ({
+  feeds: assignedFeedIds.value.map((id) => ({
+    id,
+    exclude: excludedFeedIds.value.includes(id),
+  })),
+})
+
 async function handleSave() {
   if (!form.value.name.trim()) { toast.add({ severity: 'error', summary: t('modes.error_name'), life: 3000 }); return }
+
+  // Only an existing mode has users already on it and prior feed
+  // membership to diff against — a brand-new mode has neither, so there's
+  // nothing to preview yet. Also gated on enabled changing, not just the
+  // feed set: the Save button below persists both (as two separate
+  // requests) in one click, and previewing the feed change alone against a
+  // mode that is or stays disabled would always measure 0 -> 0 regardless
+  // of the feed edit, hiding e.g. "enable this mode and give it feeds" in
+  // one save.
+  if (selected.value && !persistedFeedsKnown.value) {
+    toast.add({ severity: 'error', summary: t('modes.feeds_save_failed'), life: 3000 })
+    return
+  }
+  const snapshotBeforePreview = editSnapshot()
+  if (selected.value && (
+    !sameFeedSet(assignedFeedIds.value, originalAssignedFeedIds.value) ||
+    !sameFeedSet(excludedFeedIds.value, originalExcludedFeedIds.value) ||
+    form.value.enabled !== selected.value.enabled
+  )) {
+    try {
+      const ok = await confirmBlastRadius(async () => {
+        const resp = await apiClient.post<BlastRadiusPreview>(
+          '/admin/modes/' + selected.value!.id + '/feeds/preview',
+          { ...feedsBody(), enabled: form.value.enabled },
+        )
+        return resp.data
+      })
+      if (!ok) return
+    } catch {
+      toast.add({ severity: 'error', summary: t('blast_radius.preview_failed'), life: 3000 })
+      return
+    }
+    if (editSnapshot() !== snapshotBeforePreview) {
+      toast.add({ severity: 'warn', summary: t('blast_radius.changed_during_preview'), life: 4000 })
+      return
+    }
+  }
+
   saving.value = true
   try {
-    let resp: AxiosResponse<Mode>
-    if (!selected.value) {
-      resp = await apiClient.post<Mode>('/admin/modes', {
-        name: form.value.name,
-        enabled: form.value.enabled,
-      })
-    } else {
-      resp = await apiClient.put<Mode>('/admin/modes/' + selected.value.id, {
-        name: form.value.name,
-        enabled: form.value.enabled,
-      })
-    }
-    const savedMode: Mode = resp.data
-    // Save feed assignments
-    savingFeeds.value = true
+    // A mode's enabled flag reconciles BGP the moment it's saved, so when
+    // enabling, the feed set has to land first (the mode is still disabled,
+    // so nothing is announced yet) — otherwise the mode would announce its
+    // old feeds before the previewed ones are installed. When disabling, the
+    // mode goes off first for the same reason in reverse.
+    // Captured before the first await: the confirmed preview covers exactly
+    // this payload, and the editor stays interactive until the save finishes.
+    const modeId = selected.value?.id
+    const name = form.value.name
+    const enabledNow = form.value.enabled
+    const feeds = feedsBody()
+
+    let savedMode: Mode
     let feedsSaveFailed = false
     try {
-      await apiClient.put('/admin/modes/' + savedMode.id + '/feeds', {
-        feeds: assignedFeedIds.value.map((id) => ({
-          id,
-          exclude: excludedFeedIds.value.includes(id),
-        })),
-      })
-      // Fire-and-forget regenerate communities
-      apiClient.post('/admin/modes/' + savedMode.id + '/communities/generate').catch(() => {})
-    } catch {
-      feedsSaveFailed = true
-    } finally { savingFeeds.value = false }
+      if (!modeId) {
+        const created = await apiClient.post<Mode>('/admin/modes', { name, enabled: enabledNow })
+        savedMode = created.data
+        savingFeeds.value = true
+        try {
+          await apiClient.put('/admin/modes/' + savedMode.id + '/feeds', feeds)
+          apiClient.post('/admin/modes/' + savedMode.id + '/communities/generate').catch(() => {})
+        } catch {
+          feedsSaveFailed = true
+        } finally { savingFeeds.value = false }
+      } else {
+        // One request, one transaction: a failure leaves the mode and its
+        // feeds exactly as they were.
+        savedMode = (await apiClient.put<Mode>('/admin/modes/' + modeId + '/save', { name, enabled: enabledNow, ...feeds })).data
+      }
+    } catch (e: unknown) {
+      // Resync to what's persisted (a failed create may still have made the mode).
+      try {
+        await loadList()
+        const persisted = modes.value.find((m) => m.id === modeId)
+        if (persisted) {
+          selected.value = persisted
+          form.value = { name: persisted.name, enabled: persisted.enabled }
+          await loadModeFeeds()
+        }
+      } catch {
+        // Best-effort: the error toast below is what the admin needs to see.
+      }
+      const msg = (e as { response?: { data?: { error?: string } } }).response?.data?.error || t('modes.save_failed')
+      toast.add({ severity: 'error', summary: msg, life: 4000 })
+      return
+    }
 
     // The mode itself (name/enabled) is already persisted at this point
     // regardless of whether the feed assignment succeeded — resync the UI
@@ -140,6 +271,8 @@ async function handleSave() {
     selected.value = savedMode
     form.value = { name: savedMode.name, enabled: savedMode.enabled }
     editMode.value = false
+    // Refreshes the persisted feed snapshots the next preview diffs against.
+    await loadModeFeeds()
 
     if (feedsSaveFailed) {
       // The feed assignment didn't take — reload it from the server so the
@@ -179,21 +312,27 @@ async function loadList() {
 
 async function loadModeFeeds() {
   if (!selected.value) return
+  const token = feedsRequests.next()
   loadingFeeds.value = true
+  persistedFeedsKnown.value = false
   try {
     const resp = await apiClient.get('/admin/modes/' + selected.value.id + '/feeds')
+    if (!feedsRequests.isCurrent(token)) return
     assignedFeeds.value = resp.data.feeds || []
     assignedFeedIds.value = assignedFeeds.value.map((f: FeedItem) => f.id)
     excludedFeedIds.value = assignedFeeds.value.filter((f: FeedItem) => f.exclude).map((f: FeedItem) => f.id)
-  } finally { loadingFeeds.value = false }
+    originalAssignedFeedIds.value = [...assignedFeedIds.value]
+    originalExcludedFeedIds.value = [...excludedFeedIds.value]
+    persistedFeedsKnown.value = true
+  } finally { if (feedsRequests.isCurrent(token)) loadingFeeds.value = false }
 }
 
 async function loadAllFeeds() {
-  loadingFeeds.value = true
+  loadingAllFeeds.value = true
   try {
     const resp = await apiClient.get('/admin/feeds')
     allFeeds.value = resp.data.feeds || []
-  } finally { loadingFeeds.value = false }
+  } finally { loadingAllFeeds.value = false }
 }
 
 function isFeedAssigned(feedId: number): boolean {
@@ -233,6 +372,11 @@ defineExpose({
   excludedFeedIds,
   handleSave,
   startNew,
+  selectMode,
+  toggleModeEnabled,
+  blastRadiusVisible,
+  applyBlastRadius,
+  cancelBlastRadius,
 })
 </script>
 
@@ -310,7 +454,7 @@ defineExpose({
               <Button v-if="selected && !editMode" :label="t('modes.communities_button')" icon="pi pi-hashtag" severity="secondary" size="small" @click="openCommunities" />
               <div v-if="selected && !editMode" class="switch-row">
                 <FormField :label="t('modes.enabled')" input-id="menabled-hdr">
-                  <ToggleSwitch id="menabled-hdr" :modelValue="selected.enabled" @change="toggleModeEnabled" />
+                  <ToggleSwitch :key="headerSwitchKey" id="menabled-hdr" :modelValue="selected.enabled" :disabled="loadingFeeds || !persistedFeedsKnown" @change="toggleModeEnabled" />
                 </FormField>
               </div>
             </div>
@@ -332,7 +476,7 @@ defineExpose({
             <div class="flex flex-col gap-1">
               <span class="font-medium">{{ t('modes.view_feeds') }}</span>
               <div
-                v-if="loadingFeeds"
+                v-if="loadingFeeds || loadingAllFeeds"
                 class="flex justify-content-center py-2"
               >
                 <i class="pi pi-spin pi-spinner" />
@@ -387,7 +531,7 @@ defineExpose({
             <div class="flex flex-col gap-1.5 mt-1">
               <label class="font-medium">{{ t('modes.view_feeds') }}</label>
               <div
-                v-if="loadingFeeds"
+                v-if="loadingFeeds || loadingAllFeeds"
                 class="flex justify-content-center py-2"
               >
                 <i class="pi pi-spin pi-spinner" />
@@ -473,6 +617,14 @@ defineExpose({
         </div>
       </div>
     </div>
+
+    <BlastRadiusPreviewDialog
+      v-if="blastRadiusPreview"
+      v-model:visible="blastRadiusVisible"
+      :preview="blastRadiusPreview"
+      @apply="applyBlastRadius"
+      @cancel="cancelBlastRadius"
+    />
   </div>
 </template>
 

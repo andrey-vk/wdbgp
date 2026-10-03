@@ -186,22 +186,29 @@ type ModeFeedLink struct {
 // see links and materialization disagree.
 func (s *Store) ReplaceModeFeeds(ctx context.Context, modeID int64, links []ModeFeedLink) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		return replaceModeFeedsTx(ctx, tx, modeID, links)
+	})
+}
+
+// replaceModeFeedsTx is ReplaceModeFeeds' tx-scoped body, reused by
+// PreviewModeFeedChange (blastradius.go) to run the real mutation inside a
+// transaction it then rolls back.
+func replaceModeFeedsTx(ctx context.Context, tx *sql.Tx, modeID int64, links []ModeFeedLink) error {
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM catalog_mode_feeds WHERE mode_id = ?", modeID); err != nil {
+		return err
+	}
+	for _, link := range links {
+		if link.FeedID <= 0 {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM catalog_mode_feeds WHERE mode_id = ?", modeID); err != nil {
+			"INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, ?)",
+			modeID, link.FeedID, link.Exclude); err != nil {
 			return err
 		}
-		for _, link := range links {
-			if link.FeedID <= 0 {
-				continue
-			}
-			if _, err := tx.ExecContext(ctx,
-				"INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, ?)",
-				modeID, link.FeedID, link.Exclude); err != nil {
-				return err
-			}
-		}
-		return rebuildModeEntriesTx(ctx, tx, modeID)
-	})
+	}
+	return rebuildModeEntriesTx(ctx, tx, modeID)
 }
 
 // RebuildModeEntriesForFeedTx rebuilds every mode the feed is linked to

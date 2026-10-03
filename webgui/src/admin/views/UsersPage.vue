@@ -21,12 +21,19 @@ import Tag from 'primevue/tag'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
 import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
+import BlastRadiusPreviewDialog from '@/admin/components/BlastRadiusPreviewDialog.vue'
+import { useBlastRadiusConfirm } from '@/composables/useBlastRadiusConfirm'
+import type { BlastRadiusPreview } from '@/types/blast-radius'
 
 const { t } = useI18n()
 const router = useRouter()
 const confirmDialog = useConfirm()
 const toast = useToast()
 const { loading, loadError, run } = useAsyncPageLoad()
+// The header switch keeps its own on/off state after a click; bumping this
+// re-renders it from the persisted value when the change isn't saved.
+const headerSwitchKey = ref(0)
+const { dialogVisible: blastRadiusVisible, preview: blastRadiusPreview, confirm: confirmBlastRadius, onApply: applyBlastRadius, onCancel: cancelBlastRadius } = useBlastRadiusConfirm()
 
 const users = ref<User[]>([])
 const modes = ref<Mode[]>([])
@@ -281,6 +288,12 @@ function parseNetworksInput(text: string): string[] {
   return text.split('\n').map(s => s.trim()).filter(Boolean)
 }
 
+// What a preview was computed from, so a save can tell whether the record or
+// its form changed while the preview was pending.
+function editSnapshot(): string {
+  return JSON.stringify({ id: selected.value?.id, form: form.value })
+}
+
 function sameNetworkSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false
   const sortedA = [...a].sort()
@@ -328,6 +341,54 @@ async function handleSave() {
   if (!form.value.peer_ip.trim()) { toast.add({ severity: 'error', summary: t('users.error_peer_ip'), life: 3000 }); return }
   const networks = form.value.networks_text.split('\n').map(s => s.trim()).filter(Boolean)
   if (networksRequired.value && networks.length === 0) { toast.add({ severity: 'error', summary: t('users.error_networks'), life: 3000 }); return }
+
+  const newFilterAllow = form.value.filter_allow_text.split('\n').map(s => s.trim()).filter(s => s !== '')
+  const newFilterDeny = form.value.filter_deny_text.split('\n').map(s => s.trim()).filter(s => s !== '')
+
+  // Only an existing user has a prior state to diff against and actual
+  // selections that a preview could report an impact on — a brand-new user
+  // doesn't exist yet for the preview endpoint to look up. One combined
+  // preview call, not one per changed field: filter_mode/filter_override,
+  // route filters, and catalog_mode_id all save together in the single PUT
+  // below, and simulating each in isolation against the ORIGINAL state can
+  // miss (or wrongly report) an impact the combination actually produces —
+  // e.g. a route only visible under the old mode's old filters can survive
+  // either change alone but not both together.
+  const snapshotBeforePreview = editSnapshot()
+  if (selected.value && (
+    form.value.enabled !== selected.value.enabled ||
+    form.value.filter_mode !== selected.value.filter_mode ||
+    form.value.filter_override !== selected.value.filter_override ||
+    !sameNetworkSet(newFilterAllow, selected.value.filter_allow || []) ||
+    !sameNetworkSet(newFilterDeny, selected.value.filter_deny || []) ||
+    form.value.catalog_mode_id !== selected.value.catalog_mode_id
+  )) {
+    try {
+      const ok = await confirmBlastRadius(async () => {
+        const resp = await apiClient.post<BlastRadiusPreview>(
+          '/admin/users/' + selected.value!.id + '/preview',
+          {
+            enabled: form.value.enabled,
+            filter_mode: form.value.filter_mode,
+            filter_override: form.value.filter_override,
+            allow: newFilterAllow,
+            deny: newFilterDeny,
+            catalog_mode_id: form.value.catalog_mode_id,
+          },
+        )
+        return resp.data
+      })
+      if (!ok) return
+    } catch {
+      toast.add({ severity: 'error', summary: t('blast_radius.preview_failed'), life: 3000 })
+      return
+    }
+    if (editSnapshot() !== snapshotBeforePreview) {
+      toast.add({ severity: 'warn', summary: t('blast_radius.changed_during_preview'), life: 4000 })
+      return
+    }
+  }
+
   saving.value = true
   try {
     const payload: UserSavePayload = {
@@ -350,8 +411,8 @@ async function handleSave() {
       // touch a user's existing networks just because this save happened
       // to include an unrelated field change while networks weren't shown.
       networks: showNetworks.value ? networks : undefined,
-      filter_allow: form.value.filter_allow_text.split('\n').map(s => s.trim()).filter(s => s !== ''),
-      filter_deny: form.value.filter_deny_text.split('\n').map(s => s.trim()).filter(s => s !== ''),
+      filter_allow: newFilterAllow,
+      filter_deny: newFilterDeny,
     }
     let resp: AxiosResponse<User>
     if (!selected.value) {
@@ -511,15 +572,39 @@ async function handleResetPassword() {
 }
 
 async function toggleEnabled() {
-  if (!selected.value) return
-  const newEnabled = !selected.value.enabled
+  let saved = false
   try {
-    await apiClient.put('/admin/users/' + selected.value.id, { enabled: newEnabled })
-    selected.value.enabled = newEnabled
+  if (!selected.value) return
+  const user = selected.value
+  const newEnabled = !user.enabled
+  try {
+    // Previews the persisted record with only enabled changed — this switch
+    // saves nothing else, so the form's in-progress edits don't apply.
+    const ok = await confirmBlastRadius(async () => {
+      const resp = await apiClient.post<BlastRadiusPreview>('/admin/users/' + user.id + '/preview', {
+        enabled: newEnabled,
+        filter_mode: user.filter_mode,
+        filter_override: user.filter_override,
+        allow: user.filter_allow || [],
+        deny: user.filter_deny || [],
+        catalog_mode_id: user.catalog_mode_id,
+      })
+      return resp.data
+    })
+    if (!ok) return
+    if (selected.value?.id !== user.id) {
+      toast.add({ severity: 'warn', summary: t('blast_radius.changed_during_preview'), life: 4000 })
+      return
+    }
+    await apiClient.put('/admin/users/' + user.id, { enabled: newEnabled })
+    saved = true
+    user.enabled = newEnabled
     await loadList() // refresh the list to show updated state in sidebar
     toast.add({ severity: 'success', summary: newEnabled ? 'User enabled' : 'User disabled', life: 2000 })
   } catch {
     toast.add({ severity: 'error', summary: 'Failed', life: 3000 })
+  }  } finally {
+    if (!saved) headerSwitchKey.value++
   }
 }
 
@@ -533,6 +618,11 @@ defineExpose({
   applyNetworksNormalization,
   handleSave,
   filterModeSelect,
+  selectUser,
+  toggleEnabled,
+  blastRadiusVisible,
+  applyBlastRadius,
+  cancelBlastRadius,
 })
 </script>
 
@@ -636,7 +726,7 @@ defineExpose({
               <!-- Enabled switch (view mode only) -->
               <div v-if="selected && !editMode" class="switch-row">
                 <FormField :label="t('users.enabled')" input-id="uenabled-hdr">
-                  <ToggleSwitch id="uenabled-hdr" :modelValue="selected.enabled" @change="toggleEnabled" />
+                  <ToggleSwitch :key="headerSwitchKey" id="uenabled-hdr" :modelValue="selected.enabled" @change="toggleEnabled" />
                 </FormField>
               </div>
             </div>
@@ -1178,6 +1268,14 @@ defineExpose({
       <Button label="OK" severity="primary" :loading="credSaving" @click="handleResetPassword" />
     </template>
   </Dialog>
+
+  <BlastRadiusPreviewDialog
+    v-if="blastRadiusPreview"
+    v-model:visible="blastRadiusVisible"
+    :preview="blastRadiusPreview"
+    @apply="applyBlastRadius"
+    @cancel="cancelBlastRadius"
+  />
 </template>
 
 <style scoped>

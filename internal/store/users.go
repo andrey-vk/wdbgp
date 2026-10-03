@@ -424,6 +424,14 @@ func encodeUserAddrs(user User) (peerIP []byte, nextHop any, err error) {
 // validating the request) that a since-committed concurrent update to the
 // same user could have already moved past.
 func (s *Store) UpdateUser(ctx context.Context, user User, meta, filterModeMeta AuditMeta) (prevCatalogModeID int64, err error) {
+	return s.UpdateUserWithRouteFilters(ctx, user, meta, filterModeMeta, nil, AuditMeta{})
+}
+
+// UpdateUserWithRouteFilters saves a user's row and, when filters is non-nil,
+// their route filters in one transaction, so a failure between the two can't
+// leave a committed mode/filter-mode change without the filters the admin
+// reviewed alongside it.
+func (s *Store) UpdateUserWithRouteFilters(ctx context.Context, user User, meta, filterModeMeta AuditMeta, filters *RouteFilters, filtersMeta AuditMeta) (prevCatalogModeID int64, err error) {
 	filterMode := normalizeFilterMode(user.FilterMode, user.FilterOverride)
 	if user.CatalogModeID == 0 {
 		user.CatalogModeID = DefaultCatalogModeID
@@ -471,8 +479,16 @@ func (s *Store) UpdateUser(ctx context.Context, user User, meta, filterModeMeta 
 		// themselves change, so this needs its own entry or a mode switch
 		// alone (e.g. global -> override) would leave no audit trace at
 		// all despite changing what gets announced.
-		return AuditEntryTx(ctx, tx, filterModeMeta, "user", strconv.FormatInt(user.ID, 10),
-			map[string]string{"filter_mode": filterModeFromInt(prevFilterModeInt)}, map[string]string{"filter_mode": filterMode}, false)
+		if err := AuditEntryTx(ctx, tx, filterModeMeta, "user", strconv.FormatInt(user.ID, 10),
+			map[string]string{"filter_mode": filterModeFromInt(prevFilterModeInt)}, map[string]string{"filter_mode": filterMode}, false); err != nil {
+			return err
+		}
+		if filters != nil {
+			if _, _, err := setUserRouteFiltersTx(ctx, tx, user.ID, *filters, filtersMeta); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	return prevCatalogModeID, err
 }
