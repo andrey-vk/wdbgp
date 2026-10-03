@@ -223,26 +223,53 @@ func (s *Store) applyUserRouteFilters(
 	prefixes []netip.Prefix,
 	globalFilters RouteFilters,
 ) ([]netip.Prefix, error) {
-	filters := globalFilters
+	var ownFilters RouteFilters
 	var err error
-	switch filterMode {
-	case FilterModeOverride:
-		filters, err = s.UserRouteFilters(ctx, userID)
+	if filterMode != FilterModeGlobal {
+		ownFilters, err = s.UserRouteFilters(ctx, userID)
 		if err != nil {
 			return nil, err
 		}
-	case FilterModeExtend:
-		userFilters, err := s.UserRouteFilters(ctx, userID)
-		if err != nil {
-			return nil, err
-		}
-		filters = mergeRouteFilters(globalFilters, userFilters)
 	}
+	filters := effectiveRouteFilters(filterMode, globalFilters, ownFilters)
 	lists, err := parseRouteFilters(filters)
 	if err != nil {
 		return nil, err
 	}
 	return prefixfilter.Apply(prefixes, lists, prefixfilter.DefaultMaxPrefixes)
+}
+
+// effectiveRouteFilters merges global and a user's own filters per the
+// user's filter_mode. own is ignored for FilterModeGlobal.
+func effectiveRouteFilters(mode string, global, own RouteFilters) RouteFilters {
+	switch mode {
+	case FilterModeOverride:
+		return own
+	case FilterModeExtend:
+		return mergeRouteFilters(global, own)
+	default:
+		return global
+	}
+}
+
+// EffectiveRouteFilters reports the filters that apply to user, split by
+// origin, for a read-only "what's filtering me" display. mode is the
+// normalized filter_mode ("global"/"extend"/"override"); own is empty when
+// mode is "global" (per-user rows exist but are not consulted).
+func (s *Store) EffectiveRouteFilters(ctx context.Context, user User) (global, own, effective RouteFilters, mode string, err error) {
+	global, err = s.GlobalRouteFilters(ctx)
+	if err != nil {
+		return
+	}
+	mode = normalizeFilterMode(user.FilterMode, user.FilterOverride)
+	if mode != FilterModeGlobal {
+		own, err = s.UserRouteFilters(ctx, user.ID)
+		if err != nil {
+			return
+		}
+	}
+	effective = effectiveRouteFilters(mode, global, own)
+	return
 }
 
 func (s *Store) GlobalRouteFilters(ctx context.Context) (RouteFilters, error) {

@@ -646,3 +646,30 @@ func (s *Server) apiUserDebugCIDR(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, result)
 }
+
+// userRouteFiltersResult reports the filters in effect for exactly the
+// authenticated caller — origin-labeled (global vs their own) plus the
+// merged effective list, so there is nothing here that could leak another
+// user's data.
+type userRouteFiltersResult struct {
+	Mode      string             `json:"mode"`
+	Global    store.RouteFilters `json:"global"`
+	Own       store.RouteFilters `json:"own"`
+	Effective store.RouteFilters `json:"effective"`
+}
+
+// apiUserRouteFilters handles GET /api/user/route-filters.
+// Read-only: reports the filters in effect for the authenticated caller,
+// split by origin, independent of whether filter_editable is set.
+func (s *Server) apiUserRouteFilters(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireUser(w, r)
+	if !ok {
+		return
+	}
+	global, own, effective, mode, err := s.store.EffectiveRouteFilters(r.Context(), *user)
+	if err != nil {
+		s.internalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, userRouteFiltersResult{Mode: mode, Global: global, Own: own, Effective: effective})
+}

@@ -127,6 +127,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	mux.HandleFunc("POST /api/user/filters", server.requireUser(server.apiUserSaveFilters))
 	mux.HandleFunc("POST /api/user/count-prefixes", server.requireUser(server.apiUserCountPrefixes))
 	mux.HandleFunc("GET /api/user/debug", server.requireUser(server.apiUserDebugCIDR))
+	mux.HandleFunc("GET /api/user/route-filters", server.requireUser(server.apiUserRouteFilters))
 
 	// Build middleware chain
 	handler := http.Handler(mux)

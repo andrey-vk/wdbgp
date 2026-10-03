@@ -10,7 +10,7 @@ import { useThemeStore } from '@/admin/stores/theme'
 import { getCurrentLocale } from '@/plugins/i18n'
 import userApi from '@/api/client'
 import { useSequencedRequest } from '@/composables/useSequencedRequest'
-import type { UserDataResponse } from '@/types/user-page'
+import type { UserDataResponse, UserRouteFiltersResult } from '@/types/user-page'
 import type { UserCIDRLookupResult } from '@/types/user-debug'
 
 const { t } = useI18n()
@@ -50,6 +50,9 @@ const savingFilters = ref(false)
 // ── Filter state ────────────────────────────────────────────
 const filterAllow = ref('')
 const filterDeny = ref('')
+
+// ── Filters-in-effect state (read-only) ──────────────────────
+const routeFiltersInfo = ref<UserRouteFiltersResult | null>(null)
 
 // ── Catalog mode ────────────────────────────────────────────
 const selectedModeId = ref<number>(0)
@@ -143,6 +146,10 @@ function formatDelta(n: number): string {
   return ''
 }
 
+function formatFilterList(cidrs: string[]): string {
+  return cidrs.length ? cidrs.join(', ') : t('user.route_filters_empty')
+}
+
 // ── Auth functions ──────────────────────────────────────────
 // Detects a 401 (expired/invalid session) and resets local auth state so
 // the login screen shows again. Without this, checkAuth was the only
@@ -204,6 +211,7 @@ async function handleLogout(): Promise<void> {
   countData.value = null
   checkedCategories.value = new Set()
   checkedServices.value = new Set()
+  routeFiltersInfo.value = null
   lookupQuery.value = ''
   invalidateLookup()
   loginForm.login = ''
@@ -244,6 +252,20 @@ async function loadUserData(userData: UserDataResponse): Promise<void> {
 
   // Fetch live counts
   await fetchCounts()
+  await fetchRouteFiltersInfo()
+}
+
+// Filters in effect don't depend on catalog mode or selections, but
+// loadUserData already re-runs on login/mode-switch/initial-auth, so
+// refetching here is the simplest correct place for a cheap, idempotent GET.
+async function fetchRouteFiltersInfo(): Promise<void> {
+  try {
+    const resp = await userApi.get('/user/route-filters')
+    routeFiltersInfo.value = resp.data
+  } catch (err) {
+    if (handleAuthError(err)) return
+    routeFiltersInfo.value = null
+  }
 }
 
 async function reloadUserData(): Promise<void> {
@@ -786,8 +808,35 @@ onMounted(() => {
           </div>
         </div>
 
+        <!-- Filters in effect (read-only) -->
+        <div v-if="routeFiltersInfo" data-testid="route-filters-section" class="p-6 rounded-border shadow-sm mb-6 bg-white dark:bg-gray-900">
+          <h2 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">{{ t('user.route_filters_title') }}</h2>
+          <p data-testid="route-filters-mode" class="text-sm text-gray-600 dark:text-gray-400 mb-3">
+            {{ t(`user.route_filters_mode_${routeFiltersInfo.mode}`) }}
+          </p>
+
+          <div v-if="routeFiltersInfo.mode === 'extend'" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div data-testid="route-filters-global">
+              <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mb-1">{{ t('user.route_filters_global') }}</h3>
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('user.route_filters_allow') }}: {{ formatFilterList(routeFiltersInfo.global.allow) }}</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('user.route_filters_deny') }}: {{ formatFilterList(routeFiltersInfo.global.deny) }}</p>
+            </div>
+            <div data-testid="route-filters-own">
+              <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase mb-1">{{ t('user.route_filters_own') }}</h3>
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('user.route_filters_allow') }}: {{ formatFilterList(routeFiltersInfo.own.allow) }}</p>
+              <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('user.route_filters_deny') }}: {{ formatFilterList(routeFiltersInfo.own.deny) }}</p>
+            </div>
+          </div>
+
+          <div data-testid="route-filters-effective" class="border-t border-gray-100 dark:border-gray-800 pt-3 text-sm">
+            <p class="text-gray-700 dark:text-gray-300">{{ t('user.route_filters_allow') }}: {{ formatFilterList(routeFiltersInfo.effective.allow) }}</p>
+            <p class="text-gray-700 dark:text-gray-300">{{ t('user.route_filters_deny') }}: {{ formatFilterList(routeFiltersInfo.effective.deny) }}</p>
+          </div>
+        </div>
+
         <!-- Route Filters section -->
         <div v-if="data.user.filter_editable" class="p-6 rounded-border shadow-sm mb-6 bg-white dark:bg-gray-900">
+          <h2 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">{{ t('user.filters_edit_title') }}</h2>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <FormField :label="t('user.filters_allow')" :hint="'user.filters_hint_allow'" input-id="ufallow">
               <Textarea id="ufallow" v-model="filterAllow" rows="3" fluid />
