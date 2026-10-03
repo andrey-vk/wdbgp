@@ -363,4 +363,46 @@ describe('ModesPage', () => {
 
     expect(order).toEqual(['/admin/modes/9:enabled=false', '/admin/modes/9/feeds', '/admin/modes/9:enabled=true'])
   })
+
+  // Regression: when the feed save fails after the rename already persisted,
+  // the sidebar and selected record must show the persisted name, not the old one.
+  it('resyncs the persisted rename when enabling fails at the feed save', async () => {
+    let listCalls = 0
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/modes') {
+        listCalls++
+        return Promise.resolve({ data: { modes: [{ id: 9, name: 'renamed', enabled: false, feed_count: 1 }] } })
+      }
+      if (url === '/admin/modes/9/feeds') {
+        return Promise.resolve({ data: { feeds: [{ id: 1, name: 'inc', url: 'u1', enabled: true, adapter_name: 'a' }] } })
+      }
+      return Promise.resolve({ data: {} })
+    })
+
+    const { wrapper } = await mountModesPage()
+    const vm = wrapper.vm as ModesPageVM
+    vm.selectMode({ id: 9, name: 'existing-mode', enabled: false, feed_count: 1 })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    vm.form.name = 'renamed'
+    vm.form.enabled = true
+
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/admin/modes/9/feeds/preview') {
+        return Promise.resolve({ data: { affected_users: [], total_delta_v4: 0, total_delta_v6: 0 } })
+      }
+      return Promise.resolve({ data: {} })
+    })
+    mockPut.mockImplementation((url: string) => {
+      if (url === '/admin/modes/9/feeds') return Promise.reject(new Error('feed save failed'))
+      return Promise.resolve({ data: { id: 9, name: 'renamed', enabled: false, feed_count: 1 } })
+    })
+
+    const callsBefore = listCalls
+    await vm.handleSave()
+
+    expect(listCalls).toBeGreaterThan(callsBefore)
+    expect(vm.selected?.name).toBe('renamed')
+    expect(mockPut).not.toHaveBeenCalledWith('/admin/modes/9', { name: 'renamed', enabled: true })
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error' }))
+  })
 })

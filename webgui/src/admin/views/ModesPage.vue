@@ -201,13 +201,19 @@ async function handleSave() {
     // so nothing is announced yet) — otherwise the mode would announce its
     // old feeds before the previewed ones are installed. When disabling, the
     // mode goes off first for the same reason in reverse.
+    // Captured before the first await: the confirmed preview covers exactly
+    // this payload, and the editor stays interactive until the save finishes.
     const enabling = !!selected.value && !selected.value.enabled && form.value.enabled
-    const saveFeeds = async (modeId: number): Promise<boolean> => {
+    const modeId = selected.value?.id
+    const name = form.value.name
+    const enabledNow = form.value.enabled
+    const feeds = feedsBody()
+    const saveFeeds = async (id: number): Promise<boolean> => {
       savingFeeds.value = true
       try {
-        await apiClient.put('/admin/modes/' + modeId + '/feeds', feedsBody())
+        await apiClient.put('/admin/modes/' + id + '/feeds', feeds)
         // Fire-and-forget regenerate communities
-        apiClient.post('/admin/modes/' + modeId + '/communities/generate').catch(() => {})
+        apiClient.post('/admin/modes/' + id + '/communities/generate').catch(() => {})
         return true
       } catch {
         return false
@@ -220,31 +226,17 @@ async function handleSave() {
       if (enabling) {
         // The rename goes first, while still disabled: a name conflict then
         // fails before any feed change lands.
-        await apiClient.put('/admin/modes/' + selected.value!.id, {
-          name: form.value.name,
-          enabled: false,
-        })
-        if (!await saveFeeds(selected.value!.id)) {
-          await loadModeFeeds()
-          toast.add({ severity: 'error', summary: t('modes.feeds_save_failed'), life: 3000 })
-          return
+        savedMode = (await apiClient.put<Mode>('/admin/modes/' + modeId, { name, enabled: false })).data
+        feedsSaveFailed = !await saveFeeds(modeId!)
+        if (!feedsSaveFailed) {
+          savedMode = (await apiClient.put<Mode>('/admin/modes/' + modeId, { name, enabled: true })).data
         }
-        savedMode = (await apiClient.put<Mode>('/admin/modes/' + selected.value!.id, {
-          name: form.value.name,
-          enabled: true,
-        })).data
       } else {
         let resp: AxiosResponse<Mode>
-        if (!selected.value) {
-          resp = await apiClient.post<Mode>('/admin/modes', {
-            name: form.value.name,
-            enabled: form.value.enabled,
-          })
+        if (!modeId) {
+          resp = await apiClient.post<Mode>('/admin/modes', { name, enabled: enabledNow })
         } else {
-          resp = await apiClient.put<Mode>('/admin/modes/' + selected.value.id, {
-            name: form.value.name,
-            enabled: form.value.enabled,
-          })
+          resp = await apiClient.put<Mode>('/admin/modes/' + modeId, { name, enabled: enabledNow })
         }
         savedMode = resp.data
         feedsSaveFailed = !await saveFeeds(savedMode.id)
