@@ -40,7 +40,7 @@ func TestGenerateCommunitiesHandlesMultiServiceCategoriesAndIsIdempotent(t *test
 		t.Fatalf("insert catalog entries: %v", err)
 	}
 
-	generated, err := s.GenerateCommunities(ctx, 1)
+	_, _, generated, err := s.GenerateCommunities(ctx, 1)
 	if err != nil {
 		t.Fatalf("GenerateCommunities: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestGenerateCommunitiesHandlesMultiServiceCategoriesAndIsIdempotent(t *test
 		t.Errorf("got %d communities, want %d", len(comms), len(wantKeys))
 	}
 
-	generatedAgain, err := s.GenerateCommunities(ctx, 1)
+	_, _, generatedAgain, err := s.GenerateCommunities(ctx, 1)
 	if err != nil {
 		t.Fatalf("second GenerateCommunities: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestPreviewCommunityResetRollsBack(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert entries: %v", err)
 	}
-	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := s.GenerateCommunities(ctx, 1); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 
@@ -153,7 +153,7 @@ func TestPreviewCommunityResetRollsBack(t *testing.T) {
 	}
 
 	// A stale digest must be rejected without writing anything.
-	if _, err := s.ResetCommunities(ctx, 1, "wrong-digest"); !errors.Is(err, ErrCommunityResetStale) {
+	if _, _, _, err := s.ResetCommunities(ctx, 1, "wrong-digest"); !errors.Is(err, ErrCommunityResetStale) {
 		t.Fatalf("reset with wrong digest: err = %v, want ErrCommunityResetStale", err)
 	}
 	stillCustom, err := s.GetCommunities(ctx, 1)
@@ -166,7 +166,7 @@ func TestPreviewCommunityResetRollsBack(t *testing.T) {
 
 	// An actual reset, given the digest the preview issued, must land on
 	// exactly what the preview predicted.
-	if _, err := s.ResetCommunities(ctx, 1, digest); err != nil {
+	if _, _, _, err := s.ResetCommunities(ctx, 1, digest); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	applied, err := s.GetCommunities(ctx, 1)
@@ -202,7 +202,7 @@ func TestResetCommunitiesRejectsStaleDigestAfterConcurrentChange(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert entries: %v", err)
 	}
-	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := s.GenerateCommunities(ctx, 1); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 
@@ -219,7 +219,7 @@ func TestResetCommunitiesRejectsStaleDigestAfterConcurrentChange(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert additional entry: %v", err)
 	}
-	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := s.GenerateCommunities(ctx, 1); err != nil {
 		t.Fatalf("generate after change: %v", err)
 	}
 
@@ -228,7 +228,7 @@ func TestResetCommunitiesRejectsStaleDigestAfterConcurrentChange(t *testing.T) {
 		t.Fatalf("read communities before stale reset attempt: %v", err)
 	}
 
-	if _, err := s.ResetCommunities(ctx, 1, digest); !errors.Is(err, ErrCommunityResetStale) {
+	if _, _, _, err := s.ResetCommunities(ctx, 1, digest); !errors.Is(err, ErrCommunityResetStale) {
 		t.Fatalf("reset with pre-change digest: err = %v, want ErrCommunityResetStale", err)
 	}
 
@@ -358,7 +358,7 @@ func TestAllModeCommunitySnapshotsIsConsistentAcrossModes(t *testing.T) {
 		if err := s.RebuildModeEntries(ctx, modeID); err != nil {
 			t.Fatalf("rebuild mode entries for %d: %v", modeID, err)
 		}
-		if _, err := s.GenerateCommunities(ctx, modeID); err != nil {
+		if _, _, _, err := s.GenerateCommunities(ctx, modeID); err != nil {
 			t.Fatalf("generate for %d: %v", modeID, err)
 		}
 	}
@@ -397,7 +397,7 @@ func TestAllModeCommunitySnapshotsIsConsistentAcrossModes(t *testing.T) {
 					writerErr <- fmt.Errorf("rebuild mode %d: %w", modeID, err)
 					return
 				}
-				if _, err := s.GenerateCommunities(ctx, modeID); err != nil {
+				if _, _, _, err := s.GenerateCommunities(ctx, modeID); err != nil {
 					writerErr <- fmt.Errorf("generate mode %d: %w", modeID, err)
 					return
 				}
@@ -473,7 +473,7 @@ func TestGenerateCommunitiesHandlesPipeInCategoryName(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert initial entries: %v", err)
 	}
-	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := s.GenerateCommunities(ctx, 1); err != nil {
 		t.Fatalf("initial generate: %v", err)
 	}
 	before, err := s.CommunityRows(ctx, 1)
@@ -499,7 +499,7 @@ func TestGenerateCommunitiesHandlesPipeInCategoryName(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert second entries: %v", err)
 	}
-	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := s.GenerateCommunities(ctx, 1); err != nil {
 		t.Fatalf("second generate: %v", err)
 	}
 
@@ -572,7 +572,7 @@ func TestResetDigestDoesNotCollideAcrossModes(t *testing.T) {
 		if err := s.RebuildModeEntries(ctx, modeID); err != nil {
 			t.Fatalf("rebuild mode entries for %d: %v", modeID, err)
 		}
-		if _, err := s.GenerateCommunities(ctx, modeID); err != nil {
+		if _, _, _, err := s.GenerateCommunities(ctx, modeID); err != nil {
 			t.Fatalf("generate for %d: %v", modeID, err)
 		}
 	}
@@ -610,12 +610,12 @@ func TestResetDigestDoesNotCollideAcrossModes(t *testing.T) {
 	}
 
 	// Mode 1's own preview must never authorize applying to mode B.
-	if _, err := s.ResetCommunities(ctx, modeB, digestA); !errors.Is(err, ErrCommunityResetStale) {
+	if _, _, _, err := s.ResetCommunities(ctx, modeB, digestA); !errors.Is(err, ErrCommunityResetStale) {
 		t.Fatalf("reset mode %d with mode 1's digest: err = %v, want ErrCommunityResetStale", modeB, err)
 	}
 
 	// Its own digest must still work correctly.
-	if _, err := s.ResetCommunities(ctx, modeB, digestB); err != nil {
+	if _, _, _, err := s.ResetCommunities(ctx, modeB, digestB); err != nil {
 		t.Fatalf("reset mode %d with its own digest: %v", modeB, err)
 	}
 }

@@ -49,7 +49,7 @@ func exportFixture(t *testing.T) (*Server, *fakeBGP, int64) {
 	if err := st.RebuildModeEntries(ctx, modeID); err != nil {
 		t.Fatalf("rebuild mode entries: %v", err)
 	}
-	if _, err := st.GenerateCommunities(ctx, modeID); err != nil {
+	if _, _, _, err := st.GenerateCommunities(ctx, modeID); err != nil {
 		t.Fatalf("generate communities: %v", err)
 	}
 	return srv, bgp, modeID
@@ -346,7 +346,7 @@ func TestCommunitiesExportHandlesPipeInCategoryName(t *testing.T) {
 	if err := srv.store.RebuildModeEntries(ctx, modeID); err != nil {
 		t.Fatalf("rebuild mode entries: %v", err)
 	}
-	if _, err := srv.store.GenerateCommunities(ctx, modeID); err != nil {
+	if _, _, _, err := srv.store.GenerateCommunities(ctx, modeID); err != nil {
 		t.Fatalf("generate communities: %v", err)
 	}
 

@@ -101,6 +101,72 @@ func TestDesiredPrefixesSubtractsGlobalDeny(t *testing.T) {
 	}
 }
 
+// TestSetUserRouteFiltersBeforeAfterBracketingWouldMisattribute shows the
+// bug the old handler pattern had (an independent pre-fetch read for
+// "before", bracketing a separate write) and what SetUserRouteFilters'
+// atomic before/after fixes: a second save reading a "before" that's
+// already stale by the time it's compared, because a first save committed
+// in between. The old pattern's stale "before" would make the second
+// save's audit entry wrongly claim it replaced the ORIGINAL filters
+// (1.1.1.1/32) rather than the immediately preceding ones (2.2.2.2/32).
+func TestSetUserRouteFiltersBeforeAfterBracketingWouldMisattribute(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := addFilteredTestUser(t, s, true)
+
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"1.1.1.1/32"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The old pattern: "request B"'s own "before" read, taken before
+	// "request A" (below) has committed its replacement.
+	staleBefore, err := s.UserRouteFilters(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(staleBefore.Allow) != 1 || staleBefore.Allow[0] != "1.1.1.1/32" {
+		t.Fatalf("staleBefore = %+v, want Allow=[1.1.1.1/32]", staleBefore)
+	}
+
+	// "Request A" commits its replacement.
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM user_route_filters WHERE user_id = ?", userID); err != nil {
+			return err
+		}
+		return insertRouteFilters(ctx, tx, userID, RouteFilters{Allow: []string{"2.2.2.2/32"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Under the old pattern, "request B" would now compare staleBefore
+	// (1.1.1.1/32) against whatever it writes — the bug: a transition
+	// that actually started from 2.2.2.2/32 gets attributed to
+	// 1.1.1.1/32 instead.
+	trueCurrent, err := s.UserRouteFilters(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trueCurrent.Allow) != 1 || trueCurrent.Allow[0] != "2.2.2.2/32" {
+		t.Fatalf("trueCurrent = %+v, want Allow=[2.2.2.2/32]", trueCurrent)
+	}
+	if staleBefore.Allow[0] == trueCurrent.Allow[0] {
+		t.Fatal("expected the old pattern's stale \"before\" to (wrongly) differ from the true current state")
+	}
+
+	// The fix: "request B" via SetUserRouteFilters sees the TRUE current
+	// state as "before" — 2.2.2.2/32, not the stale 1.1.1.1/32.
+	beforeB, afterB, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"3.3.3.3/32"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeB.Allow) != 1 || beforeB.Allow[0] != "2.2.2.2/32" {
+		t.Fatalf("request B via SetUserRouteFilters: before = %+v, want Allow=[2.2.2.2/32] (the true immediately-prior state), not the stale 1.1.1.1/32", beforeB)
+	}
+	if len(afterB.Allow) != 1 || afterB.Allow[0] != "3.3.3.3/32" {
+		t.Fatalf("request B's after = %+v, want Allow=[3.3.3.3/32]", afterB)
+	}
+}
+
 func TestDesiredPrefixesUsesUserOverride(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -109,7 +175,7 @@ func TestDesiredPrefixesUsesUserOverride(t *testing.T) {
 		`INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES ('filter_deny', '1.1.1.1/32', datetime('now'))`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"1.1.0.0/16"}}); err != nil {
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"1.1.0.0/16"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -433,7 +499,7 @@ func TestEffectiveRouteFiltersGlobalMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Deny: []string{"9.9.9.0/24"}}); err != nil {
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Deny: []string{"9.9.9.0/24"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SaveSetting(ctx, "filter_allow", "10.0.0.0/8"); err != nil {
@@ -480,7 +546,7 @@ func TestEffectiveRouteFiltersExtendMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetUserRouteFilters(ctx, userID, RouteFilters{
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{
 		Allow: []string{"192.168.0.0/16"}, Deny: []string{"192.168.1.0/24"},
 	}); err != nil {
 		t.Fatal(err)
@@ -529,7 +595,7 @@ func TestEffectiveRouteFiltersOverrideMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"192.168.0.0/16"}}); err != nil {
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"192.168.0.0/16"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SaveSetting(ctx, "filter_allow", "10.0.0.0/8"); err != nil {

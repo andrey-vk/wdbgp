@@ -258,8 +258,24 @@ type CommunityUpdate struct {
 // item fails, leaving the database mutated with nothing to show for it in
 // the response or (since the caller only records an audit entry for a
 // request that succeeds end to end) the audit trail either.
-func (s *Store) SetCommunities(ctx context.Context, modeID int64, updates []CommunityUpdate) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
+// SetCommunities applies updates and fills any cleared/missing entries
+// (the equivalent of a separate GenerateCommunities call) in one
+// transaction, returning the mode's community rows immediately before and
+// after — all atomic with the write, so a caller logging an audit entry
+// describes exactly this call's own result. Reading "before"/"after" via
+// independent CommunityRows calls bracketing this one instead would let a
+// concurrent mutation to the same mode land in the gap: a second request
+// committing between this call's write and an independent post-read would
+// have this request's audit entry describe the SECOND request's result,
+// not its own.
+func (s *Store) SetCommunities(ctx context.Context, modeID int64, updates []CommunityUpdate) (before, after []Community, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		b, err := communityRows(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		before = b
+
 		for _, u := range updates {
 			if u.Community == 0 {
 				if err := deleteCommunityTx(ctx, tx, modeID, u.Category, u.Service); err != nil {
@@ -271,8 +287,22 @@ func (s *Store) SetCommunities(ctx context.Context, modeID int64, updates []Comm
 				return err
 			}
 		}
+		// Fill any cleared or missing entries — the same work
+		// GenerateCommunities does, inlined here so it's part of this
+		// same transaction instead of a separate best-effort call after
+		// this one commits.
+		if _, err := genCommunitiesRuntime(ctx, tx, modeID); err != nil {
+			return err
+		}
+
+		a, err := communityRows(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		after = a
 		return nil
 	})
+	return before, after, err
 }
 
 // CommunityChange is one community assignment that a reset would alter.
@@ -430,13 +460,19 @@ func diffCommunities(before, after []Community) []CommunityChange {
 // window between an operator reviewing a preview and clicking apply, during
 // which a feed sync or another admin's edit could otherwise get silently
 // renumbered into something never shown to anyone.
-func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDigest string) (int, error) {
-	var generated int
-	err := s.Transaction(ctx, func(tx *sql.Tx) error {
-		before, err := communityRows(ctx, tx, modeID)
+// ResetCommunities renumbers modeID's communities from scratch and
+// returns the rows immediately before and after, alongside the generated
+// count — all read/computed inside the one transaction that performs the
+// reset, so a caller logging an audit entry describes exactly this call's
+// own result rather than a value an independent pre/post read (bracketing
+// this call) could have raced with a concurrent mutation to see instead.
+func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDigest string) (before, after []Community, generated int, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		b, err := communityRows(ctx, tx, modeID)
 		if err != nil {
 			return err
 		}
+		before = b
 		if _, err := tx.ExecContext(ctx,
 			"DELETE FROM catalog_communities WHERE mode_id = ?", modeID); err != nil {
 			return err
@@ -445,17 +481,18 @@ func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDige
 		if err != nil {
 			return err
 		}
-		after, err := communityRows(ctx, tx, modeID)
+		a, err := communityRows(ctx, tx, modeID)
 		if err != nil {
 			return err
 		}
+		after = a
 		if communityResetDigest(modeID, before, after) != expectedDigest {
 			generated = 0
 			return ErrCommunityResetStale
 		}
 		return nil
 	})
-	return generated, err
+	return before, after, generated, err
 }
 
 // DeleteCommunity removes a manual community override.
@@ -508,14 +545,31 @@ type communityMapKey struct {
 // GenerateCommunities fills missing communities for all categories/services in a mode.
 // Uses the 10000*gap scheme. Skips categories/services that already have a community.
 // Returns count of newly generated communities.
-func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (int, error) {
-	var count int
-	err := s.Transaction(ctx, func(tx *sql.Tx) error {
-		var err2 error
-		count, err2 = genCommunitiesRuntime(ctx, tx, modeID)
-		return err2
+// GenerateCommunities fills missing communities for modeID and returns
+// the rows immediately before and after, alongside the generated count —
+// all inside the one transaction that performs the fill, so a caller
+// logging an audit entry describes exactly this call's own result rather
+// than a value an independent pre/post read (bracketing this call) could
+// have raced with a concurrent mutation to see instead.
+func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (before, after []Community, count int, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		b, err := communityRows(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		before = b
+		count, err = genCommunitiesRuntime(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		a, err := communityRows(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		after = a
+		return nil
 	})
-	return count, err
+	return before, after, count, err
 }
 
 // genCommunitiesRuntime generates communities using catalog_mode_feeds (post-migration-20).

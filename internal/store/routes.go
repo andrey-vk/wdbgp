@@ -358,13 +358,36 @@ func applyRouteFiltersToPrefixes(prefixes []netip.Prefix, filters RouteFilters) 
 	return prefixfilter.Apply(prefixes, lists, prefixfilter.DefaultMaxPrefixes)
 }
 
-func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters RouteFilters) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
+// SetUserRouteFilters replaces userID's route filters and returns the
+// normalized filters immediately before and after the write, both read
+// inside the same transaction as the write — so a caller logging an audit
+// entry describes exactly this call's own change, not a value a
+// concurrent save for the same user could read or write in between (two
+// overlapping saves both reading the same "before", then each comparing
+// it against their own "after", can otherwise double-log one real change
+// as two, or describe a transition that never actually happened).
+func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters RouteFilters) (before, after RouteFilters, err error) {
+	const query = "SELECT action, ip, bits FROM user_route_filters WHERE user_id = ? ORDER BY action, ip, bits"
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		b, err := readRouteFilters(ctx, tx, query, userID)
+		if err != nil {
+			return err
+		}
+		before = b
 		if _, err := tx.ExecContext(ctx, "DELETE FROM user_route_filters WHERE user_id = ?", userID); err != nil {
 			return err
 		}
-		return insertRouteFilters(ctx, tx, userID, filters)
+		if err := insertRouteFilters(ctx, tx, userID, filters); err != nil {
+			return err
+		}
+		a, err := readRouteFilters(ctx, tx, query, userID)
+		if err != nil {
+			return err
+		}
+		after = a
+		return nil
 	})
+	return before, after, err
 }
 
 func (s *Store) SetUserRouteFilterConfig(ctx context.Context, userID int64, mode string, filters RouteFilters) error {

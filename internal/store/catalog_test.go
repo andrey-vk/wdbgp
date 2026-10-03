@@ -70,7 +70,7 @@ func TestCatalogModesKeepSelectionsAndRoutesIsolated(t *testing.T) {
 	if len(prefixes) != 1 || len(prefixes["8.8.0.0/16"]) != 1 {
 		t.Fatalf("OpenCCK prefixes = %#v", prefixes)
 	}
-	if err := s.SetUserCatalogMode(ctx, userID, ipranges.ID, true); err != nil {
+	if _, err := s.SetUserCatalogMode(ctx, userID, ipranges.ID, true); err != nil {
 		t.Fatal(err)
 	}
 	prefixes, _, err = s.DesiredPrefixes(ctx)
@@ -120,10 +120,10 @@ func TestUserCannotChangeCatalogModeWithoutPermission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetUserCatalogMode(ctx, userID, ipranges.ID, true); !IsNotFound(err) {
+	if _, err := s.SetUserCatalogMode(ctx, userID, ipranges.ID, true); !IsNotFound(err) {
 		t.Fatalf("mode change error = %v, want not found", err)
 	}
-	if err := s.SetUserCatalogMode(ctx, userID, 1, true); err != nil {
+	if _, err := s.SetUserCatalogMode(ctx, userID, 1, true); err != nil {
 		t.Fatalf("saving current managed mode: %v", err)
 	}
 }

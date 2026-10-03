@@ -435,11 +435,6 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	beforeRows, err := s.store.CommunityRows(r.Context(), modeID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
 	// Validate no duplicate community numbers within the mode. Keyed by
 	// store.ServiceKey, not a "category|service"-joined string: a category
 	// legitimately containing "|" could otherwise make two genuinely
@@ -461,25 +456,22 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 		}
 		used[c.Community] = key
 	}
-	// Save every community in one transaction — either they all land or
-	// (e.g. a later item conflicts with an assignment this batch doesn't
-	// otherwise touch) none do, so a failure partway through can never
-	// leave some items committed with nothing to show for it in the
-	// response or the audit entry below.
+	// Save every community and fill any cleared/missing entries in one
+	// transaction, returning the before/after rows atomic with that write
+	// — either every update lands and the before/after describe exactly
+	// this call's result, or (e.g. a later item conflicts with an
+	// assignment this batch doesn't otherwise touch) none do.
 	updates := make([]store.CommunityUpdate, 0, len(body.Communities))
 	for _, c := range body.Communities {
 		updates = append(updates, store.CommunityUpdate{Category: c.Category, Service: c.Service, Community: c.Community})
 	}
-	if err := s.store.SetCommunities(r.Context(), modeID, updates); err != nil {
+	beforeRows, afterRows, err := s.store.SetCommunities(r.Context(), modeID, updates)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	// Auto-generate communities for any cleared or missing entries.
-	s.store.GenerateCommunities(r.Context(), modeID) //nolint:errcheck,gosec // best-effort, already called elsewhere
-	if afterRows, err := s.store.CommunityRows(r.Context(), modeID); err == nil {
-		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "communities.updated", "mode",
-			strconv.FormatInt(modeID, 10), beforeRows, afterRows)
-	}
+	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "communities.updated", "mode",
+		strconv.FormatInt(modeID, 10), beforeRows, afterRows)
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community set", "error", err)
@@ -521,12 +513,7 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	beforeRows, err := s.store.CommunityRows(r.Context(), modeID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
-	generated, err := s.store.ResetCommunities(r.Context(), modeID, body.Digest)
+	beforeRows, afterRows, generated, err := s.store.ResetCommunities(r.Context(), modeID, body.Digest)
 	if errors.Is(err, store.ErrCommunityResetStale) {
 		writePreview(w, r, s, modeID, true)
 		return
@@ -542,14 +529,12 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 	// confirm flow exists precisely because of that), so it's worth
 	// recording even on the rare occasion the recomputed values happen to
 	// match what was there before.
-	if afterRows, err := s.store.CommunityRows(r.Context(), modeID); err == nil {
-		beforeJSON, _ := json.Marshal(beforeRows) //nolint:errcheck // Community marshals trivially
-		afterJSON, _ := json.Marshal(afterRows)   //nolint:errcheck // Community marshals trivially
-		s.recordAudit(r.Context(), r, store.AuditLogEntry{
-			Actor: s.adminActor(r), Action: "communities.reset", ObjectType: "mode", ObjectID: strconv.FormatInt(modeID, 10),
-			Before: string(beforeJSON), After: string(afterJSON),
-		})
-	}
+	beforeJSON, _ := json.Marshal(beforeRows) //nolint:errcheck // Community marshals trivially
+	afterJSON, _ := json.Marshal(afterRows)   //nolint:errcheck // Community marshals trivially
+	s.recordAudit(r.Context(), r, store.AuditLogEntry{
+		Actor: s.adminActor(r), Action: "communities.reset", ObjectType: "mode", ObjectID: strconv.FormatInt(modeID, 10),
+		Before: string(beforeJSON), After: string(afterJSON),
+	})
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community reset", "error", err)
@@ -594,20 +579,13 @@ func (s *Server) apiModeCommunitiesGenerate(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
 		return
 	}
-	beforeRows, err := s.store.CommunityRows(r.Context(), modeID)
+	beforeRows, afterRows, generated, err := s.store.GenerateCommunities(r.Context(), modeID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	generated, err := s.store.GenerateCommunities(r.Context(), modeID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
-	if afterRows, err := s.store.CommunityRows(r.Context(), modeID); err == nil {
-		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "communities.generated", "mode",
-			strconv.FormatInt(modeID, 10), beforeRows, afterRows)
-	}
+	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "communities.generated", "mode",
+		strconv.FormatInt(modeID, 10), beforeRows, afterRows)
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community generate", "error", err)

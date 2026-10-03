@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -435,7 +434,7 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 	// toggles — bracketing it with two independent UserModeSelection calls
 	// instead would let a concurrent save change either count out from
 	// under this request.
-	beforeCats, beforeSvcs, afterCats, afterSvcs, err :=
+	beforeCats, beforeSvcs, afterCats, afterSvcs, _, err :=
 		s.store.SaveUserSelectionCounts(ctx, user.ID, user.CatalogModeID, false, categoryToggles, serviceToggles)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
@@ -482,37 +481,19 @@ func (s *Server) apiUserSaveFilters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	before, err := s.store.UserRouteFilters(ctx, user.ID)
+	// SetUserRouteFilters reads the prior filters and the newly-persisted
+	// (normalized) filters inside the same transaction as the write, so
+	// the comparison below describes exactly this call's own change —
+	// bracketing it with independent reads before/after instead would let
+	// a concurrent save for the same user change either side out from
+	// under this request.
+	before, after, err := s.store.SetUserRouteFilters(ctx, user.ID, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	// Run `before` through NormalizeRouteFilters too, not just `after` below
-	// — a never-set Allow/Deny reads back as a nil slice (JSON null), while
-	// NormalizeRouteFilters always returns a non-nil (possibly empty) slice
-	// (JSON []), and recordAuditIfChanged compares marshaled JSON, so
-	// without this a no-op save could still log a spurious null-vs-[]
-	// "change" on whichever side was never populated.
-	normalizedBefore, err := store.NormalizeRouteFilters(before)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
-
-	if err := s.store.SetUserRouteFilters(ctx, user.ID, body); err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
-	// SetUserRouteFilters persists the normalized form (e.g. a bare
-	// "10.0.0.1" becomes "10.0.0.1/32") — compare against that, not the raw
-	// submitted body, or a request that normalizes to the already-stored
-	// value would log a spurious change, and a real change would be
-	// recorded with an "after" that doesn't match what's in the database.
-	// Safe to ignore the error here: SetUserRouteFilters above already
-	// normalized this same body successfully.
-	normalizedAfter, _ := store.NormalizeRouteFilters(body) //nolint:errcheck // already validated by SetUserRouteFilters above
 	s.recordAuditIfChanged(ctx, r, userActor(user.ID), "route_filters.user_updated", "user", strconv.FormatInt(user.ID, 10),
-		normalizedBefore, normalizedAfter)
+		before, after)
 
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(ctx); err != nil {
@@ -637,18 +618,19 @@ func (s *Server) apiUserSwitchMode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode is disabled"})
 		return
 	}
-	// Update user's catalog_mode_id
-	err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
-		_, execErr := tx.ExecContext(r.Context(),
-			"UPDATE users SET catalog_mode_id = ? WHERE id = ?", body.ModeID, user.ID)
-		return execErr
-	})
+	// SetUserCatalogMode reads the prior catalog_mode_id inside the same
+	// transaction as the write, so the audit entry below describes exactly
+	// this call's own transition — using user.CatalogModeID (the session
+	// snapshot taken at authentication) instead would let two overlapping
+	// switches (1→2 and 1→3, say) both log "from 1" even though the real
+	// sequence was 1→2→3.
+	prevModeID, err := s.store.SetUserCatalogMode(r.Context(), user.ID, body.ModeID, false)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to update catalog mode"})
 		return
 	}
 	s.recordAuditIfChanged(r.Context(), r, userActor(user.ID), "user.mode_changed", "user", strconv.FormatInt(user.ID, 10),
-		map[string]int64{"catalog_mode_id": user.CatalogModeID}, map[string]int64{"catalog_mode_id": body.ModeID})
+		map[string]int64{"catalog_mode_id": prevModeID}, map[string]int64{"catalog_mode_id": body.ModeID})
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Catalog mode updated but BGP reconciliation failed: " + err.Error()})

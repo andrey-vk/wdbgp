@@ -408,7 +408,7 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Save route filters
 	if len(body.FilterAllow) > 0 || len(body.FilterDeny) > 0 {
-		if err := s.store.SetUserRouteFilters(r.Context(), userID, store.RouteFilters{
+		if _, _, err := s.store.SetUserRouteFilters(r.Context(), userID, store.RouteFilters{
 			Allow: body.FilterAllow,
 			Deny:  body.FilterDeny,
 		}); err != nil {
@@ -493,8 +493,6 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	previousCatalogModeID := current.CatalogModeID
-
 	// Apply only provided fields
 	if body.Name != nil {
 		current.Name = *body.Name
@@ -670,23 +668,18 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	// — otherwise omitting one field from the request silently wipes the
 	// other.
 	var filterAllow, filterDeny []string
-	var normalizedBeforeFilters, normalizedFilters store.RouteFilters
 	filtersProvided := body.FilterAllow != nil || body.FilterDeny != nil
 	if filtersProvided {
+		// Only to merge a partial update (touching just one of
+		// allow/deny) against the currently-saved value for the untouched
+		// side — not used for the audit log below, which instead uses
+		// SetUserRouteFilters' own atomic before/after once that call
+		// actually runs, so a concurrent save for the same user can't
+		// make this read stale for audit purposes.
 		existing, err := s.store.UserRouteFilters(r.Context(), id)
 		if err != nil {
 			logging.FromContext(r.Context()).Debug("route filters lookup before update failed", "error", err, "user_id", id)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load existing route filters"})
-			return
-		}
-		// Normalized for the audit log below, for the same reason "after" is
-		// normalized there: a never-set Allow/Deny reads back as a nil slice
-		// (JSON null) while NormalizeRouteFilters always returns a non-nil
-		// slice (JSON []), and comparing raw before/after could log a
-		// spurious null-vs-[] "change" on a true no-op save.
-		normalizedBeforeFilters, err = store.NormalizeRouteFilters(existing)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 			return
 		}
 		filterAllow = existing.Allow
@@ -697,19 +690,20 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		if body.FilterDeny != nil {
 			filterDeny = *body.FilterDeny
 		}
-		// Keep the normalized form for the audit log below — SetUserRouteFilters
-		// persists this, not the raw submitted lists (e.g. a bare "10.0.0.1"
-		// becomes "10.0.0.1/32"), so comparing against the raw lists could log
-		// a spurious change, or a real change with an "after" that doesn't
-		// match what's actually in the database.
-		normalizedFilters, err = store.NormalizeRouteFilters(store.RouteFilters{Allow: filterAllow, Deny: filterDeny})
-		if err != nil {
+		// Validate before committing anything below — a malformed CIDR
+		// must not leave the user record updated while the filter save
+		// itself still fails afterward.
+		if _, err := store.NormalizeRouteFilters(store.RouteFilters{Allow: filterAllow, Deny: filterDeny}); err != nil {
 			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 			return
 		}
 	}
 
-	if err := s.store.UpdateUser(r.Context(), current); err != nil {
+	// UpdateUser reads the prior catalog_mode_id inside the same
+	// transaction as the write and returns it, so the mode-change audit
+	// below describes exactly this call's own transition.
+	prevCatalogModeID, err := s.store.UpdateUser(r.Context(), current)
+	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
 			return
@@ -717,19 +711,26 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	// Audited immediately after UpdateUser commits, before the filter
+	// save below — a later SetUserRouteFilters failure must not suppress
+	// an audit entry for a mode change that already took effect.
+	if body.CatalogModeID != nil {
+		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.mode_changed", "user", strconv.FormatInt(id, 10),
+			map[string]int64{"catalog_mode_id": prevCatalogModeID}, map[string]int64{"catalog_mode_id": current.CatalogModeID})
+	}
 
 	if filtersProvided {
-		if err := s.store.SetUserRouteFilters(r.Context(), id, store.RouteFilters{Allow: filterAllow, Deny: filterDeny}); err != nil {
+		// SetUserRouteFilters reads its own before/after inside the same
+		// transaction as the write, so this comparison describes exactly
+		// this call's own change.
+		before, after, err := s.store.SetUserRouteFilters(r.Context(), id, store.RouteFilters{Allow: filterAllow, Deny: filterDeny})
+		if err != nil {
 			logging.FromContext(r.Context()).Debug("route filters save after update failed", "error", err, "user_id", id)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save route filters"})
 			return
 		}
 		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "route_filters.user_updated", "user", strconv.FormatInt(id, 10),
-			normalizedBeforeFilters, normalizedFilters)
-	}
-	if body.CatalogModeID != nil {
-		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.mode_changed", "user", strconv.FormatInt(id, 10),
-			map[string]int64{"catalog_mode_id": previousCatalogModeID}, map[string]int64{"catalog_mode_id": current.CatalogModeID})
+			before, after)
 	}
 
 	if s.bgp != nil {
@@ -1082,7 +1083,7 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 	// the same reason apiUserSaveSelections needs that: bracketing it with
 	// independent reads would let a concurrent save change either count
 	// out from under this request.
-	beforeCats, beforeSvcs, afterCats, afterSvcs, err :=
+	beforeCats, beforeSvcs, afterCats, afterSvcs, prevModeID, err :=
 		s.store.SaveUserSelectionCounts(r.Context(), id, modeID, switchingMode, categoryToggles, serviceToggles)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid or disabled mode"})
@@ -1093,8 +1094,13 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if switchingMode {
+		// prevModeID is read inside the same transaction as the switch —
+		// using user.CatalogModeID (the session/pre-fetch snapshot)
+		// instead would let two overlapping switches both log "from" the
+		// same stale starting mode even though the real sequence moved
+		// through an intermediate one.
 		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.mode_changed", "user", strconv.FormatInt(id, 10),
-			map[string]int64{"catalog_mode_id": user.CatalogModeID}, map[string]int64{"catalog_mode_id": modeID})
+			map[string]int64{"catalog_mode_id": prevModeID}, map[string]int64{"catalog_mode_id": modeID})
 	}
 	// Counts only, not the full selection list — see apiUserSaveSelections
 	// for the known limitation this carries.

@@ -98,7 +98,7 @@ func TestAuditHookCommunitiesGenerateNoopWhenNothingToGenerate(t *testing.T) {
 	ctx := context.Background()
 
 	// First generate fills everything; a second call has nothing left to do.
-	if _, err := st.GenerateCommunities(ctx, modeID); err != nil {
+	if _, _, _, err := st.GenerateCommunities(ctx, modeID); err != nil {
 		t.Fatalf("pre-generate: %v", err)
 	}
 
@@ -134,6 +134,63 @@ func TestAuditHookCommunitiesPut(t *testing.T) {
 	}
 	if !strings.Contains(e.After, "12345") {
 		t.Fatalf("after = %q, want it to mention the new community 12345", e.After)
+	}
+}
+
+// TestAuditHookCommunitiesPutAfterIsImmuneToLaterConcurrentWrite shows the
+// bug an independent post-mutation CommunityRows read (bracketing
+// SetCommunities instead of using its own atomic return) would have: a
+// concurrent request committing between this PUT's write and that
+// independent read would make the audit entry describe the CONCURRENT
+// request's result, not this PUT's own. SetCommunities' returned "after"
+// is captured inside its own transaction and can't be affected by
+// anything that commits afterward.
+func TestAuditHookCommunitiesPutAfterIsImmuneToLaterConcurrentWrite(t *testing.T) {
+	srv, st, modeID := modeWithCatalogFixture(t)
+	ctx := context.Background()
+
+	body := `{"communities":[{"category":"cat-a","service":"svc-a","community":100}]}`
+	req := httptest.NewRequest("PUT", "/api/admin/modes/x/communities", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w := httptest.NewRecorder()
+	srv.apiModeCommunitiesPut(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("put: %d body=%s", w.Code, w.Body.String())
+	}
+	e := latestAuditByAction(t, st, "communities.updated")
+	if !strings.Contains(e.After, "100") {
+		t.Fatalf("after = %q, want it to mention 100 (this PUT's own write)", e.After)
+	}
+
+	// A second, independent mutation commits afterward (e.g. a concurrent
+	// admin request touching the same pair).
+	if err := st.SetCommunity(ctx, modeID, "cat-a", "svc-a", 200); err != nil {
+		t.Fatalf("concurrent write: %v", err)
+	}
+	// An independent post-read at this point would see the CONCURRENT
+	// write's result, not the original PUT's — demonstrating exactly what
+	// the old bracketing pattern was vulnerable to.
+	rows, err := st.CommunityRows(ctx, modeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawConcurrentValue := false
+	for _, row := range rows {
+		if row.Category == "cat-a" && row.Service == "svc-a" && row.Community == 200 {
+			sawConcurrentValue = true
+		}
+	}
+	if !sawConcurrentValue {
+		t.Fatal("expected the concurrent write to be visible to an independent post-read")
+	}
+
+	// The already-recorded audit entry for the original PUT must still
+	// describe only that PUT's own result (100), unaffected by the later
+	// concurrent write.
+	e = latestAuditByAction(t, st, "communities.updated")
+	if !strings.Contains(e.After, "100") || strings.Contains(e.After, "200") {
+		t.Fatalf("audit entry after = %q, want it to still mention only 100, not the later concurrent write's 200", e.After)
 	}
 }
 
@@ -196,7 +253,7 @@ func TestAuditHookCommunitiesPutIsAtomic(t *testing.T) {
 func TestAuditHookCommunitiesReset(t *testing.T) {
 	srv, st, modeID := modeWithCatalogFixture(t)
 	ctx := context.Background()
-	if _, err := st.GenerateCommunities(ctx, modeID); err != nil {
+	if _, _, _, err := st.GenerateCommunities(ctx, modeID); err != nil {
 		t.Fatalf("pre-generate: %v", err)
 	}
 
@@ -603,7 +660,7 @@ func TestAuditHookUserSaveFiltersAfterIsNormalized(t *testing.T) {
 func TestAuditHookUserSaveFiltersNoopWhenResubmittingNormalizedEquivalent(t *testing.T) {
 	srv, st, userID := selfServiceUserFixture(t, true, false)
 	ctx := context.Background()
-	if err := st.SetUserRouteFilters(ctx, userID, store.RouteFilters{Allow: []string{"10.1.0.1/32"}}); err != nil {
+	if _, _, err := st.SetUserRouteFilters(ctx, userID, store.RouteFilters{Allow: []string{"10.1.0.1/32"}}); err != nil {
 		t.Fatalf("pre-set filters: %v", err)
 	}
 
