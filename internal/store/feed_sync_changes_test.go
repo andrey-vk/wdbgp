@@ -124,7 +124,9 @@ func userSelectingFeedChange(t *testing.T, s *Store, selected string, exclude bo
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{
 			AddedServices: 2, AddedByCategory: map[string]int{"ai": 2},
-		}, []ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Added: 5}}, time.Now().Unix())
+		}, []ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: []string{
+			"21.0.0.0/8", "22.0.0.0/8", "23.0.0.0/8", "24.0.0.0/8", "25.0.0.0/8",
+		}}}, time.Now().Unix())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +200,7 @@ func TestAckUserFeedChangesHidesSeenAndNeverMovesBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	var seen int64
-	if err := s.DB.QueryRowContext(ctx, "SELECT feed_changes_seen_id FROM users WHERE id = ?", userID).Scan(&seen); err != nil {
+	if err := s.DB.QueryRowContext(ctx, "SELECT change_id FROM user_feed_changes_seen WHERE user_id = ?", userID).Scan(&seen); err != nil {
 		t.Fatal(err)
 	}
 	if seen != changes[0].ChangeID {
@@ -216,7 +218,7 @@ func TestAckUserFeedChangesDoesNotHideSameSecondChange(t *testing.T) {
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{
 			AddedServices: 1, AddedByCategory: map[string]int{"ai": 1},
-		}, []ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Added: 1}}, same)
+		}, []ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: []string{"26.0.0.0/8"}}}, same)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -303,16 +305,49 @@ func TestModeGrowthCountsOnlyNewlyAnnouncedPrefixes(t *testing.T) {
 		{Category: "cat-a", Service: "svc1", CIDR: "21.0.0.0/8"},
 		{Category: "cat-a", Service: "svc3", CIDR: "22.0.0.0/8"},
 	})
-	if len(g) != 1 || g[0].Category != "cat-a" || g[0].Added != 1 {
-		t.Fatalf("growth = %+v, want exactly cat-a +1 (22/8 only)", g)
+	if len(g) != 1 || g[0].Category != "cat-a" || len(g[0].Prefixes) != 1 || g[0].Prefixes[0] != "22.0.0.0/8" {
+		t.Fatalf("growth = %+v, want exactly cat-a: 22.0.0.0/8 (21/8 was already announced)", g)
 	}
 
-	// Feed B adds a service whose prefix (21/8) the mode already announces.
+	// Feed B adds cat-b/svc4 with 21/8, which the mode already announces
+	// through cat-a. For a user who selects only cat-b it is new.
 	g = syncTo(feedB, []CatalogEntry{
 		{Category: "cat-a", Service: "svc2", CIDR: "21.0.0.0/8"},
 		{Category: "cat-b", Service: "svc4", CIDR: "21.0.0.0/8"},
 	})
-	if len(g) != 0 {
-		t.Fatalf("growth = %+v, want none: 21/8 was already announced", g)
+	if len(g) != 1 || g[0].Category != "cat-b" || len(g[0].Prefixes) != 1 || g[0].Prefixes[0] != "21.0.0.0/8" {
+		t.Fatalf("growth = %+v, want exactly cat-b: 21.0.0.0/8 (new through cat-b even though cat-a already had it)", g)
+	}
+}
+
+// A route filter that denies a growth prefix means it was never announced to
+// the user, so it must not be reported.
+func TestUserFeedChangesAppliesRouteFilters(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	if _, err := s.DB.ExecContext(ctx, "DELETE FROM feed_sync_mode_growth"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{AddedServices: 1, AddedByCategory: map[string]int{"ai": 1}},
+			[]ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: []string{"31.0.0.0/8", "32.0.0.0/8"}}},
+			time.Now().Unix())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Override mode, so the user's own deny list is the one that applies.
+	if _, err := s.DB.ExecContext(ctx, "UPDATE users SET filter_mode = ? WHERE id = ?", filterModeToInt(FilterModeOverride), userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Deny: []string{"31.0.0.0/8"}}, AuditMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := s.UserFeedChanges(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 || len(changes[0].Categories) != 1 || changes[0].Categories[0].AddedPrefixes != 1 {
+		t.Fatalf("UserFeedChanges = %+v, want one prefix (32/8) after the deny on 31/8", changes)
 	}
 }

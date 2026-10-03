@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/netip"
 	"time"
 )
@@ -127,10 +128,12 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 		}
 	}
 	for _, g := range growth {
-		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO feed_sync_mode_growth(change_id, mode_id, category, added_prefixes) VALUES (?, ?, ?, ?)",
-			changeID, g.ModeID, g.Category, g.Added); err != nil {
-			return err
+		for _, prefix := range g.Prefixes {
+			if _, err := tx.ExecContext(ctx,
+				"INSERT INTO feed_sync_mode_growth(change_id, mode_id, category, prefix) VALUES (?, ?, ?, ?)",
+				changeID, g.ModeID, g.Category, prefix); err != nil {
+				return err
+			}
 		}
 	}
 	const stale = `SELECT id FROM feed_sync_changes WHERE feed_id = ?1 AND id NOT IN (
@@ -210,8 +213,9 @@ ORDER BY synced_at DESC, id DESC LIMIT ?`, feedID, limit)
 }
 
 // UserFeedChange is prefixes a feed sync newly made announced in the user's
-// mode, through categories they have selected. Those routes reached the user
-// because of the feed, not because of anything they did.
+// mode, through categories they have selected and that their route filters
+// let through. Those routes reached the user because of the feed, not because
+// of anything they did.
 type UserFeedChange struct {
 	ChangeID   int64                    `json:"change_id"`
 	FeedName   string                   `json:"feed_name"`
@@ -225,50 +229,109 @@ type UserFeedChangeCategory struct {
 }
 
 // UserFeedChanges returns the feed-driven growth the user hasn't acknowledged
-// (changes newer than their cursor, within userFeedChangeWindow), oldest first.
+// in their current mode (within userFeedChangeWindow), oldest first. Growth
+// their route filters remove is left out: it was never announced to them.
 func (s *Store) UserFeedChanges(ctx context.Context, userID int64, now time.Time) ([]UserFeedChange, error) {
-	var seenID, modeID int64
+	var modeID int64
+	var filterModeInt int
 	if err := s.DB.QueryRowContext(ctx,
-		"SELECT feed_changes_seen_id, catalog_mode_id FROM users WHERE id = ?", userID).Scan(&seenID, &modeID); err != nil {
+		"SELECT catalog_mode_id, filter_mode FROM users WHERE id = ?", userID).Scan(&modeID, &filterModeInt); err != nil {
+		return nil, err
+	}
+	var seenID int64
+	err := s.DB.QueryRowContext(ctx,
+		"SELECT change_id FROM user_feed_changes_seen WHERE user_id = ? AND mode_id = ?", userID, modeID).Scan(&seenID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	since := now.Add(-userFeedChangeWindow).Unix()
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT f.name, c.id, c.synced_at, g.category, g.added_prefixes
+SELECT f.name, c.id, c.synced_at, g.category, g.prefix
 FROM feed_sync_mode_growth g
 JOIN feed_sync_changes c ON c.id = g.change_id
 JOIN feeds f ON f.id = c.feed_id
 JOIN categories cat ON cat.name = g.category
 JOIN selected_categories sc ON sc.user_id = ? AND sc.mode_id = g.mode_id AND sc.category_id = cat.id
 WHERE g.mode_id = ? AND c.id > ? AND c.synced_at >= ? AND f.enabled = 1
-ORDER BY c.id, g.category`, userID, modeID, seenID, since)
+ORDER BY c.id, g.category, g.prefix`, userID, modeID, seenID, since)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }() //nolint:errcheck
-	var out []UserFeedChange
-	var lastChangeID int64 = -1
+
+	type growthRow struct {
+		feedName, category, prefix string
+		changeID, syncedAt         int64
+	}
+	var all []growthRow
+	distinct := map[netip.Prefix]bool{}
 	for rows.Next() {
-		var feedName, category string
-		var changeID, syncedAt int64
-		var added int
-		if err := rows.Scan(&feedName, &changeID, &syncedAt, &category, &added); err != nil {
+		var g growthRow
+		if err := rows.Scan(&g.feedName, &g.changeID, &g.syncedAt, &g.category, &g.prefix); err != nil {
 			return nil, err
 		}
-		if changeID != lastChangeID {
-			out = append(out, UserFeedChange{ChangeID: changeID, FeedName: feedName, SyncedAt: syncedAt, Categories: []UserFeedChangeCategory{}})
-			lastChangeID = changeID
+		all = append(all, g)
+		if p, err := netip.ParsePrefix(g.prefix); err == nil {
+			distinct[p] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(all) == 0 {
+		return nil, nil
+	}
+
+	filters, err := loadEffectiveRouteFilters(ctx, s.DB, userID, filterModeFromInt(filterModeInt))
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]netip.Prefix, 0, len(distinct))
+	for p := range distinct {
+		candidates = append(candidates, p)
+	}
+	allowedList, err := applyRouteFiltersToPrefixes(candidates, filters)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[netip.Prefix]bool, len(allowedList))
+	for _, p := range allowedList {
+		allowed[p] = true
+	}
+
+	var out []UserFeedChange
+	var lastChangeID int64 = -1
+	for _, g := range all {
+		p, err := netip.ParsePrefix(g.prefix)
+		if err != nil || !allowed[p] {
+			continue
+		}
+		if g.changeID != lastChangeID {
+			out = append(out, UserFeedChange{ChangeID: g.changeID, FeedName: g.feedName, SyncedAt: g.syncedAt, Categories: []UserFeedChangeCategory{}})
+			lastChangeID = g.changeID
 		}
 		last := &out[len(out)-1]
-		last.Categories = append(last.Categories, UserFeedChangeCategory{Category: category, AddedPrefixes: added})
+		if n := len(last.Categories); n > 0 && last.Categories[n-1].Category == g.category {
+			last.Categories[n-1].AddedPrefixes++
+		} else {
+			last.Categories = append(last.Categories, UserFeedChangeCategory{Category: g.category, AddedPrefixes: 1})
+		}
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-// AckUserFeedChanges marks changes up to throughID as seen. The cursor only
-// moves forward, so a stale acknowledgement can't re-surface old changes.
+// AckUserFeedChanges marks changes up to throughID as seen in the user's
+// current mode. The cursor only moves forward, so a stale acknowledgement
+// can't re-surface old changes.
 func (s *Store) AckUserFeedChanges(ctx context.Context, userID, throughID int64) error {
-	_, err := s.DB.ExecContext(ctx,
-		"UPDATE users SET feed_changes_seen_id = MAX(feed_changes_seen_id, ?) WHERE id = ?", throughID, userID)
+	var modeID int64
+	if err := s.DB.QueryRowContext(ctx,
+		"SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&modeID); err != nil {
+		return err
+	}
+	_, err := s.DB.ExecContext(ctx, `
+INSERT INTO user_feed_changes_seen(user_id, mode_id, change_id) VALUES (?, ?, ?)
+ON CONFLICT(user_id, mode_id) DO UPDATE SET change_id = MAX(change_id, excluded.change_id)`,
+		userID, modeID, throughID)
 	return err
 }

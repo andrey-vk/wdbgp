@@ -379,6 +379,21 @@ WHERE cme.mode_id = ?1
 	return filterSelectionPrefixes(ctx, q, userID, filterMode, prefixes)
 }
 
+// loadEffectiveRouteFilters reads the global and per-user filters and merges
+// them the way the user's filter mode says.
+func loadEffectiveRouteFilters(ctx context.Context, q queryer, userID int64, filterMode string) (RouteFilters, error) {
+	userFilters, err := readRouteFilters(ctx, q,
+		"SELECT action, ip, bits FROM user_route_filters WHERE user_id = ? ORDER BY action, ip, bits", userID)
+	if err != nil {
+		return RouteFilters{}, err
+	}
+	globalFilters, err := globalRouteFilters(ctx, q)
+	if err != nil {
+		return RouteFilters{}, err
+	}
+	return effectiveRouteFilters(filterMode, globalFilters, userFilters), nil
+}
+
 func countPrefixFamilies(prefixes []netip.Prefix) (v4, v6 int) {
 	for _, pfx := range prefixes {
 		if pfx.Addr().Is6() {
@@ -443,25 +458,9 @@ func (s *Store) countFilteredPrefixes(ctx context.Context, userID int64, filterM
 // countFilteredPrefixes is countFilteredPrefixes' queryer-parameterized
 // implementation — see countSelectionPrefixesTx.
 func filterSelectionPrefixes(ctx context.Context, q queryer, userID int64, filterMode string, prefixes []netip.Prefix) ([]netip.Prefix, error) {
-	userFilters, err := readRouteFilters(ctx, q,
-		"SELECT action, ip, bits FROM user_route_filters WHERE user_id = ? ORDER BY action, ip, bits", userID)
+	effectiveFilters, err := loadEffectiveRouteFilters(ctx, q, userID, filterMode)
 	if err != nil {
 		return nil, err
-	}
-
-	globalFilters, err := globalRouteFilters(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-
-	var effectiveFilters RouteFilters
-	switch filterMode {
-	case FilterModeOverride:
-		effectiveFilters = userFilters
-	case FilterModeExtend:
-		effectiveFilters = mergeRouteFilters(globalFilters, userFilters)
-	default:
-		effectiveFilters = globalFilters
 	}
 
 	filtered, err := applyRouteFiltersToPrefixes(prefixes, effectiveFilters)
