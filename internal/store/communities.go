@@ -32,6 +32,19 @@ func findFirstFree(start uint32, used map[uint32]bool) uint32 {
 // UI display; actual assignment uses findFirstFree. Not valid for a group's
 // own (category-level) entry — use AutoGroupCommunity for that, since a
 // group's base value has no "+1 for the first service" offset applied to it.
+//
+// Known limitation: for a category with more than 9,999 services,
+// genCommunitiesRuntime's real findFirstFree-based assignment just keeps
+// counting past the next group's nominal base rather than wrapping into a
+// reserved block for it (there is no such reservation — group bases are
+// found, not fixed, whenever a prior group's own count pushes past 9,999),
+// which in turn shifts the NEXT category's real group base by however many
+// services spilled over. This estimate does not model that spillover (doing
+// so would mean tracking every preceding category's exact service count,
+// turning this cheap estimate into a re-implementation of the real
+// algorithm), so it can be off by a small amount for that category and the
+// one after it. Accepted as out of scope: a single category with over 9,999
+// services is far larger than anything a real catalog has.
 func AutoCommunity(groupIndex int, serviceIndex int) uint32 {
 	for serviceIndex >= 9999 {
 		groupIndex++
