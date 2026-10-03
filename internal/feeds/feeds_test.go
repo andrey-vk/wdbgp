@@ -674,7 +674,7 @@ func TestSyncDiscardsDownloadWhenFeedURLChanges(t *testing.T) {
 			t.Fatalf("download URL = %q, want %q", request.URL, oldURL)
 		}
 		feed.URL = newURL
-		if err := db.UpdateFeed(ctx, feed); err != nil {
+		if _, err := db.UpdateFeed(ctx, feed); err != nil {
 			t.Fatal(err)
 		}
 		return &http.Response{

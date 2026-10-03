@@ -208,13 +208,24 @@ func (s *Server) apiModesDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Built-in catalog modes cannot be deleted"})
 		return
 	}
-	if err := s.store.DeleteCatalogMode(r.Context(), id); err != nil {
+	reassignedUserIDs, err := s.store.DeleteCatalogMode(r.Context(), id)
+	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Mode not found"})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
+	}
+	// Every user still pointing at the deleted mode was just moved to mode
+	// 1 — without this, those moves have no trace in the audit log despite
+	// user.mode_changed covering every other way a user's mode can change.
+	for _, userID := range reassignedUserIDs {
+		s.recordAudit(r.Context(), r, store.AuditLogEntry{
+			Actor: s.adminActor(r), Action: "user.mode_changed", ObjectType: "user", ObjectID: strconv.FormatInt(userID, 10),
+			Before: `{"catalog_mode_id":` + strconv.FormatInt(id, 10) + `}`,
+			After:  `{"catalog_mode_id":1}`,
+		})
 	}
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {

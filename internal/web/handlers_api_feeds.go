@@ -205,22 +205,20 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 	if extraHosts := s.store.BuiltinAdapterAllowedHosts(r.Context(), body.AdapterID); extraHosts != "" {
 		body.AllowedHosts = mergeAllowedHosts(body.AllowedHosts, extraHosts)
 	}
-	before, err := s.store.Feed(r.Context(), id)
-	if err != nil {
-		if store.IsNotFound(err) {
-			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Feed not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
 	f := store.Feed{
 		ID: id, Name: body.Name, URL: body.URL, Enabled: body.Enabled,
 		SyncInterval: int(body.SyncInterval), Data: body.Data,
 		AdapterID:    body.AdapterID,
 		AllowedHosts: body.AllowedHosts, RestrictHosts: body.RestrictHosts,
 	}
-	if err := s.store.UpdateFeed(r.Context(), f); err != nil {
+	// prevEnabled is read inside UpdateFeed's own transaction, atomically
+	// with the write — bracketing the update with two independent
+	// s.store.Feed() reads instead would let a concurrent update slip in
+	// between them, comparing this request's own before/after as equal
+	// (both reflecting the other request's write) even though this
+	// request's write did change enabled.
+	prevEnabled, err := s.store.UpdateFeed(r.Context(), f)
+	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Feed not found"})
 			return
@@ -234,8 +232,12 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to read updated feed"})
 		return
 	}
+	// "after" is f.Enabled (what this request itself submitted and
+	// UpdateFeed just persisted), not updated.Enabled — the latter is a
+	// separate read after the transaction commits, which a third
+	// concurrent request could still change in between.
 	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "feed.enabled_changed", "feed", strconv.FormatInt(id, 10),
-		map[string]bool{"enabled": before.Enabled}, map[string]bool{"enabled": updated.Enabled})
+		map[string]bool{"enabled": prevEnabled}, map[string]bool{"enabled": f.Enabled})
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after feed update", "error", err)

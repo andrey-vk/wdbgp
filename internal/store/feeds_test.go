@@ -87,7 +87,7 @@ func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 
 	feed.Name = "renamed"
 	feed.URL = "https://example.test/new.json"
-	if err := s.UpdateFeed(ctx, feed); err != nil {
+	if _, err := s.UpdateFeed(ctx, feed); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err = s.Feeds(ctx, false)
@@ -145,5 +145,58 @@ func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 		if selections != 0 {
 			t.Fatalf("%s after feed deletion = %d, want 0", table, selections)
 		}
+	}
+}
+
+// TestUpdateFeedPrevEnabledReflectsImmediatelyPriorState guards against a
+// caller (the audit log hook in apiFeedsUpdate) bracketing UpdateFeed with
+// its own separate "before" read instead of using the value this call
+// returns. Simulates two overlapping requests without needing real
+// goroutines: a "stale" read taken before either request's own UpdateFeed
+// call runs, then two UpdateFeed calls in sequence (mirroring two
+// overlapping PUTs committing in some order) — each call's own returned
+// prevEnabled must reflect the state its own write actually overwrote, not
+// whatever a once-cached read from earlier in the sequence still says.
+func TestUpdateFeedPrevEnabledReflectsImmediatelyPriorState(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	feedID, err := s.AddFeed(ctx, "race-feed", "https://example.test/race.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, err := s.Feed(ctx, feedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A read taken before anything below runs — if UpdateFeed's caller used
+	// a value like this instead of UpdateFeed's own return, it would be
+	// stale by the time the second call below runs.
+	staleBefore := feed.Enabled // true
+
+	// "Request B": disables the feed. Its own prevEnabled must be the
+	// actual current value (true), same as staleBefore here — not yet
+	// distinguishing, but establishes the baseline.
+	feed.Enabled = false
+	prevB, err := s.UpdateFeed(ctx, feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prevB != true {
+		t.Fatalf("request B's prevEnabled = %v, want true", prevB)
+	}
+
+	// "Request A": re-enables the feed. The real immediately-prior state is
+	// false (what request B above just committed) — not staleBefore
+	// (true). A caller using staleBefore here would compare true-to-true
+	// and conclude nothing changed, even though the feed just flipped
+	// false→true.
+	feed.Enabled = true
+	prevA, err := s.UpdateFeed(ctx, feed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prevA != false {
+		t.Fatalf("request A's prevEnabled = %v, want false (request B's write), not staleBefore (%v)", prevA, staleBefore)
 	}
 }

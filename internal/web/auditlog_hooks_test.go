@@ -357,6 +357,48 @@ func TestAuditHookFeedEnabledNoopWhenUnchanged(t *testing.T) {
 	}
 }
 
+// TestAuditHookFeedEnabledChangedTwoToggles exercises the real handler
+// across two consecutive toggles (disable, then re-enable) and checks both
+// resulting entries — proving the handler's "before" comes from
+// UpdateFeed's own atomic return rather than a value read earlier and
+// reused, which the race TestUpdateFeedPrevEnabledReflectsImmediatelyPriorState
+// (internal/store/feeds_test.go) covers directly at the store layer.
+func TestAuditHookFeedEnabledChangedTwoToggles(t *testing.T) {
+	srv, st, feedID := feedFixture(t)
+	idStr := strconv.FormatInt(feedID, 10)
+
+	put := func(enabled bool) {
+		body := `{"name":"audit-feed","url":"http://example.com/feed.json","enabled":` +
+			strconv.FormatBool(enabled) + `,"sync_interval":3600,"mode_id":1,"adapter_id":1}`
+		req := httptest.NewRequest("PUT", "/api/admin/feeds/"+idStr, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", idStr)
+		w := httptest.NewRecorder()
+		srv.apiFeedsUpdate(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("update(enabled=%v): %d body=%s", enabled, w.Code, w.Body.String())
+		}
+	}
+
+	put(false) // true -> false
+	put(true)  // false -> true
+
+	entries, total, err := st.ListAuditLog(context.Background(), store.AuditLogFilter{Action: "feed.enabled_changed"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (both toggles are real changes)", total)
+	}
+	// Newest first.
+	if entries[0].Before != `{"enabled":false}` || entries[0].After != `{"enabled":true}` {
+		t.Fatalf("second toggle: before=%q after=%q, want false->true", entries[0].Before, entries[0].After)
+	}
+	if entries[1].Before != `{"enabled":true}` || entries[1].After != `{"enabled":false}` {
+		t.Fatalf("first toggle: before=%q after=%q, want true->false", entries[1].Before, entries[1].After)
+	}
+}
+
 // --- Admin user update: mode move + route filters -------------------------
 
 func adminUserFixture(t *testing.T) (*Server, *store.Store, int64) {
@@ -729,5 +771,39 @@ func TestAuditHookAdminUserSaveSelectionsModeSwitchNoopComparesTargetMode(t *tes
 
 	if n := auditLogCount(t, st, "user.selections_changed"); n != 0 {
 		t.Fatalf("selections_changed count = %d, want 0 (mode 1's count of 1 must not be compared against target mode B's count of 0)", n)
+	}
+}
+
+// TestAuditHookModeDeleteReassignsUsersWithAudit guards against deleting a
+// mode silently moving every user still pointing at it to mode 1 with no
+// trace in the audit log — user.mode_changed is supposed to cover every way
+// a user's mode can change, and this is one DeleteCatalogMode performs
+// itself, not something apiModesDelete's caller does explicitly.
+func TestAuditHookModeDeleteReassignsUsersWithAudit(t *testing.T) {
+	srv, st, userID := adminUserFixture(t)
+	modeBID := createSecondModeFixture(t, srv)
+	ctx := context.Background()
+	if _, err := st.DB.ExecContext(ctx, "UPDATE users SET catalog_mode_id = ? WHERE id = ?", modeBID, userID); err != nil {
+		t.Fatalf("move user to mode B: %v", err)
+	}
+
+	req := httptest.NewRequest("DELETE", "/api/admin/modes/x", nil)
+	req.SetPathValue("id", strconv.FormatInt(modeBID, 10))
+	w := httptest.NewRecorder()
+	srv.apiModesDelete(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete mode: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "user.mode_changed")
+	if !strings.HasPrefix(e.Actor, "admin:") {
+		t.Fatalf("actor = %q, want admin:<ip>", e.Actor)
+	}
+	if e.ObjectType != "user" || e.ObjectID != strconv.FormatInt(userID, 10) {
+		t.Fatalf("entry = %+v, want user/%d", e, userID)
+	}
+	wantBefore := `{"catalog_mode_id":` + strconv.FormatInt(modeBID, 10) + `}`
+	if e.Before != wantBefore || e.After != `{"catalog_mode_id":1}` {
+		t.Fatalf("before=%q after=%q, want %q -> {\"catalog_mode_id\":1}", e.Before, e.After, wantBefore)
 	}
 }

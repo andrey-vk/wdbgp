@@ -177,7 +177,7 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	}
 
 	feed.Enabled = false
-	if err := s.UpdateFeed(ctx, feed); err != nil {
+	if _, err := s.UpdateFeed(ctx, feed); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err = s.Catalog(ctx)
@@ -204,7 +204,7 @@ func TestDisabledFeedIsExcludedWithoutDeletingSnapshot(t *testing.T) {
 	}
 
 	feed.Enabled = true
-	if err := s.UpdateFeed(ctx, feed); err != nil {
+	if _, err := s.UpdateFeed(ctx, feed); err != nil {
 		t.Fatal(err)
 	}
 	prefixes, _, err = s.DesiredPrefixes(ctx)

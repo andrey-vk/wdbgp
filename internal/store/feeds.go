@@ -189,8 +189,14 @@ func mergeHosts(hosts, host string) string {
 	return hosts + "," + host
 }
 
-func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
-	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+// UpdateFeed updates feed and returns the Enabled value it had immediately
+// before this update, read in the same transaction as the write — so a
+// caller comparing before/after enabled state (e.g. for an audit log) gets
+// the value this specific call actually overwrote, not a value read by an
+// independent, unsynchronized query that a concurrent update could have
+// already changed underneath it.
+func (s *Store) UpdateFeed(ctx context.Context, feed Feed) (prevEnabled bool, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
 		var oldURL string
 		var oldAdapterID int64
 		var oldData string
@@ -198,8 +204,8 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		var oldAllowedHosts string
 		var oldRestrictHosts bool
 		if err := tx.QueryRowContext(ctx,
-			"SELECT url, adapter_id, data, name, allowed_hosts, restrict_hosts FROM feeds WHERE id = ?", feed.ID).
-			Scan(&oldURL, &oldAdapterID, &oldData, &oldName, &oldAllowedHosts, &oldRestrictHosts); err != nil {
+			"SELECT url, adapter_id, data, name, allowed_hosts, restrict_hosts, enabled FROM feeds WHERE id = ?", feed.ID).
+			Scan(&oldURL, &oldAdapterID, &oldData, &oldName, &oldAllowedHosts, &oldRestrictHosts, &prevEnabled); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -229,7 +235,7 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		// being announced from a stale materialized merge.
 		return RebuildModeEntriesForFeedTx(ctx, tx, feed.ID)
 	})
-	return err
+	return prevEnabled, err
 }
 
 // FeedModes returns the mode IDs associated with a feed.
