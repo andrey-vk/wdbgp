@@ -302,7 +302,8 @@ func (s *Store) SetCommunities(ctx context.Context, modeID int64, updates []Comm
 		}
 		after = a
 		changedBefore, changedAfter := diffCommunityRows(before, after)
-		return AuditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, false)
+		return AuditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10),
+			boundCommunitiesForAudit(changedBefore), boundCommunitiesForAudit(changedAfter), false)
 	})
 	return before, after, err
 }
@@ -340,6 +341,26 @@ func diffCommunityRows(before, after []Community) (changedBefore, changedAfter [
 		changedAfter = append(changedAfter, a)
 	}
 	return changedBefore, changedAfter
+}
+
+// AuditCommunityList is a capped, audit-safe representation of a changed
+// community-assignment list — Entries holds up to MaxAuditDiffEntries,
+// and Truncated (omitted when zero) notes how many additional entries
+// were cut. diffCommunityRows alone bounds a community audit entry to
+// what actually changed instead of the complete snapshot, but a bulk
+// generate/reset on a catalog with tens of thousands of services can
+// still change most of the mode at once — unbounded by the diff alone,
+// the same gap route-filter audits had before MaxAuditDiffEntries.
+type AuditCommunityList struct {
+	Entries   []Community `json:"entries"`
+	Truncated int         `json:"truncated,omitempty"`
+}
+
+// boundCommunitiesForAudit caps a diffCommunityRows result for audit
+// storage.
+func boundCommunitiesForAudit(entries []Community) AuditCommunityList {
+	capped, truncated := BoundSlice(entries, MaxAuditDiffEntries)
+	return AuditCommunityList{Entries: capped, Truncated: truncated}
 }
 
 // CommunityChange is one community assignment that a reset would alter.
@@ -533,7 +554,8 @@ func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDige
 		// because of that), worth recording even on the rare occasion the
 		// recomputed values happen to match what was there before.
 		changedBefore, changedAfter := diffCommunityRows(before, after)
-		return AuditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, true)
+		return AuditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10),
+			boundCommunitiesForAudit(changedBefore), boundCommunitiesForAudit(changedAfter), true)
 	})
 	return before, after, generated, err
 }
@@ -611,7 +633,8 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64, meta Audi
 		}
 		after = a
 		changedBefore, changedAfter := diffCommunityRows(before, after)
-		return AuditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, false)
+		return AuditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10),
+			boundCommunitiesForAudit(changedBefore), boundCommunitiesForAudit(changedAfter), false)
 	})
 	return before, after, count, err
 }

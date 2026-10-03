@@ -608,6 +608,18 @@ func BoundDiffEntries(entries []string) (capped []string, truncated int) {
 	return capped, truncated
 }
 
+// BoundSlice caps items to max for audit storage, returning the capped
+// slice and how many were omitted (0 if none). The generic counterpart to
+// BoundDiffEntries for audit diffs whose entries aren't strings (see
+// communities.AuditCommunityList) — no per-entry byte cap, since those
+// entries aren't free-form text the way a filter_allow comment line is.
+func BoundSlice[T any](items []T, max int) (capped []T, truncated int) {
+	if len(items) <= max {
+		return items, 0
+	}
+	return items[:max], len(items) - max
+}
+
 // AuditStringList is a capped, audit-safe representation of a changed
 // entry list — Entries holds up to MaxAuditDiffEntries, and Truncated
 // (omitted when zero) notes how many additional entries were cut.

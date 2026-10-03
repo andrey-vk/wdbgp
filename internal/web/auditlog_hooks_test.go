@@ -155,20 +155,22 @@ func TestAuditHookCommunitiesPutOnlyRecordsChangedAssignments(t *testing.T) {
 	}
 
 	e := latestAuditByAction(t, st, "communities.updated")
-	var afterEntries []store.Community
-	if err := json.Unmarshal([]byte(e.After), &afterEntries); err != nil {
+	var afterList store.AuditCommunityList
+	if err := json.Unmarshal([]byte(e.After), &afterList); err != nil {
 		t.Fatalf("unmarshal after %q: %v", e.After, err)
 	}
+	afterEntries := afterList.Entries
 	if len(afterEntries) != 1 {
 		t.Fatalf("after entries = %d, want exactly 1 (only the changed assignment), got %q", len(afterEntries), e.After)
 	}
 	if afterEntries[0].Category != "cat-a" || afterEntries[0].Service != "svc-a" || afterEntries[0].Community != newComm {
 		t.Fatalf("after entry = %+v, want cat-a/svc-a -> %d", afterEntries[0], newComm)
 	}
-	var beforeEntries []store.Community
-	if err := json.Unmarshal([]byte(e.Before), &beforeEntries); err != nil {
+	var beforeList store.AuditCommunityList
+	if err := json.Unmarshal([]byte(e.Before), &beforeList); err != nil {
 		t.Fatalf("unmarshal before %q: %v", e.Before, err)
 	}
+	beforeEntries := beforeList.Entries
 	if len(beforeEntries) != 1 {
 		t.Fatalf("before entries = %d, want exactly 1 (only the changed assignment), got %q", len(beforeEntries), e.Before)
 	}
@@ -255,10 +257,11 @@ func TestAuditHookCommunitiesGenerateOnlyRecordsNewAssignments(t *testing.T) {
 	}
 
 	e := latestAuditByAction(t, st, "communities.generated")
-	var afterEntries []store.Community
-	if err := json.Unmarshal([]byte(e.After), &afterEntries); err != nil {
+	var afterList store.AuditCommunityList
+	if err := json.Unmarshal([]byte(e.After), &afterList); err != nil {
 		t.Fatalf("unmarshal after %q: %v", e.After, err)
 	}
+	afterEntries := afterList.Entries
 	if len(afterEntries) == 0 {
 		t.Fatalf("after = %q, want at least the newly generated cat-b assignment(s)", e.After)
 	}
@@ -266,6 +269,70 @@ func TestAuditHookCommunitiesGenerateOnlyRecordsNewAssignments(t *testing.T) {
 		if c.Category == "cat-a" {
 			t.Fatalf("after unexpectedly includes the already-assigned cat-a entry: %+v (full after=%s)", c, e.After)
 		}
+	}
+}
+
+// TestAuditHookCommunitiesGenerateCapsBulkFill checks that generating
+// communities for a mode with more than store.MaxAuditDiffEntries
+// services still records a capped audit entry — diffCommunityRows alone
+// bounds the entry to what actually changed, but a bulk fill on a large
+// catalog can still change most of the mode at once (catalogs can have
+// tens of thousands of services), unbounded by the diff alone.
+func TestAuditHookCommunitiesGenerateCapsBulkFill(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	req := httptest.NewRequest("POST", "/api/admin/modes", strings.NewReader(`{"name":"Bulk Mode","enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiModesCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create mode: %d body=%s", w.Code, w.Body.String())
+	}
+	var created modeJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	modeID := created.ID
+
+	feedID, err := st.AddFeed(ctx, "Bulk Feed", "http://example.com/bulk.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+		t.Fatalf("assign feed: %v", err)
+	}
+	n := store.MaxAuditDiffEntries + 30
+	entries := make([]store.CatalogEntry, n)
+	for i := range entries {
+		entries[i] = store.CatalogEntry{
+			Category: fmt.Sprintf("cat-%d", i), Service: "svc", CIDR: fmt.Sprintf("10.%d.0.0/16", i),
+		}
+	}
+	if err := st.InsertCatalogEntries(ctx, feedID, entries); err != nil {
+		t.Fatalf("insert catalog: %v", err)
+	}
+
+	req = httptest.NewRequest("POST", "/api/admin/modes/x/communities/generate", nil)
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeCommunitiesGenerate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("generate: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "communities.generated")
+	var afterList store.AuditCommunityList
+	if err := json.Unmarshal([]byte(e.After), &afterList); err != nil {
+		t.Fatalf("unmarshal after %q: %v", e.After, err)
+	}
+	if len(afterList.Entries) != store.MaxAuditDiffEntries {
+		t.Fatalf("len(after.Entries) = %d, want exactly %d", len(afterList.Entries), store.MaxAuditDiffEntries)
+	}
+	// 2 category-level + 1 service-level entry generated per cat-N, so
+	// truncated must be positive but isn't pinned to one exact value here.
+	if afterList.Truncated == 0 {
+		t.Fatalf("Truncated = 0, want > 0 (catalog has far more than %d generated assignments)", store.MaxAuditDiffEntries)
 	}
 }
 
