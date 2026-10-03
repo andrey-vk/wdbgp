@@ -240,6 +240,7 @@
   "feeds.sync_changes_title": "Recent syncs that changed entries",
   "feeds.sync_change_services": "Services: +{added} / −{removed}",
   "feeds.sync_change_prefixes": "Prefixes: +{added} / −{removed}",
+  "feeds.sync_change_associations": "Associations: +{added} / −{removed}",
   "feeds.sync_change_category": "{category}: +{added} services",
   "feeds.sync_started": "Sync started — running in the background.",
   "feeds.sync_in_progress": "Sync already in progress.",

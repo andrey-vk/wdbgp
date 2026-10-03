@@ -12,6 +12,8 @@ export interface FeedSyncChange {
   removed_services: number
   added_prefixes: number
   removed_prefixes: number
+  added_associations: number
+  removed_associations: number
   categories: FeedSyncCategory[]
 }
 

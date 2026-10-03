@@ -452,6 +452,7 @@ async function loadList() {
                 <span class="text-gray-500 dark:text-gray-400">{{ new Date(change.synced_at * 1000).toLocaleString() }}</span>
                 <span>{{ t('feeds.sync_change_services', { added: change.added_services, removed: change.removed_services }) }}</span>
                 <span>{{ t('feeds.sync_change_prefixes', { added: change.added_prefixes, removed: change.removed_prefixes }) }}</span>
+                <span>{{ t('feeds.sync_change_associations', { added: change.added_associations, removed: change.removed_associations }) }}</span>
                 <span
                   v-for="cat in change.categories"
                   :key="cat.category"

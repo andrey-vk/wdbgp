@@ -239,6 +239,7 @@
   "feeds.sync_changes_title": "Недавние синхронизации, изменившие записи",
   "feeds.sync_change_services": "Сервисы: +{added} / −{removed}",
   "feeds.sync_change_prefixes": "Префиксы: +{added} / −{removed}",
+  "feeds.sync_change_associations": "Связи сервис–префикс: +{added} / −{removed}",
   "feeds.sync_change_category": "{category}: +{added} сервисов",
   "feeds.sync_started": "Синхронизация запущена — выполняется в фоне.",
   "feeds.sync_in_progress": "Синхронизация уже выполняется.",

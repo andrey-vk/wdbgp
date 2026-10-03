@@ -18,7 +18,9 @@ func V038(ctx context.Context, tx *sql.Tx) error {
 			added_services   INTEGER NOT NULL,
 			removed_services INTEGER NOT NULL,
 			added_prefixes   INTEGER NOT NULL,
-			removed_prefixes INTEGER NOT NULL
+			removed_prefixes INTEGER NOT NULL,
+			added_associations   INTEGER NOT NULL,
+			removed_associations INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_feed_sync_changes_feed ON feed_sync_changes(feed_id, synced_at)`,
 		`CREATE TABLE IF NOT EXISTS user_feed_changes_seen (

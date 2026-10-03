@@ -132,9 +132,11 @@ WHERE ce.feed_id = ?`, feedID)
 // to the retention bound, inside the sync's own transaction.
 func RecordFeedSyncChangeTx(ctx context.Context, tx *sql.Tx, feedID int64, diff FeedSyncDiff, syncedAt int64) error {
 	res, err := tx.ExecContext(ctx, `
-INSERT INTO feed_sync_changes(feed_id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes)
-VALUES (?, ?, ?, ?, ?, ?)`,
-		feedID, syncedAt, diff.AddedServices, diff.RemovedServices, diff.AddedPrefixes, diff.RemovedPrefixes)
+INSERT INTO feed_sync_changes(feed_id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes,
+	added_associations, removed_associations)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		feedID, syncedAt, diff.AddedServices, diff.RemovedServices, diff.AddedPrefixes, diff.RemovedPrefixes,
+		diff.AddedAssociations, diff.RemovedAssociations)
 	if err != nil {
 		return err
 	}
@@ -165,19 +167,22 @@ type FeedSyncCategory struct {
 }
 
 type FeedSyncChange struct {
-	ID              int64              `json:"change_id"`
-	SyncedAt        int64              `json:"synced_at"`
-	AddedServices   int                `json:"added_services"`
-	RemovedServices int                `json:"removed_services"`
-	AddedPrefixes   int                `json:"added_prefixes"`
-	RemovedPrefixes int                `json:"removed_prefixes"`
-	Categories      []FeedSyncCategory `json:"categories"`
+	ID                  int64              `json:"change_id"`
+	SyncedAt            int64              `json:"synced_at"`
+	AddedServices       int                `json:"added_services"`
+	RemovedServices     int                `json:"removed_services"`
+	AddedPrefixes       int                `json:"added_prefixes"`
+	RemovedPrefixes     int                `json:"removed_prefixes"`
+	AddedAssociations   int                `json:"added_associations"`
+	RemovedAssociations int                `json:"removed_associations"`
+	Categories          []FeedSyncCategory `json:"categories"`
 }
 
 // RecentFeedSyncChanges returns a feed's most recent sync changes, newest first.
 func (s *Store) RecentFeedSyncChanges(ctx context.Context, feedID int64, limit int) ([]FeedSyncChange, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes
+SELECT id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes,
+	added_associations, removed_associations
 FROM feed_sync_changes WHERE feed_id = ?
 ORDER BY synced_at DESC, id DESC LIMIT ?`, feedID, limit)
 	if err != nil {
@@ -188,7 +193,8 @@ ORDER BY synced_at DESC, id DESC LIMIT ?`, feedID, limit)
 	var ids []int64
 	for rows.Next() {
 		var c FeedSyncChange
-		if err := rows.Scan(&c.ID, &c.SyncedAt, &c.AddedServices, &c.RemovedServices, &c.AddedPrefixes, &c.RemovedPrefixes); err != nil {
+		if err := rows.Scan(&c.ID, &c.SyncedAt, &c.AddedServices, &c.RemovedServices, &c.AddedPrefixes, &c.RemovedPrefixes,
+			&c.AddedAssociations, &c.RemovedAssociations); err != nil {
 			return nil, err
 		}
 		c.Categories = []FeedSyncCategory{}
