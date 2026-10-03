@@ -46,6 +46,9 @@ const loadingFeeds = ref(false)
 // the header switch and save previews diff against those, so they must not
 // run off a snapshot left over from a previous mode or a failed load.
 const persistedFeedsKnown = ref(false)
+// The header switch keeps its own on/off state after a click; bumping this
+// re-renders it from the persisted value when the change isn't saved.
+const headerSwitchKey = ref(0)
 const loadingAllFeeds = ref(false)
 // Overlapping loads (quick successive selections) must not let an older
 // mode's response overwrite the feed snapshots of the one now selected.
@@ -111,6 +114,8 @@ function openCommunities() {
 }
 
 async function toggleModeEnabled() {
+  let saved = false
+  try {
   // Feeds still loading means the persisted feed set this preview relies on
   // isn't known yet, so previewing now could report a false 0 -> 0.
   if (!selected.value || loadingFeeds.value || !persistedFeedsKnown.value) return
@@ -138,11 +143,14 @@ async function toggleModeEnabled() {
       return
     }
     await apiClient.put('/admin/modes/' + modeId, { enabled: newEnabled })
+    saved = true
     selected.value.enabled = newEnabled
     await loadList()
     toast.add({ severity: 'success', summary: newEnabled ? 'Mode enabled' : 'Mode disabled', life: 2000 })
   } catch {
     toast.add({ severity: 'error', summary: 'Failed', life: 3000 })
+  }  } finally {
+    if (!saved) headerSwitchKey.value++
   }
 }
 
@@ -446,7 +454,7 @@ defineExpose({
               <Button v-if="selected && !editMode" :label="t('modes.communities_button')" icon="pi pi-hashtag" severity="secondary" size="small" @click="openCommunities" />
               <div v-if="selected && !editMode" class="switch-row">
                 <FormField :label="t('modes.enabled')" input-id="menabled-hdr">
-                  <ToggleSwitch id="menabled-hdr" :modelValue="selected.enabled" :disabled="loadingFeeds || !persistedFeedsKnown" @change="toggleModeEnabled" />
+                  <ToggleSwitch :key="headerSwitchKey" id="menabled-hdr" :modelValue="selected.enabled" :disabled="loadingFeeds || !persistedFeedsKnown" @change="toggleModeEnabled" />
                 </FormField>
               </div>
             </div>

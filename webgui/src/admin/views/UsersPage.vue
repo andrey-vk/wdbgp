@@ -30,6 +30,9 @@ const router = useRouter()
 const confirmDialog = useConfirm()
 const toast = useToast()
 const { loading, loadError, run } = useAsyncPageLoad()
+// The header switch keeps its own on/off state after a click; bumping this
+// re-renders it from the persisted value when the change isn't saved.
+const headerSwitchKey = ref(0)
 const { dialogVisible: blastRadiusVisible, preview: blastRadiusPreview, confirm: confirmBlastRadius, onApply: applyBlastRadius, onCancel: cancelBlastRadius } = useBlastRadiusConfirm()
 
 const users = ref<User[]>([])
@@ -569,6 +572,8 @@ async function handleResetPassword() {
 }
 
 async function toggleEnabled() {
+  let saved = false
+  try {
   if (!selected.value) return
   const user = selected.value
   const newEnabled = !user.enabled
@@ -592,11 +597,14 @@ async function toggleEnabled() {
       return
     }
     await apiClient.put('/admin/users/' + user.id, { enabled: newEnabled })
+    saved = true
     user.enabled = newEnabled
     await loadList() // refresh the list to show updated state in sidebar
     toast.add({ severity: 'success', summary: newEnabled ? 'User enabled' : 'User disabled', life: 2000 })
   } catch {
     toast.add({ severity: 'error', summary: 'Failed', life: 3000 })
+  }  } finally {
+    if (!saved) headerSwitchKey.value++
   }
 }
 
@@ -718,7 +726,7 @@ defineExpose({
               <!-- Enabled switch (view mode only) -->
               <div v-if="selected && !editMode" class="switch-row">
                 <FormField :label="t('users.enabled')" input-id="uenabled-hdr">
-                  <ToggleSwitch id="uenabled-hdr" :modelValue="selected.enabled" @change="toggleEnabled" />
+                  <ToggleSwitch :key="headerSwitchKey" id="uenabled-hdr" :modelValue="selected.enabled" @change="toggleEnabled" />
                 </FormField>
               </div>
             </div>
