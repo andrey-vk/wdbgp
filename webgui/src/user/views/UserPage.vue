@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
 import axios from 'axios'
@@ -11,6 +11,7 @@ import { getCurrentLocale } from '@/plugins/i18n'
 import userApi from '@/api/client'
 import { useSequencedRequest } from '@/composables/useSequencedRequest'
 import type { UserDataResponse } from '@/types/user-page'
+import type { UserCIDRLookupResult } from '@/types/user-debug'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -40,6 +41,7 @@ const countData = ref<{ v4: number; v6: number; delta_v4: number; delta_v6: numb
 const countLoading = ref(false)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 const countRequest = useSequencedRequest()
+const lookupRequest = useSequencedRequest()
 
 // ── Save state ──────────────────────────────────────────────
 const saving = ref(false)
@@ -202,6 +204,8 @@ async function handleLogout(): Promise<void> {
   countData.value = null
   checkedCategories.value = new Set()
   checkedServices.value = new Set()
+  lookupQuery.value = ''
+  invalidateLookup()
   loginForm.login = ''
   loginForm.password = ''
 }
@@ -229,6 +233,15 @@ async function loadUserData(userData: UserDataResponse): Promise<void> {
   filterAllow.value = (userData.filters?.allow || []).join('\n')
   filterDeny.value = (userData.filters?.deny || []).join('\n')
 
+  // A previous (or still in-flight) lookup describes the catalog mode and
+  // selections at the time it ran. This function reloads both (called
+  // after a mode switch, on login, and on initial auth check), so any
+  // prior or pending answer may no longer be accurate — invalidate it
+  // rather than leave a stale verdict displayed, or let an in-flight
+  // request that resolves afterward repopulate it, under a now-different
+  // configuration.
+  invalidateLookup()
+
   // Fetch live counts
   await fetchCounts()
 }
@@ -249,17 +262,17 @@ async function reloadUserData(): Promise<void> {
 async function switchMode(modeId: number): Promise<void> {
   if (modeId === selectedModeId.value) return
   try {
-    await userApi.put('/user/mode', { mode_id: modeId })
+    await invalidatingLookup(userApi.put('/user/mode', { mode_id: modeId }))
     selectedModeId.value = modeId
     await reloadUserData()
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
-    toast.add({ severity: 'error', summary: t('user.save_error'), life: 5000 })
     // The backend commits the mode change before it can fail on a later
     // step (e.g. BGP reconciliation), so an error here doesn't mean the
     // switch didn't happen — resync from the server's true state rather
     // than leaving the UI showing pre-switch mode/catalog/selections.
+    toast.add({ severity: 'error', summary: t('user.save_error'), life: 5000 })
     try {
       await reloadUserData()
     } catch {
@@ -382,7 +395,7 @@ function buildSelectionPayload() {
 async function saveSelections(): Promise<void> {
   saving.value = true
   try {
-    await userApi.post('/user/selections', buildSelectionPayload())
+    await invalidatingLookup(userApi.post('/user/selections', buildSelectionPayload()))
     // The just-saved selection is now the baseline delta_v4/delta_v6 should
     // be measured against — without this, the delta badge keeps showing
     // the pre-save delta as if it were still unsaved.
@@ -407,13 +420,124 @@ async function saveFilters(): Promise<void> {
       .split('\n')
       .map((l) => l.trim())
       .filter(Boolean)
-    await userApi.post('/user/filters', { allow, deny })
+    await invalidatingLookup(userApi.post('/user/filters', { allow, deny }))
     toast.add({ severity: 'success', summary: t('user.filters_saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
   } finally {
     savingFilters.value = false
+  }
+}
+
+// ── Address lookup state ───────────────────────────────────
+const lookupQuery = ref('')
+const lookupLoading = ref(false)
+const lookupError = ref('')
+const lookupResult = ref<UserCIDRLookupResult | null>(null)
+
+// A query can be a CIDR block only partly covered by what's actually
+// delivered (e.g. a /24 with one selected /25) — after_percentage can
+// legitimately land strictly between 0 and 100, and collapsing that to
+// the same "in your tunnel" verdict as a fully-delivered /32 would imply
+// the whole queried range is routed when only part of it is.
+const lookupVerdict = computed<'none' | 'partial' | 'full'>(() => {
+  const after = lookupResult.value?.after_percentage ?? 0
+  if (after <= 0) return 'none'
+  if (after >= 100) return 'full'
+  return 'partial'
+})
+// Math.round alone can round a genuinely-partial value to a boundary that
+// contradicts the partial verdict next to it (99.6% rounding to "100%", or
+// 0.4% rounding to "0%") — bound it instead so the number shown can never
+// read as "none" or "full" when the verdict says otherwise.
+function formatLookupPercentage(pct: number): string {
+  if (pct > 0 && pct < 1) return '<1%'
+  if (pct > 99 && pct < 100) return '>99%'
+  return Math.round(pct) + '%'
+}
+const lookupVerdictText = computed(() => {
+  switch (lookupVerdict.value) {
+    case 'full':
+      return t('user.lookup_in_tunnel')
+    case 'partial':
+      return t('user.lookup_partially_in_tunnel', {
+        pct: formatLookupPercentage(lookupResult.value?.after_percentage ?? 0),
+      })
+    default:
+      return t('user.lookup_not_in_tunnel')
+  }
+})
+const lookupVerdictClass = computed(() => {
+  switch (lookupVerdict.value) {
+    case 'full':
+      return 'text-green-600 dark:text-green-400'
+    case 'partial':
+      return 'text-amber-600 dark:text-amber-400'
+    default:
+      return 'text-red-600 dark:text-red-400'
+  }
+})
+
+// Bumps the sequence so any in-flight lookup response is no longer
+// current, then clears the displayed state. Used whenever something other
+// than a fresh runLookup invalidates the previous answer (editing the
+// query, or a mode switch/selection save/filter save/logout succeeding) —
+// without bumping the sequence here, a request that was already in flight
+// when one of those happened would still pass its own isCurrent check when
+// it resolves, silently repopulating the state this just cleared.
+function invalidateLookup(): void {
+  lookupRequest.next()
+  lookupLoading.value = false
+  lookupError.value = ''
+  lookupResult.value = null
+}
+
+// Invalidates the lookup the instant `request` settles — success or
+// failure, before anything awaited after it at the call site. Several of
+// the requests this wraps (save selections, save filters, switch mode)
+// commit on the backend before they can fail on a later step (BGP
+// reconciliation), so even a rejected request doesn't mean nothing
+// changed; and invalidating in a `finally` here, rather than duplicated in
+// a try block and its catch block at every call site, means a mutating
+// request can't be added later without its invalidation, and an await
+// placed after this one (a count refresh, a resync) can never delay or
+// skip it, however slow or how it resolves.
+async function invalidatingLookup<T>(request: Promise<T>): Promise<T> {
+  try {
+    return await request
+  } finally {
+    invalidateLookup()
+  }
+}
+
+// The result panel shows lookupResult, not lookupQuery — editing the input
+// without resubmitting (or a request resolving after the input changed
+// again) must not leave an old query's answer displayed under a different,
+// unsubmitted query string.
+watch(lookupQuery, () => invalidateLookup())
+
+async function runLookup(): Promise<void> {
+  if (!lookupQuery.value.trim()) return
+  // The button disables while loading, but Enter in the input can still
+  // fire a second request after editing the query mid-flight — sequence
+  // responses so a slower, now-superseded request can never overwrite a
+  // newer one's result, matching fetchCounts' countRequest pattern.
+  const token = lookupRequest.next()
+  lookupLoading.value = true
+  lookupError.value = ''
+  lookupResult.value = null
+  try {
+    const resp = await userApi.get('/user/debug', { params: { cidr: lookupQuery.value.trim() } })
+    if (!lookupRequest.isCurrent(token)) return
+    lookupResult.value = resp.data
+  } catch (err) {
+    if (!lookupRequest.isCurrent(token)) return
+    if (handleAuthError(err)) return
+    const e = err as { response?: { data?: { error?: string } } }
+    lookupError.value = e.response?.data?.error || t('user.lookup_error')
+  } finally {
+    if (lookupRequest.isCurrent(token)) lookupLoading.value = false
   }
 }
 
@@ -499,6 +623,7 @@ onMounted(() => {
             <i :class="themeStore.isDark ? 'pi pi-sun' : 'pi pi-moon'" class="text-gray-500 dark:text-gray-400" />
           </button>
           <button
+            data-testid="logout-button"
             @click="handleLogout"
             class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors"
           >
@@ -680,6 +805,72 @@ onMounted(() => {
               <i v-if="savingFilters" class="pi pi-spin pi-spinner" />
               {{ t('user.save_filters') }}
             </button>
+          </div>
+        </div>
+
+        <!-- Address lookup section -->
+        <div class="p-6 rounded-border shadow-sm mb-6 bg-white dark:bg-gray-900">
+          <h2 class="text-sm font-semibold text-gray-900 dark:text-white mb-3">{{ t('user.lookup_title') }}</h2>
+          <div class="flex items-end gap-3">
+            <div class="flex-1">
+              <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{{ t('user.lookup_cidr') }}</label>
+              <input
+                v-model="lookupQuery"
+                type="text"
+                data-testid="lookup-input"
+                @keyup.enter="runLookup"
+                class="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+              >
+              <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">{{ t('user.lookup_hint') }}</p>
+            </div>
+            <button
+              data-testid="lookup-button"
+              @click="runLookup"
+              :disabled="lookupLoading || !lookupQuery.trim()"
+              class="px-4 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg transition-colors flex items-center gap-1.5"
+            >
+              <i v-if="lookupLoading" class="pi pi-spin pi-spinner" />
+              {{ t('user.lookup_button') }}
+            </button>
+          </div>
+
+          <div v-if="lookupError" data-testid="lookup-error" class="mt-3 text-sm text-red-500 dark:text-red-400">
+            {{ lookupError }}
+          </div>
+
+          <div v-else-if="lookupResult" data-testid="lookup-result" class="mt-4">
+            <div v-if="!lookupResult.matches.length" class="text-sm text-gray-400 dark:text-gray-500">
+              {{ t('user.lookup_no_match') }}
+            </div>
+            <template v-else>
+              <div class="flex flex-col gap-1 mb-3">
+                <div
+                  v-for="(m, index) in lookupResult.matches"
+                  :key="index"
+                  class="flex items-center justify-between text-sm py-1"
+                  data-testid="lookup-match"
+                >
+                  <span class="text-gray-700 dark:text-gray-300">{{ m.category }} / {{ m.service }}</span>
+                  <span class="flex items-center gap-2">
+                    <span
+                      class="text-xs px-1.5 py-0.5 rounded"
+                      :class="m.selected ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'"
+                    >
+                      {{ m.selected ? t('user.lookup_selected') : t('user.lookup_not_selected') }}
+                    </span>
+                    <span class="text-gray-400 dark:text-gray-500">{{ formatLookupPercentage(m.percentage) }}</span>
+                  </span>
+                </div>
+              </div>
+              <div class="text-sm text-gray-600 dark:text-gray-400 border-t border-gray-100 dark:border-gray-800 pt-3">
+                <span data-testid="lookup-in-tunnel" :class="lookupVerdictClass">
+                  {{ lookupVerdictText }}
+                </span>
+                <span v-if="lookupResult.before_percentage !== lookupResult.after_percentage" class="ml-2">
+                  ({{ t('user.lookup_filtered_note') }})
+                </span>
+              </div>
+            </template>
           </div>
         </div>
       </template>

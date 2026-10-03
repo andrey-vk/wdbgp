@@ -35,6 +35,17 @@ type addressRange struct {
 	end   *big.Int
 }
 
+// invalidLookupInputError marks a debugCIDR/userDebugCIDR failure as caused
+// by bad client input (the cidr query parameter itself) rather than a
+// backend failure (a DB read, or stored filter data that fails to parse).
+// Msg is always a plain validation message — never anything derived from
+// the database or another user's data — so it's always safe to return
+// as-is in a 400; everything else must not be, especially to the
+// unprivileged caller of the user-facing endpoint, and is a 500 instead.
+type invalidLookupInputError struct{ msg string }
+
+func (e invalidLookupInputError) Error() string { return e.msg }
+
 func (s *Server) debugCIDR(
 	ctx context.Context,
 	raw string,
@@ -46,65 +57,20 @@ func (s *Server) debugCIDR(
 	}
 	target, err := parseDebugPrefix(raw)
 	if err != nil {
-		return cidrDebugResult{}, err
+		return cidrDebugResult{}, invalidLookupInputError{msg: err.Error()}
 	}
-	catalog, err := s.store.EnabledCatalogPrefixes(ctx, modeID)
+	coverage, err := s.coverageForTarget(ctx, target, modeID)
 	if err != nil {
 		return cidrDebugResult{}, err
 	}
-	serviceRanges := map[store.ServiceKey][]addressRange{}
-	servicePrefixes := map[store.ServiceKey][]netip.Prefix{}
-	for _, entry := range catalog {
-		prefix, err := netip.ParsePrefix(entry.CIDR)
-		if err != nil {
-			return cidrDebugResult{}, fmt.Errorf("parse catalog prefix %q: %w", entry.CIDR, err)
-		}
-		if prefix.Addr().BitLen() != target.Addr().BitLen() {
-			continue
-		}
-		// Feed-provided default routes are discarded before route filtering.
-		if prefix.Bits() == 0 {
-			continue
-		}
-		servicePrefixes[entry.ServiceKey] = append(servicePrefixes[entry.ServiceKey], prefix.Masked())
-		if overlap, ok := intersectRanges(prefixRange(target), prefixRange(prefix)); ok {
-			serviceRanges[entry.ServiceKey] = append(serviceRanges[entry.ServiceKey], overlap)
-		}
-	}
 
 	result := cidrDebugResult{
-		Query:            target.String(),
-		FullServices:     []coverageItem{},
-		PartialServices:  []coverageItem{},
-		CombinedServices: []coverageItem{},
-		Users:            []coverageItem{},
-	}
-	for key, ranges := range serviceRanges {
-		percentage := coveragePercentage(target, ranges)
-		if percentage == 0 {
-			continue
-		}
-		item := coverageItem{
-			Category: key.Category, Service: key.Service, Percentage: percentage,
-		}
-		if percentage == 100 {
-			result.FullServices = append(result.FullServices, item)
-		} else {
-			result.PartialServices = append(result.PartialServices, item)
-		}
-	}
-	if len(result.FullServices) == 0 && len(result.PartialServices) > 1 {
-		var combinedRanges []addressRange
-		result.CombinedServices = append(result.CombinedServices, result.PartialServices...)
-		for key, ranges := range serviceRanges {
-			for _, item := range result.CombinedServices {
-				if item.Category == key.Category && item.Service == key.Service {
-					combinedRanges = append(combinedRanges, ranges...)
-					break
-				}
-			}
-		}
-		result.CombinedPercentage = coveragePercentage(target, combinedRanges)
+		Query:              coverage.target.String(),
+		FullServices:       coverage.fullServices,
+		PartialServices:    coverage.partialServices,
+		CombinedServices:   coverage.combinedServices,
+		CombinedPercentage: coverage.combinedPercentage,
+		Users:              []coverageItem{},
 	}
 
 	users, err := s.store.Users(ctx, true)
@@ -115,43 +81,26 @@ func (s *Server) debugCIDR(
 		if user.CatalogModeID != modeID {
 			continue
 		}
-		categories, services, err := s.store.UserModeSelection(ctx, user.ID, modeID)
+		matches, beforePercentage, afterPercentage, err := s.userCoverage(ctx, user, coverage)
 		if err != nil {
 			return cidrDebugResult{}, err
 		}
-		var beforeRanges []addressRange
-		var selectedPrefixes []netip.Prefix
-		var matches []string
-		for key, serviceCoverage := range serviceRanges {
-			if categories[key.Category] || services[key] {
-				beforeRanges = append(beforeRanges, serviceCoverage...)
-				selectedPrefixes = append(selectedPrefixes, servicePrefixes[key]...)
-				matches = append(matches, key.Category+" / "+key.Service)
+		if beforePercentage == 0 {
+			continue
+		}
+		selected := make([]string, 0, len(matches))
+		for _, m := range matches {
+			if m.Selected {
+				selected = append(selected, m.Category+" / "+m.Service)
 			}
 		}
-		beforePercentage := coveragePercentage(target, beforeRanges)
-		if beforePercentage > 0 {
-			filteredPrefixes, err := s.store.ApplyUserRouteFilters(ctx, user, selectedPrefixes)
-			if err != nil {
-				return cidrDebugResult{}, fmt.Errorf("filter routes for user %d: %w", user.ID, err)
-			}
-			var afterRanges []addressRange
-			for _, prefix := range filteredPrefixes {
-				if prefix.Addr().BitLen() != target.Addr().BitLen() {
-					continue
-				}
-				if overlap, ok := intersectRanges(prefixRange(target), prefixRange(prefix)); ok {
-					afterRanges = append(afterRanges, overlap)
-				}
-			}
-			sort.Strings(matches)
-			result.Users = append(result.Users, coverageItem{
-				Name:             user.Name,
-				BeforePercentage: beforePercentage,
-				AfterPercentage:  coveragePercentage(target, afterRanges),
-				Matches:          matches,
-			})
-		}
+		sort.Strings(selected)
+		result.Users = append(result.Users, coverageItem{
+			Name:             user.Name,
+			BeforePercentage: beforePercentage,
+			AfterPercentage:  afterPercentage,
+			Matches:          selected,
+		})
 	}
 
 	sortCoverage(result.FullServices)
@@ -167,6 +116,182 @@ func (s *Server) debugCIDR(
 		return result.Users[i].Name < result.Users[j].Name
 	})
 	return result, nil
+}
+
+// catalogCoverage is the catalog-wide intersection of a target
+// address/CIDR against every enabled catalog prefix for one mode,
+// independent of any user's selections or filters.
+type catalogCoverage struct {
+	target             netip.Prefix
+	serviceRanges      map[store.ServiceKey][]addressRange
+	servicePrefixes    map[store.ServiceKey][]netip.Prefix
+	fullServices       []coverageItem
+	partialServices    []coverageItem
+	combinedServices   []coverageItem
+	combinedPercentage float64
+}
+
+func (s *Server) coverageForTarget(ctx context.Context, target netip.Prefix, modeID int64) (catalogCoverage, error) {
+	catalog, err := s.store.EnabledCatalogPrefixes(ctx, modeID)
+	if err != nil {
+		return catalogCoverage{}, err
+	}
+	coverage := catalogCoverage{
+		target:           target,
+		serviceRanges:    map[store.ServiceKey][]addressRange{},
+		servicePrefixes:  map[store.ServiceKey][]netip.Prefix{},
+		fullServices:     []coverageItem{},
+		partialServices:  []coverageItem{},
+		combinedServices: []coverageItem{},
+	}
+	for _, entry := range catalog {
+		prefix, err := netip.ParsePrefix(entry.CIDR)
+		if err != nil {
+			return catalogCoverage{}, fmt.Errorf("parse catalog prefix %q: %w", entry.CIDR, err)
+		}
+		if prefix.Addr().BitLen() != target.Addr().BitLen() {
+			continue
+		}
+		// Feed-provided default routes are discarded before route filtering.
+		if prefix.Bits() == 0 {
+			continue
+		}
+		coverage.servicePrefixes[entry.ServiceKey] = append(coverage.servicePrefixes[entry.ServiceKey], prefix.Masked())
+		if overlap, ok := intersectRanges(prefixRange(target), prefixRange(prefix)); ok {
+			coverage.serviceRanges[entry.ServiceKey] = append(coverage.serviceRanges[entry.ServiceKey], overlap)
+		}
+	}
+
+	for key, ranges := range coverage.serviceRanges {
+		percentage := coveragePercentage(target, ranges)
+		if percentage == 0 {
+			continue
+		}
+		item := coverageItem{Category: key.Category, Service: key.Service, Percentage: percentage}
+		if percentage == 100 {
+			coverage.fullServices = append(coverage.fullServices, item)
+		} else {
+			coverage.partialServices = append(coverage.partialServices, item)
+		}
+	}
+	if len(coverage.fullServices) == 0 && len(coverage.partialServices) > 1 {
+		var combinedRanges []addressRange
+		coverage.combinedServices = append(coverage.combinedServices, coverage.partialServices...)
+		for key, ranges := range coverage.serviceRanges {
+			for _, item := range coverage.combinedServices {
+				if item.Category == key.Category && item.Service == key.Service {
+					combinedRanges = append(combinedRanges, ranges...)
+					break
+				}
+			}
+		}
+		coverage.combinedPercentage = coveragePercentage(target, combinedRanges)
+	}
+	return coverage, nil
+}
+
+// userCIDRMatch is one catalog category/service covering the queried
+// address, independent of whether the caller has selected it.
+type userCIDRMatch struct {
+	Category   string  `json:"category"`
+	Service    string  `json:"service"`
+	Percentage float64 `json:"percentage"`
+	Selected   bool    `json:"selected"`
+}
+
+// userCoverage reports every catalog category/service that intersects
+// coverage.target (selected or not, each flagged), plus the before/after
+// -route-filter percentage summed over only the ones user has selected.
+// Touches only the one user passed in — shared by debugCIDR (loops all
+// users) and userDebugCIDR (single caller), so the range math and the
+// ApplyUserRouteFilters call exist in one place.
+func (s *Server) userCoverage(
+	ctx context.Context, user store.User, coverage catalogCoverage,
+) (matches []userCIDRMatch, beforePercentage, afterPercentage float64, err error) {
+	categories, services, err := s.store.UserModeSelection(ctx, user.ID, user.CatalogModeID)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	var beforeRanges []addressRange
+	var selectedPrefixes []netip.Prefix
+	for key, ranges := range coverage.serviceRanges {
+		percentage := coveragePercentage(coverage.target, ranges)
+		selected := categories[key.Category] || services[key]
+		matches = append(matches, userCIDRMatch{
+			Category: key.Category, Service: key.Service, Percentage: percentage, Selected: selected,
+		})
+		if selected {
+			beforeRanges = append(beforeRanges, ranges...)
+			selectedPrefixes = append(selectedPrefixes, coverage.servicePrefixes[key]...)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].Category != matches[j].Category {
+			return matches[i].Category < matches[j].Category
+		}
+		return matches[i].Service < matches[j].Service
+	})
+
+	beforePercentage = coveragePercentage(coverage.target, beforeRanges)
+	if beforePercentage == 0 {
+		return matches, 0, 0, nil
+	}
+	filteredPrefixes, err := s.store.ApplyUserRouteFilters(ctx, user, selectedPrefixes)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("filter routes for user %d: %w", user.ID, err)
+	}
+	var afterRanges []addressRange
+	for _, prefix := range filteredPrefixes {
+		if prefix.Addr().BitLen() != coverage.target.Addr().BitLen() {
+			continue
+		}
+		if overlap, ok := intersectRanges(prefixRange(coverage.target), prefixRange(prefix)); ok {
+			afterRanges = append(afterRanges, overlap)
+		}
+	}
+	afterPercentage = coveragePercentage(coverage.target, afterRanges)
+	return matches, beforePercentage, afterPercentage, nil
+}
+
+// userCIDRLookupResult is scoped to exactly the authenticated caller who
+// requested it — no Name field and no cross-user list, unlike
+// cidrDebugResult.Users, so there is nothing here that could leak another
+// user's data.
+type userCIDRLookupResult struct {
+	Query            string          `json:"query"`
+	Matches          []userCIDRMatch `json:"matches"`
+	BeforePercentage float64         `json:"before_percentage"`
+	AfterPercentage  float64         `json:"after_percentage"`
+	InTunnel         bool            `json:"in_tunnel"`
+}
+
+// userDebugCIDR answers "why is this address in/not in my tunnel" for
+// exactly user. Mode is always user.CatalogModeID; this never reads
+// s.store.Users(...) — there is no code path here that can see another
+// user's row.
+func (s *Server) userDebugCIDR(ctx context.Context, user store.User, raw string) (userCIDRLookupResult, error) {
+	target, err := parseDebugPrefix(raw)
+	if err != nil {
+		return userCIDRLookupResult{}, invalidLookupInputError{msg: err.Error()}
+	}
+	coverage, err := s.coverageForTarget(ctx, target, user.CatalogModeID)
+	if err != nil {
+		return userCIDRLookupResult{}, err
+	}
+	matches, beforePercentage, afterPercentage, err := s.userCoverage(ctx, user, coverage)
+	if err != nil {
+		return userCIDRLookupResult{}, err
+	}
+	if matches == nil {
+		matches = []userCIDRMatch{}
+	}
+	return userCIDRLookupResult{
+		Query:            coverage.target.String(),
+		Matches:          matches,
+		BeforePercentage: beforePercentage,
+		AfterPercentage:  afterPercentage,
+		InTunnel:         afterPercentage > 0,
+	}, nil
 }
 
 func parseDebugPrefix(raw string) (netip.Prefix, error) {

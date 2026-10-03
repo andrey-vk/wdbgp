@@ -378,6 +378,21 @@ mode changed in the meantime — a feed sync regenerated communities, or another
 edited one — the digest no longer matches and the reset is refused (`409`) with a fresh
 preview instead of silently renumbering something nobody actually reviewed.
 
+### Address lookup
+
+The end-user selection page has an address lookup tool answering "why is this IP
+in/not in my tunnel": enter a CIDR prefix or an address, and it reports every catalog
+category/service covering it (regardless of whether the user has selected it), whether
+the user has it selected, and whether a route filter would remove it before it reaches
+the wire. A CIDR block only partly delivered (e.g. a /24 with one selected /25 inside it)
+is reported as partial rather than collapsed into the same verdict as a fully-delivered
+query. It's a single-user, read-only view of the same coverage logic behind the admin's
+CIDR debug tool (`/admin/debug`), scoped so a caller can only ever see their own
+selections and filters — there is no mode or user parameter to request anyone else's.
+
+`GET /api/user/debug?cidr=` powers it; mode and identity always come from the
+authenticated session.
+
 ### Validation and constraints
 
 All values are validated on startup with helpful error messages. If not specified, defaults apply.
