@@ -21,6 +21,7 @@ export interface UserFeedChangeCategory {
 
 export interface UserFeedChange {
   change_id: number
+  mode_id: number
   feed_name: string
   synced_at: number
   categories: UserFeedChangeCategory[]

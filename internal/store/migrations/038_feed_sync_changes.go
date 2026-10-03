@@ -23,11 +23,12 @@ func V038(ctx context.Context, tx *sql.Tx) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_feed_sync_changes_feed ON feed_sync_changes(feed_id, synced_at)`,
 		`CREATE TABLE IF NOT EXISTS feed_sync_mode_growth (
-			change_id INTEGER NOT NULL REFERENCES feed_sync_changes(id) ON DELETE CASCADE,
-			mode_id   INTEGER NOT NULL,
-			category  TEXT NOT NULL,
-			prefix    TEXT NOT NULL,
-			PRIMARY KEY (change_id, mode_id, category, prefix)
+			change_id   INTEGER NOT NULL REFERENCES feed_sync_changes(id) ON DELETE CASCADE,
+			mode_id     INTEGER NOT NULL,
+			category    TEXT NOT NULL,
+			prefix_ip   BLOB NOT NULL,
+			prefix_bits INTEGER NOT NULL,
+			PRIMARY KEY (change_id, mode_id, category, prefix_ip, prefix_bits)
 		)`,
 		`CREATE TABLE IF NOT EXISTS user_feed_changes_seen (
 			user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

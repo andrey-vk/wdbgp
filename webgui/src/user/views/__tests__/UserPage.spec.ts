@@ -1664,8 +1664,8 @@ describe('UserPage', () => {
       modes: [{ id: 1, name: 'Mode A', enabled: true, feed_count: 1 }],
     }
     const changes = [
-      { change_id: 101, feed_name: 'opencck-main', synced_at: 1700000100, categories: [{ category: 'ai', added_prefixes: 2 }] },
-      { change_id: 102, feed_name: 'opencck-main', synced_at: 1700000100, categories: [{ category: 'ai', added_prefixes: 1 }] },
+      { change_id: 101, mode_id: 1, feed_name: 'opencck-main', synced_at: 1700000100, categories: [{ category: 'ai', added_prefixes: 2 }] },
+      { change_id: 102, mode_id: 1, feed_name: 'opencck-main', synced_at: 1700000100, categories: [{ category: 'ai', added_prefixes: 1 }] },
     ]
     mockGet.mockImplementation((url: string) => {
       if (url === '/user/feed-changes') return Promise.resolve({ data: { changes } })
@@ -1691,7 +1691,7 @@ describe('UserPage', () => {
     await wrapper.find('[data-testid="feed-changes-dismiss"]').trigger('click')
     await new Promise((r) => setTimeout(r, 0))
 
-    expect(mockPost).toHaveBeenCalledWith('/user/feed-changes/ack', { through: 102 })
+    expect(mockPost).toHaveBeenCalledWith('/user/feed-changes/ack', { mode_id: 1, through: 102 })
     expect(wrapper.find('[data-testid="feed-changes-section"]').exists()).toBe(false)
   })
 })

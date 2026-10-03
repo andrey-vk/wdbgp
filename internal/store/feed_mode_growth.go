@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"net/netip"
 	"sort"
 )
 
@@ -10,7 +11,7 @@ import (
 // whose services provide it. Selections are per category, so the same prefix
 // under a new category is growth for a user who selects only that category.
 type prefixAssociation struct {
-	cidr       string
+	prefix     netip.Prefix
 	categories map[string]bool
 }
 
@@ -22,7 +23,7 @@ type ModePrefixCategories map[int64]map[int64]*prefixAssociation
 type ModeCategoryGrowth struct {
 	ModeID   int64
 	Category string
-	Prefixes []string
+	Prefixes []netip.Prefix
 }
 
 // SnapshotFeedModePrefixesTx captures, for every mode the feed is linked to,
@@ -61,9 +62,13 @@ WHERE cme.mode_id = ?`, modeID)
 				_ = rows.Close() //nolint:errcheck
 				return nil, err
 			}
+			// Default routes are never announced (DesiredPrefixes skips them).
+			if prefix.Bits() == 0 {
+				continue
+			}
 			a := prefixes[prefixID]
 			if a == nil {
-				a = &prefixAssociation{cidr: prefix.String(), categories: map[string]bool{}}
+				a = &prefixAssociation{prefix: prefix, categories: map[string]bool{}}
 				prefixes[prefixID] = a
 			}
 			a.categories[category] = true
@@ -85,7 +90,7 @@ func ModeGrowth(before, after ModePrefixCategories) []ModeCategoryGrowth {
 		mode     int64
 		category string
 	}
-	added := map[key][]string{}
+	added := map[key][]netip.Prefix{}
 	for modeID, afterPrefixes := range after {
 		for prefixID, a := range afterPrefixes {
 			prior := before[modeID][prefixID]
@@ -94,13 +99,13 @@ func ModeGrowth(before, after ModePrefixCategories) []ModeCategoryGrowth {
 					continue
 				}
 				k := key{modeID, category}
-				added[k] = append(added[k], a.cidr)
+				added[k] = append(added[k], a.prefix)
 			}
 		}
 	}
 	out := make([]ModeCategoryGrowth, 0, len(added))
 	for k, prefixes := range added {
-		sort.Strings(prefixes)
+		sort.Slice(prefixes, func(i, j int) bool { return prefixes[i].String() < prefixes[j].String() })
 		out = append(out, ModeCategoryGrowth{ModeID: k.mode, Category: k.category, Prefixes: prefixes})
 	}
 	sort.Slice(out, func(i, j int) bool {

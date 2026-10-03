@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"net/netip"
 	"testing"
 	"time"
 )
@@ -115,6 +117,7 @@ func userSelectingFeedChange(t *testing.T, s *Store, selected string, exclude bo
 		"INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, ?)", DefaultCatalogModeID, feedID, excl); err != nil {
 		t.Fatal(err)
 	}
+	addAIEntries(t, s, feedID, "21.0.0.0/8", "22.0.0.0/8", "23.0.0.0/8", "24.0.0.0/8", "25.0.0.0/8", "26.0.0.0/8")
 	userID = addBlastRadiusTestUser(t, s, DefaultCatalogModeID, FilterModeGlobal, "cat-seed", 1)
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return SetUserModeSelection(ctx, tx, userID, DefaultCatalogModeID, []string{selected}, nil)
@@ -124,9 +127,9 @@ func userSelectingFeedChange(t *testing.T, s *Store, selected string, exclude bo
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{
 			AddedServices: 2, AddedByCategory: map[string]int{"ai": 2},
-		}, []ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: []string{
+		}, []ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: mustPrefixes(
 			"21.0.0.0/8", "22.0.0.0/8", "23.0.0.0/8", "24.0.0.0/8", "25.0.0.0/8",
-		}}}, time.Now().Unix())
+		)}}, time.Now().Unix())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -159,9 +162,10 @@ func TestUserFeedChangesShowsOnlySelectedCategories(t *testing.T) {
 	}
 }
 
-// Growth is measured on the mode's effective prefix set, so a sync from an
-// exclude feed that re-announces prefixes is real growth for the user too.
-func TestUserFeedChangesShowsEffectiveGrowthFromExcludeFeed(t *testing.T) {
+// Growth is measured on the mode's effective prefix set. An exclude feed's
+// prefixes are subtracted from the mode, so growth from one that isn't
+// announced to the user is not reported.
+func TestUserFeedChangesHidesExcludeFeedGrowthNotAnnounced(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	userID, _ := userSelectingFeedChange(t, s, "ai", true)
@@ -169,8 +173,8 @@ func TestUserFeedChangesShowsEffectiveGrowthFromExcludeFeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changes) != 1 {
-		t.Fatalf("effective growth from an exclude feed not shown: %+v", changes)
+	if len(changes) != 0 {
+		t.Fatalf("growth from an exclude feed shown as announced: %+v", changes)
 	}
 }
 
@@ -186,7 +190,7 @@ func TestAckUserFeedChangesHidesSeenAndNeverMovesBack(t *testing.T) {
 	if len(changes) != 1 {
 		t.Fatalf("setup: want 1 change, got %+v", changes)
 	}
-	if err := s.AckUserFeedChanges(ctx, userID, changes[0].ChangeID); err != nil {
+	if err := s.AckUserFeedChanges(ctx, userID, DefaultCatalogModeID, changes[0].ChangeID); err != nil {
 		t.Fatal(err)
 	}
 	after, err := s.UserFeedChanges(ctx, userID, now)
@@ -196,7 +200,7 @@ func TestAckUserFeedChangesHidesSeenAndNeverMovesBack(t *testing.T) {
 	if len(after) != 0 {
 		t.Fatalf("acknowledged change still shown: %+v", after)
 	}
-	if err := s.AckUserFeedChanges(ctx, userID, changes[0].ChangeID-1); err != nil {
+	if err := s.AckUserFeedChanges(ctx, userID, DefaultCatalogModeID, changes[0].ChangeID-1); err != nil {
 		t.Fatal(err)
 	}
 	var seen int64
@@ -218,7 +222,7 @@ func TestAckUserFeedChangesDoesNotHideSameSecondChange(t *testing.T) {
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{
 			AddedServices: 1, AddedByCategory: map[string]int{"ai": 1},
-		}, []ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: []string{"26.0.0.0/8"}}}, same)
+		}, []ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: mustPrefixes("26.0.0.0/8")}}, same)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +233,7 @@ func TestAckUserFeedChangesDoesNotHideSameSecondChange(t *testing.T) {
 	if len(changes) != 2 {
 		t.Fatalf("setup: want 2 changes, got %+v", changes)
 	}
-	if err := s.AckUserFeedChanges(ctx, userID, changes[0].ChangeID); err != nil {
+	if err := s.AckUserFeedChanges(ctx, userID, DefaultCatalogModeID, changes[0].ChangeID); err != nil {
 		t.Fatal(err)
 	}
 	left, err := s.UserFeedChanges(ctx, userID, time.Now())
@@ -305,7 +309,7 @@ func TestModeGrowthCountsOnlyNewlyAnnouncedPrefixes(t *testing.T) {
 		{Category: "cat-a", Service: "svc1", CIDR: "21.0.0.0/8"},
 		{Category: "cat-a", Service: "svc3", CIDR: "22.0.0.0/8"},
 	})
-	if len(g) != 1 || g[0].Category != "cat-a" || len(g[0].Prefixes) != 1 || g[0].Prefixes[0] != "22.0.0.0/8" {
+	if len(g) != 1 || g[0].Category != "cat-a" || len(g[0].Prefixes) != 1 || g[0].Prefixes[0].String() != "22.0.0.0/8" {
 		t.Fatalf("growth = %+v, want exactly cat-a: 22.0.0.0/8 (21/8 was already announced)", g)
 	}
 
@@ -315,7 +319,7 @@ func TestModeGrowthCountsOnlyNewlyAnnouncedPrefixes(t *testing.T) {
 		{Category: "cat-a", Service: "svc2", CIDR: "21.0.0.0/8"},
 		{Category: "cat-b", Service: "svc4", CIDR: "21.0.0.0/8"},
 	})
-	if len(g) != 1 || g[0].Category != "cat-b" || len(g[0].Prefixes) != 1 || g[0].Prefixes[0] != "21.0.0.0/8" {
+	if len(g) != 1 || g[0].Category != "cat-b" || len(g[0].Prefixes) != 1 || g[0].Prefixes[0].String() != "21.0.0.0/8" {
 		t.Fatalf("growth = %+v, want exactly cat-b: 21.0.0.0/8 (new through cat-b even though cat-a already had it)", g)
 	}
 }
@@ -329,9 +333,10 @@ func TestUserFeedChangesAppliesRouteFilters(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, "DELETE FROM feed_sync_mode_growth"); err != nil {
 		t.Fatal(err)
 	}
+	addAIEntries(t, s, feedID, "31.0.0.0/8", "32.0.0.0/8")
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{AddedServices: 1, AddedByCategory: map[string]int{"ai": 1}},
-			[]ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: []string{"31.0.0.0/8", "32.0.0.0/8"}}},
+			[]ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: mustPrefixes("31.0.0.0/8", "32.0.0.0/8")}},
 			time.Now().Unix())
 	}); err != nil {
 		t.Fatal(err)
@@ -375,9 +380,10 @@ func TestUserFeedChangesKeepsPartiallyFilteredGrowth(t *testing.T) {
 	if _, err := s.DB.ExecContext(ctx, "DELETE FROM feed_sync_mode_growth"); err != nil {
 		t.Fatal(err)
 	}
+	addAIEntries(t, s, feedID, "31.0.0.0/8")
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{AddedServices: 1, AddedByCategory: map[string]int{"ai": 1}},
-			[]ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: []string{"31.0.0.0/8"}}}, time.Now().Unix())
+			[]ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: mustPrefixes("31.0.0.0/8")}}, time.Now().Unix())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -391,8 +397,9 @@ func TestUserFeedChangesKeepsPartiallyFilteredGrowth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changes) != 1 || changes[0].Categories[0].AddedPrefixes != 1 {
-		t.Fatalf("UserFeedChanges = %+v, want the partially filtered 31/8 reported", changes)
+	// The deny 31.1/16 splits 31/8 into 8 announced fragments; each counts.
+	if len(changes) != 1 || changes[0].Categories[0].AddedPrefixes != 8 {
+		t.Fatalf("UserFeedChanges = %+v, want the partially filtered 31/8 reported as 8 fragments", changes)
 	}
 }
 
@@ -410,5 +417,114 @@ func TestUserFeedChangesSkipsDisabledMode(t *testing.T) {
 	}
 	if len(changes) != 0 {
 		t.Fatalf("growth shown for a disabled mode: %+v", changes)
+	}
+}
+
+// addAIEntries gives the feed real ai catalog entries for the prefixes and
+// rebuilds the modes it's linked to, so growth rows point at announced prefixes.
+func addAIEntries(t *testing.T, s *Store, feedID int64, cidrs ...string) {
+	t.Helper()
+	entries := make([]CatalogEntry, 0, len(cidrs))
+	for i, c := range cidrs {
+		entries = append(entries, CatalogEntry{Category: "ai", Service: fmt.Sprintf("svc-%d", i), CIDR: c})
+	}
+	if err := s.Transaction(context.Background(), func(tx *sql.Tx) error {
+		if err := ReplaceCatalogEntries(context.Background(), tx, feedID, entries); err != nil {
+			return err
+		}
+		return RebuildModeEntriesForFeedTx(context.Background(), tx, feedID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustPrefixes(cidrs ...string) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(cidrs))
+	for _, c := range cidrs {
+		out = append(out, netip.MustParsePrefix(c))
+	}
+	return out
+}
+
+// Growth a later sync removed is no longer announced, so it must not be
+// reported as news.
+func TestUserFeedChangesDropsRemovedGrowth(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, _ := userSelectingFeedChange(t, s, "ai", false)
+	before, err := s.UserFeedChanges(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) == 0 {
+		t.Fatal("setup: no growth shown before removal")
+	}
+	if _, err := s.DB.ExecContext(ctx, "DELETE FROM catalog_mode_entries WHERE mode_id = ?", DefaultCatalogModeID); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.UserFeedChanges(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 0 {
+		t.Fatalf("growth still reported after its prefixes were removed: %+v", after)
+	}
+}
+
+// Default routes are never announced, so they must not enter a snapshot.
+func TestModeGrowthSkipsDefaultRoutes(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	feedID, err := s.AddFeed(ctx, "default-route-feed", "https://example.test/d.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, 0)", DefaultCatalogModeID, feedID); err != nil {
+		t.Fatal(err)
+	}
+	addAIEntries(t, s, feedID, "0.0.0.0/0", "21.0.0.0/8")
+	var snap ModePrefixCategories
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		var err error
+		snap, err = SnapshotFeedModePrefixesTx(ctx, tx, feedID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, prefixes := range snap {
+		for _, a := range prefixes {
+			if a.prefix.Bits() == 0 {
+				t.Fatalf("default route %s in snapshot", a.prefix)
+			}
+		}
+	}
+}
+
+// An acknowledgement advances the cursor of the mode it was shown for, and
+// no other, so unseen changes in another mode stay visible.
+func TestAckUserFeedChangesIsScopedToMode(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, _ := userSelectingFeedChange(t, s, "ai", false)
+	changes, err := s.UserFeedChanges(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("setup: want 1 change, got %+v", changes)
+	}
+	otherMode, err := s.AddCatalogMode(ctx, "Other", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AckUserFeedChanges(ctx, userID, otherMode, changes[0].ChangeID); err != nil {
+		t.Fatal(err)
+	}
+	still, err := s.UserFeedChanges(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(still) != 1 {
+		t.Fatalf("acknowledging another mode hid this mode's change: %+v", still)
 	}
 }

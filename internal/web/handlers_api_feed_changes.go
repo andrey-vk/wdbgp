@@ -46,21 +46,23 @@ func (s *Server) apiUserFeedChanges(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"changes": changes})
 }
 
-// apiUserFeedChangesAck handles POST /api/user/feed-changes/ack. through is
-// the newest change_id the user was shown; changes up to it are marked seen.
+// apiUserFeedChangesAck handles POST /api/user/feed-changes/ack. mode_id and
+// through are the mode and the newest change_id the user was shown; changes up
+// to it are marked seen in that mode.
 func (s *Server) apiUserFeedChangesAck(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)
 	if !ok {
 		return
 	}
 	var body struct {
+		ModeID  int64 `json:"mode_id"`
 		Through int64 `json:"through"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Through <= 0 {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ModeID <= 0 || body.Through <= 0 {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	if err := s.store.AckUserFeedChanges(r.Context(), user.ID, body.Through); err != nil {
+	if err := s.store.AckUserFeedChanges(r.Context(), user.ID, body.ModeID, body.Through); err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}

@@ -315,9 +315,12 @@ async function dismissFeedChanges(): Promise<void> {
   const shown = feedChanges.value
   if (shown.length === 0) return
   const through = Math.max(...shown.map((c) => c.change_id))
+  // The mode is the one these notices were shown for, so an acknowledgement
+  // can't move a different mode's cursor after a mode switch.
+  const mode_id = shown[0].mode_id
   feedChanges.value = []
   try {
-    await userApi.post('/user/feed-changes/ack', { through })
+    await userApi.post('/user/feed-changes/ack', { mode_id, through })
   } catch (err) {
     if (handleAuthError(err)) return
     feedChanges.value = shown

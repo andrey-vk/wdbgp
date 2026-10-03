@@ -151,9 +151,10 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 	}
 	for _, g := range growth {
 		for _, prefix := range g.Prefixes {
+			ip, bits := EncodePrefix(prefix)
 			if _, err := tx.ExecContext(ctx,
-				"INSERT INTO feed_sync_mode_growth(change_id, mode_id, category, prefix) VALUES (?, ?, ?, ?)",
-				changeID, g.ModeID, g.Category, prefix); err != nil {
+				"INSERT INTO feed_sync_mode_growth(change_id, mode_id, category, prefix_ip, prefix_bits) VALUES (?, ?, ?, ?, ?)",
+				changeID, g.ModeID, g.Category, ip, bits); err != nil {
 				return err
 			}
 		}
@@ -240,6 +241,7 @@ ORDER BY synced_at DESC, id DESC LIMIT ?`, feedID, limit)
 // of anything they did.
 type UserFeedChange struct {
 	ChangeID   int64                    `json:"change_id"`
+	ModeID     int64                    `json:"mode_id"`
 	FeedName   string                   `json:"feed_name"`
 	SyncedAt   int64                    `json:"synced_at"`
 	Categories []UserFeedChangeCategory `json:"categories"`
@@ -252,7 +254,9 @@ type UserFeedChangeCategory struct {
 
 // UserFeedChanges returns the feed-driven growth the user hasn't acknowledged
 // in their current mode (within userFeedChangeWindow), oldest first. Growth
-// their route filters remove is left out: it was never announced to them.
+// is re-checked against the mode's current entries, so a prefix a later sync
+// removed stops being reported. Growth their route filters remove is left out,
+// and a prefix split into fragments counts once per surviving fragment.
 func (s *Store) UserFeedChanges(ctx context.Context, userID int64, now time.Time) ([]UserFeedChange, error) {
 	var modeID int64
 	var filterModeInt int
@@ -268,7 +272,7 @@ func (s *Store) UserFeedChanges(ctx context.Context, userID int64, now time.Time
 	}
 	since := now.Add(-userFeedChangeWindow).Unix()
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT f.name, c.id, c.synced_at, g.category, g.prefix
+SELECT f.name, c.id, c.synced_at, g.category, g.prefix_ip, g.prefix_bits
 FROM feed_sync_mode_growth g
 JOIN feed_sync_changes c ON c.id = g.change_id
 JOIN feeds f ON f.id = c.feed_id
@@ -276,27 +280,39 @@ JOIN catalog_modes m ON m.id = g.mode_id AND m.enabled = 1
 JOIN categories cat ON cat.name = g.category
 JOIN selected_categories sc ON sc.user_id = ? AND sc.mode_id = g.mode_id AND sc.category_id = cat.id
 WHERE g.mode_id = ? AND c.id > ? AND c.synced_at >= ? AND f.enabled = 1
-ORDER BY c.id, g.category, g.prefix`, userID, modeID, seenID, since)
+  AND EXISTS (
+    SELECT 1 FROM catalog_mode_entries cme
+    JOIN services sv ON sv.id = cme.service_id
+    JOIN categories c2 ON c2.id = sv.category_id
+    JOIN prefixes p ON p.id = cme.prefix_id
+    WHERE cme.mode_id = g.mode_id AND c2.name = g.category AND p.ip = g.prefix_ip AND p.bits = g.prefix_bits)
+ORDER BY c.id, g.category, g.prefix_ip, g.prefix_bits`, userID, modeID, seenID, since)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }() //nolint:errcheck
 
 	type growthRow struct {
-		feedName, category, prefix string
-		changeID, syncedAt         int64
+		feedName, category string
+		changeID, syncedAt int64
+		prefix             netip.Prefix
 	}
 	var all []growthRow
 	distinct := map[netip.Prefix]bool{}
 	for rows.Next() {
 		var g growthRow
-		if err := rows.Scan(&g.feedName, &g.changeID, &g.syncedAt, &g.category, &g.prefix); err != nil {
+		var ip []byte
+		var bits int
+		if err := rows.Scan(&g.feedName, &g.changeID, &g.syncedAt, &g.category, &ip, &bits); err != nil {
 			return nil, err
 		}
-		all = append(all, g)
-		if p, err := netip.ParsePrefix(g.prefix); err == nil {
-			distinct[p] = true
+		prefix, err := DecodePrefix(ip, bits)
+		if err != nil {
+			return nil, err
 		}
+		g.prefix = prefix
+		all = append(all, g)
+		distinct[prefix] = true
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -309,48 +325,43 @@ ORDER BY c.id, g.category, g.prefix`, userID, modeID, seenID, since)
 	if err != nil {
 		return nil, err
 	}
-	// A prefix counts if any part of it survives the filters: a deny on a more
-	// specific prefix can split a growth prefix into fragments, which are still
-	// announced.
-	reported := make(map[netip.Prefix]bool, len(distinct))
+	// Each growth prefix is filtered on its own: a deny that splits it leaves
+	// fragments, and each surviving fragment is one announced prefix.
+	fragments := make(map[netip.Prefix]int, len(distinct))
 	for p := range distinct {
 		kept, err := applyRouteFiltersToPrefixes([]netip.Prefix{p}, filters)
 		if err != nil {
 			return nil, err
 		}
-		reported[p] = len(kept) > 0
+		fragments[p] = len(kept)
 	}
 
 	var out []UserFeedChange
 	var lastChangeID int64 = -1
 	for _, g := range all {
-		p, err := netip.ParsePrefix(g.prefix)
-		if err != nil || !reported[p] {
+		n := fragments[g.prefix]
+		if n == 0 {
 			continue
 		}
 		if g.changeID != lastChangeID {
-			out = append(out, UserFeedChange{ChangeID: g.changeID, FeedName: g.feedName, SyncedAt: g.syncedAt, Categories: []UserFeedChangeCategory{}})
+			out = append(out, UserFeedChange{ChangeID: g.changeID, ModeID: modeID, FeedName: g.feedName, SyncedAt: g.syncedAt, Categories: []UserFeedChangeCategory{}})
 			lastChangeID = g.changeID
 		}
 		last := &out[len(out)-1]
-		if n := len(last.Categories); n > 0 && last.Categories[n-1].Category == g.category {
-			last.Categories[n-1].AddedPrefixes++
+		if k := len(last.Categories); k > 0 && last.Categories[k-1].Category == g.category {
+			last.Categories[k-1].AddedPrefixes += n
 		} else {
-			last.Categories = append(last.Categories, UserFeedChangeCategory{Category: g.category, AddedPrefixes: 1})
+			last.Categories = append(last.Categories, UserFeedChangeCategory{Category: g.category, AddedPrefixes: n})
 		}
 	}
 	return out, nil
 }
 
-// AckUserFeedChanges marks changes up to throughID as seen in the user's
-// current mode. The cursor only moves forward, so a stale acknowledgement
-// can't re-surface old changes.
-func (s *Store) AckUserFeedChanges(ctx context.Context, userID, throughID int64) error {
-	var modeID int64
-	if err := s.DB.QueryRowContext(ctx,
-		"SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&modeID); err != nil {
-		return err
-	}
+// AckUserFeedChanges marks changes up to throughID as seen in modeID — the
+// mode the changes were shown for, which the client sends back, so an
+// acknowledgement can't advance a different mode's cursor. The cursor only
+// moves forward, so a stale acknowledgement can't re-surface old changes.
+func (s *Store) AckUserFeedChanges(ctx context.Context, userID, modeID, throughID int64) error {
 	_, err := s.DB.ExecContext(ctx, `
 INSERT INTO user_feed_changes_seen(user_id, mode_id, change_id) VALUES (?, ?, ?)
 ON CONFLICT(user_id, mode_id) DO UPDATE SET change_id = MAX(change_id, excluded.change_id)`,
