@@ -159,13 +159,24 @@ func (s *Store) PreviewGlobalRouteFilterChange(ctx context.Context, newAllow, ne
 }
 
 // PreviewModeFeedChange reports the blast radius of replacing modeID's
-// feed membership with links, without persisting anything.
-func (s *Store) PreviewModeFeedChange(ctx context.Context, modeID int64, links []ModeFeedLink) (BlastRadiusPreview, error) {
+// feed membership with links and its enabled flag with enabled, without
+// persisting anything. enabled is simulated in the same trial as the feed
+// change — not just the feeds — because countSelectionPrefixesTx's query
+// requires catalog_modes.enabled = 1: previewing a feed-only change against
+// a mode that is (or stays) disabled would otherwise always measure 0 -> 0
+// regardless of the feed edit, hiding the real impact of enabling a
+// disabled mode and its feeds together in one admin save (ModesPage.vue
+// saves the mode's own enabled flag and its feed membership as two separate
+// requests, but from one Save click and one preview).
+func (s *Store) PreviewModeFeedChange(ctx context.Context, modeID int64, links []ModeFeedLink, enabled bool) (BlastRadiusPreview, error) {
 	users, err := usersByCatalogMode(ctx, s.DB, modeID)
 	if err != nil {
 		return BlastRadiusPreview{}, err
 	}
 	return s.previewBlastRadius(ctx, users, func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "UPDATE catalog_modes SET enabled = ? WHERE id = ?", enabled, modeID); err != nil {
+			return err
+		}
 		return replaceModeFeedsTx(ctx, tx, modeID, links)
 	})
 }

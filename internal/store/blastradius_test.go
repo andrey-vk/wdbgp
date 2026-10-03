@@ -167,7 +167,7 @@ func TestPreviewModeFeedChange(t *testing.T) {
 	userOnA := addBlastRadiusTestUser(t, s, modeAID, FilterModeGlobal, "cat-a", 1)
 	_ = addBlastRadiusTestUser(t, s, modeBID, FilterModeGlobal, "cat-b", 2)
 
-	preview, err := s.PreviewModeFeedChange(ctx, modeAID, nil) // remove all feeds from mode A
+	preview, err := s.PreviewModeFeedChange(ctx, modeAID, nil, true) // remove all feeds from mode A, stays enabled
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,13 +179,77 @@ func TestPreviewModeFeedChange(t *testing.T) {
 		t.Fatalf("entry = %+v, want user %d: 1 -> 0, LostRoutes true", a, userOnA)
 	}
 
-	// Mode A's real feed membership must be untouched.
+	// Mode A's real feed membership and enabled flag must be untouched.
 	v4, _, err := s.CountSelectionPrefixes(ctx, userOnA)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if v4 != 1 {
 		t.Fatalf("user's real prefix count = %d after a preview, want unchanged 1", v4)
+	}
+	modeA, err := s.CatalogMode(ctx, modeAID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !modeA.Enabled {
+		t.Fatalf("mode A enabled = false after a preview, want unchanged true")
+	}
+}
+
+// TestPreviewModeFeedChangeIncludesEnabledTransition reproduces the gap
+// Codex's review flagged: ModesPage.vue's Save button persists a mode's own
+// enabled flag and its feed membership as two separate requests from one
+// click, so previewing the feed side alone — leaving the mode's current
+// enabled value untouched in the trial — would always measure 0 -> 0 for a
+// disabled mode regardless of its feed membership, since
+// countSelectionPrefixesTx's query requires catalog_modes.enabled = 1. The
+// fix threads the target enabled value into the same trial transaction.
+func TestPreviewModeFeedChangeIncludesEnabledTransition(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	modeID, err := s.AddCatalogMode(ctx, "Disabled Mode", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := addBlastRadiusTestUser(t, s, modeID, FilterModeGlobal, "cat-a", 1)
+	feeds, err := s.ModeFeeds(ctx, modeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 1 {
+		t.Fatalf("ModeFeeds = %+v, want exactly 1", feeds)
+	}
+	links := []ModeFeedLink{{FeedID: feeds[0].ID}}
+
+	// Sanity: while the mode stays disabled, the preview must show no
+	// impact regardless of feed membership — this is the old (buggy)
+	// behavior, still correct for a mode that is genuinely staying disabled.
+	staysDisabled, err := s.PreviewModeFeedChange(ctx, modeID, links, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staysDisabled.AffectedUsers[0].BeforeV4 != 0 || staysDisabled.AffectedUsers[0].AfterV4 != 0 {
+		t.Fatalf("staysDisabled preview = %+v, want 0 -> 0", staysDisabled.AffectedUsers[0])
+	}
+
+	// The real bug: enabling the mode in the same save the feeds are kept
+	// (unchanged) must show the user actually gaining routes, not 0 -> 0.
+	becomesEnabled, err := s.PreviewModeFeedChange(ctx, modeID, links, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := becomesEnabled.AffectedUsers[0]
+	if a.UserID != userID || a.BeforeV4 != 0 || a.AfterV4 != 1 {
+		t.Fatalf("becomesEnabled preview = %+v, want user %d: 0 -> 1", a, userID)
+	}
+
+	// Nothing persisted by either preview.
+	mode, err := s.CatalogMode(ctx, modeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode.Enabled {
+		t.Fatalf("mode enabled = true after previews, want unchanged false")
 	}
 }
 

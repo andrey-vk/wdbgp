@@ -219,6 +219,7 @@ describe('ModesPage', () => {
 
     expect(mockPost).toHaveBeenCalledWith('/admin/modes/9/feeds/preview', {
       feeds: [{ id: 1, exclude: false }, { id: 2, exclude: false }],
+      enabled: true,
     })
     expect(mockPut).not.toHaveBeenCalled()
     expect(vm.blastRadiusVisible).toBe(true)
@@ -229,5 +230,59 @@ describe('ModesPage', () => {
     expect(mockPut).toHaveBeenCalledWith('/admin/modes/9/feeds', {
       feeds: [{ id: 1, exclude: false }, { id: 2, exclude: false }],
     })
+  })
+
+  // Regression: the gate used to trigger only on a feed-set change, so
+  // enabling a disabled mode while leaving its feeds untouched skipped the
+  // preview entirely — even though previewing feeds alone against a mode
+  // that's still disabled always measures 0 -> 0 server-side.
+  it('previews an enabled-flag change even when the feed set is untouched', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/modes') {
+        return Promise.resolve({ data: { modes: [{ id: 9, name: 'existing-mode', enabled: false, feed_count: 1 }] } })
+      }
+      if (url === '/admin/modes/9/feeds') {
+        return Promise.resolve({ data: { feeds: [{ id: 1, name: 'inc', url: 'u1', enabled: true, adapter_name: 'a' }] } })
+      }
+      if (url === '/admin/feeds') {
+        return Promise.resolve({ data: { feeds: [{ id: 1, name: 'inc', url: 'u1', enabled: true, adapter_name: 'a' }] } })
+      }
+      return Promise.resolve({ data: {} })
+    })
+
+    const { wrapper } = await mountModesPage()
+    const vm = wrapper.vm as ModesPageVM
+
+    vm.selectMode({ id: 9, name: 'existing-mode', enabled: false, feed_count: 1 })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    vm.form.enabled = true // feeds left exactly as loaded
+
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/admin/modes/9/feeds/preview') {
+        return Promise.resolve({
+          data: {
+            affected_users: [{ user_id: 1, name: 'u', before_v4: 0, before_v6: 0, after_v4: 1, after_v6: 0, lost_routes: false }],
+            total_delta_v4: 1, total_delta_v6: 0,
+          },
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+    mockPut.mockResolvedValue({ data: { id: 9, name: 'existing-mode', enabled: true, feed_count: 1 } })
+
+    const savePromise = vm.handleSave()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/modes/9/feeds/preview', {
+      feeds: [{ id: 1, exclude: false }],
+      enabled: true,
+    })
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(vm.blastRadiusVisible).toBe(true)
+
+    vm.applyBlastRadius()
+    await savePromise
+
+    expect(mockPut).toHaveBeenCalled()
   })
 })

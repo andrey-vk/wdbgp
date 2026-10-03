@@ -160,7 +160,7 @@ func TestAPIModeFeedsPreview(t *testing.T) {
 	userID := addPreviewTestUser(t, st, modeID, store.FilterModeGlobal, "cat-a", 1)
 	idStr := strconv.FormatInt(modeID, 10)
 
-	req = httptest.NewRequest("POST", "/api/admin/modes/x/feeds/preview", strings.NewReader(`{"feed_ids":[]}`))
+	req = httptest.NewRequest("POST", "/api/admin/modes/x/feeds/preview", strings.NewReader(`{"feed_ids":[],"enabled":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", idStr)
 	w = httptest.NewRecorder()
@@ -183,6 +183,78 @@ func TestAPIModeFeedsPreview(t *testing.T) {
 	}
 	if v4 != 1 {
 		t.Fatalf("user's real prefix count = %d after a preview, want unchanged 1", v4)
+	}
+}
+
+// TestAPIModeFeedsPreviewIncludesEnabledTransition checks that the
+// "enabled" field in the preview body reaches PreviewModeFeedChange — a
+// feed-membership-only preview against a disabled mode must report no
+// impact (countSelectionPrefixesTx requires catalog_modes.enabled = 1), but
+// the SAME feeds with enabled:true must show the user actually gaining
+// routes.
+func TestAPIModeFeedsPreviewIncludesEnabledTransition(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+
+	req := httptest.NewRequest("POST", "/api/admin/modes", strings.NewReader(`{"name":"Disabled Mode","enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiModesCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create mode: %d body=%s", w.Code, w.Body.String())
+	}
+	var created modeJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	modeID := created.ID
+	userID := addPreviewTestUser(t, st, modeID, store.FilterModeGlobal, "cat-a", 1)
+	idStr := strconv.FormatInt(modeID, 10)
+
+	feeds, err := st.ModeFeeds(context.Background(), modeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 1 {
+		t.Fatalf("ModeFeeds = %+v, want exactly 1", feeds)
+	}
+	feedsBody := fmt.Sprintf(`{"feed_ids":[%d]`, feeds[0].ID)
+
+	req = httptest.NewRequest("POST", "/api/admin/modes/x/feeds/preview", strings.NewReader(feedsBody+`,"enabled":false}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w = httptest.NewRecorder()
+	srv.apiModeFeedsPreview(w, req)
+	var staysDisabled store.BlastRadiusPreview
+	if err := json.NewDecoder(w.Body).Decode(&staysDisabled); err != nil {
+		t.Fatal(err)
+	}
+	if staysDisabled.AffectedUsers[0].BeforeV4 != 0 || staysDisabled.AffectedUsers[0].AfterV4 != 0 {
+		t.Fatalf("staysDisabled preview = %+v, want 0 -> 0", staysDisabled.AffectedUsers[0])
+	}
+
+	req = httptest.NewRequest("POST", "/api/admin/modes/x/feeds/preview", strings.NewReader(feedsBody+`,"enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w = httptest.NewRecorder()
+	srv.apiModeFeedsPreview(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview: %d body=%s", w.Code, w.Body.String())
+	}
+	var becomesEnabled store.BlastRadiusPreview
+	if err := json.NewDecoder(w.Body).Decode(&becomesEnabled); err != nil {
+		t.Fatal(err)
+	}
+	a := becomesEnabled.AffectedUsers[0]
+	if a.UserID != userID || a.BeforeV4 != 0 || a.AfterV4 != 1 {
+		t.Fatalf("becomesEnabled preview = %+v, want user %d: 0 -> 1", a, userID)
+	}
+
+	mode, err := st.CatalogMode(context.Background(), modeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode.Enabled {
+		t.Fatalf("mode enabled = true after previews, want unchanged false")
 	}
 }
 

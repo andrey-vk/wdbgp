@@ -127,15 +127,22 @@ async function handleSave() {
 
   // Only an existing mode has users already on it and prior feed
   // membership to diff against — a brand-new mode has neither, so there's
-  // nothing to preview yet.
+  // nothing to preview yet. Also gated on enabled changing, not just the
+  // feed set: the Save button below persists both (as two separate
+  // requests) in one click, and previewing the feed change alone against a
+  // mode that is or stays disabled would always measure 0 -> 0 regardless
+  // of the feed edit, hiding e.g. "enable this mode and give it feeds" in
+  // one save.
   if (selected.value && (
     !sameFeedSet(assignedFeedIds.value, originalAssignedFeedIds.value) ||
-    !sameFeedSet(excludedFeedIds.value, originalExcludedFeedIds.value)
+    !sameFeedSet(excludedFeedIds.value, originalExcludedFeedIds.value) ||
+    form.value.enabled !== selected.value.enabled
   )) {
     try {
       const ok = await confirmBlastRadius(async () => {
         const resp = await apiClient.post<BlastRadiusPreview>(
-          '/admin/modes/' + selected.value!.id + '/feeds/preview', feedsBody(),
+          '/admin/modes/' + selected.value!.id + '/feeds/preview',
+          { ...feedsBody(), enabled: form.value.enabled },
         )
         return resp.data
       })

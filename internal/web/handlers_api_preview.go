@@ -13,6 +13,7 @@ import (
 // with the submitted values, without persisting anything — issue #49 item
 // #3's shared preview primitive applied to global route filters.
 func (s *Server) apiSettingsPreviewFilters(w http.ResponseWriter, r *http.Request) {
+	extendRequestDeadlines(w, r) // large filter upload can outlive ReadTimeout — same as apiSettingsPut
 	var body struct {
 		FilterAllow string `json:"filter_allow"`
 		FilterDeny  string `json:"filter_deny"`
@@ -46,6 +47,7 @@ func (s *Server) apiSettingsPreviewFilters(w http.ResponseWriter, r *http.Reques
 // against the original state can miss an impact the combination actually
 // produces (or report one that the combination actually avoids).
 func (s *Server) apiUserPreview(w http.ResponseWriter, r *http.Request) {
+	extendRequestDeadlines(w, r) // large filter upload can outlive ReadTimeout — same as apiUsersUpdate
 	userID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid user ID"})
@@ -107,8 +109,12 @@ func (s *Server) apiUserPreview(w http.ResponseWriter, r *http.Request) {
 
 // apiModeFeedsPreview handles POST /api/admin/modes/{id}/feeds/preview.
 // Reports the blast radius of replacing modeID's feed membership with the
-// submitted links, without persisting anything. Same body shape as
-// apiModeFeedsSet.
+// submitted links AND its enabled flag with the submitted value, without
+// persisting anything — ModesPage.vue's Save button changes both in one
+// click (as two separate real requests), and previewing the feed change
+// alone against a mode that is or stays disabled would always measure
+// 0 -> 0 regardless of the feed edit. Feed body shape matches
+// apiModeFeedsSet; enabled matches the mode PUT's own body field.
 func (s *Server) apiModeFeedsPreview(w http.ResponseWriter, r *http.Request) {
 	modeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -121,6 +127,7 @@ func (s *Server) apiModeFeedsPreview(w http.ResponseWriter, r *http.Request) {
 			Exclude bool  `json:"exclude"`
 		} `json:"feeds"`
 		FeedIDs []int64 `json:"feed_ids"`
+		Enabled bool    `json:"enabled"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
@@ -136,7 +143,7 @@ func (s *Server) apiModeFeedsPreview(w http.ResponseWriter, r *http.Request) {
 			links = append(links, store.ModeFeedLink{FeedID: feedID})
 		}
 	}
-	preview, err := s.store.PreviewModeFeedChange(r.Context(), modeID, links)
+	preview, err := s.store.PreviewModeFeedChange(r.Context(), modeID, links, body.Enabled)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
