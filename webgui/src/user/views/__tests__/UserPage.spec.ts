@@ -28,6 +28,26 @@ vi.mock('@/plugins/i18n', () => ({
 
 const i18n = createI18n({ legacy: false, locale: 'en', messages: { en: {} } })
 
+// Default empty filters-in-effect payload for GET /user/route-filters.
+// Tests that care about its content use mockGet.mockImplementation directly.
+const defaultRouteFiltersInfo = {
+  mode: 'global',
+  global: { allow: [], deny: [] },
+  own: { allow: [], deny: [] },
+  effective: { allow: [], deny: [] },
+}
+
+// Resolves GET /user/me|/user/login with userData and GET /user/route-filters
+// with an empty default — a URL-aware stand-in for the old blanket
+// mockGet.mockResolvedValue({ data: userData }), needed since loadUserData
+// now also fetches /user/route-filters on every load.
+function mockUserDataGet(userData: unknown): void {
+  mockGet.mockImplementation((url: string) => {
+    if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
+    return Promise.resolve({ data: userData })
+  })
+}
+
 describe('UserPage', () => {
   beforeEach(() => {
     mockGet.mockReset()
@@ -88,7 +108,7 @@ describe('UserPage', () => {
         { id: 2, name: 'Mode B', enabled: true, feed_count: 0 },
       ],
     }
-    mockGet.mockResolvedValue({ data: userData })
+    mockUserDataGet(userData)
     // The PUT reports failure (e.g. the backend committed the mode change
     // but BGP reconciliation failed afterwards, returning a 500).
     mockPut.mockRejectedValueOnce(new Error('reconcile failed'))
@@ -104,7 +124,8 @@ describe('UserPage', () => {
       },
     })
     await new Promise((r) => setTimeout(r, 0))
-    expect(mockGet).toHaveBeenCalledTimes(1)
+    // One load = /user/me + /user/route-filters.
+    expect(mockGet).toHaveBeenCalledTimes(2)
 
     const select = wrapper.find('select')
     await select.setValue('2')
@@ -112,7 +133,7 @@ describe('UserPage', () => {
 
     // Even though the PUT failed, the UI must re-fetch the authoritative
     // server state rather than silently keep showing pre-switch data.
-    expect(mockGet).toHaveBeenCalledTimes(2)
+    expect(mockGet).toHaveBeenCalledTimes(4)
   })
 
   it('returns to the login screen when a count-prefixes fetch gets a 401 mid-session, instead of getting stuck on a dead authenticated view', async () => {
@@ -136,7 +157,7 @@ describe('UserPage', () => {
       filters: { allow: [], deny: [] },
       modes: [],
     }
-    mockGet.mockResolvedValue({ data: userData })
+    mockUserDataGet(userData)
     // The session expires between the initial auth check and the
     // count-prefixes fetch that loadUserData triggers right after it.
     mockPost.mockRejectedValue({ isAxiosError: true, response: { status: 401 } })
@@ -182,7 +203,7 @@ describe('UserPage', () => {
       filters: { allow: [], deny: [] },
       modes: [],
     }
-    mockGet.mockResolvedValue({ data: userData })
+    mockUserDataGet(userData)
     mockPost.mockImplementation((url: string) => {
       if (url === '/user/selections') {
         return Promise.reject({ isAxiosError: true, response: { status: 401 } })
@@ -233,7 +254,7 @@ describe('UserPage', () => {
       filters: { allow: [], deny: [] },
       modes: [],
     }
-    mockGet.mockResolvedValue({ data: userData })
+    mockUserDataGet(userData)
     mockPost.mockImplementation((url: string) => {
       if (url === '/user/count-prefixes') {
         return Promise.resolve({ data: { v4: 100, v6: 50, delta_v4: 20, delta_v6: 10 } })
@@ -294,7 +315,7 @@ describe('UserPage', () => {
       filters: { allow: [], deny: [] },
       modes: [],
     }
-    mockGet.mockResolvedValue({ data: userData })
+    mockUserDataGet(userData)
     mockPost.mockRejectedValue(new Error('network error'))
 
     const UserPage = (await import('../UserPage.vue')).default
@@ -337,7 +358,7 @@ describe('UserPage', () => {
         filters: { allow: [], deny: [] },
         modes: [],
       }
-      mockGet.mockResolvedValue({ data: userData })
+      mockUserDataGet(userData)
 
       let resolveStale: (v: unknown) => void = () => {}
       let resolveFresh: (v: unknown) => void = () => {}
@@ -423,7 +444,7 @@ describe('UserPage', () => {
       filters: { allow: [], deny: [] },
       modes: [],
     }
-    mockGet.mockResolvedValue({ data: userData })
+    mockUserDataGet(userData)
     mockPost.mockResolvedValue({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
 
     const UserPage = (await import('../UserPage.vue')).default
@@ -495,7 +516,7 @@ describe('UserPage', () => {
       filters: { allow: [], deny: [] },
       modes: [],
     }
-    mockGet.mockResolvedValue({ data: userData })
+    mockUserDataGet(userData)
     mockPost.mockResolvedValue({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
 
     const UserPage = (await import('../UserPage.vue')).default
@@ -547,6 +568,7 @@ describe('UserPage', () => {
     async function mountWithLookup(lookupHandler: (url: string) => Promise<{ data: unknown }>) {
       mockGet.mockImplementation((url: string) => {
         if (url === '/user/me') return Promise.resolve({ data: baseUserData })
+        if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
         if (url === '/user/debug') return lookupHandler(url)
         return Promise.reject(new Error(`unexpected GET ${url}`))
       })
@@ -784,6 +806,7 @@ describe('UserPage', () => {
       }
       mockGet.mockImplementation((url: string) => {
         if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
+        if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
         if (url === '/user/debug') return Promise.resolve({ data: lookupResultData })
         return Promise.reject(new Error(`unexpected GET ${url}`))
       })
@@ -839,6 +862,7 @@ describe('UserPage', () => {
           meCalls++
           return Promise.resolve({ data: modeAData })
         }
+        if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
         if (url === '/user/debug') return Promise.resolve({ data: lookupResultData })
         return Promise.reject(new Error(`unexpected GET ${url}`))
       })
@@ -908,6 +932,7 @@ describe('UserPage', () => {
       let resolveLookup: (v: { data: unknown }) => void = () => {}
       mockGet.mockImplementation((url: string) => {
         if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
+        if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
         if (url === '/user/debug') return new Promise((resolve) => { resolveLookup = resolve })
         return Promise.reject(new Error(`unexpected GET ${url}`))
       })
@@ -1005,6 +1030,7 @@ describe('UserPage', () => {
           if (meCalls === 1) return Promise.resolve({ data: modeAData })
           return Promise.reject({ isAxiosError: true, response: { status: 500 } })
         }
+        if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
         if (url === '/user/debug') return Promise.resolve({ data: lookupResultData })
         return Promise.reject(new Error(`unexpected GET ${url}`))
       })
@@ -1048,6 +1074,7 @@ describe('UserPage', () => {
       let countCalls = 0
       mockGet.mockImplementation((url: string) => {
         if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
+        if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
         if (url === '/user/debug') return Promise.resolve({
           data: {
             query: '8.8.8.0/24',
@@ -1111,6 +1138,7 @@ describe('UserPage', () => {
       // doesn't mean the selection didn't change.
       mockGet.mockImplementation((url: string) => {
         if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
+        if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
         if (url === '/user/debug') return Promise.resolve({
           data: {
             query: '8.8.8.0/24',
@@ -1158,6 +1186,464 @@ describe('UserPage', () => {
       // The save itself rejected, but the previous lookup answer may now
       // describe a configuration that no longer applies.
       expect(wrapper.find('[data-testid="lookup-result"]').exists()).toBe(false)
+    })
+  })
+
+  describe('filters in effect', () => {
+    const baseUserData = {
+      user: {
+        id: 1,
+        name: 'Alice',
+        catalog_mode_id: 1,
+        catalog_mode_name: 'Mode A',
+        selection_locked: false,
+        filter_editable: false,
+        filter_override: false,
+        filter_mode: 'allow',
+        catalog_editable: true,
+        networks: [],
+      },
+      catalog: {},
+      selections: { categories: [], services: [] },
+      communities: [],
+      prefix_counts: { v4: {}, v6: {} },
+      filters: { allow: [], deny: [] },
+      modes: [],
+    }
+
+    async function mountWithRouteFilters(routeFiltersInfo: unknown) {
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') return Promise.resolve({ data: baseUserData })
+        if (url === '/user/route-filters') return Promise.resolve({ data: routeFiltersInfo })
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      return wrapper
+    }
+
+    it('fetches and renders the filters in effect on load', async () => {
+      const wrapper = await mountWithRouteFilters({
+        mode: 'global',
+        global: { allow: ['10.0.0.0/8'], deny: [] },
+        own: { allow: [], deny: [] },
+        effective: { allow: ['10.0.0.0/8'], deny: [] },
+      })
+
+      expect(mockGet).toHaveBeenCalledWith('/user/route-filters')
+      const section = wrapper.find('[data-testid="route-filters-section"]')
+      expect(section.exists()).toBe(true)
+      expect(section.text()).toContain('user.route_filters_mode_global')
+      expect(wrapper.find('[data-testid="route-filters-effective"]').text()).toContain('10.0.0.0/8')
+    })
+
+    it('shows the global/own breakdown only in extend mode', async () => {
+      const wrapper = await mountWithRouteFilters({
+        mode: 'extend',
+        global: { allow: ['10.0.0.0/8'], deny: [] },
+        own: { allow: ['192.168.0.0/16'], deny: [] },
+        effective: { allow: ['10.0.0.0/8', '192.168.0.0/16'], deny: [] },
+      })
+
+      const globalBlock = wrapper.find('[data-testid="route-filters-global"]')
+      const ownBlock = wrapper.find('[data-testid="route-filters-own"]')
+      expect(globalBlock.exists()).toBe(true)
+      expect(ownBlock.exists()).toBe(true)
+      expect(globalBlock.text()).toContain('10.0.0.0/8')
+      expect(ownBlock.text()).toContain('192.168.0.0/16')
+    })
+
+    it('shows no breakdown in global or override mode', async () => {
+      const wrapper = await mountWithRouteFilters({
+        mode: 'override',
+        global: { allow: ['10.0.0.0/8'], deny: [] },
+        own: { allow: ['192.168.0.0/16'], deny: [] },
+        effective: { allow: ['192.168.0.0/16'], deny: [] },
+      })
+
+      expect(wrapper.find('[data-testid="route-filters-global"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="route-filters-own"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="route-filters-section"]').text()).toContain('user.route_filters_mode_override')
+    })
+
+    it('shows the empty-configuration hint when a list has no entries', async () => {
+      const wrapper = await mountWithRouteFilters({
+        mode: 'global',
+        global: { allow: [], deny: [] },
+        own: { allow: [], deny: [] },
+        effective: { allow: [], deny: [] },
+      })
+
+      expect(wrapper.find('[data-testid="route-filters-effective"]').text()).toContain('user.route_filters_empty')
+    })
+
+    it('resets filters-in-effect state on logout', async () => {
+      const wrapper = await mountWithRouteFilters({
+        mode: 'global',
+        global: { allow: ['10.0.0.0/8'], deny: [] },
+        own: { allow: [], deny: [] },
+        effective: { allow: ['10.0.0.0/8'], deny: [] },
+      })
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(true)
+
+      mockPost.mockResolvedValue({ data: { ok: true } })
+      await wrapper.find('[data-testid="logout-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(false)
+    })
+
+    it('renders null allow/deny lists (as Go serializes an empty slice) without crashing', async () => {
+      // RouteFilters.Allow/Deny are nil slices when empty; encoding/json
+      // marshals a nil slice as null, not [] — a real API response, not
+      // just a sloppy test fixture.
+      const wrapper = await mountWithRouteFilters({
+        mode: 'global',
+        global: { allow: null, deny: null },
+        own: { allow: null, deny: null },
+        effective: { allow: null, deny: null },
+      })
+
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="route-filters-effective"]').text()).toContain('user.route_filters_empty')
+    })
+
+    it('drops a stale route-filters response from a save that resolves after a later mode switch already fetched a newer one', async () => {
+      // A real, user-reachable overlap: saveFilters's own post-save refetch
+      // is slow, and the mode switcher isn't disabled while it's in
+      // flight (only the save button is), so the user can switch modes
+      // before it lands — that resync's refetch must win.
+      const userData = {
+        ...baseUserData,
+        user: { ...baseUserData.user, catalog_mode_id: 1, catalog_editable: true, filter_editable: true },
+        modes: [
+          { id: 1, name: 'Mode A', enabled: true, feed_count: 0 },
+          { id: 2, name: 'Mode B', enabled: true, feed_count: 0 },
+        ],
+      }
+      let resolveStale: (v: { data: unknown }) => void = () => {}
+      let routeFiltersCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') return Promise.resolve({ data: userData })
+        if (url === '/user/route-filters') {
+          routeFiltersCalls++
+          if (routeFiltersCalls === 1) {
+            return Promise.resolve({
+              data: { mode: 'global', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+            })
+          }
+          if (routeFiltersCalls === 2) return new Promise((resolve) => { resolveStale = resolve }) // triggered by saveFilters below
+          return Promise.resolve({
+            data: { mode: 'extend', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+          })
+        }
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/user/filters') return Promise.resolve({ data: { ok: true } })
+        return Promise.resolve({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+      })
+      mockPut.mockResolvedValue({ data: { ok: true } })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_global')
+
+      // Save filters — its post-save refetch (call #2) is left pending.
+      const saveButton = wrapper.findAll('button').find((b) => b.text().includes('user.save_filters'))
+      await saveButton?.trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Switch mode before the save's own refetch lands — its resync
+      // (call #3) resolves immediately.
+      await wrapper.find('select').setValue('2')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_extend')
+
+      // The stale save-triggered refetch finally resolves — without the
+      // sequencing guard this would silently clobber the mode switch's
+      // newer answer.
+      resolveStale({
+        data: { mode: 'override', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_extend')
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).not.toContain('user.route_filters_mode_override')
+    })
+
+    it('refreshes the filters in effect after a self-service filter save', async () => {
+      let routeFiltersCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') {
+          return Promise.resolve({
+            data: { ...baseUserData, user: { ...baseUserData.user, filter_editable: true } },
+          })
+        }
+        if (url === '/user/route-filters') {
+          routeFiltersCalls++
+          return Promise.resolve({
+            data: {
+              mode: 'override',
+              global: { allow: [], deny: [] },
+              own: { allow: [], deny: [] },
+              effective: { allow: routeFiltersCalls === 1 ? [] : ['192.168.0.0/16'], deny: [] },
+            },
+          })
+        }
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/user/filters') return Promise.resolve({ data: { ok: true } })
+        return Promise.resolve({ data: {} })
+      })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-effective"]').text()).toContain('user.route_filters_empty')
+
+      await wrapper.find('#ufallow').setValue('192.168.0.0/16')
+      const saveButton = wrapper.findAll('button').find((b) => b.text().includes('user.save_filters'))
+      await saveButton?.trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      expect(routeFiltersCalls).toBe(2)
+      expect(wrapper.find('[data-testid="route-filters-effective"]').text()).toContain('192.168.0.0/16')
+    })
+
+    it('never shows a previous user\'s stale filters to the next user who logs in on the same page', async () => {
+      // User A has a route-filters request in flight (triggered by a
+      // filter save) when they log out; user B logs in while B's own
+      // count-prefixes fetch is still pending — loadUserData awaits that
+      // before starting B's own route-filters fetch. A's stale response
+      // must never become visible in B's session, however it resolves.
+      const aliceData = { ...baseUserData, user: { ...baseUserData.user, filter_editable: true } }
+      const bobData = {
+        ...baseUserData,
+        user: { ...baseUserData.user, id: 2, name: 'Bob' },
+      }
+      let resolveAliceStale: (v: { data: unknown }) => void = () => {}
+      let resolveBobCounts: (v: { data: unknown }) => void = () => {}
+      let routeFiltersCalls = 0
+      let meCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') {
+          meCalls++
+          return Promise.resolve({ data: aliceData }) // only the initial mount uses /user/me here
+        }
+        if (url === '/user/route-filters') {
+          routeFiltersCalls++
+          if (routeFiltersCalls === 1) {
+            return Promise.resolve({
+              data: { mode: 'global', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+            })
+          }
+          if (routeFiltersCalls === 2) return new Promise((resolve) => { resolveAliceStale = resolve }) // Alice's save-triggered refetch
+          return Promise.resolve({
+            data: { mode: 'override', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+          }) // Bob's own refetch
+        }
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      let countCalls = 0
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/user/filters') return Promise.resolve({ data: { ok: true } })
+        if (url === '/user/logout') return Promise.resolve({ data: { ok: true } })
+        if (url === '/user/login') return Promise.resolve({ data: bobData })
+        if (url === '/user/count-prefixes') {
+          countCalls++
+          if (countCalls === 1) return Promise.resolve({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } }) // Alice's initial load
+          return new Promise((resolve) => { resolveBobCounts = resolve }) // Bob's own, left pending
+        }
+        return Promise.resolve({ data: {} })
+      })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(meCalls).toBe(1)
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_global')
+
+      // Alice saves her filters — the post-save refetch (call #2) is left pending.
+      const saveButton = wrapper.findAll('button').find((b) => b.text().includes('user.save_filters'))
+      await saveButton?.trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Alice logs out while that refetch is still in flight.
+      await wrapper.find('[data-testid="logout-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(false)
+
+      // Bob logs in; his own count-prefixes fetch is left pending, so his
+      // route-filters fetch (call #3) hasn't started yet.
+      await wrapper.find('input[type="text"]').setValue('bob')
+      await wrapper.find('input[type="password"]').setValue('secret')
+      await wrapper.find('form').trigger('submit')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Alice's stale refetch resolves now — it must not reappear in Bob's
+      // session even though Bob's own fetch hasn't fired yet.
+      resolveAliceStale({
+        data: { mode: 'extend', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(false)
+
+      // Bob's own count fetch resolves, unblocking his own route-filters
+      // fetch (call #3) — his real data must display correctly.
+      resolveBobCounts({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_override')
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).not.toContain('user.route_filters_mode_extend')
+    })
+
+    it('never shows a previous user\'s stale filters after a session expiry (401), not just an explicit logout', async () => {
+      // Same leak as above, but the session ends via a 401 picked up by
+      // handleAuthError (e.g. the mode-switch PUT below) rather than the
+      // user clicking "logout" — handleAuthError must invalidate the same
+      // state handleLogout does, since any authenticated action can hit a
+      // 401 once a session expires.
+      const aliceData = {
+        ...baseUserData,
+        user: { ...baseUserData.user, catalog_mode_id: 1, catalog_editable: true, filter_editable: true },
+        modes: [
+          { id: 1, name: 'Mode A', enabled: true, feed_count: 0 },
+          { id: 2, name: 'Mode B', enabled: true, feed_count: 0 },
+        ],
+      }
+      const bobData = { ...baseUserData, user: { ...baseUserData.user, id: 2, name: 'Bob' } }
+      let resolveAliceStale: (v: { data: unknown }) => void = () => {}
+      let resolveBobCounts: (v: { data: unknown }) => void = () => {}
+      let routeFiltersCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') return Promise.resolve({ data: aliceData }) // only the initial mount uses /user/me here
+        if (url === '/user/route-filters') {
+          routeFiltersCalls++
+          if (routeFiltersCalls === 1) {
+            return Promise.resolve({
+              data: { mode: 'global', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+            })
+          }
+          if (routeFiltersCalls === 2) return new Promise((resolve) => { resolveAliceStale = resolve }) // Alice's save-triggered refetch
+          return Promise.resolve({
+            data: { mode: 'override', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+          }) // Bob's own refetch
+        }
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      let countCalls = 0
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/user/filters') return Promise.resolve({ data: { ok: true } })
+        if (url === '/user/login') return Promise.resolve({ data: bobData })
+        if (url === '/user/count-prefixes') {
+          countCalls++
+          if (countCalls === 1) return Promise.resolve({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } }) // Alice's initial load
+          return new Promise((resolve) => { resolveBobCounts = resolve }) // Bob's own, left pending
+        }
+        return Promise.resolve({ data: {} })
+      })
+      mockPut.mockRejectedValue({ isAxiosError: true, response: { status: 401 } })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_global')
+
+      // Alice saves her filters — the post-save refetch (call #2) is left pending.
+      const saveButton = wrapper.findAll('button').find((b) => b.text().includes('user.save_filters'))
+      await saveButton?.trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Alice's session expires via a 401 on an unrelated action (a mode
+      // switch) while that refetch is still in flight — not an explicit
+      // logout.
+      await wrapper.find('select').setValue('2')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(false)
+
+      // Bob logs in; his own count-prefixes fetch is left pending, so his
+      // route-filters fetch (call #3) hasn't started yet.
+      await wrapper.find('input[type="text"]').setValue('bob')
+      await wrapper.find('input[type="password"]').setValue('secret')
+      await wrapper.find('form').trigger('submit')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Alice's stale refetch resolves now — it must not reappear in Bob's
+      // session even though Bob's own fetch hasn't fired yet.
+      resolveAliceStale({
+        data: { mode: 'extend', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(false)
+
+      // Bob's own count fetch resolves, unblocking his own route-filters
+      // fetch (call #3) — his real data must display correctly.
+      resolveBobCounts({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_override')
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).not.toContain('user.route_filters_mode_extend')
     })
   })
 })

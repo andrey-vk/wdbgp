@@ -393,6 +393,19 @@ selections and filters — there is no mode or user parameter to request anyone 
 `GET /api/user/debug?cidr=` powers it; mode and identity always come from the
 authenticated session.
 
+### Filters in effect
+
+Global and per-user route filters can silently remove prefixes the user would otherwise
+expect to see announced. The end-user selection page has a read-only "filters in effect"
+section, visible to every user regardless of whether they're allowed to edit their own
+filters, showing: their `filter_mode` (`global`, `extend`, or `override`) in plain language,
+and the resulting effective allow/deny lists. In `extend` mode it also breaks the effective
+lists down into their global and per-user origin, since a merged list alone can't show which
+side contributed which entry.
+
+`GET /api/user/route-filters` powers it, deriving everything from the authenticated session —
+there is no parameter to request anyone else's filters.
+
 ### Validation and constraints
 
 All values are validated on startup with helpful error messages. If not specified, defaults apply.

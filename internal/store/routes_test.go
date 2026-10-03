@@ -420,3 +420,143 @@ func TestRouteFiltersJSONLowercaseKeys(t *testing.T) {
 		t.Errorf("marshaled JSON = %s, should not have capitalized \"Allow\" key", raw)
 	}
 }
+
+// TestEffectiveRouteFiltersGlobalMode — in "global" mode, the user's own
+// per-user rows exist but must not be consulted or reported as "own".
+func TestEffectiveRouteFiltersGlobalMode(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, err := s.AddUser(ctx, User{
+		Name: "u", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"192.168.20.0/24"}, FilterMode: FilterModeGlobal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Deny: []string{"9.9.9.0/24"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSetting(ctx, "filter_allow", "10.0.0.0/8"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSetting(ctx, "filter_deny", "10.1.0.0/16"); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := s.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	global, own, effective, mode, err := s.EffectiveRouteFilters(ctx, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != FilterModeGlobal {
+		t.Fatalf("mode = %q, want %q", mode, FilterModeGlobal)
+	}
+	if len(own.Allow) != 0 || len(own.Deny) != 0 {
+		t.Fatalf("own = %+v, want empty (stale per-user rows must be ignored)", own)
+	}
+	if len(global.Allow) != 1 || global.Allow[0] != "10.0.0.0/8" {
+		t.Fatalf("global.allow = %v, want [10.0.0.0/8]", global.Allow)
+	}
+	if len(effective.Allow) != 1 || effective.Allow[0] != "10.0.0.0/8" {
+		t.Fatalf("effective.allow = %v, want [10.0.0.0/8]", effective.Allow)
+	}
+	if len(effective.Deny) != 1 || effective.Deny[0] != "10.1.0.0/16" {
+		t.Fatalf("effective.deny = %v, want [10.1.0.0/16]", effective.Deny)
+	}
+}
+
+// TestEffectiveRouteFiltersExtendMode — effective is the union of global
+// and the user's own filters.
+func TestEffectiveRouteFiltersExtendMode(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, err := s.AddUser(ctx, User{
+		Name: "u", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"192.168.20.0/24"}, FilterMode: FilterModeExtend,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserRouteFilters(ctx, userID, RouteFilters{
+		Allow: []string{"192.168.0.0/16"}, Deny: []string{"192.168.1.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSetting(ctx, "filter_allow", "10.0.0.0/8"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSetting(ctx, "filter_deny", "10.1.0.0/16"); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := s.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, own, effective, mode, err := s.EffectiveRouteFilters(ctx, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != FilterModeExtend {
+		t.Fatalf("mode = %q, want %q", mode, FilterModeExtend)
+	}
+	if len(own.Allow) != 1 || own.Allow[0] != "192.168.0.0/16" {
+		t.Fatalf("own.allow = %v, want [192.168.0.0/16]", own.Allow)
+	}
+	wantAllow := map[string]bool{"10.0.0.0/8": true, "192.168.0.0/16": true}
+	if len(effective.Allow) != len(wantAllow) {
+		t.Fatalf("effective.allow = %v, want union of global+own", effective.Allow)
+	}
+	for _, a := range effective.Allow {
+		if !wantAllow[a] {
+			t.Fatalf("unexpected effective.allow entry %q", a)
+		}
+	}
+}
+
+// TestEffectiveRouteFiltersOverrideMode — effective is the user's own
+// filters only; global is still reported (for display) but has no effect.
+func TestEffectiveRouteFiltersOverrideMode(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, err := s.AddUser(ctx, User{
+		Name: "u", PeerIP: "172.16.0.2", PeerASN: 65001, Enabled: true,
+		Networks: []string{"192.168.20.0/24"}, FilterMode: FilterModeOverride,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"192.168.0.0/16"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSetting(ctx, "filter_allow", "10.0.0.0/8"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSetting(ctx, "filter_deny", "10.1.0.0/16"); err != nil {
+		t.Fatal(err)
+	}
+
+	user, err := s.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	global, _, effective, mode, err := s.EffectiveRouteFilters(ctx, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != FilterModeOverride {
+		t.Fatalf("mode = %q, want %q", mode, FilterModeOverride)
+	}
+	if len(global.Allow) != 1 || global.Allow[0] != "10.0.0.0/8" {
+		t.Fatalf("global.allow = %v, want [10.0.0.0/8] (must still be reported)", global.Allow)
+	}
+	if len(effective.Allow) != 1 || effective.Allow[0] != "192.168.0.0/16" {
+		t.Fatalf("effective.allow = %v, want own only [192.168.0.0/16]", effective.Allow)
+	}
+	if len(effective.Deny) != 0 {
+		t.Fatalf("effective.deny = %v, want empty (global deny must not apply in override mode)", effective.Deny)
+	}
+}

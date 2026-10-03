@@ -20,6 +20,13 @@ export interface RouteFilters {
   deny: string[]
 }
 
+export interface UserRouteFiltersResult {
+  mode: string
+  global: RouteFilters
+  own: RouteFilters
+  effective: RouteFilters
+}
+
 // A flat list, not a "category|service"-keyed map: a category legitimately
 // containing "|" would collide with that key scheme (e.g. category "a"
 // service "b" vs. group "a|b"), showing the wrong number next to one of the

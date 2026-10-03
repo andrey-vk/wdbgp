@@ -149,6 +149,10 @@ describe('i18n locale consistency', () => {
       'user.login_title',
       'user.category',
       'user.service',
+      // Built from the filter_mode value: t(`user.route_filters_mode_${mode}`)
+      'user.route_filters_mode_global',
+      'user.route_filters_mode_extend',
+      'user.route_filters_mode_override',
     ])
 
     const dynamicPatterns = [
