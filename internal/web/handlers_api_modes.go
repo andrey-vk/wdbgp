@@ -291,7 +291,7 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Generate communities and reconcile (best-effort side effects, after commit)
-	s.store.GenerateCommunities(r.Context(), modeID) //nolint:errcheck,gosec // best-effort community generation
+	_, _ = s.store.GenerateCommunitiesCount(r.Context(), modeID) //nolint:errcheck,gosec // best-effort community generation
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after mode feeds save", "error", err)
@@ -470,8 +470,9 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	changedBefore, changedAfter := diffCommunityRows(beforeRows, afterRows)
 	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "communities.updated", "mode",
-		strconv.FormatInt(modeID, 10), beforeRows, afterRows)
+		strconv.FormatInt(modeID, 10), changedBefore, changedAfter)
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community set", "error", err)
@@ -529,8 +530,9 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 	// confirm flow exists precisely because of that), so it's worth
 	// recording even on the rare occasion the recomputed values happen to
 	// match what was there before.
-	beforeJSON, _ := json.Marshal(beforeRows) //nolint:errcheck // Community marshals trivially
-	afterJSON, _ := json.Marshal(afterRows)   //nolint:errcheck // Community marshals trivially
+	changedBefore, changedAfter := diffCommunityRows(beforeRows, afterRows)
+	beforeJSON, _ := json.Marshal(changedBefore) //nolint:errcheck // Community marshals trivially
+	afterJSON, _ := json.Marshal(changedAfter)   //nolint:errcheck // Community marshals trivially
 	s.recordAudit(r.Context(), r, store.AuditLogEntry{
 		Actor: s.adminActor(r), Action: "communities.reset", ObjectType: "mode", ObjectID: strconv.FormatInt(modeID, 10),
 		Before: string(beforeJSON), After: string(afterJSON),
@@ -584,8 +586,9 @@ func (s *Server) apiModeCommunitiesGenerate(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	changedBefore, changedAfter := diffCommunityRows(beforeRows, afterRows)
 	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "communities.generated", "mode",
-		strconv.FormatInt(modeID, 10), beforeRows, afterRows)
+		strconv.FormatInt(modeID, 10), changedBefore, changedAfter)
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community generate", "error", err)

@@ -39,6 +39,63 @@ func auditLogCount(t *testing.T, st *store.Store, action string) int {
 	return total
 }
 
+// --- recordAudit / request-cancellation isolation --------------------------
+
+// TestRecordAuditSurvivesRequestCancellation simulates a client disconnect
+// right after the mutation it's auditing has already committed: the
+// request's own context is canceled before recordAudit runs. The audit
+// write must still succeed — it's no longer in the client's cancellation
+// path by the time the mutation itself has committed.
+func TestRecordAuditSurvivesRequestCancellation(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	srv.recordAudit(ctx, req, store.AuditLogEntry{
+		Actor: "admin:test", Action: "test.cancel_survives", ObjectType: "x", ObjectID: "1",
+		Before: "a", After: "b",
+	})
+
+	if n := auditLogCount(t, st, "test.cancel_survives"); n != 1 {
+		t.Fatalf("audit log count = %d, want 1 (write must survive request cancellation)", n)
+	}
+}
+
+// TestDiffCommunityRows exercises diffCommunityRows directly: an unchanged
+// entry must be dropped, a changed entry kept on both sides, an
+// after-only (newly filled) entry kept only in after, and a before-only
+// (removed) entry kept only in before.
+func TestDiffCommunityRows(t *testing.T) {
+	before := []store.Community{
+		{Category: "cat-a", Service: "svc-a", Community: 100}, // unchanged
+		{Category: "cat-a", Service: "svc-b", Community: 200}, // changed below
+		{Category: "cat-b", Service: "svc-c", Community: 300}, // removed below
+	}
+	after := []store.Community{
+		{Category: "cat-a", Service: "svc-a", Community: 100}, // unchanged
+		{Category: "cat-a", Service: "svc-b", Community: 250}, // changed
+		{Category: "cat-c", Service: "svc-d", Community: 400}, // newly added
+	}
+
+	changedBefore, changedAfter := diffCommunityRows(before, after)
+
+	if len(changedBefore) != 2 || len(changedAfter) != 2 {
+		t.Fatalf("changedBefore=%+v changedAfter=%+v, want 2 entries each (unchanged cat-a/svc-a dropped)", changedBefore, changedAfter)
+	}
+	for _, c := range changedBefore {
+		if c.Category == "cat-a" && c.Service == "svc-a" {
+			t.Fatalf("changedBefore unexpectedly includes the unchanged entry: %+v", changedBefore)
+		}
+	}
+	for _, c := range changedAfter {
+		if c.Category == "cat-a" && c.Service == "svc-a" {
+			t.Fatalf("changedAfter unexpectedly includes the unchanged entry: %+v", changedAfter)
+		}
+	}
+}
+
 // --- Communities hooks ---------------------------------------------------
 
 // modeWithCatalogFixture creates a mode with one feed/catalog entry, ready
@@ -74,6 +131,103 @@ func modeWithCatalogFixture(t *testing.T) (*Server, *store.Store, int64) {
 		t.Fatalf("insert catalog: %v", err)
 	}
 	return srv, st, modeID
+}
+
+// modeWithMultiCatalogFixture creates a mode with three catalog entries
+// across two categories, all generated (assigned a community), ready for
+// a test that edits only one assignment and checks the audit entry doesn't
+// also report the other, untouched ones.
+func modeWithMultiCatalogFixture(t *testing.T) (*Server, *store.Store, int64) {
+	t.Helper()
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	req := httptest.NewRequest("POST", "/api/admin/modes", strings.NewReader(`{"name":"Audit Multi Mode","enabled":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiModesCreate(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create mode: %d body=%s", w.Code, w.Body.String())
+	}
+	var created modeJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	modeID := created.ID
+
+	feedID, err := st.AddFeed(ctx, "Audit Multi Feed", "http://example.com/audit-multi.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+		t.Fatalf("assign feed: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "cat-a", Service: "svc-a", CIDR: "10.0.0.0/8"},
+		{Category: "cat-a", Service: "svc-b", CIDR: "10.1.0.0/16"},
+		{Category: "cat-b", Service: "svc-c", CIDR: "10.2.0.0/16"},
+	}); err != nil {
+		t.Fatalf("insert catalog: %v", err)
+	}
+	if _, _, _, err := st.GenerateCommunities(ctx, modeID); err != nil {
+		t.Fatalf("pre-generate: %v", err)
+	}
+	return srv, st, modeID
+}
+
+// TestAuditHookCommunitiesPutOnlyRecordsChangedAssignments checks that
+// editing one assignment in a multi-entry mode records an audit before/after
+// containing only that one changed (category, service) pair — not a full
+// snapshot of every assignment in the mode, most of which this PUT never
+// touched.
+func TestAuditHookCommunitiesPutOnlyRecordsChangedAssignments(t *testing.T) {
+	srv, st, modeID := modeWithMultiCatalogFixture(t)
+	ctx := context.Background()
+
+	before, err := st.CommunityRows(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read rows: %v", err)
+	}
+	if len(before) < 3 {
+		t.Fatalf("fixture rows = %d, want >= 3 (2 categories + 3 services)", len(before))
+	}
+	used := make(map[uint32]bool, len(before))
+	for _, c := range before {
+		used[c.Community] = true
+	}
+	newComm := uint32(90000)
+	for used[newComm] {
+		newComm++
+	}
+
+	body := fmt.Sprintf(`{"communities":[{"category":"cat-a","service":"svc-a","community":%d}]}`, newComm)
+	req := httptest.NewRequest("PUT", "/api/admin/modes/x/communities", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w := httptest.NewRecorder()
+	srv.apiModeCommunitiesPut(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("put: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "communities.updated")
+	var afterEntries []store.Community
+	if err := json.Unmarshal([]byte(e.After), &afterEntries); err != nil {
+		t.Fatalf("unmarshal after %q: %v", e.After, err)
+	}
+	if len(afterEntries) != 1 {
+		t.Fatalf("after entries = %d, want exactly 1 (only the changed assignment), got %q", len(afterEntries), e.After)
+	}
+	if afterEntries[0].Category != "cat-a" || afterEntries[0].Service != "svc-a" || afterEntries[0].Community != newComm {
+		t.Fatalf("after entry = %+v, want cat-a/svc-a -> %d", afterEntries[0], newComm)
+	}
+	var beforeEntries []store.Community
+	if err := json.Unmarshal([]byte(e.Before), &beforeEntries); err != nil {
+		t.Fatalf("unmarshal before %q: %v", e.Before, err)
+	}
+	if len(beforeEntries) != 1 {
+		t.Fatalf("before entries = %d, want exactly 1 (only the changed assignment), got %q", len(beforeEntries), e.Before)
+	}
 }
 
 func TestAuditHookCommunitiesGenerate(t *testing.T) {
@@ -115,6 +269,59 @@ func TestAuditHookCommunitiesGenerateNoopWhenNothingToGenerate(t *testing.T) {
 
 	if n := auditLogCount(t, st, "communities.generated"); n != 0 {
 		t.Fatalf("audit log count = %d, want 0 (nothing changed)", n)
+	}
+}
+
+// TestAuditHookCommunitiesGenerateOnlyRecordsNewAssignments checks that
+// generating communities for a mode that already has some assignments
+// filled records an audit after containing only the newly filled entries
+// — not the already-assigned ones GenerateCommunities left untouched.
+func TestAuditHookCommunitiesGenerateOnlyRecordsNewAssignments(t *testing.T) {
+	srv, st, modeID := modeWithCatalogFixture(t)
+	ctx := context.Background()
+
+	feedID, err := st.AddFeed(ctx, "Audit Feed 2", "http://example.com/audit2.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+		t.Fatalf("assign feed: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "cat-b", Service: "svc-b", CIDR: "10.1.0.0/16"},
+	}); err != nil {
+		t.Fatalf("insert catalog: %v", err)
+	}
+
+	// Pre-assign cat-a's entries by hand, leaving only cat-b for Generate
+	// to fill.
+	if err := st.SetCommunity(ctx, modeID, "cat-a", "svc-a", 500); err != nil {
+		t.Fatalf("pre-assign: %v", err)
+	}
+	if err := st.SetCommunity(ctx, modeID, "cat-a", "", 501); err != nil {
+		t.Fatalf("pre-assign group: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/admin/modes/x/communities/generate", nil)
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w := httptest.NewRecorder()
+	srv.apiModeCommunitiesGenerate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("generate: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "communities.generated")
+	var afterEntries []store.Community
+	if err := json.Unmarshal([]byte(e.After), &afterEntries); err != nil {
+		t.Fatalf("unmarshal after %q: %v", e.After, err)
+	}
+	if len(afterEntries) == 0 {
+		t.Fatalf("after = %q, want at least the newly generated cat-b assignment(s)", e.After)
+	}
+	for _, c := range afterEntries {
+		if c.Category == "cat-a" {
+			t.Fatalf("after unexpectedly includes the already-assigned cat-a entry: %+v (full after=%s)", c, e.After)
+		}
 	}
 }
 

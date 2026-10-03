@@ -5,10 +5,17 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
+
+// auditWriteTimeout bounds the detached audit-log write in recordAudit —
+// long enough for a single INSERT, short enough that a stuck store doesn't
+// leak goroutines indefinitely once detached from the request's own
+// deadline.
+const auditWriteTimeout = 5 * time.Second
 
 // adminActor builds the "admin:<ip>" actor string for an admin-triggered
 // mutation. There is no per-admin identity in this codebase today (the
@@ -34,7 +41,14 @@ func (s *Server) recordAudit(ctx context.Context, r *http.Request, e store.Audit
 		return
 	}
 	e.UserAgent = r.Header.Get("User-Agent")
-	if err := s.store.RecordAuditLog(ctx, e); err != nil {
+	// Detached from ctx's own cancellation: by this point the mutation
+	// being audited has already committed, so a client that disconnects
+	// right after (canceling the request context) must not also suppress
+	// the record of that already-committed change. The timeout bounds the
+	// write now that it's no longer tied to the request's own deadline.
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditWriteTimeout)
+	defer cancel()
+	if err := s.store.RecordAuditLog(auditCtx, e); err != nil {
 		logging.FromContext(ctx).Error("audit log write failed", "action", e.Action, "error", err)
 	}
 }
@@ -62,4 +76,40 @@ func (s *Server) recordAuditIfChanged(ctx context.Context, r *http.Request, acto
 		Actor: actor, Action: action, ObjectType: objectType, ObjectID: objectID,
 		Before: string(beforeJSON), After: string(afterJSON),
 	})
+}
+
+// diffCommunityRows returns only the (category, service) assignments whose
+// community number actually differs between before and after. The store
+// layer's before/after returns are always a full snapshot of every
+// assignment in the mode (needed there to compute the change itself), but
+// logging that whole snapshot on every edit — most of it unchanged — would
+// add a full catalog's worth of JSON to audit_log per edit on a large mode.
+// Order is preserved from before, then any after-only keys.
+func diffCommunityRows(before, after []store.Community) (changedBefore, changedAfter []store.Community) {
+	type key = store.ServiceKey
+	afterByKey := make(map[key]store.Community, len(after))
+	for _, c := range after {
+		afterByKey[key{Category: c.Category, Service: c.Service}] = c
+	}
+	seen := make(map[key]bool, len(before))
+	for _, b := range before {
+		k := key{Category: b.Category, Service: b.Service}
+		seen[k] = true
+		a, ok := afterByKey[k]
+		if ok && a.Community == b.Community {
+			continue
+		}
+		changedBefore = append(changedBefore, b)
+		if ok {
+			changedAfter = append(changedAfter, a)
+		}
+	}
+	for _, a := range after {
+		k := key{Category: a.Category, Service: a.Service}
+		if seen[k] {
+			continue
+		}
+		changedAfter = append(changedAfter, a)
+	}
+	return changedBefore, changedAfter
 }

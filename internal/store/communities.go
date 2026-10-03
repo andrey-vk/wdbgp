@@ -572,6 +572,20 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (before, 
 	return before, after, count, err
 }
 
+// GenerateCommunitiesCount fills missing communities for modeID exactly
+// like GenerateCommunities, but skips the two full communityRows scans —
+// for callers (background feed sync, and the mode-feeds-save handler's
+// best-effort regeneration) that only need the generated count and would
+// otherwise pay for a full-table snapshot before and after on every call,
+// for rows they immediately discard.
+func (s *Store) GenerateCommunitiesCount(ctx context.Context, modeID int64) (count int, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		count, err = genCommunitiesRuntime(ctx, tx, modeID)
+		return err
+	})
+	return count, err
+}
+
 // genCommunitiesRuntime generates communities using catalog_mode_feeds (post-migration-20).
 // Used by GenerateCommunities during normal runtime operation. Which
 // categories/services already have a community is read once per mode from

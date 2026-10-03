@@ -85,6 +85,63 @@ func TestGenerateCommunitiesHandlesMultiServiceCategoriesAndIsIdempotent(t *test
 	}
 }
 
+// TestGenerateCommunitiesCountMatchesGenerateCommunities checks that the
+// count-only path (added for callers like background feed sync that
+// discard GenerateCommunities' before/after snapshots and would otherwise
+// pay for two full-table scans per call for nothing) performs exactly the
+// same generation and reports the same count as GenerateCommunities.
+func TestGenerateCommunitiesCountMatchesGenerateCommunities(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	feedID, err := s.AddFeed(ctx, "count-only-feed", "https://example.test/count.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
+	}
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "cat-a", Service: "svc-1", CIDR: "10.0.0.0/24"},
+		{Category: "cat-a", Service: "svc-2", CIDR: "10.0.1.0/24"},
+	}); err != nil {
+		t.Fatalf("insert catalog entries: %v", err)
+	}
+
+	count, err := s.GenerateCommunitiesCount(ctx, 1)
+	if err != nil {
+		t.Fatalf("GenerateCommunitiesCount: %v", err)
+	}
+	const wantGenerated = 3 // 1 group + 2 service communities
+	if count != wantGenerated {
+		t.Fatalf("count = %d, want %d", count, wantGenerated)
+	}
+
+	comms, err := s.GetCommunities(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetCommunities: %v", err)
+	}
+	wantKeys := []string{"cat-a", "cat-a|svc-1", "cat-a|svc-2"}
+	for _, k := range wantKeys {
+		if _, ok := comms[k]; !ok {
+			t.Errorf("missing community for %q", k)
+		}
+	}
+	if len(comms) != len(wantKeys) {
+		t.Errorf("got %d communities, want %d", len(comms), len(wantKeys))
+	}
+
+	// Idempotent, like GenerateCommunities.
+	countAgain, err := s.GenerateCommunitiesCount(ctx, 1)
+	if err != nil {
+		t.Fatalf("second GenerateCommunitiesCount: %v", err)
+	}
+	if countAgain != 0 {
+		t.Fatalf("second GenerateCommunitiesCount = %d, want 0 (idempotent)", countAgain)
+	}
+}
+
 // TestPreviewCommunityResetRollsBack covers the preview contract: it must
 // report exactly the renumbering a reset would perform, and must not persist
 // the trial regeneration it runs to find that out.
