@@ -26,8 +26,13 @@ func userActor(userID int64) string {
 
 // recordAudit writes one audit log entry, logging and continuing on
 // failure — an audit-log write must never block or fail the mutation it
-// records.
+// records. A nil store (some tests construct a *Server without one, for
+// handlers that otherwise don't need it, e.g. settings-only tests) is
+// treated the same as a write failure: skipped, not panicked on.
 func (s *Server) recordAudit(ctx context.Context, r *http.Request, e store.AuditLogEntry) {
+	if s.store == nil {
+		return
+	}
 	e.UserAgent = r.Header.Get("User-Agent")
 	if err := s.store.RecordAuditLog(ctx, e); err != nil {
 		logging.FromContext(ctx).Error("audit log write failed", "action", e.Action, "error", err)
