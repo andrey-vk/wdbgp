@@ -670,7 +670,7 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	// — otherwise omitting one field from the request silently wipes the
 	// other.
 	var filterAllow, filterDeny []string
-	var beforeFilters store.RouteFilters
+	var normalizedBeforeFilters, normalizedFilters store.RouteFilters
 	filtersProvided := body.FilterAllow != nil || body.FilterDeny != nil
 	if filtersProvided {
 		existing, err := s.store.UserRouteFilters(r.Context(), id)
@@ -679,7 +679,16 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load existing route filters"})
 			return
 		}
-		beforeFilters = existing
+		// Normalized for the audit log below, for the same reason "after" is
+		// normalized there: a never-set Allow/Deny reads back as a nil slice
+		// (JSON null) while NormalizeRouteFilters always returns a non-nil
+		// slice (JSON []), and comparing raw before/after could log a
+		// spurious null-vs-[] "change" on a true no-op save.
+		normalizedBeforeFilters, err = store.NormalizeRouteFilters(existing)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+			return
+		}
 		filterAllow = existing.Allow
 		filterDeny = existing.Deny
 		if body.FilterAllow != nil {
@@ -688,7 +697,13 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		if body.FilterDeny != nil {
 			filterDeny = *body.FilterDeny
 		}
-		if _, err := store.NormalizeRouteFilters(store.RouteFilters{Allow: filterAllow, Deny: filterDeny}); err != nil {
+		// Keep the normalized form for the audit log below — SetUserRouteFilters
+		// persists this, not the raw submitted lists (e.g. a bare "10.0.0.1"
+		// becomes "10.0.0.1/32"), so comparing against the raw lists could log
+		// a spurious change, or a real change with an "after" that doesn't
+		// match what's actually in the database.
+		normalizedFilters, err = store.NormalizeRouteFilters(store.RouteFilters{Allow: filterAllow, Deny: filterDeny})
+		if err != nil {
 			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 			return
 		}
@@ -710,7 +725,7 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "route_filters.user_updated", "user", strconv.FormatInt(id, 10),
-			beforeFilters, store.RouteFilters{Allow: filterAllow, Deny: filterDeny})
+			normalizedBeforeFilters, normalizedFilters)
 	}
 	if body.CatalogModeID != nil {
 		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.mode_changed", "user", strconv.FormatInt(id, 10),
@@ -1053,7 +1068,13 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 	}
 	switchingMode := body.ModeID > 0 && body.ModeID != user.CatalogModeID
 
-	beforeCats, beforeSvcs, err := s.store.UserModeSelection(r.Context(), id, user.CatalogModeID)
+	// Compared against the TARGET mode (modeID), not the user's current one
+	// (user.CatalogModeID) — when switchingMode is true those differ, and
+	// comparing selection counts across two different modes' catalogs is
+	// meaningless: it can both flag a no-op switch as "changed" (the modes'
+	// pre-existing counts happen to differ) and miss a real change (the
+	// counts happen to coincide).
+	beforeCats, beforeSvcs, err := s.store.UserModeSelection(r.Context(), id, modeID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return

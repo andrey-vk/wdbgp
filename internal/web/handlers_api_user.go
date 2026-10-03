@@ -494,13 +494,32 @@ func (s *Server) apiUserSaveFilters(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	// Run `before` through NormalizeRouteFilters too, not just `after` below
+	// — a never-set Allow/Deny reads back as a nil slice (JSON null), while
+	// NormalizeRouteFilters always returns a non-nil (possibly empty) slice
+	// (JSON []), and recordAuditIfChanged compares marshaled JSON, so
+	// without this a no-op save could still log a spurious null-vs-[]
+	// "change" on whichever side was never populated.
+	normalizedBefore, err := store.NormalizeRouteFilters(before)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
 
 	if err := s.store.SetUserRouteFilters(ctx, user.ID, body); err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	// SetUserRouteFilters persists the normalized form (e.g. a bare
+	// "10.0.0.1" becomes "10.0.0.1/32") — compare against that, not the raw
+	// submitted body, or a request that normalizes to the already-stored
+	// value would log a spurious change, and a real change would be
+	// recorded with an "after" that doesn't match what's in the database.
+	// Safe to ignore the error here: SetUserRouteFilters above already
+	// normalized this same body successfully.
+	normalizedAfter, _ := store.NormalizeRouteFilters(body) //nolint:errcheck // already validated by SetUserRouteFilters above
 	s.recordAuditIfChanged(ctx, r, userActor(user.ID), "route_filters.user_updated", "user", strconv.FormatInt(user.ID, 10),
-		before, body)
+		normalizedBefore, normalizedAfter)
 
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(ctx); err != nil {

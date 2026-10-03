@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -403,6 +404,30 @@ func TestAuditHookAdminUserRouteFiltersUpdated(t *testing.T) {
 	}
 }
 
+// TestAuditHookAdminUserRouteFiltersAfterIsNormalized mirrors the
+// self-service version: apiUsersUpdate's audit "after" must be the
+// normalized form SetUserRouteFilters actually persists, not the raw
+// submitted list.
+func TestAuditHookAdminUserRouteFiltersAfterIsNormalized(t *testing.T) {
+	srv, st, userID := adminUserFixture(t)
+	idStr := strconv.FormatInt(userID, 10)
+
+	req := httptest.NewRequest("PUT", "/api/admin/users/"+idStr, strings.NewReader(
+		`{"filter_allow":["192.168.0.1"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w := httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "route_filters.user_updated")
+	if !strings.Contains(e.After, "192.168.0.1/32") {
+		t.Fatalf("after = %q, want the normalized \"192.168.0.1/32\", not the raw bare IP", e.After)
+	}
+}
+
 // --- Self-service user hooks ----------------------------------------------
 
 func selfServiceUserFixture(t *testing.T, filterEditable, catalogEditable bool) (*Server, *store.Store, int64) {
@@ -447,6 +472,55 @@ func TestAuditHookUserSaveFilters(t *testing.T) {
 	}
 	if !strings.Contains(e.After, "10.1.0.0/16") {
 		t.Fatalf("after = %q, want it to mention 10.1.0.0/16", e.After)
+	}
+}
+
+// TestAuditHookUserSaveFiltersAfterIsNormalized guards against logging the
+// raw submitted filter representation: SetUserRouteFilters persists the
+// normalized form (a bare IP becomes a /32), so the audit "after" must
+// match what's actually in the database, not what the client happened to
+// type.
+func TestAuditHookUserSaveFiltersAfterIsNormalized(t *testing.T) {
+	srv, st, _ := selfServiceUserFixture(t, true, false)
+
+	req := httptest.NewRequest("POST", "/api/user/filters", strings.NewReader(`{"allow":["10.1.0.1"],"deny":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.8.8.1:1234"
+	addCSRF(req)
+	w := httptest.NewRecorder()
+	srv.requireUser(srv.apiUserSaveFilters).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save filters: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "route_filters.user_updated")
+	if !strings.Contains(e.After, "10.1.0.1/32") {
+		t.Fatalf("after = %q, want the normalized \"10.1.0.1/32\", not the raw bare IP", e.After)
+	}
+}
+
+// TestAuditHookUserSaveFiltersNoopWhenResubmittingNormalizedEquivalent
+// guards against a false audit entry when the submitted representation
+// normalizes to the already-stored value (a bare IP for an existing /32).
+func TestAuditHookUserSaveFiltersNoopWhenResubmittingNormalizedEquivalent(t *testing.T) {
+	srv, st, userID := selfServiceUserFixture(t, true, false)
+	ctx := context.Background()
+	if err := st.SetUserRouteFilters(ctx, userID, store.RouteFilters{Allow: []string{"10.1.0.1/32"}}); err != nil {
+		t.Fatalf("pre-set filters: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/user/filters", strings.NewReader(`{"allow":["10.1.0.1"],"deny":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "10.8.8.1:1234"
+	addCSRF(req)
+	w := httptest.NewRecorder()
+	srv.requireUser(srv.apiUserSaveFilters).ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save filters: %d body=%s", w.Code, w.Body.String())
+	}
+
+	if n := auditLogCount(t, st, "route_filters.user_updated"); n != 0 {
+		t.Fatalf("audit log count = %d, want 0 (bare IP normalizes to the already-stored /32)", n)
 	}
 }
 
@@ -548,5 +622,56 @@ func TestAuditHookAdminUserSaveSelections(t *testing.T) {
 	}
 	if e.ObjectType != "user" || e.ObjectID != idStr {
 		t.Fatalf("entry = %+v, want user/%s", e, idStr)
+	}
+}
+
+// TestAuditHookAdminUserSaveSelectionsModeSwitchNoopComparesTargetMode
+// guards against comparing the before-snapshot (old mode) against the
+// after-snapshot (target mode) when a save switches modes — two different
+// modes' selection counts are not comparable, so a pure mode switch with no
+// selection changes at all must not be misreported as a selections change.
+func TestAuditHookAdminUserSaveSelectionsModeSwitchNoopComparesTargetMode(t *testing.T) {
+	srv, st, userID := adminUserFixture(t)
+	ctx := context.Background()
+
+	// Give the user's current mode (1) one selected category, so its
+	// selection count (1) differs from the brand-new target mode's (0).
+	feedID, err := st.AddFeed(ctx, "mode1-feed", "http://example.com/mode1.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, feedID, []store.CatalogEntry{
+		{Category: "cat-old", Service: "svc-old", CIDR: "10.50.0.0/16"},
+	}); err != nil {
+		t.Fatalf("insert catalog: %v", err)
+	}
+	if err := st.RebuildModeEntries(ctx, 1); err != nil {
+		t.Fatalf("rebuild mode entries: %v", err)
+	}
+	if err := st.Transaction(ctx, func(tx *sql.Tx) error {
+		return store.ToggleSelectedCategory(ctx, tx, userID, 1, "cat-old", true)
+	}); err != nil {
+		t.Fatalf("pre-select category in mode 1: %v", err)
+	}
+
+	modeBID := createSecondModeFixture(t, srv)
+	idStr := strconv.FormatInt(userID, 10)
+
+	// Switch to mode B, toggling nothing — a pure mode switch.
+	req := httptest.NewRequest("PUT", "/api/admin/users/"+idStr+"/selections", strings.NewReader(
+		`{"mode_id":`+strconv.FormatInt(modeBID, 10)+`,"categories":[],"services":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w := httptest.NewRecorder()
+	srv.apiAdminUserSaveSelections(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin save selections: %d body=%s", w.Code, w.Body.String())
+	}
+
+	if n := auditLogCount(t, st, "user.selections_changed"); n != 0 {
+		t.Fatalf("selections_changed count = %d, want 0 (mode 1's count of 1 must not be compared against target mode B's count of 0)", n)
 	}
 }
