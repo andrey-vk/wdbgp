@@ -8,6 +8,7 @@ import Paginator from 'primevue/paginator'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
 import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
+import { useSequencedRequest } from '@/composables/useSequencedRequest'
 import type { AuditLogEntry, AuditLogListResponse } from '@/types/audit-log'
 
 const { t } = useI18n()
@@ -24,8 +25,10 @@ const rows = ref(50)
 const expanded = ref<Set<number>>(new Set())
 
 const { loading, loadError, run } = useAsyncPageLoad()
+const loadRequest = useSequencedRequest()
 
 async function load(): Promise<void> {
+  const token = loadRequest.next()
   await run(async () => {
     const params: Record<string, string | number> = { limit: rows.value, offset: first.value }
     if (actor.value.trim()) params.actor = actor.value.trim()
@@ -33,6 +36,11 @@ async function load(): Promise<void> {
     if (objectType.value.trim()) params.object_type = objectType.value.trim()
     if (objectID.value.trim()) params.object_id = objectID.value.trim()
     const resp = await apiClient.get<AuditLogListResponse>('/admin/audit-log', { params })
+    // A newer load (a later filter change or page turn) may have already
+    // started and could still finish after this one — applying this
+    // response then would show entries matching the controls' old state
+    // under whatever filters/page are now displayed.
+    if (!loadRequest.isCurrent(token)) return
     entries.value = resp.data.entries
     total.value = resp.data.total
   })

@@ -551,9 +551,16 @@ func (s *Store) UserModeSelection(
 	userID int64,
 	modeID int64,
 ) (map[string]bool, map[ServiceKey]bool, error) {
+	return userModeSelection(ctx, s.DB, userID, modeID)
+}
+
+// userModeSelection is UserModeSelection's query logic against a queryer
+// (either *sql.DB or, for a caller that needs it alongside a write in the
+// same transaction, *sql.Tx).
+func userModeSelection(ctx context.Context, q queryer, userID, modeID int64) (map[string]bool, map[ServiceKey]bool, error) {
 	categories := map[string]bool{}
 	services := map[ServiceKey]bool{}
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := q.QueryContext(ctx, `
 SELECT c.name FROM selected_categories sc
 JOIN categories c ON c.id = sc.category_id
 WHERE sc.user_id = ? AND sc.mode_id = ?`, userID, modeID)
@@ -569,7 +576,7 @@ WHERE sc.user_id = ? AND sc.mode_id = ?`, userID, modeID)
 		categories[category] = true
 	}
 	_ = rows.Close() //nolint:errcheck
-	rows, err = s.DB.QueryContext(ctx, `
+	rows, err = q.QueryContext(ctx, `
 SELECT c.name, sv.name FROM selected_services ss
 JOIN services sv ON sv.id = ss.service_id
 JOIN categories c ON c.id = sv.category_id
@@ -587,6 +594,70 @@ WHERE ss.user_id = ? AND ss.mode_id = ?`, userID, modeID)
 		services[key] = true
 	}
 	return categories, services, rows.Err()
+}
+
+// CategoryToggle and ServiceToggle are one checkbox change each, as
+// submitted by the user/admin selection-save endpoints.
+type CategoryToggle struct {
+	Category string
+	Checked  bool
+}
+
+type ServiceToggle struct {
+	Category string
+	Service  string
+	Checked  bool
+}
+
+// SaveUserSelectionCounts applies categories/services toggles for
+// (userID, modeID) — optionally switching the user's catalog_mode_id to
+// modeID first, when switchMode is true — and returns the selected
+// category/service counts immediately before and after, all within one
+// transaction. Without this, a caller bracketing the mutation with two
+// independent UserModeSelection reads could have its "before" or "after"
+// changed by a concurrent request's own read or write landing in between,
+// misreporting what this call itself actually changed (e.g. two requests
+// both checking the same previously-unchecked category would each read
+// "before" as 0 and, after the second request's write is a no-op, both
+// read "after" as 1 — both logging a change when only one truly happened).
+func (s *Store) SaveUserSelectionCounts(
+	ctx context.Context,
+	userID, modeID int64,
+	switchMode bool,
+	categories []CategoryToggle,
+	services []ServiceToggle,
+) (beforeCats, beforeSvcs, afterCats, afterSvcs int, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		bc, bs, err := userModeSelection(ctx, tx, userID, modeID)
+		if err != nil {
+			return err
+		}
+		beforeCats, beforeSvcs = len(bc), len(bs)
+
+		if switchMode {
+			if err := SetUserCatalogModeTx(ctx, tx, userID, modeID, false); err != nil {
+				return err
+			}
+		}
+		for _, c := range categories {
+			if err := ToggleSelectedCategory(ctx, tx, userID, modeID, c.Category, c.Checked); err != nil {
+				return err
+			}
+		}
+		for _, svc := range services {
+			if err := ToggleSelectedService(ctx, tx, userID, modeID, svc.Category, svc.Service, svc.Checked); err != nil {
+				return err
+			}
+		}
+
+		ac, as, err := userModeSelection(ctx, tx, userID, modeID)
+		if err != nil {
+			return err
+		}
+		afterCats, afterSvcs = len(ac), len(as)
+		return nil
+	})
+	return beforeCats, beforeSvcs, afterCats, afterSvcs, err
 }
 
 func SetUserSelection(

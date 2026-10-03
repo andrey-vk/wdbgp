@@ -141,4 +141,42 @@ describe('AuditLogPage', () => {
     expect(wrapper.text()).toContain('error.generic_title')
     expect(wrapper.find('[data-testid="audit-log-row"]').exists()).toBe(false)
   })
+
+  it('drops a stale response that resolves after a newer filtered one', async () => {
+    let resolveStale: (v: unknown) => void = () => {}
+    let calls = 0
+    mockGet.mockImplementation(() => {
+      calls++
+      if (calls === 1) return new Promise((resolve) => { resolveStale = resolve }) // initial load, left pending
+      return Promise.resolve({
+        data: {
+          entries: [{ id: 2, recorded_at: '2026-01-02T00:00:00Z', actor: 'a', user_agent: '', action: 'fresh', object_type: 't', object_id: '1', before: '', after: '' }],
+          total: 1,
+        },
+      })
+    })
+
+    const AuditLogPage = (await import('../AuditLogPage.vue')).default
+    const wrapper = mount(AuditLogPage, {
+      global: { plugins: [i18n, PrimeVue], stubs: stubPrimeVueComponents() },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise((r) => setTimeout(r, 0))
+    // Initial load is still pending — nothing rendered as a result yet.
+    expect(wrapper.find('[data-testid="audit-log-row"]').exists()).toBe(false)
+
+    // A filter is applied before the initial load resolves — its request
+    // (call #2) resolves immediately with "fresh".
+    await wrapper.find('#audit-actor-input').setValue('admin:1.2.3.4')
+    await wrapper.find('[data-testid="audit-log-filter-button"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="audit-log-row"]').text()).toContain('fresh')
+
+    // The stale initial load finally resolves — it must not clobber the
+    // already-displayed, newer filtered result.
+    resolveStale({ data: { entries: [{ id: 1, recorded_at: '2026-01-01T00:00:00Z', actor: 'a', user_agent: '', action: 'stale', object_type: 't', object_id: '1', before: '', after: '' }], total: 1 } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="audit-log-row"]').text()).toContain('fresh')
+    expect(wrapper.find('[data-testid="audit-log-row"]').text()).not.toContain('stale')
+  })
 })

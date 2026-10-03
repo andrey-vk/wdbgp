@@ -423,25 +423,20 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	beforeCats, beforeSvcs, err := s.store.UserModeSelection(ctx, user.ID, user.CatalogModeID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
+	categoryToggles := make([]store.CategoryToggle, 0, len(body.Categories))
+	for _, c := range body.Categories {
+		categoryToggles = append(categoryToggles, store.CategoryToggle{Category: c.Category, Checked: c.Checked})
 	}
-
-	err = s.store.Transaction(ctx, func(tx *sql.Tx) error {
-		for _, c := range body.Categories {
-			if err := store.ToggleSelectedCategory(ctx, tx, user.ID, user.CatalogModeID, c.Category, c.Checked); err != nil {
-				return err
-			}
-		}
-		for _, svc := range body.Services {
-			if err := store.ToggleSelectedService(ctx, tx, user.ID, user.CatalogModeID, svc.Category, svc.Service, svc.Checked); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	serviceToggles := make([]store.ServiceToggle, 0, len(body.Services))
+	for _, svc := range body.Services {
+		serviceToggles = append(serviceToggles, store.ServiceToggle{Category: svc.Category, Service: svc.Service, Checked: svc.Checked})
+	}
+	// Before/after counts are read inside the same transaction as the
+	// toggles — bracketing it with two independent UserModeSelection calls
+	// instead would let a concurrent save change either count out from
+	// under this request.
+	beforeCats, beforeSvcs, afterCats, afterSvcs, err :=
+		s.store.SaveUserSelectionCounts(ctx, user.ID, user.CatalogModeID, false, categoryToggles, serviceToggles)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
@@ -451,11 +446,9 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 	// leaving the total count unchanged won't be flagged as a change. A
 	// known, accepted limitation of summarizing rather than diffing the
 	// full list.
-	if afterCats, afterSvcs, err := s.store.UserModeSelection(ctx, user.ID, user.CatalogModeID); err == nil {
-		s.recordAuditIfChanged(ctx, r, userActor(user.ID), "user.selections_changed", "user", strconv.FormatInt(user.ID, 10),
-			map[string]int{"categories": len(beforeCats), "services": len(beforeSvcs)},
-			map[string]int{"categories": len(afterCats), "services": len(afterSvcs)})
-	}
+	s.recordAuditIfChanged(ctx, r, userActor(user.ID), "user.selections_changed", "user", strconv.FormatInt(user.ID, 10),
+		map[string]int{"categories": beforeCats, "services": beforeSvcs},
+		map[string]int{"categories": afterCats, "services": afterSvcs})
 
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(ctx); err != nil {

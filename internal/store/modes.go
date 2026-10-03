@@ -91,6 +91,14 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) (reassignedUser
 		return nil, fmt.Errorf("built-in catalog modes cannot be deleted")
 	}
 	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		// Store.Transaction may invoke this closure more than once (it
+		// retries on a transient SQLite lock error), so the IDs collected
+		// here must stay attempt-local — appending straight to the named
+		// return (reassignedUserIDs) would duplicate a prior failed
+		// attempt's rows once a retry commits. Only published to the
+		// named return just before this closure returns nil, i.e. only
+		// for the attempt that actually commits.
+		var attemptIDs []int64
 		rows, err := tx.QueryContext(ctx, "SELECT id FROM users WHERE catalog_mode_id = ?", id)
 		if err != nil {
 			return err
@@ -106,12 +114,17 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) (reassignedUser
 				if err := rows.Scan(&userID); err != nil {
 					return err
 				}
-				reassignedUserIDs = append(reassignedUserIDs, userID)
+				attemptIDs = append(attemptIDs, userID)
 			}
 			return rows.Err()
 		}()
 		if scanErr != nil {
 			return scanErr
+		}
+		if deleteCatalogModeAttemptHook != nil {
+			if err := deleteCatalogModeAttemptHook(attemptIDs); err != nil {
+				return err
+			}
 		}
 
 		if _, err := tx.ExecContext(ctx,
@@ -127,6 +140,7 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) (reassignedUser
 		} else if count == 0 {
 			return sql.ErrNoRows
 		}
+		reassignedUserIDs = attemptIDs
 		return nil
 	})
 	if err != nil {
@@ -134,6 +148,14 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) (reassignedUser
 	}
 	return reassignedUserIDs, nil
 }
+
+// deleteCatalogModeAttemptHook, if set, runs once per DeleteCatalogMode
+// transaction attempt, right after that attempt's local reassignedUserIDs
+// are collected and before the reassignment/delete writes. A test uses it
+// to force a retry (returning an error retry.TransientError accepts) and
+// confirm a later successful attempt doesn't duplicate an earlier failed
+// attempt's collected IDs onto the published result.
+var deleteCatalogModeAttemptHook func(attemptIDs []int64) error
 
 // ModeFeedCounts returns a map of mode_id→feed count.
 func (s *Store) ModeFeedCounts(ctx context.Context) (map[int64]int, error) {

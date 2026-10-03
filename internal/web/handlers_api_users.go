@@ -1068,39 +1068,22 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 	}
 	switchingMode := body.ModeID > 0 && body.ModeID != user.CatalogModeID
 
-	// Compared against the TARGET mode (modeID), not the user's current one
-	// (user.CatalogModeID) — when switchingMode is true those differ, and
-	// comparing selection counts across two different modes' catalogs is
-	// meaningless: it can both flag a no-op switch as "changed" (the modes'
-	// pre-existing counts happen to differ) and miss a real change (the
-	// counts happen to coincide).
-	beforeCats, beforeSvcs, err := s.store.UserModeSelection(r.Context(), id, modeID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
+	categoryToggles := make([]store.CategoryToggle, 0, len(body.Categories))
+	for _, c := range body.Categories {
+		categoryToggles = append(categoryToggles, store.CategoryToggle{Category: c.Category, Checked: c.Checked})
 	}
-
-	err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
-		if switchingMode {
-			// Persist the mode switch alongside the selection rows below, in the
-			// same transaction, so a save that changes mode doesn't leave the
-			// user's active catalog_mode_id pointing at the old mode.
-			if err := store.SetUserCatalogModeTx(r.Context(), tx, id, modeID, false); err != nil {
-				return err
-			}
-		}
-		for _, c := range body.Categories {
-			if err := store.ToggleSelectedCategory(r.Context(), tx, id, modeID, c.Category, c.Checked); err != nil {
-				return err
-			}
-		}
-		for _, svc := range body.Services {
-			if err := store.ToggleSelectedService(r.Context(), tx, id, modeID, svc.Category, svc.Service, svc.Checked); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	serviceToggles := make([]store.ServiceToggle, 0, len(body.Services))
+	for _, svc := range body.Services {
+		serviceToggles = append(serviceToggles, store.ServiceToggle{Category: svc.Category, Service: svc.Service, Checked: svc.Checked})
+	}
+	// Before/after counts (compared against the TARGET mode, not the
+	// user's current one — see the comment this carried before) are read
+	// inside the same transaction as the mode switch and the toggles, for
+	// the same reason apiUserSaveSelections needs that: bracketing it with
+	// independent reads would let a concurrent save change either count
+	// out from under this request.
+	beforeCats, beforeSvcs, afterCats, afterSvcs, err :=
+		s.store.SaveUserSelectionCounts(r.Context(), id, modeID, switchingMode, categoryToggles, serviceToggles)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid or disabled mode"})
 		return
@@ -1115,11 +1098,9 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 	}
 	// Counts only, not the full selection list — see apiUserSaveSelections
 	// for the known limitation this carries.
-	if afterCats, afterSvcs, err := s.store.UserModeSelection(r.Context(), id, modeID); err == nil {
-		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.selections_changed", "user", strconv.FormatInt(id, 10),
-			map[string]int{"categories": len(beforeCats), "services": len(beforeSvcs)},
-			map[string]int{"categories": len(afterCats), "services": len(afterSvcs)})
-	}
+	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.selections_changed", "user", strconv.FormatInt(id, 10),
+		map[string]int{"categories": beforeCats, "services": beforeSvcs},
+		map[string]int{"categories": afterCats, "services": afterSvcs})
 
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
