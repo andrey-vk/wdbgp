@@ -15,6 +15,7 @@ export interface FeedSyncChange {
 }
 
 export interface UserFeedChange {
+  change_id: number
   feed_name: string
   synced_at: number
   categories: FeedSyncCategory[]

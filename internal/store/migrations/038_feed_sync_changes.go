@@ -7,7 +7,7 @@ import (
 
 // V038 records what each feed sync changed — services and prefixes added or
 // removed, with the added services broken down by category — and each
-// user's feed_changes_seen_at, which bounds the user-facing note about
+// user's feed_changes_seen_id, which bounds the user-facing note about
 // feed-driven growth.
 func V038(ctx context.Context, tx *sql.Tx) error {
 	stmts := []string{
@@ -35,11 +35,11 @@ func V038(ctx context.Context, tx *sql.Tx) error {
 	}
 	var hasSeen int
 	if err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'feed_changes_seen_at'").Scan(&hasSeen); err != nil {
+		"SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'feed_changes_seen_id'").Scan(&hasSeen); err != nil {
 		return err
 	}
 	if hasSeen == 0 {
-		_, err := tx.ExecContext(ctx, "ALTER TABLE users ADD COLUMN feed_changes_seen_at INTEGER NOT NULL DEFAULT 0")
+		_, err := tx.ExecContext(ctx, "ALTER TABLE users ADD COLUMN feed_changes_seen_id INTEGER NOT NULL DEFAULT 0")
 		return err
 	}
 	return nil

@@ -182,7 +182,7 @@ func TestAckUserFeedChangesHidesSeenAndNeverMovesBack(t *testing.T) {
 	if len(changes) != 1 {
 		t.Fatalf("setup: want 1 change, got %+v", changes)
 	}
-	if err := s.AckUserFeedChanges(ctx, userID, changes[0].SyncedAt); err != nil {
+	if err := s.AckUserFeedChanges(ctx, userID, changes[0].ChangeID); err != nil {
 		t.Fatal(err)
 	}
 	after, err := s.UserFeedChanges(ctx, userID, now)
@@ -192,14 +192,47 @@ func TestAckUserFeedChangesHidesSeenAndNeverMovesBack(t *testing.T) {
 	if len(after) != 0 {
 		t.Fatalf("acknowledged change still shown: %+v", after)
 	}
-	if err := s.AckUserFeedChanges(ctx, userID, changes[0].SyncedAt-100); err != nil {
+	if err := s.AckUserFeedChanges(ctx, userID, changes[0].ChangeID-1); err != nil {
 		t.Fatal(err)
 	}
 	var seen int64
-	if err := s.DB.QueryRowContext(ctx, "SELECT feed_changes_seen_at FROM users WHERE id = ?", userID).Scan(&seen); err != nil {
+	if err := s.DB.QueryRowContext(ctx, "SELECT feed_changes_seen_id FROM users WHERE id = ?", userID).Scan(&seen); err != nil {
 		t.Fatal(err)
 	}
-	if seen != changes[0].SyncedAt {
-		t.Fatalf("seen_at moved backwards to %d, want still %d", seen, changes[0].SyncedAt)
+	if seen != changes[0].ChangeID {
+		t.Fatalf("seen_id moved backwards to %d, want still %d", seen, changes[0].ChangeID)
+	}
+}
+
+// Two changes can commit in the same second. Acknowledging the first must not
+// hide the second, which the timestamp cursor used to do.
+func TestAckUserFeedChangesDoesNotHideSameSecondChange(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	same := time.Now().Unix()
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{
+			AddedServices: 1, AddedByCategory: map[string]int{"ai": 1},
+		}, same)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := s.UserFeedChanges(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("setup: want 2 changes, got %+v", changes)
+	}
+	if err := s.AckUserFeedChanges(ctx, userID, changes[0].ChangeID); err != nil {
+		t.Fatal(err)
+	}
+	left, err := s.UserFeedChanges(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].ChangeID != changes[1].ChangeID {
+		t.Fatalf("after acknowledging the first, left = %+v, want only the second", left)
 	}
 }

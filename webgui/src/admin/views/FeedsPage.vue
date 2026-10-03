@@ -149,8 +149,13 @@ async function loadSyncChanges(feedId: number) {
   }
 }
 
-watch(() => selected.value?.id, (id) => {
-  if (id) loadSyncChanges(id)
+// Keyed on the completed-attempt marker too: a sync that finishes while this
+// feed stays selected records a change the history must pick up. The key is a
+// string, so polling that replaces the selected object without changing
+// either field doesn't reload the history.
+watch(() => (selected.value ? selected.value.id + ':' + (selected.value.sync_attempted_at || '') : ''), (key) => {
+  const id = selected.value?.id
+  if (key && id) loadSyncChanges(id)
   else syncChanges.value = []
 })
 

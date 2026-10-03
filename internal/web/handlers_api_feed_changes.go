@@ -47,7 +47,7 @@ func (s *Server) apiUserFeedChanges(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiUserFeedChangesAck handles POST /api/user/feed-changes/ack. through is
-// the newest synced_at the user was shown; changes up to it are marked seen.
+// the newest change_id the user was shown; changes up to it are marked seen.
 func (s *Server) apiUserFeedChangesAck(w http.ResponseWriter, r *http.Request) {
 	user, ok := requireUser(w, r)
 	if !ok {

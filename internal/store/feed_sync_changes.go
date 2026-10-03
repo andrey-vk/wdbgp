@@ -202,23 +202,21 @@ ORDER BY synced_at DESC, id DESC LIMIT ?`, feedID, limit)
 // selected, in a mode that includes that feed. Selecting a category already
 // announces its services, so these are routes the user did not choose.
 type UserFeedChange struct {
+	ChangeID   int64              `json:"change_id"`
 	FeedName   string             `json:"feed_name"`
 	SyncedAt   int64              `json:"synced_at"`
 	Categories []FeedSyncCategory `json:"categories"`
 }
 
-// UserFeedChanges returns the feed-driven growth since the user last
-// acknowledged it (bounded by userFeedChangeWindow), oldest first.
+// UserFeedChanges returns the feed-driven growth the user hasn't acknowledged
+// (changes newer than their cursor, within userFeedChangeWindow), oldest first.
 func (s *Store) UserFeedChanges(ctx context.Context, userID int64, now time.Time) ([]UserFeedChange, error) {
-	var seenAt, modeID int64
+	var seenID, modeID int64
 	if err := s.DB.QueryRowContext(ctx,
-		"SELECT feed_changes_seen_at, catalog_mode_id FROM users WHERE id = ?", userID).Scan(&seenAt, &modeID); err != nil {
+		"SELECT feed_changes_seen_id, catalog_mode_id FROM users WHERE id = ?", userID).Scan(&seenID, &modeID); err != nil {
 		return nil, err
 	}
 	since := now.Add(-userFeedChangeWindow).Unix()
-	if seenAt > since {
-		since = seenAt
-	}
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT f.name, c.id, c.synced_at, fc.category, fc.added_services
 FROM feed_sync_change_categories fc
@@ -227,8 +225,8 @@ JOIN feeds f ON f.id = c.feed_id
 JOIN catalog_mode_feeds cmf ON cmf.feed_id = c.feed_id AND cmf.mode_id = ? AND cmf.exclude = 0
 JOIN categories cat ON cat.name = fc.category
 JOIN selected_categories sc ON sc.user_id = ? AND sc.mode_id = cmf.mode_id AND sc.category_id = cat.id
-WHERE c.synced_at > ? AND f.enabled = 1
-ORDER BY c.synced_at, c.id, fc.category`, modeID, userID, since)
+WHERE c.id > ? AND c.synced_at >= ? AND f.enabled = 1
+ORDER BY c.id, fc.category`, modeID, userID, seenID, since)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +241,7 @@ ORDER BY c.synced_at, c.id, fc.category`, modeID, userID, since)
 			return nil, err
 		}
 		if changeID != lastChangeID {
-			out = append(out, UserFeedChange{FeedName: feedName, SyncedAt: syncedAt, Categories: []FeedSyncCategory{}})
+			out = append(out, UserFeedChange{ChangeID: changeID, FeedName: feedName, SyncedAt: syncedAt, Categories: []FeedSyncCategory{}})
 			lastChangeID = changeID
 		}
 		last := &out[len(out)-1]
@@ -252,10 +250,10 @@ ORDER BY c.synced_at, c.id, fc.category`, modeID, userID, since)
 	return out, rows.Err()
 }
 
-// AckUserFeedChanges marks feed changes up to through as seen. It never moves
-// the mark backwards, so a stale acknowledgement can't re-surface old changes.
-func (s *Store) AckUserFeedChanges(ctx context.Context, userID, through int64) error {
+// AckUserFeedChanges marks changes up to throughID as seen. The cursor only
+// moves forward, so a stale acknowledgement can't re-surface old changes.
+func (s *Store) AckUserFeedChanges(ctx context.Context, userID, throughID int64) error {
 	_, err := s.DB.ExecContext(ctx,
-		"UPDATE users SET feed_changes_seen_at = MAX(feed_changes_seen_at, ?) WHERE id = ?", through, userID)
+		"UPDATE users SET feed_changes_seen_id = MAX(feed_changes_seen_id, ?) WHERE id = ?", throughID, userID)
 	return err
 }

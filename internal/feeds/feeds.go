@@ -354,10 +354,11 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		var currentAllowedHosts string
 		var currentRestrictHosts bool
 		var enabled bool
+		var lastSuccess int64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT f.url, f.adapter_id, f.enabled, f.data, f.name,
 			        f.allowed_hosts, f.restrict_hosts,
-			        a.revision
+			        a.revision, COALESCE(f.last_success, 0)
 			 FROM feeds f
 			 JOIN feed_adapters a ON a.id = f.adapter_id
 			 WHERE f.id = ?`, feed.ID).
@@ -365,7 +366,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 				&currentURL, &currentAdapterID, &enabled,
 				&currentData, &currentName,
 				&currentAllowedHosts, &currentRestrictHosts,
-				&currentAdapterRevision,
+				&currentAdapterRevision, &lastSuccess,
 			); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errFeedChanged
@@ -390,8 +391,10 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		if err := store.ReplaceCatalogEntries(ctx, tx, feed.ID, next); err != nil {
 			return err
 		}
-		// The first import has nothing to compare against, so it isn't drift.
-		if len(prev) > 0 {
+		// A feed that has never synced successfully has nothing to compare
+		// against, so its first import isn't drift. A feed that synced before,
+		// even to an empty catalog, is compared — repopulating it is growth.
+		if lastSuccess > 0 || len(prev) > 0 {
 			if diff := store.DiffCatalogEntries(prev, next); diff.HasChanges() {
 				if err := store.RecordFeedSyncChangeTx(ctx, tx, feed.ID, diff, time.Now().Unix()); err != nil {
 					return err

@@ -309,12 +309,12 @@ async function fetchFeedChanges(): Promise<void> {
   }
 }
 
-// Acknowledges what the user was shown: everything up to the newest sync in
-// the list. Changes that land after this page loaded stay unseen.
+// Acknowledges what the user was shown: everything up to the newest change in
+// the list (by change ID, so changes that share a second stay distinct). Changes that land after this page loaded stay unseen.
 async function dismissFeedChanges(): Promise<void> {
   const shown = feedChanges.value
   if (shown.length === 0) return
-  const through = Math.max(...shown.map((c) => c.synced_at))
+  const through = Math.max(...shown.map((c) => c.change_id))
   feedChanges.value = []
   try {
     await userApi.post('/user/feed-changes/ack', { through })
@@ -893,7 +893,7 @@ onMounted(() => {
             <h2 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('user.feed_changes_title') }}</h2>
             <button type="button" data-testid="feed-changes-dismiss" class="text-sm text-blue-600 dark:text-blue-400" @click="dismissFeedChanges">{{ t('user.feed_changes_dismiss') }}</button>
           </div>
-          <div v-for="change in feedChanges" :key="change.synced_at + change.feed_name" class="text-sm mb-2">
+          <div v-for="change in feedChanges" :key="change.change_id" class="text-sm mb-2">
             <span class="text-gray-500 dark:text-gray-400">{{ new Date(change.synced_at * 1000).toLocaleString() }} · {{ change.feed_name }}</span>
             <div v-for="cat in change.categories" :key="cat.category" class="pl-3 text-gray-700 dark:text-gray-300">
               {{ t('user.feed_changes_line', { category: cat.category, added: cat.added_services }) }}
