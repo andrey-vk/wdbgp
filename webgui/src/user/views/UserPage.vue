@@ -318,12 +318,16 @@ async function dismissFeedChanges(): Promise<void> {
   // The mode is the one these notices were shown for, so an acknowledgement
   // can't move a different mode's cursor after a mode switch.
   const mode_id = shown[0].mode_id
+  // Drop any fetch still in flight: its response may still hold the rows being
+  // acknowledged, and would bring them back after the dismissal.
+  feedChangesRequest.next()
   feedChanges.value = []
   try {
     await userApi.post('/user/feed-changes/ack', { mode_id, through })
   } catch (err) {
     if (handleAuthError(err)) return
-    feedChanges.value = shown
+    // Resync from the server rather than restoring what was shown.
+    await fetchFeedChanges()
   }
 }
 

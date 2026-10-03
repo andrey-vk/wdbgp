@@ -315,3 +315,28 @@ func TestDiffCatalogEntriesDetectsMovedAssociations(t *testing.T) {
 		t.Fatal("swapping prefixes between services in different categories reported no change")
 	}
 }
+
+// A deleted mode's acknowledgement cursor goes with it, so a reused mode id
+// can't inherit an old high-water mark.
+func TestDeletingModeRemovesItsNoticeCursor(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, _ := userSelectingFeedChange(t, s, "ai", false)
+	other, err := s.AddCatalogMode(ctx, "Custom", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AckUserFeedChanges(ctx, userID, other, 99); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, "DELETE FROM catalog_modes WHERE id = ?", other); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM user_feed_changes_seen WHERE mode_id = ?", other).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("cursor for deleted mode still present: %d rows", n)
+	}
+}
