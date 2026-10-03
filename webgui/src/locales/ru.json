@@ -454,6 +454,7 @@
   "blast_radius.total": "Итоговое изменение: {v4} IPv4, {v6} IPv6 префиксов",
   "blast_radius.apply": "Всё равно применить",
   "blast_radius.preview_failed": "Не удалось получить предпросмотр изменения",
+  "blast_radius.changed_during_preview": "Выбор изменился, пока загружался предпросмотр. Проверьте изменение ещё раз.",
 
   "error.generic_title": "Что-то пошло не так",
   "error.generic_message": "Произошла непредвиденная ошибка. Попробуйте перезагрузить страницу.",

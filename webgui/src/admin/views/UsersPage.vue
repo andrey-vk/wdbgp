@@ -285,6 +285,12 @@ function parseNetworksInput(text: string): string[] {
   return text.split('\n').map(s => s.trim()).filter(Boolean)
 }
 
+// What a preview was computed from, so a save can tell whether the record or
+// its form changed while the preview was pending.
+function editSnapshot(): string {
+  return JSON.stringify({ id: selected.value?.id, form: form.value })
+}
+
 function sameNetworkSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false
   const sortedA = [...a].sort()
@@ -345,6 +351,7 @@ async function handleSave() {
   // miss (or wrongly report) an impact the combination actually produces —
   // e.g. a route only visible under the old mode's old filters can survive
   // either change alone but not both together.
+  const snapshotBeforePreview = editSnapshot()
   if (selected.value && (
     form.value.enabled !== selected.value.enabled ||
     form.value.filter_mode !== selected.value.filter_mode ||
@@ -371,6 +378,10 @@ async function handleSave() {
       if (!ok) return
     } catch {
       toast.add({ severity: 'error', summary: t('blast_radius.preview_failed'), life: 3000 })
+      return
+    }
+    if (editSnapshot() !== snapshotBeforePreview) {
+      toast.add({ severity: 'warn', summary: t('blast_radius.changed_during_preview'), life: 4000 })
       return
     }
   }
@@ -559,10 +570,29 @@ async function handleResetPassword() {
 
 async function toggleEnabled() {
   if (!selected.value) return
-  const newEnabled = !selected.value.enabled
+  const user = selected.value
+  const newEnabled = !user.enabled
   try {
-    await apiClient.put('/admin/users/' + selected.value.id, { enabled: newEnabled })
-    selected.value.enabled = newEnabled
+    // Previews the persisted record with only enabled changed — this switch
+    // saves nothing else, so the form's in-progress edits don't apply.
+    const ok = await confirmBlastRadius(async () => {
+      const resp = await apiClient.post<BlastRadiusPreview>('/admin/users/' + user.id + '/preview', {
+        enabled: newEnabled,
+        filter_mode: user.filter_mode,
+        filter_override: user.filter_override,
+        allow: user.filter_allow || [],
+        deny: user.filter_deny || [],
+        catalog_mode_id: user.catalog_mode_id,
+      })
+      return resp.data
+    })
+    if (!ok) return
+    if (selected.value?.id !== user.id) {
+      toast.add({ severity: 'warn', summary: t('blast_radius.changed_during_preview'), life: 4000 })
+      return
+    }
+    await apiClient.put('/admin/users/' + user.id, { enabled: newEnabled })
+    user.enabled = newEnabled
     await loadList() // refresh the list to show updated state in sidebar
     toast.add({ severity: 'success', summary: newEnabled ? 'User enabled' : 'User disabled', life: 2000 })
   } catch {
@@ -581,6 +611,7 @@ defineExpose({
   handleSave,
   filterModeSelect,
   selectUser,
+  toggleEnabled,
   blastRadiusVisible,
   applyBlastRadius,
   cancelBlastRadius,

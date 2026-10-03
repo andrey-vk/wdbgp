@@ -453,4 +453,24 @@ describe('UsersPage blast-radius preview', () => {
     expect(mockPost).not.toHaveBeenCalledWith('/admin/users/1/preview', expect.anything())
     expect(mockPut).toHaveBeenCalled()
   })
+
+  it('previews the header enable switch before persisting', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }])
+    mockPut.mockResolvedValue({ data: { ...existingUser, enabled: false } })
+
+    const togglePromise = vm.toggleEnabled()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', expect.objectContaining({ enabled: false, catalog_mode_id: 1 }))
+    expect(mockPut).not.toHaveBeenCalled()
+
+    vm.applyBlastRadius()
+    await togglePromise
+    expect(mockPut).toHaveBeenCalledWith('/admin/users/1', { enabled: false })
+  })
 })

@@ -15,6 +15,7 @@ import Checkbox from 'primevue/checkbox'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
 import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
+import { useSequencedRequest } from '@/composables/useSequencedRequest'
 import BlastRadiusPreviewDialog from '@/admin/components/BlastRadiusPreviewDialog.vue'
 import { useBlastRadiusConfirm } from '@/composables/useBlastRadiusConfirm'
 import type { BlastRadiusPreview } from '@/types/blast-radius'
@@ -42,6 +43,9 @@ const allFeeds = ref<FeedItem[]>([])
 const assignedFeedIds = ref<number[]>([])
 const excludedFeedIds = ref<number[]>([])
 const loadingFeeds = ref(false)
+// Overlapping loads (quick successive selections) must not let an older
+// mode's response overwrite the feed snapshots of the one now selected.
+const feedsRequests = useSequencedRequest()
 const savingFeeds = ref(false)
 // Snapshot of assignedFeedIds/excludedFeedIds as last loaded from the
 // server — handleSave diffs the current form against this to decide
@@ -106,6 +110,7 @@ async function toggleModeEnabled() {
   // Feeds still loading means the persisted feed set this preview relies on
   // isn't known yet, so previewing now could report a false 0 -> 0.
   if (!selected.value || loadingFeeds.value) return
+  const modeId = selected.value.id
   const newEnabled = !selected.value.enabled
   try {
     // Previewed against the persisted feed set, not the form's in-progress
@@ -124,7 +129,11 @@ async function toggleModeEnabled() {
       return resp.data
     })
     if (!ok) return
-    await apiClient.put('/admin/modes/' + selected.value.id, { enabled: newEnabled })
+    if (selected.value?.id !== modeId) {
+      toast.add({ severity: 'warn', summary: t('blast_radius.changed_during_preview'), life: 4000 })
+      return
+    }
+    await apiClient.put('/admin/modes/' + modeId, { enabled: newEnabled })
     selected.value.enabled = newEnabled
     await loadList()
     toast.add({ severity: 'success', summary: newEnabled ? 'Mode enabled' : 'Mode disabled', life: 2000 })
@@ -132,6 +141,15 @@ async function toggleModeEnabled() {
     toast.add({ severity: 'error', summary: 'Failed', life: 3000 })
   }
 }
+
+// What a preview was computed from, so a save can tell whether the mode or
+// its form changed while the preview was pending.
+const editSnapshot = () => JSON.stringify({
+  id: selected.value?.id,
+  form: form.value,
+  assigned: assignedFeedIds.value,
+  excluded: excludedFeedIds.value,
+})
 
 const feedsBody = () => ({
   feeds: assignedFeedIds.value.map((id) => ({
@@ -151,6 +169,7 @@ async function handleSave() {
   // mode that is or stays disabled would always measure 0 -> 0 regardless
   // of the feed edit, hiding e.g. "enable this mode and give it feeds" in
   // one save.
+  const snapshotBeforePreview = editSnapshot()
   if (selected.value && (
     !sameFeedSet(assignedFeedIds.value, originalAssignedFeedIds.value) ||
     !sameFeedSet(excludedFeedIds.value, originalExcludedFeedIds.value) ||
@@ -167,6 +186,10 @@ async function handleSave() {
       if (!ok) return
     } catch {
       toast.add({ severity: 'error', summary: t('blast_radius.preview_failed'), life: 3000 })
+      return
+    }
+    if (editSnapshot() !== snapshotBeforePreview) {
+      toast.add({ severity: 'warn', summary: t('blast_radius.changed_during_preview'), life: 4000 })
       return
     }
   }
@@ -282,15 +305,17 @@ async function loadList() {
 
 async function loadModeFeeds() {
   if (!selected.value) return
+  const token = feedsRequests.next()
   loadingFeeds.value = true
   try {
     const resp = await apiClient.get('/admin/modes/' + selected.value.id + '/feeds')
+    if (!feedsRequests.isCurrent(token)) return
     assignedFeeds.value = resp.data.feeds || []
     assignedFeedIds.value = assignedFeeds.value.map((f: FeedItem) => f.id)
     excludedFeedIds.value = assignedFeeds.value.filter((f: FeedItem) => f.exclude).map((f: FeedItem) => f.id)
     originalAssignedFeedIds.value = [...assignedFeedIds.value]
     originalExcludedFeedIds.value = [...excludedFeedIds.value]
-  } finally { loadingFeeds.value = false }
+  } finally { if (feedsRequests.isCurrent(token)) loadingFeeds.value = false }
 }
 
 async function loadAllFeeds() {

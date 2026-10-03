@@ -455,6 +455,7 @@
   "blast_radius.total": "Total change: {v4} IPv4, {v6} IPv6 prefixes",
   "blast_radius.apply": "Apply anyway",
   "blast_radius.preview_failed": "Failed to preview this change",
+  "blast_radius.changed_during_preview": "The selection changed while its preview was loading. Review the change again.",
 
   "error.generic_title": "Something went wrong",
   "error.generic_message": "An unexpected error occurred. Please try reloading the page.",
