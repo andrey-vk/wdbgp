@@ -46,4 +46,15 @@ describe('useBlastRadiusConfirm', () => {
     expect(dialogVisible.value).toBe(false)
     expect(await pending).toBe(false)
   })
+
+  it('rejects a second confirmation while one is pending, without disturbing the first', async () => {
+    const { confirm, onApply } = useBlastRadiusConfirm()
+    const first = confirm(vi.fn().mockResolvedValue(withImpact))
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(await confirm(vi.fn().mockResolvedValue(withImpact))).toBe(false)
+
+    onApply()
+    expect(await first).toBe(true)
+  })
 })

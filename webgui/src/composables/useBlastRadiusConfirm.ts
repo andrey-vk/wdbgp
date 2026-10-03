@@ -8,20 +8,31 @@ import { hasBlastRadiusImpact } from '@/types/blast-radius'
 // away (matching CommunitiesPage.vue's existing "no changes -> just save"
 // shortcut) — otherwise it opens BlastRadiusPreviewDialog.vue (via
 // dialogVisible/preview) and waits for the admin's answer, resolving true
-// only once onApply() fires, or false once onCancel()/onDialogCancel fires.
+// only once onApply() fires, or false once onCancel() fires.
 export function useBlastRadiusConfirm() {
   const dialogVisible = ref(false)
   const preview = ref<BlastRadiusPreview | null>(null)
   let resolveFn: ((apply: boolean) => void) | null = null
+  // One confirmation at a time. A second caller while one is pending (a
+  // repeated Save or header click during the preview request) gets false
+  // straight away instead of overwriting resolveFn and leaving the first
+  // caller's promise stranded.
+  let pending = false
 
   async function confirm(fetchPreview: () => Promise<BlastRadiusPreview>): Promise<boolean> {
-    const p = await fetchPreview()
-    if (!hasBlastRadiusImpact(p)) return true
-    preview.value = p
-    dialogVisible.value = true
-    return new Promise<boolean>((resolve) => {
-      resolveFn = resolve
-    })
+    if (pending) return false
+    pending = true
+    try {
+      const p = await fetchPreview()
+      if (!hasBlastRadiusImpact(p)) return true
+      preview.value = p
+      dialogVisible.value = true
+      return await new Promise<boolean>((resolve) => {
+        resolveFn = resolve
+      })
+    } finally {
+      pending = false
+    }
   }
 
   function onApply() {
