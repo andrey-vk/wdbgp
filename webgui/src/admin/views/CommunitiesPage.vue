@@ -323,7 +323,7 @@ async function copyExportUrl() {
             <span class="flex-1 truncate font-semibold">{{ group.category }}</span>
             <div class="flex items-center gap-2 shrink-0" :class="{ 'has-duplicate': duplicateValues.has(group.groupItem?.community ?? 0) && group.groupItem?.community !== 0 }">
               <InputNumber v-if="group.groupItem" :input-id="'comm-grp-' + group.category" v-model="group.groupItem.community" :min="0" class="w-28" @update:model-value="markDirty" />
-              <span class="text-gray-400 dark:text-gray-500 text-sm whitespace-nowrap min-w-[5rem]">auto {{ group.groupItem?.auto_community }}</span>
+              <span class="text-gray-400 dark:text-gray-500 text-sm whitespace-nowrap min-w-[5rem]" :title="t('communities.reset_value_hint')">{{ t('communities.reset_value', { value: group.groupItem?.auto_community }) }}</span>
             </div>
           </div>
           <!-- Service rows -->
@@ -331,7 +331,7 @@ async function copyExportUrl() {
             <span class="flex-1 truncate text-gray-500 dark:text-gray-400 pl-6">{{ item.service }}</span>
             <div class="flex items-center gap-2 shrink-0" :class="{ 'has-duplicate': duplicateValues.has(item.community) && item.community !== 0 }">
               <InputNumber :input-id="communityInputId(item)" v-model="item.community" :min="0" class="w-28" @update:model-value="markDirty" />
-              <span class="text-gray-400 dark:text-gray-500 text-sm whitespace-nowrap min-w-[5rem]">auto {{ item.auto_community }}</span>
+              <span class="text-gray-400 dark:text-gray-500 text-sm whitespace-nowrap min-w-[5rem]" :title="t('communities.reset_value_hint')">{{ t('communities.reset_value', { value: item.auto_community }) }}</span>
             </div>
           </div>
         </template>

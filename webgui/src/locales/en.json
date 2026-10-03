@@ -302,6 +302,8 @@
   "communities.reset_preview_count": "{count} value(s) will change:",
   "communities.reset_preview_apply": "Renumber anyway",
   "communities.none": "No community data available. Assign feeds to this mode and sync them first.",
+  "communities.reset_value": "reset: {value}",
+  "communities.reset_value_hint": "What a full reset would assign here — not necessarily what's currently assigned, since communities accumulate in feed-sync order while a reset renumbers alphabetically from scratch. Use \"Reset to defaults\" for an exact preview before applying.",
 
   "users.title": "Users",
   "users.name": "Name",
