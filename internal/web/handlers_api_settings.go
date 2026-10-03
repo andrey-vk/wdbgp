@@ -5,9 +5,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/andrey-vk/wdbgp/internal/settings"
+	"github.com/andrey-vk/wdbgp/internal/store"
 )
+
+// splitFilterLines splits a filter_allow/filter_deny raw stored value (one
+// entry per line, stored verbatim — see validateFilterList) into a slice
+// for diffing, dropping blank lines. Comments are kept as literal entries:
+// they're real content an admin directly edited, and a diff should still
+// surface a comment-only change rather than silently hiding it.
+func splitFilterLines(text string) []string {
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
 
 // apiSettingsGet handles GET /api/admin/settings.
 func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
@@ -91,8 +110,16 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 				"filter_allow": s.settings.FilterAllow.Get(),
 				"filter_deny":  s.settings.FilterDeny.Get(),
 			}
+			// Bounded to just the lines that changed — the full text has
+			// no size limit (filter_allow/filter_deny accept arbitrarily
+			// large lists), so logging it whole on every edit could make
+			// a single audit row, or a page of them, arbitrarily large.
+			removedAllow, addedAllow := store.DiffStringSet(splitFilterLines(beforeFilters["filter_allow"]), splitFilterLines(afterFilters["filter_allow"]))
+			removedDeny, addedDeny := store.DiffStringSet(splitFilterLines(beforeFilters["filter_deny"]), splitFilterLines(afterFilters["filter_deny"]))
+			removed := map[string][]string{"filter_allow": removedAllow, "filter_deny": removedDeny}
+			added := map[string][]string{"filter_allow": addedAllow, "filter_deny": addedDeny}
 			s.recordAuditIfChanged(ctx, r, s.adminActor(r), "route_filters.global_updated", "settings", "",
-				beforeFilters, afterFilters)
+				removed, added)
 		}
 		return nil
 	}()

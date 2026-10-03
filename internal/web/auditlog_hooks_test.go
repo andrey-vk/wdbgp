@@ -487,6 +487,43 @@ func TestAuditHookGlobalRouteFiltersUpdated(t *testing.T) {
 	}
 }
 
+// TestAuditHookGlobalRouteFiltersOnlyRecordsChangedLines checks that
+// adding one line to an existing multi-line filter_allow records an audit
+// entry containing only that one added line — not the complete list,
+// which has no size limit and could otherwise make a single audit row
+// arbitrarily large.
+func TestAuditHookGlobalRouteFiltersOnlyRecordsChangedLines(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+
+	put := func(value string) {
+		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"filter_allow":"`+value+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.apiSettingsPut(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("settings put: %d body=%s", w.Code, w.Body.String())
+		}
+	}
+
+	put(`10.0.0.0/8\n192.168.0.0/16\n172.16.0.0/12`)
+	put(`10.0.0.0/8\n192.168.0.0/16\n172.16.0.0/12\n203.0.113.0/24`)
+
+	entries, total, err := st.ListAuditLog(context.Background(), store.AuditLogFilter{Action: "route_filters.global_updated"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (baseline + the one-line addition)", total)
+	}
+	e := entries[0] // newest first
+	if !strings.Contains(e.After, "203.0.113.0/24") {
+		t.Fatalf("after = %q, want it to mention the added line", e.After)
+	}
+	if strings.Contains(e.After, "10.0.0.0/8") || strings.Contains(e.After, "192.168.0.0/16") || strings.Contains(e.After, "172.16.0.0/12") {
+		t.Fatalf("after = %q, want ONLY the added line, not the 3 unchanged ones", e.After)
+	}
+}
+
 func TestAuditHookGlobalRouteFiltersNoopWhenUnrelatedSettingChanges(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 
@@ -847,6 +884,79 @@ func TestAuditHookAdminUserModeChangedNoopWhenSameMode(t *testing.T) {
 	}
 }
 
+// TestAuditHookAdminUserModeChangeRevertedByStaleConcurrentUpdateIsAudited
+// forces a genuine overlap: request A loads `current` (catalog_mode_id=1),
+// pauses (via apiUsersUpdatePreWriteHook); request B then fully completes a
+// real mode change (1 -> modeB); A resumes and writes its own now-stale
+// `current`, silently reverting the user back to mode 1 — a real DB
+// mutation A's own request body never asked for (it only touched `name`).
+// Before this fix, apiUsersUpdate only populated modeMeta when its OWN
+// request body mentioned catalog_mode_id, so this reversion — a real
+// transition UpdateUser's own prior-state read would see as modeB -> 1 —
+// went completely unaudited.
+func TestAuditHookAdminUserModeChangeRevertedByStaleConcurrentUpdateIsAudited(t *testing.T) {
+	srv, st, userID := adminUserFixture(t)
+	modeBID := createSecondModeFixture(t, srv)
+	idStr := strconv.FormatInt(userID, 10)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	apiUsersUpdatePreWriteHook = func() {
+		close(entered)
+		<-release
+	}
+	t.Cleanup(func() { apiUsersUpdatePreWriteHook = nil })
+
+	aDone := make(chan error, 1)
+	go func() {
+		req := httptest.NewRequest("PUT", "/api/admin/users/"+idStr, strings.NewReader(`{"name":"renamed-by-a"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", idStr)
+		w := httptest.NewRecorder()
+		srv.apiUsersUpdate(w, req)
+		if w.Code != http.StatusOK {
+			aDone <- fmt.Errorf("request A: %d body=%s", w.Code, w.Body.String())
+			return
+		}
+		aDone <- nil
+	}()
+	<-entered // A has loaded `current` (catalog_mode_id=1) and is now paused.
+
+	// Request B: a real, independent, fully-completed mode change.
+	reqB := httptest.NewRequest("PUT", "/api/admin/users/"+idStr, strings.NewReader(
+		`{"catalog_mode_id":`+strconv.FormatInt(modeBID, 10)+`}`))
+	reqB.Header.Set("Content-Type", "application/json")
+	reqB.SetPathValue("id", idStr)
+	wB := httptest.NewRecorder()
+	apiUsersUpdatePreWriteHook = nil // B must not also pause on the hook.
+	srv.apiUsersUpdate(wB, reqB)
+	if wB.Code != http.StatusOK {
+		t.Fatalf("request B: %d body=%s", wB.Code, wB.Body.String())
+	}
+
+	// Resume A: its stale `current.CatalogModeID` (1) overwrites B's write.
+	close(release)
+	if err := <-aDone; err != nil {
+		t.Fatal(err)
+	}
+
+	entries, total, err := st.ListAuditLog(context.Background(), store.AuditLogFilter{Action: "user.mode_changed"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (B's 1->modeB, then A's silent revert modeB->1)", total)
+	}
+	// Newest first: entries[0] is A's revert, entries[1] is B's move.
+	aEntry, bEntry := entries[0], entries[1]
+	if bEntry.Before != `{"catalog_mode_id":1}` || bEntry.After != `{"catalog_mode_id":`+strconv.FormatInt(modeBID, 10)+`}` {
+		t.Fatalf("B's entry: before=%q after=%q, want 1 -> %d", bEntry.Before, bEntry.After, modeBID)
+	}
+	if aEntry.Before != `{"catalog_mode_id":`+strconv.FormatInt(modeBID, 10)+`}` || aEntry.After != `{"catalog_mode_id":1}` {
+		t.Fatalf("A's entry: before=%q after=%q, want %d -> 1 (A's silent revert must still be audited)", aEntry.Before, aEntry.After, modeBID)
+	}
+}
+
 // TestAuditHookAdminUserFilterModeChanged covers a gap the
 // route_filters.user_updated hook alone can't: switching a user's
 // filter_mode (global -> override) changes their effective route
@@ -964,6 +1074,45 @@ func TestAuditHookAdminUserRouteFiltersAfterIsNormalized(t *testing.T) {
 	e := latestAuditByAction(t, st, "route_filters.user_updated")
 	if !strings.Contains(e.After, "192.168.0.1/32") {
 		t.Fatalf("after = %q, want the normalized \"192.168.0.1/32\", not the raw bare IP", e.After)
+	}
+}
+
+// TestAuditHookAdminUserRouteFiltersOnlyRecordsChangedEntries checks that
+// adding one entry to a user's existing multi-entry filter_allow records
+// an audit entry containing only that one added entry — not the complete
+// list, which has no size limit (the request body itself allows up to
+// 8 MiB) and could otherwise make a single audit row arbitrarily large.
+func TestAuditHookAdminUserRouteFiltersOnlyRecordsChangedEntries(t *testing.T) {
+	srv, st, userID := adminUserFixture(t)
+	idStr := strconv.FormatInt(userID, 10)
+
+	put := func(body string) {
+		req := httptest.NewRequest("PUT", "/api/admin/users/"+idStr, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.SetPathValue("id", idStr)
+		w := httptest.NewRecorder()
+		srv.apiUsersUpdate(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("update: %d body=%s", w.Code, w.Body.String())
+		}
+	}
+
+	put(`{"filter_allow":["10.0.0.0/8","192.168.0.0/16"]}`)
+	put(`{"filter_allow":["10.0.0.0/8","192.168.0.0/16","172.16.0.0/12"]}`)
+
+	entries, total, err := st.ListAuditLog(context.Background(), store.AuditLogFilter{Action: "route_filters.user_updated"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (baseline + the one-entry addition)", total)
+	}
+	e := entries[0] // newest first
+	if !strings.Contains(e.After, "172.16.0.0/12") {
+		t.Fatalf("after = %q, want it to mention the added entry", e.After)
+	}
+	if strings.Contains(e.After, "10.0.0.0/8") || strings.Contains(e.After, "192.168.0.0/16") {
+		t.Fatalf("after = %q, want ONLY the added entry, not the 2 unchanged ones", e.After)
 	}
 }
 

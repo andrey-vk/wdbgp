@@ -385,7 +385,8 @@ func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters R
 			return err
 		}
 		after = a
-		return auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), before, after, false)
+		removed, added := diffRouteFilters(before, after)
+		return auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), removed, added, false)
 	})
 	return before, after, err
 }
@@ -532,6 +533,42 @@ func insertRouteFilters(ctx context.Context, tx *sql.Tx, userID int64, filters R
 		}
 	}
 	return nil
+}
+
+// DiffStringSet returns the entries present only in before (removed) and
+// only in after (added) — used to bound an audit entry to just what
+// changed in a list instead of serializing the complete list on every
+// edit, which for an unbounded list (this project's request bodies allow
+// up to 8 MiB, with no entry-count limit on a route filter list) could
+// otherwise make a single audit row, or a page of them, arbitrarily large.
+func DiffStringSet(before, after []string) (removed, added []string) {
+	beforeSet := make(map[string]bool, len(before))
+	for _, v := range before {
+		beforeSet[v] = true
+	}
+	afterSet := make(map[string]bool, len(after))
+	for _, v := range after {
+		afterSet[v] = true
+	}
+	for _, v := range before {
+		if !afterSet[v] {
+			removed = append(removed, v)
+		}
+	}
+	for _, v := range after {
+		if !beforeSet[v] {
+			added = append(added, v)
+		}
+	}
+	return removed, added
+}
+
+// diffRouteFilters bounds a route-filter audit entry to just the Allow/Deny
+// entries that changed, rather than the complete snapshot.
+func diffRouteFilters(before, after RouteFilters) (removed, added RouteFilters) {
+	removed.Allow, added.Allow = DiffStringSet(before.Allow, after.Allow)
+	removed.Deny, added.Deny = DiffStringSet(before.Deny, after.Deny)
+	return removed, added
 }
 
 func NormalizeRouteFilters(filters RouteFilters) (RouteFilters, error) {

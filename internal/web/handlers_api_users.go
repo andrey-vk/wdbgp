@@ -449,6 +449,13 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, j)
 }
 
+// apiUsersUpdatePreWriteHook, if set, runs in apiUsersUpdate right before
+// the UpdateUser call, after `current` has been loaded and merged with the
+// request body — a test seam used to force a concurrent request's own
+// mutation to land in that window deterministically, so a test can verify
+// this request's (stale-`current`) write still gets audited correctly.
+var apiUsersUpdatePreWriteHook func()
+
 // apiUsersUpdate handles PUT /api/admin/users/{id}.
 func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	extendRequestDeadlines(w, r) // large filter upload + reconcile can outlive Read/WriteTimeout
@@ -701,19 +708,20 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// UpdateUser reads the prior catalog_mode_id/filter_mode inside the
 	// same transaction as the write and records both change audits
-	// atomically with it — each meta is zero-value (no audit) unless the
-	// request actually touched the corresponding field. filter_mode and
-	// filter_override change the user's effective route filtering (global
-	// vs. extend vs. override) even when filter_allow/filter_deny
-	// themselves aren't touched, so this needs its own entry — otherwise
-	// route_filters.user_updated (only recorded when the lists change)
-	// would leave a mode-only switch with no audit trace at all.
-	var modeMeta, filterModeMeta store.AuditMeta
-	if body.CatalogModeID != nil {
-		modeMeta = store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
-	}
-	if body.FilterMode != nil || body.FilterOverride != nil {
-		filterModeMeta = store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.filter_mode_changed"}
+	// atomically with it. meta is always populated (not conditioned on
+	// whether this request's body mentioned the field) — UpdateUser's
+	// UPDATE statement writes catalog_mode_id/filter_mode unconditionally
+	// regardless of what the request touched, so a request that didn't
+	// mention a field can still change it: if a concurrent request moved
+	// the user in between this handler's `current` read and this write,
+	// this write silently reverts that concurrent change back to the
+	// stale value `current` captured. auditEntryTx's own before/after
+	// equality check already skips the row when nothing really changed,
+	// so there's no cost to always checking — only a gap if we don't.
+	modeMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
+	filterModeMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.filter_mode_changed"}
+	if apiUsersUpdatePreWriteHook != nil {
+		apiUsersUpdatePreWriteHook()
 	}
 	_, err = s.store.UpdateUser(r.Context(), current, modeMeta, filterModeMeta)
 	if err != nil {
