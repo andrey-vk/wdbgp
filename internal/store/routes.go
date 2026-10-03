@@ -386,7 +386,8 @@ func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters R
 		}
 		after = a
 		removed, added := diffRouteFilters(before, after)
-		return AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), removed, added, false)
+		return AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10),
+			BoundRouteFiltersForAudit(removed), BoundRouteFiltersForAudit(added), false)
 	})
 	return before, after, err
 }
@@ -569,6 +570,58 @@ func diffRouteFilters(before, after RouteFilters) (removed, added RouteFilters) 
 	removed.Allow, added.Allow = DiffStringSet(before.Allow, after.Allow)
 	removed.Deny, added.Deny = DiffStringSet(before.Deny, after.Deny)
 	return removed, added
+}
+
+// MaxAuditDiffEntries hard-caps how many changed entries an audit row
+// stores per list. Diffing bounds a route-filter audit entry to what
+// actually changed instead of the complete snapshot, but a diff alone is
+// still unbounded in the worst case — replacing an entire large filter
+// set with a disjoint large one puts every old entry in "removed" and
+// every new one in "added", so a single edit against the 8 MiB request
+// body limit (with no entry-count cap of its own) could still produce an
+// audit row approaching that size. This caps it explicitly.
+const MaxAuditDiffEntries = 50
+
+// BoundDiffEntries caps entries to MaxAuditDiffEntries for audit storage,
+// returning the capped slice and how many entries were omitted (0 if
+// none were).
+func BoundDiffEntries(entries []string) (capped []string, truncated int) {
+	if len(entries) <= MaxAuditDiffEntries {
+		return entries, 0
+	}
+	return entries[:MaxAuditDiffEntries], len(entries) - MaxAuditDiffEntries
+}
+
+// AuditStringList is a capped, audit-safe representation of a changed
+// entry list — Entries holds up to MaxAuditDiffEntries, and Truncated
+// (omitted when zero) notes how many additional entries were cut.
+type AuditStringList struct {
+	Entries   []string `json:"entries"`
+	Truncated int      `json:"truncated,omitempty"`
+}
+
+// BoundStringListForAudit wraps BoundDiffEntries' result as an
+// AuditStringList, ready to embed directly in an audit before/after
+// payload.
+func BoundStringListForAudit(entries []string) AuditStringList {
+	capped, truncated := BoundDiffEntries(entries)
+	return AuditStringList{Entries: capped, Truncated: truncated}
+}
+
+// AuditRouteFilters is RouteFilters' audit-safe counterpart: each of
+// Allow/Deny capped via BoundStringListForAudit.
+type AuditRouteFilters struct {
+	Allow AuditStringList `json:"allow"`
+	Deny  AuditStringList `json:"deny"`
+}
+
+// BoundRouteFiltersForAudit caps a RouteFilters value (typically a diff
+// result from diffRouteFilters) for audit storage.
+func BoundRouteFiltersForAudit(f RouteFilters) AuditRouteFilters {
+	return AuditRouteFilters{
+		Allow: BoundStringListForAudit(f.Allow),
+		Deny:  BoundStringListForAudit(f.Deny),
+	}
 }
 
 func NormalizeRouteFilters(filters RouteFilters) (RouteFilters, error) {

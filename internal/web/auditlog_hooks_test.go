@@ -501,6 +501,60 @@ func TestAuditHookGlobalRouteFiltersOnlyRecordsChangedLines(t *testing.T) {
 	}
 }
 
+// TestAuditHookGlobalRouteFiltersAuditCapsEntireDisjointReplacement is the
+// adversarial case diffing alone doesn't bound: replacing an entire large
+// filter_allow with a disjoint large one puts every old line in "removed"
+// and every new one in "added" — this checks the resulting audit entry is
+// still capped to store.MaxAuditDiffEntries per side.
+func TestAuditHookGlobalRouteFiltersAuditCapsEntireDisjointReplacement(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+
+	put := func(value string) {
+		req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"filter_allow":"`+value+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.apiSettingsPut(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("settings put: %d body=%s", w.Code, w.Body.String())
+		}
+	}
+
+	n := store.MaxAuditDiffEntries + 30
+	oldLines := make([]string, n)
+	for i := range oldLines {
+		oldLines[i] = fmt.Sprintf("10.%d.0.0/16", i)
+	}
+	put(strings.Join(oldLines, `\n`))
+
+	newLines := make([]string, n)
+	for i := range newLines {
+		newLines[i] = fmt.Sprintf("172.%d.0.0/16", i) // entirely disjoint from oldLines
+	}
+	put(strings.Join(newLines, `\n`))
+
+	entries, total, err := st.ListAuditLog(context.Background(), store.AuditLogFilter{Action: "route_filters.global_updated"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (baseline + the disjoint replacement)", total)
+	}
+
+	var before, after map[string]store.AuditStringList
+	if err := json.Unmarshal([]byte(entries[0].Before), &before); err != nil {
+		t.Fatalf("unmarshal before: %v", err)
+	}
+	if err := json.Unmarshal([]byte(entries[0].After), &after); err != nil {
+		t.Fatalf("unmarshal after: %v", err)
+	}
+	if len(before["filter_allow"].Entries) != store.MaxAuditDiffEntries || before["filter_allow"].Truncated != 30 {
+		t.Fatalf("before[filter_allow] = %+v, want %d entries and 30 truncated", before["filter_allow"], store.MaxAuditDiffEntries)
+	}
+	if len(after["filter_allow"].Entries) != store.MaxAuditDiffEntries || after["filter_allow"].Truncated != 30 {
+		t.Fatalf("after[filter_allow] = %+v, want %d entries and 30 truncated", after["filter_allow"], store.MaxAuditDiffEntries)
+	}
+}
+
 func TestAuditHookGlobalRouteFiltersNoopWhenUnrelatedSettingChanges(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 

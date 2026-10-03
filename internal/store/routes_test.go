@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"testing"
 
@@ -164,6 +165,79 @@ func TestSetUserRouteFiltersBeforeAfterBracketingWouldMisattribute(t *testing.T)
 	}
 	if len(afterB.Allow) != 1 || afterB.Allow[0] != "3.3.3.3/32" {
 		t.Fatalf("request B's after = %+v, want Allow=[3.3.3.3/32]", afterB)
+	}
+}
+
+// TestBoundDiffEntries covers the hard cap directly: a list under the cap
+// passes through unchanged (and reports 0 truncated), while one over it
+// is cut to exactly MaxAuditDiffEntries with the correct truncated count.
+func TestBoundDiffEntries(t *testing.T) {
+	short := []string{"a", "b", "c"}
+	capped, truncated := BoundDiffEntries(short)
+	if truncated != 0 || len(capped) != 3 {
+		t.Fatalf("short list: capped=%v truncated=%d, want unchanged and 0", capped, truncated)
+	}
+
+	long := make([]string, MaxAuditDiffEntries+25)
+	for i := range long {
+		long[i] = fmt.Sprintf("10.%d.0.0/16", i)
+	}
+	capped, truncated = BoundDiffEntries(long)
+	if len(capped) != MaxAuditDiffEntries {
+		t.Fatalf("len(capped) = %d, want exactly %d", len(capped), MaxAuditDiffEntries)
+	}
+	if truncated != 25 {
+		t.Fatalf("truncated = %d, want 25", truncated)
+	}
+}
+
+// TestSetUserRouteFiltersAuditCapsEntireDisjointReplacement is the
+// adversarial case diffing alone doesn't bound: replacing an entire large
+// filter_allow with a disjoint large one puts every old entry in
+// "removed" and every new one in "added" — this checks the resulting
+// audit entry is still capped to MaxAuditDiffEntries per side, not merely
+// smaller than the full pre-change snapshot would have been.
+func TestSetUserRouteFiltersAuditCapsEntireDisjointReplacement(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := addFilteredTestUser(t, s, true)
+
+	oldAllow := make([]string, MaxAuditDiffEntries+30)
+	for i := range oldAllow {
+		oldAllow[i] = fmt.Sprintf("10.%d.0.0/16", i)
+	}
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: oldAllow}, AuditMeta{}); err != nil {
+		t.Fatal(err)
+	}
+
+	newAllow := make([]string, MaxAuditDiffEntries+30)
+	for i := range newAllow {
+		newAllow[i] = fmt.Sprintf("172.%d.0.0/16", i) // entirely disjoint from oldAllow
+	}
+	meta := AuditMeta{Actor: "admin:test", Action: "route_filters.user_updated"}
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: newAllow}, meta); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, total, err := s.ListAuditLog(ctx, AuditLogFilter{Action: "route_filters.user_updated"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	var before, after AuditRouteFilters
+	if err := json.Unmarshal([]byte(entries[0].Before), &before); err != nil {
+		t.Fatalf("unmarshal before: %v", err)
+	}
+	if err := json.Unmarshal([]byte(entries[0].After), &after); err != nil {
+		t.Fatalf("unmarshal after: %v", err)
+	}
+	if len(before.Allow.Entries) != MaxAuditDiffEntries || before.Allow.Truncated != 30 {
+		t.Fatalf("before.Allow = %+v, want %d entries and 30 truncated", before.Allow, MaxAuditDiffEntries)
+	}
+	if len(after.Allow.Entries) != MaxAuditDiffEntries || after.Allow.Truncated != 30 {
+		t.Fatalf("after.Allow = %+v, want %d entries and 30 truncated", after.Allow, MaxAuditDiffEntries)
 	}
 }
 

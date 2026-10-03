@@ -196,8 +196,18 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 			// a single audit row, or a page of them, arbitrarily large.
 			removedAllow, addedAllow := store.DiffStringSet(splitFilterLines(beforeFilters["filter_allow"]), splitFilterLines(after["filter_allow"]))
 			removedDeny, addedDeny := store.DiffStringSet(splitFilterLines(beforeFilters["filter_deny"]), splitFilterLines(after["filter_deny"]))
-			removed := map[string][]string{"filter_allow": removedAllow, "filter_deny": removedDeny}
-			added := map[string][]string{"filter_allow": addedAllow, "filter_deny": addedDeny}
+			// Hard-capped (not just diffed): replacing an entire large
+			// filter_allow/filter_deny text with a disjoint large one
+			// would otherwise still put every old line in "removed" and
+			// every new line in "added", unbounded by the diff alone.
+			removed := map[string]store.AuditStringList{
+				"filter_allow": store.BoundStringListForAudit(removedAllow),
+				"filter_deny":  store.BoundStringListForAudit(removedDeny),
+			}
+			added := map[string]store.AuditStringList{
+				"filter_allow": store.BoundStringListForAudit(addedAllow),
+				"filter_deny":  store.BoundStringListForAudit(addedDeny),
+			}
 			meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "route_filters.global_updated"}
 			return store.AuditEntryTx(ctx, tx, meta, "settings", "", removed, added, false)
 		})
