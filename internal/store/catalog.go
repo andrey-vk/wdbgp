@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/netip"
@@ -21,6 +22,41 @@ func (s *Store) Catalog(ctx context.Context) (map[string][]string, error) {
 func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisabled bool) (map[string][]string, error) {
 	return catalogForMode(ctx, s.DB, modeID, includeDisabled)
 }
+
+// CatalogScopesForMode reads the enabled-only catalog (what the admin
+// Communities list actually shows) and the reset-scope catalog (every
+// include-linked feed, regardless of whether it's enabled — the same scope
+// genCommunitiesRuntime counts when it decides each category's real
+// position) in one transaction. Two separate CatalogForMode calls here
+// would each see their own, independently-committed snapshot, so a feed
+// sync landing between them could leave the two maps describing different
+// catalog versions — e.g. a service the first read saw already removed
+// from the second, silently defaulting a position lookup against it to
+// zero instead of erroring. One transaction closes that window the same
+// way AllModeCommunitySnapshots does for the community export.
+func (s *Store) CatalogScopesForMode(ctx context.Context, modeID int64) (visible, reset map[string][]string, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		var txErr error
+		visible, txErr = catalogForMode(ctx, tx, modeID, false)
+		if txErr != nil {
+			return txErr
+		}
+		if catalogScopesForModeHook != nil {
+			catalogScopesForModeHook()
+		}
+		reset, txErr = catalogForMode(ctx, tx, modeID, true)
+		return txErr
+	})
+	return visible, reset, err
+}
+
+// catalogScopesForModeHook, when set, runs once CatalogScopesForMode's
+// first read has returned and before its second read starts — a seam for
+// tests to inject a concurrent write at exactly that point and confirm
+// it's invisible to the second read, proving the two reads are genuinely
+// isolated within one transaction rather than two independent ones. A nil
+// hook (the default outside tests) is a no-op.
+var catalogScopesForModeHook func()
 
 // catalogForMode is CatalogForMode's implementation, parameterized on
 // queryer so a caller that needs it inside a larger transaction (e.g. a

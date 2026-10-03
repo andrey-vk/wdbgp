@@ -332,11 +332,33 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		communities[store.ServiceKey{Category: row.Category, Service: row.Service}] = row.Community
 	}
-	// Load catalog (categories and services) for this mode
-	catalog, err := s.store.CatalogForMode(r.Context(), modeID, false)
+	// Load the catalog twice over: the enabled-feeds-only scope that's
+	// actually listed below, and the wider reset scope (including disabled
+	// feeds) purely to compute AutoCommunity/AutoGroupCommunity's
+	// positional index against the same ordering basis a real reset uses —
+	// genCommunitiesRuntime counts every include-linked feed's entries
+	// regardless of whether the feed is enabled, so a disabled feed whose
+	// category sorts earlier still shifts every later category's real
+	// assignment, even though it contributes no row to the list below.
+	// Both scopes come from one transaction: two independent reads could
+	// each see their own, separately-committed snapshot if a feed sync
+	// landed between them, and since the reset scope is a superset of the
+	// visible one by construction, any visible category/service is
+	// guaranteed to be found in it too only when both come from the same
+	// point in time.
+	catalog, resetCatalog, err := s.store.CatalogScopesForMode(r.Context(), modeID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load catalog"})
 		return
+	}
+	resetCategories := make([]string, 0, len(resetCatalog))
+	for cat := range resetCatalog {
+		resetCategories = append(resetCategories, cat)
+	}
+	sort.Strings(resetCategories)
+	categoryIndex := make(map[string]int, len(resetCategories))
+	for i, cat := range resetCategories {
+		categoryIndex[cat] = i
 	}
 	// Build sorted list of categories
 	categories := make([]string, 0, len(catalog))
@@ -346,9 +368,17 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(categories)
 	// Build community items
 	var items []communityItemJSON
-	for groupIndex, category := range categories {
+	for _, category := range categories {
+		groupIndex := categoryIndex[category]
 		services := catalog[category]
 		sort.Strings(services)
+		resetServices := make([]string, len(resetCatalog[category]))
+		copy(resetServices, resetCatalog[category])
+		sort.Strings(resetServices)
+		serviceIndex := make(map[string]int, len(resetServices))
+		for i, svc := range resetServices {
+			serviceIndex[svc] = i
+		}
 		// Group-level community
 		grpComm := communities[store.ServiceKey{Category: category}]
 		items = append(items, communityItemJSON{
@@ -358,13 +388,13 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 			AutoCommunity: store.AutoGroupCommunity(groupIndex),
 		})
 		// Service-level communities
-		for svcIndex, service := range services {
+		for _, service := range services {
 			svcComm := communities[store.ServiceKey{Category: category, Service: service}]
 			items = append(items, communityItemJSON{
 				Category:      category,
 				Service:       service,
 				Community:     svcComm,
-				AutoCommunity: store.AutoCommunity(groupIndex, svcIndex),
+				AutoCommunity: store.AutoCommunity(groupIndex, serviceIndex[service]),
 			})
 		}
 	}

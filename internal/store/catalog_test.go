@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -350,5 +353,182 @@ func TestCountSelectionPrefixes(t *testing.T) {
 	}
 	if v6 != 1 {
 		t.Fatalf("CountSelectionPrefixes v6 = %d, want 1", v6)
+	}
+}
+
+// TestCatalogScopesForModeIsolatesConcurrentWrite proves, deterministically,
+// that CatalogScopesForMode's own two reads are genuinely isolated within
+// one transaction — not just that the underlying transaction mechanism can
+// provide isolation in principle. The race window between its two internal
+// catalogForMode reads is a handful of microseconds (two back-to-back
+// SELECTs with no other work in between), too narrow for a probabilistic
+// concurrent-writer test to land in reliably (confirmed empirically: 5,000
+// iterations of a realistic-load version never reproduced it) —
+// TestCatalogScopesForModeIsConsistentUnderConcurrentChange below still
+// exercises that realistic load, but a real regression of the
+// single-transaction guarantee could easily slip past it given how tight
+// the window is. This test instead calls CatalogScopesForMode itself, using
+// catalogScopesForModeHook to land a concurrent write — on a separate
+// connection — in exactly the gap between its two internal reads, and
+// asserts that write is invisible to the second one.
+func TestCatalogScopesForModeIsolatesConcurrentWrite(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	feedID, err := s.AddFeed(ctx, "isolation-feed", "https://example.test/isolation.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
+	}
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "Aaa", Service: "Svc1", CIDR: "10.0.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert entries: %v", err)
+	}
+	if err := s.RebuildModeEntries(ctx, 1); err != nil {
+		t.Fatalf("rebuild mode entries: %v", err)
+	}
+
+	catalogScopesForModeHook = func() {
+		// A second service, committed on a separate connection while
+		// CatalogScopesForMode's transaction is still open — simulating a
+		// feed sync landing in exactly the gap between its two reads.
+		if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+			{Category: "Aaa", Service: "Svc1", CIDR: "10.0.0.0/24"},
+			{Category: "Aaa", Service: "Svc2", CIDR: "10.1.0.0/24"},
+		}); err != nil {
+			t.Fatalf("concurrent insert: %v", err)
+		}
+		if err := s.RebuildModeEntries(ctx, 1); err != nil {
+			t.Fatalf("concurrent rebuild: %v", err)
+		}
+	}
+	t.Cleanup(func() { catalogScopesForModeHook = nil })
+
+	_, reset, err := s.CatalogScopesForMode(ctx, 1)
+	if err != nil {
+		t.Fatalf("CatalogScopesForMode: %v", err)
+	}
+
+	if len(reset["Aaa"]) != 1 {
+		t.Fatalf("reset scope = %v, want exactly the pre-write single service — "+
+			"the concurrent write committed strictly between the two reads inside "+
+			"one transaction and must not have been visible to the second one",
+			reset["Aaa"])
+	}
+}
+
+// TestCatalogScopesForModeIsConsistentUnderConcurrentChange covers the same
+// atomicity guarantee CatalogScopesForMode exists for: the reset scope
+// (every include-linked feed, regardless of whether it's enabled) is a
+// superset of the visible scope (enabled feeds only) by construction, so
+// reading both from one point in time must never show a category/service
+// in the visible map that's missing from the reset map. Two independent
+// reads could each land in a different, separately-committed state if a
+// feed sync changed the catalog between them — e.g. a service the first
+// read still saw already removed by the second — silently defaulting a
+// caller's position lookup against it to zero instead of erroring.
+func TestCatalogScopesForModeIsConsistentUnderConcurrentChange(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	feedID, err := s.AddFeed(ctx, "scopes-feed", "https://example.test/scopes.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
+	}
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "Aaa", Service: "Svc1", CIDR: "10.0.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert entries: %v", err)
+	}
+	if err := s.RebuildModeEntries(ctx, 1); err != nil {
+		t.Fatalf("rebuild mode entries: %v", err)
+	}
+
+	// Bounded, constant-size writes (toggling a second service in and out
+	// of the feed's entries) paced with a small sleep — same technique as
+	// TestAllModeCommunitySnapshotsIsConsistentAcrossModes, for the same
+	// reason: enough churn to create real race windows without write
+	// volume growing with the iteration count.
+	stop := make(chan struct{})
+	writerErr := make(chan error, 1)
+	go func() {
+		defer close(writerErr)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			entries := []CatalogEntry{{Category: "Aaa", Service: "Svc1", CIDR: "10.0.0.0/24"}}
+			if i%2 == 1 {
+				entries = append(entries, CatalogEntry{Category: "Aaa", Service: "Svc2", CIDR: "10.1.0.0/24"})
+			}
+			if err := s.InsertCatalogEntries(ctx, feedID, entries); err != nil {
+				writerErr <- fmt.Errorf("insert entries: %w", err)
+				return
+			}
+			if err := s.RebuildModeEntries(ctx, 1); err != nil {
+				writerErr <- fmt.Errorf("rebuild mode entries: %w", err)
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	readScopes := func() (visible, reset map[string][]string, err error) {
+		for attempt := 0; attempt < 5; attempt++ {
+			visible, reset, err = s.CatalogScopesForMode(ctx, 1)
+			if err == nil || !strings.Contains(err.Error(), "database is locked") {
+				return visible, reset, err
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return visible, reset, err
+	}
+
+	const iterations = 60
+	for i := 0; i < iterations; i++ {
+		visible, reset, err := readScopes()
+		if err != nil {
+			close(stop)
+			<-writerErr
+			t.Fatalf("read scopes: %v", err)
+		}
+		for category, services := range visible {
+			resetServices, ok := reset[category]
+			if !ok {
+				close(stop)
+				<-writerErr
+				t.Fatalf("iteration %d: category %q visible but missing from reset scope — "+
+					"the two reads saw different catalog states", i, category)
+			}
+			for _, service := range services {
+				found := false
+				for _, rs := range resetServices {
+					if rs == service {
+						found = true
+						break
+					}
+				}
+				if !found {
+					close(stop)
+					<-writerErr
+					t.Fatalf("iteration %d: service %q in category %q visible but missing from "+
+						"reset scope — the two reads saw different catalog states", i, service, category)
+				}
+			}
+		}
+	}
+	close(stop)
+	if err := <-writerErr; err != nil {
+		t.Fatalf("writer: %v", err)
 	}
 }

@@ -221,6 +221,32 @@ describe('CommunitiesPage duplicate validation', () => {
 })
 
 // ============================================================
+// Test: CommunitiesPage reset-value label
+// ============================================================
+
+describe('CommunitiesPage reset-value label', () => {
+  it('labels the auto-generated value as what a reset would assign, not a bare "auto" badge', async () => {
+    // A positional estimate recomputed from the catalog's current
+    // alphabetical order, not necessarily the real currently-assigned
+    // value (which only moves on an actual reset/generate) — a plain
+    // "auto N" label doesn't convey that distinction.
+    const CommunitiesPage = (await import('@/admin/views/CommunitiesPage.vue')).default
+    const wrapper = mount(CommunitiesPage, {
+      global: {
+        stubs: stubPrimeVueComponents(),
+      },
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await nextTick()
+
+    const html = wrapper.html()
+    expect(html).toContain('communities.reset_value')
+    expect(html).toContain('communities.reset_value_hint')
+  })
+})
+
+// ============================================================
 // Test: CommunitiesPage two-step reset
 // ============================================================
 
