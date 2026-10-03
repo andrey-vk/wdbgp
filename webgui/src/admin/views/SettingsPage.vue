@@ -140,6 +140,9 @@ async function handleSave() {
   if ('filter_allow' in body || 'filter_deny' in body) {
     const newAllow = (body.filter_allow ?? values.value.filter_allow ?? '') as string
     const newDeny = (body.filter_deny ?? values.value.filter_deny ?? '') as string
+    // The PUT below sends `body` as captured here, so edits made while the
+    // preview is pending would be silently overwritten by loadSettings().
+    const valuesBeforePreview = JSON.stringify(values.value)
     try {
       const ok = await confirmBlastRadius(async () => {
         const resp = await apiClient.post<BlastRadiusPreview>('/admin/settings/preview-filters', {
@@ -150,6 +153,10 @@ async function handleSave() {
       if (!ok) return
     } catch {
       toast.add({ severity: 'error', summary: t('blast_radius.preview_failed'), life: 3000 })
+      return
+    }
+    if (JSON.stringify(values.value) !== valuesBeforePreview) {
+      toast.add({ severity: 'warn', summary: t('blast_radius.changed_during_preview'), life: 4000 })
       return
     }
   }

@@ -266,6 +266,8 @@ async function handleSave() {
     selected.value = savedMode
     form.value = { name: savedMode.name, enabled: savedMode.enabled }
     editMode.value = false
+    // Refreshes the persisted feed snapshots the next preview diffs against.
+    await loadModeFeeds()
 
     if (feedsSaveFailed) {
       // The feed assignment didn't take — reload it from the server so the
