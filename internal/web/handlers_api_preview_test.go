@@ -370,3 +370,42 @@ func TestAPIUserPreviewAllowsUnchangedDisabledMode(t *testing.T) {
 		t.Fatalf("preview: %d body=%s, want 200 (mode unchanged, so not re-validated)", w.Code, w.Body.String())
 	}
 }
+
+func TestAPIModeSaveAppliesRenameEnableAndFeedsTogether(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+	modeID, err := st.AddCatalogMode(ctx, "Before", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID, err := st.AddFeed(ctx, "save-feed", "https://example.test/save.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idStr := strconv.FormatInt(modeID, 10)
+
+	req := httptest.NewRequest("PUT", "/api/admin/modes/"+idStr+"/save",
+		strings.NewReader(fmt.Sprintf(`{"name":"After","enabled":true,"feeds":[{"id":%d,"exclude":false}]}`, feedID)))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w := httptest.NewRecorder()
+	srv.apiModeSave(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("save: %d body=%s", w.Code, w.Body.String())
+	}
+
+	mode, err := st.CatalogMode(ctx, modeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode.Name != "After" || !mode.Enabled {
+		t.Fatalf("mode = %+v, want renamed to After and enabled", mode)
+	}
+	feeds, err := st.ModeFeeds(ctx, modeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 1 || feeds[0].ID != feedID {
+		t.Fatalf("ModeFeeds = %+v, want exactly feed %d", feeds, feedID)
+	}
+}

@@ -455,3 +455,43 @@ func TestUpdateUserWithRouteFiltersRollsBackRowOnFilterFailure(t *testing.T) {
 		t.Fatalf("CatalogModeID = %d after a failed combined save, want rolled back to %d", after.CatalogModeID, modeAID)
 	}
 }
+
+// TestSaveModeWithFeedsRollsBackFeedsOnRenameConflict checks the combined
+// mode save is all-or-nothing: a rename that violates the unique name must
+// not leave the feed change committed.
+func TestSaveModeWithFeedsRollsBackFeedsOnRenameConflict(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	if _, err := s.AddCatalogMode(ctx, "Taken", true); err != nil {
+		t.Fatal(err)
+	}
+	modeBID, err := s.AddCatalogMode(ctx, "Free", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID, err := s.AddFeed(ctx, "some-feed", "https://example.test/f.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = s.SaveModeWithFeeds(ctx, CatalogMode{ID: modeBID, Name: "Taken", Enabled: true},
+		[]ModeFeedLink{{FeedID: feedID}})
+	if err == nil {
+		t.Fatal("SaveModeWithFeeds renaming onto an existing name = nil error, want failure")
+	}
+
+	mode, err := s.CatalogMode(ctx, modeBID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode.Name != "Free" || mode.Enabled {
+		t.Fatalf("mode = %+v after a failed save, want unchanged name Free, disabled", mode)
+	}
+	feeds, err := s.ModeFeeds(ctx, modeBID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feeds) != 0 {
+		t.Fatalf("ModeFeeds = %+v after a failed save, want none", feeds)
+	}
+}

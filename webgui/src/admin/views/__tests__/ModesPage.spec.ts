@@ -135,7 +135,7 @@ describe('ModesPage', () => {
     await vm.handleSave()
 
     expect(mockPost).not.toHaveBeenCalledWith('/admin/modes', expect.anything())
-    expect(mockPut).toHaveBeenCalledWith('/admin/modes/42', expect.anything())
+    expect(mockPut).toHaveBeenCalledWith('/admin/modes/42/save', expect.anything())
   })
 
   it('saves feed assignments with include/exclude roles', async () => {
@@ -227,7 +227,9 @@ describe('ModesPage', () => {
     vm.applyBlastRadius()
     await savePromise
 
-    expect(mockPut).toHaveBeenCalledWith('/admin/modes/9/feeds', {
+    expect(mockPut).toHaveBeenCalledWith('/admin/modes/9/save', {
+      name: 'existing-mode',
+      enabled: true,
       feeds: [{ id: 1, exclude: false }, { id: 2, exclude: false }],
     })
   })
@@ -327,7 +329,7 @@ describe('ModesPage', () => {
   // Regression: a mode's enabled flag reconciles BGP on save, so enabling a
   // mode must save its feeds first — otherwise it announces its old feed set
   // before the previewed one is installed.
-  it('renames while still disabled, then saves feeds, then enables, so nothing unpreviewed is announced', async () => {
+  it('saves the rename, enable flag, and feeds in one atomic request', async () => {
     mockGet.mockImplementation((url: string) => {
       if (url === '/admin/modes') {
         return Promise.resolve({ data: { modes: [{ id: 9, name: 'existing-mode', enabled: false, feed_count: 1 }] } })
@@ -361,17 +363,17 @@ describe('ModesPage', () => {
 
     await vm.handleSave()
 
-    expect(order).toEqual(['/admin/modes/9:enabled=false', '/admin/modes/9/feeds', '/admin/modes/9:enabled=true'])
+    expect(order).toEqual(['/admin/modes/9/save:enabled=true'])
   })
 
   // Regression: when the feed save fails after the rename already persisted,
   // the sidebar and selected record must show the persisted name, not the old one.
-  it('resyncs the persisted rename when enabling fails at the feed save', async () => {
+  it('resyncs to the persisted state when the atomic save fails', async () => {
     let listCalls = 0
     mockGet.mockImplementation((url: string) => {
       if (url === '/admin/modes') {
         listCalls++
-        return Promise.resolve({ data: { modes: [{ id: 9, name: 'renamed', enabled: false, feed_count: 1 }] } })
+        return Promise.resolve({ data: { modes: [{ id: 9, name: 'existing-mode', enabled: false, feed_count: 1 }] } })
       }
       if (url === '/admin/modes/9/feeds') {
         return Promise.resolve({ data: { feeds: [{ id: 1, name: 'inc', url: 'u1', enabled: true, adapter_name: 'a' }] } })
@@ -392,17 +394,13 @@ describe('ModesPage', () => {
       }
       return Promise.resolve({ data: {} })
     })
-    mockPut.mockImplementation((url: string) => {
-      if (url === '/admin/modes/9/feeds') return Promise.reject(new Error('feed save failed'))
-      return Promise.resolve({ data: { id: 9, name: 'renamed', enabled: false, feed_count: 1 } })
-    })
+    mockPut.mockRejectedValue(Object.assign(new Error('conflict'), { response: { data: { error: 'UNIQUE constraint failed' } } }))
 
     const callsBefore = listCalls
     await vm.handleSave()
 
     expect(listCalls).toBeGreaterThan(callsBefore)
-    expect(vm.selected?.name).toBe('renamed')
-    expect(mockPut).not.toHaveBeenCalledWith('/admin/modes/9', { name: 'renamed', enabled: true })
-    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error' }))
+    expect(vm.selected?.name).toBe('existing-mode')
+    expect(toastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'error', summary: 'UNIQUE constraint failed' }))
   })
 })

@@ -94,6 +94,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	mux.HandleFunc("DELETE /api/admin/modes/{id}", server.apiRequireAdmin(server.apiModesDelete))
 	mux.HandleFunc("GET /api/admin/modes/{id}/feeds", server.apiRequireAdmin(server.apiModeFeedsGet))
 	mux.HandleFunc("PUT /api/admin/modes/{id}/feeds", server.apiRequireAdmin(server.apiModeFeedsSet))
+	mux.HandleFunc("PUT /api/admin/modes/{id}/save", server.apiRequireAdmin(server.apiModeSave))
 	mux.HandleFunc("POST /api/admin/modes/{id}/feeds/preview", server.apiRequireAdmin(server.apiModeFeedsPreview))
 	mux.HandleFunc("GET /api/admin/modes/{id}/communities", server.apiRequireAdmin(server.apiModeCommunitiesGet))
 	mux.HandleFunc("PUT /api/admin/modes/{id}/communities", server.apiRequireAdmin(server.apiModeCommunitiesPut))

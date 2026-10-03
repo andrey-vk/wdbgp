@@ -5,7 +5,6 @@ import { useI18n } from 'vue-i18n'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
-import type { AxiosResponse } from 'axios'
 import type { Mode, ModesListResponse } from '@/types/modes'
 import InputText from 'primevue/inputtext'
 import ToggleSwitch from 'primevue/toggleswitch'
@@ -212,45 +211,42 @@ async function handleSave() {
     // mode goes off first for the same reason in reverse.
     // Captured before the first await: the confirmed preview covers exactly
     // this payload, and the editor stays interactive until the save finishes.
-    const enabling = !!selected.value && !selected.value.enabled && form.value.enabled
     const modeId = selected.value?.id
     const name = form.value.name
     const enabledNow = form.value.enabled
     const feeds = feedsBody()
-    const saveFeeds = async (id: number): Promise<boolean> => {
-      savingFeeds.value = true
-      try {
-        await apiClient.put('/admin/modes/' + id + '/feeds', feeds)
-        // Fire-and-forget regenerate communities
-        apiClient.post('/admin/modes/' + id + '/communities/generate').catch(() => {})
-        return true
-      } catch {
-        return false
-      } finally { savingFeeds.value = false }
-    }
 
     let savedMode: Mode
     let feedsSaveFailed = false
     try {
-      if (enabling) {
-        // The rename goes first, while still disabled: a name conflict then
-        // fails before any feed change lands.
-        savedMode = (await apiClient.put<Mode>('/admin/modes/' + modeId, { name, enabled: false })).data
-        feedsSaveFailed = !await saveFeeds(modeId!)
-        if (!feedsSaveFailed) {
-          savedMode = (await apiClient.put<Mode>('/admin/modes/' + modeId, { name, enabled: true })).data
-        }
+      if (!modeId) {
+        const created = await apiClient.post<Mode>('/admin/modes', { name, enabled: enabledNow })
+        savedMode = created.data
+        savingFeeds.value = true
+        try {
+          await apiClient.put('/admin/modes/' + savedMode.id + '/feeds', feeds)
+          apiClient.post('/admin/modes/' + savedMode.id + '/communities/generate').catch(() => {})
+        } catch {
+          feedsSaveFailed = true
+        } finally { savingFeeds.value = false }
       } else {
-        let resp: AxiosResponse<Mode>
-        if (!modeId) {
-          resp = await apiClient.post<Mode>('/admin/modes', { name, enabled: enabledNow })
-        } else {
-          resp = await apiClient.put<Mode>('/admin/modes/' + modeId, { name, enabled: enabledNow })
-        }
-        savedMode = resp.data
-        feedsSaveFailed = !await saveFeeds(savedMode.id)
+        // One request, one transaction: a failure leaves the mode and its
+        // feeds exactly as they were.
+        savedMode = (await apiClient.put<Mode>('/admin/modes/' + modeId + '/save', { name, enabled: enabledNow, ...feeds })).data
       }
     } catch (e: unknown) {
+      // Resync to what's persisted (a failed create may still have made the mode).
+      try {
+        await loadList()
+        const persisted = modes.value.find((m) => m.id === modeId)
+        if (persisted) {
+          selected.value = persisted
+          form.value = { name: persisted.name, enabled: persisted.enabled }
+          await loadModeFeeds()
+        }
+      } catch {
+        // Best-effort: the error toast below is what the admin needs to see.
+      }
       const msg = (e as { response?: { data?: { error?: string } } }).response?.data?.error || t('modes.save_failed')
       toast.add({ severity: 'error', summary: msg, life: 4000 })
       return
