@@ -504,15 +504,15 @@ async function saveSelections(): Promise<void> {
     // be measured against — without this, the delta badge keeps showing
     // the pre-save delta as if it were still unsaved.
     await fetchCounts()
-    // The notice lists prefixes announced through selected categories, so a
-    // changed selection changes what it should show.
-    await fetchFeedChanges()
     toast.add({ severity: 'success', summary: t('user.saved'), life: 3000 })
   } catch (err) {
     if (handleAuthError(err)) return
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
   } finally {
+    // The selection is committed before BGP reconciliation, so a failed save can
+    // still have changed what the notice should list. Refresh either way.
     saving.value = false
+    await fetchFeedChanges()
   }
 }
 
