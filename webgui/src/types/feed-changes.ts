@@ -1,0 +1,31 @@
+// Mirrors internal/store/feed_sync_changes.go — what a feed sync changed,
+// and the user-facing note built from it.
+export interface FeedSyncCategory {
+  category: string
+  added_services: number
+}
+
+export interface FeedSyncChange {
+  change_id: number
+  synced_at: number
+  added_services: number
+  removed_services: number
+  added_prefixes: number
+  removed_prefixes: number
+  added_associations: number
+  removed_associations: number
+  categories: FeedSyncCategory[]
+}
+
+export interface UserFeedChangeCategory {
+  category: string
+  added_services: number
+}
+
+export interface UserFeedChange {
+  change_id: number
+  mode_id: number
+  feed_name: string
+  synced_at: number
+  categories: UserFeedChangeCategory[]
+}

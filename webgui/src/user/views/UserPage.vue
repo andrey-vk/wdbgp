@@ -11,6 +11,7 @@ import { getCurrentLocale } from '@/plugins/i18n'
 import userApi from '@/api/client'
 import { useSequencedRequest } from '@/composables/useSequencedRequest'
 import type { UserDataResponse, UserRouteFiltersResult } from '@/types/user-page'
+import type { UserFeedChange } from '@/types/feed-changes'
 import type { UserCIDRLookupResult } from '@/types/user-debug'
 
 const { t } = useI18n()
@@ -54,6 +55,8 @@ const filterDeny = ref('')
 // ── Filters-in-effect state (read-only) ──────────────────────
 const routeFiltersInfo = ref<UserRouteFiltersResult | null>(null)
 const routeFiltersRequest = useSequencedRequest()
+const feedChanges = ref<UserFeedChange[]>([])
+const feedChangesRequest = useSequencedRequest()
 
 // ── Catalog mode ────────────────────────────────────────────
 const selectedModeId = ref<number>(0)
@@ -170,6 +173,7 @@ function resetSessionState(): void {
   checkedCategories.value = new Set()
   checkedServices.value = new Set()
   invalidateRouteFiltersInfo()
+  invalidateFeedChanges()
   lookupQuery.value = ''
   invalidateLookup()
 }
@@ -271,6 +275,7 @@ async function loadUserData(userData: UserDataResponse): Promise<void> {
   // Fetch live counts
   await fetchCounts()
   await fetchRouteFiltersInfo()
+  await fetchFeedChanges()
 }
 
 // Bumps routeFiltersRequest's sequence so a GET still in flight at logout
@@ -284,6 +289,46 @@ async function loadUserData(userData: UserDataResponse): Promise<void> {
 function invalidateRouteFiltersInfo(): void {
   routeFiltersRequest.next()
   routeFiltersInfo.value = null
+}
+
+function invalidateFeedChanges(): void {
+  feedChangesRequest.next()
+  feedChanges.value = []
+}
+
+async function fetchFeedChanges(): Promise<void> {
+  const token = feedChangesRequest.next()
+  try {
+    const resp = await userApi.get<{ changes: UserFeedChange[] }>('/user/feed-changes')
+    if (!feedChangesRequest.isCurrent(token)) return
+    feedChanges.value = resp.data.changes
+  } catch (err) {
+    if (!feedChangesRequest.isCurrent(token)) return
+    if (handleAuthError(err)) return
+    feedChanges.value = []
+  }
+}
+
+// Acknowledges what the user was shown: everything up to the newest change in
+// the list (by change ID, so changes that share a second stay distinct). Changes that land after this page loaded stay unseen.
+async function dismissFeedChanges(): Promise<void> {
+  const shown = feedChanges.value
+  if (shown.length === 0) return
+  const through = Math.max(...shown.map((c) => c.change_id))
+  // The mode is the one these notices were shown for, so an acknowledgement
+  // can't move a different mode's cursor after a mode switch.
+  const mode_id = shown[0].mode_id
+  // Drop any fetch still in flight: its response may still hold the rows being
+  // acknowledged, and would bring them back after the dismissal.
+  feedChangesRequest.next()
+  feedChanges.value = []
+  try {
+    await userApi.post('/user/feed-changes/ack', { mode_id, through })
+  } catch (err) {
+    if (handleAuthError(err)) return
+    // Resync from the server rather than restoring what was shown.
+    await fetchFeedChanges()
+  }
 }
 
 // Filters in effect don't depend on catalog mode or selections, but
@@ -464,7 +509,10 @@ async function saveSelections(): Promise<void> {
     if (handleAuthError(err)) return
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
   } finally {
+    // The selection is committed before BGP reconciliation, so a failed save can
+    // still have changed what the notice should list. Refresh either way.
     saving.value = false
+    await fetchFeedChanges()
   }
 }
 
@@ -485,6 +533,8 @@ async function saveFilters(): Promise<void> {
     // too (in extend/override mode) — without this it keeps showing the
     // pre-save lists until the next mode switch or page reload.
     await fetchRouteFiltersInfo()
+    // Route filters decide which of the notice's prefixes are announced.
+    await fetchFeedChanges()
   } catch (err) {
     if (handleAuthError(err)) return
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
@@ -847,6 +897,21 @@ onMounted(() => {
               {{ formatDelta(countData.delta_v6) }} {{ t('user.ipv6') }}
             </span>
           </div>
+        </div>
+
+        <!-- Feed syncs that added services to categories you selected -->
+        <div v-if="feedChanges.length" data-testid="feed-changes-section" class="p-6 rounded-border shadow-sm mb-6 bg-white dark:bg-gray-900">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('user.feed_changes_title') }}</h2>
+            <button type="button" data-testid="feed-changes-dismiss" class="text-sm text-blue-600 dark:text-blue-400" @click="dismissFeedChanges">{{ t('user.feed_changes_dismiss') }}</button>
+          </div>
+          <div v-for="change in feedChanges" :key="change.change_id" class="text-sm mb-2">
+            <span class="text-gray-500 dark:text-gray-400">{{ new Date(change.synced_at * 1000).toLocaleString() }} · {{ change.feed_name }}</span>
+            <div v-for="cat in change.categories" :key="cat.category" class="pl-3 text-gray-700 dark:text-gray-300">
+              {{ t('user.feed_changes_line', { category: cat.category, added: cat.added_services }) }}
+            </div>
+          </div>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{{ t('user.feed_changes_hint') }}</p>
         </div>
 
         <!-- Filters in effect (read-only) -->

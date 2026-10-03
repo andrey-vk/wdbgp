@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useConfirm } from 'primevue/useconfirm'
 import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
 import { formatDateTime } from '@/utils/format'
+import type { FeedSyncChange } from '@/types/feed-changes'
+import { useSequencedRequest } from '@/composables/useSequencedRequest'
 import type { AxiosResponse } from 'axios'
 import type { Feed as ApiFeed, SyncAccepted, SyncAllAccepted } from '@/types/feeds'
 import type { AdaptersListResponse } from '@/types/adapters'
@@ -40,6 +42,8 @@ const feeds = ref<Feed[]>([])
 const adapters = ref<AdapterOption[]>([])
 const modes = ref<ModeOption[]>([])
 const selected = ref<Feed | null>(null)
+const syncChanges = ref<FeedSyncChange[]>([])
+const syncChangesRequests = useSequencedRequest()
 const form = ref({
   url: '',
   name: '',
@@ -133,6 +137,27 @@ async function fetchModes() {
     modes.value = (resp.data.modes || []) as ModeOption[]
   } catch { /* silent */ }
 }
+
+async function loadSyncChanges(feedId: number) {
+  const token = syncChangesRequests.next()
+  syncChanges.value = []
+  try {
+    const resp = await apiClient.get<{ changes: FeedSyncChange[] }>('/admin/feeds/' + feedId + '/sync-changes')
+    if (syncChangesRequests.isCurrent(token)) syncChanges.value = resp.data.changes
+  } catch {
+    // Best-effort: the history is supplementary to the feed's own state.
+  }
+}
+
+// Keyed on the completed-attempt marker too: a sync that finishes while this
+// feed stays selected records a change the history must pick up. The key is a
+// string, so polling that replaces the selected object without changing
+// either field doesn't reload the history.
+watch(() => (selected.value ? selected.value.id + ':' + (selected.value.sync_attempted_at || '') : ''), (key) => {
+  const id = selected.value?.id
+  if (key && id) loadSyncChanges(id)
+  else syncChanges.value = []
+})
 
 function selectFeed(feed: Feed) {
   selected.value = feed
@@ -413,6 +438,27 @@ async function loadList() {
               <span class="font-medium">{{ t('feeds.url') }}</span><p class="m-0">
                 {{ selected.url }}
               </p>
+            </div>
+            <div
+              v-if="syncChanges.length"
+              class="flex flex-col gap-2"
+            >
+              <span class="font-medium">{{ t('feeds.sync_changes_title') }}</span>
+              <div
+                v-for="change in syncChanges"
+                :key="change.change_id"
+                class="text-sm flex flex-col gap-0.5 border-b border-gray-100 dark:border-gray-800 pb-2"
+              >
+                <span class="text-gray-500 dark:text-gray-400">{{ new Date(change.synced_at * 1000).toLocaleString() }}</span>
+                <span>{{ t('feeds.sync_change_services', { added: change.added_services, removed: change.removed_services }) }}</span>
+                <span>{{ t('feeds.sync_change_prefixes', { added: change.added_prefixes, removed: change.removed_prefixes }) }}</span>
+                <span>{{ t('feeds.sync_change_associations', { added: change.added_associations, removed: change.removed_associations }) }}</span>
+                <span
+                  v-for="cat in change.categories"
+                  :key="cat.category"
+                  class="pl-3 text-gray-600 dark:text-gray-300"
+                >{{ t('feeds.sync_change_category', { category: cat.category, added: cat.added_services }) }}</span>
+              </div>
             </div>
             <div
               v-if="selected.name"

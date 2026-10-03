@@ -354,10 +354,11 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		var currentAllowedHosts string
 		var currentRestrictHosts bool
 		var enabled bool
+		var lastSuccess int64
 		if err := tx.QueryRowContext(ctx,
 			`SELECT f.url, f.adapter_id, f.enabled, f.data, f.name,
 			        f.allowed_hosts, f.restrict_hosts,
-			        a.revision
+			        a.revision, COALESCE(f.last_success, 0)
 			 FROM feeds f
 			 JOIN feed_adapters a ON a.id = f.adapter_id
 			 WHERE f.id = ?`, feed.ID).
@@ -365,7 +366,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 				&currentURL, &currentAdapterID, &enabled,
 				&currentData, &currentName,
 				&currentAllowedHosts, &currentRestrictHosts,
-				&currentAdapterRevision,
+				&currentAdapterRevision, &lastSuccess,
 			); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return errFeedChanged
@@ -382,7 +383,18 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 			!enabled {
 			return errFeedChanged
 		}
-		if err := store.ReplaceCatalogEntries(ctx, tx, feed.ID, toCatalogEntries(entries)); err != nil {
+		prev, err := store.CatalogEntriesForFeedTx(ctx, tx, feed.ID)
+		if err != nil {
+			return err
+		}
+		next := toCatalogEntries(entries)
+		// A feed that has never synced successfully has nothing to compare
+		// against, so its first import isn't drift. A feed that synced before,
+		// even to an empty catalog, is compared — repopulating it is a change.
+		recordable := lastSuccess > 0 || len(prev) > 0
+		diff := store.DiffCatalogEntries(prev, next)
+		record := recordable && diff.HasChanges()
+		if err := store.ReplaceCatalogEntries(ctx, tx, feed.ID, next); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx,
@@ -392,10 +404,16 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		}
 		// Rebuild the materialized merge of every mode linking this feed
 		// (include or exclude role) in the SAME transaction: entries,
-		// last_success and the materialization commit or roll back as one
-		// unit, so a successful sync can never leave BGP announcing stale
-		// mode entries.
-		return store.RebuildModeEntriesForFeedTx(ctx, tx, feed.ID)
+		// last_success, the materialization and the recorded change commit or
+		// roll back as one unit, so a successful sync can never leave BGP
+		// announcing stale mode entries.
+		if err := store.RebuildModeEntriesForFeedTx(ctx, tx, feed.ID); err != nil {
+			return err
+		}
+		if !record {
+			return nil
+		}
+		return store.RecordFeedSyncChangeTx(ctx, tx, feed.ID, diff, time.Now().Unix())
 	})
 	if errors.Is(err, errFeedChanged) {
 		return adapter.Revision, nil
