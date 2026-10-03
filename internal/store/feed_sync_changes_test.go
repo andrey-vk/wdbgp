@@ -78,7 +78,7 @@ func TestFeedSyncChangeHistoryIsBounded(t *testing.T) {
 		if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 			return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{
 				AddedServices: 1, AddedByCategory: map[string]int{"ai": 1},
-			}, int64(1000+i))
+			}, nil, int64(1000+i))
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -124,7 +124,7 @@ func userSelectingFeedChange(t *testing.T, s *Store, selected string, exclude bo
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{
 			AddedServices: 2, AddedByCategory: map[string]int{"ai": 2},
-		}, time.Now().Unix())
+		}, []ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Added: 5}}, time.Now().Unix())
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -139,8 +139,8 @@ func TestUserFeedChangesShowsOnlySelectedCategories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changes) != 1 || changes[0].FeedName != "ai-feed" || changes[0].Categories[0].AddedServices != 2 {
-		t.Fatalf("UserFeedChanges = %+v, want one ai-feed change with ai +2", changes)
+	if len(changes) != 1 || changes[0].FeedName != "ai-feed" || changes[0].Categories[0].AddedPrefixes != 5 {
+		t.Fatalf("UserFeedChanges = %+v, want one ai-feed change with ai +5 prefixes", changes)
 	}
 
 	other, err := s.AddUser(ctx, User{Name: "other", PeerIP: "172.16.9.1", PeerASN: 65099, Enabled: true,
@@ -157,7 +157,9 @@ func TestUserFeedChangesShowsOnlySelectedCategories(t *testing.T) {
 	}
 }
 
-func TestUserFeedChangesHidesExcludedFeeds(t *testing.T) {
+// Growth is measured on the mode's effective prefix set, so a sync from an
+// exclude feed that re-announces prefixes is real growth for the user too.
+func TestUserFeedChangesShowsEffectiveGrowthFromExcludeFeed(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	userID, _ := userSelectingFeedChange(t, s, "ai", true)
@@ -165,8 +167,8 @@ func TestUserFeedChangesHidesExcludedFeeds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changes) != 0 {
-		t.Fatalf("excluded feed's change shown to user: %+v", changes)
+	if len(changes) != 1 {
+		t.Fatalf("effective growth from an exclude feed not shown: %+v", changes)
 	}
 }
 
@@ -214,7 +216,7 @@ func TestAckUserFeedChangesDoesNotHideSameSecondChange(t *testing.T) {
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{
 			AddedServices: 1, AddedByCategory: map[string]int{"ai": 1},
-		}, same)
+		}, []ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Added: 1}}, same)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -234,5 +236,83 @@ func TestAckUserFeedChangesDoesNotHideSameSecondChange(t *testing.T) {
 	}
 	if len(left) != 1 || left[0].ChangeID != changes[1].ChangeID {
 		t.Fatalf("after acknowledging the first, left = %+v, want only the second", left)
+	}
+}
+
+// A prefix a feed adds is growth for the mode only if the mode didn't already
+// announce it — another include feed supplying it, or an exclude feed cutting
+// it, changes the outcome. This runs the same sequence as a sync.
+func TestModeGrowthCountsOnlyNewlyAnnouncedPrefixes(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	feedA, err := s.AddFeed(ctx, "growth-a", "https://example.test/a.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedB, err := s.AddFeed(ctx, "growth-b", "https://example.test/b.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []int64{feedA, feedB} {
+		if _, err := s.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, 0)", DefaultCatalogModeID, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed := func(feedID int64, entries []CatalogEntry) {
+		t.Helper()
+		if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+			if err := ReplaceCatalogEntries(ctx, tx, feedID, entries); err != nil {
+				return err
+			}
+			return RebuildModeEntriesForFeedTx(ctx, tx, feedID)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed(feedA, []CatalogEntry{{Category: "cat-a", Service: "svc1", CIDR: "21.0.0.0/8"}})
+	seed(feedB, []CatalogEntry{{Category: "cat-a", Service: "svc2", CIDR: "21.0.0.0/8"}})
+
+	// Sync of feed A: adds svc3 with a new prefix (22/8) and keeps 21/8.
+	// 22/8 is growth in cat-a; 21/8 was already announced via feed B.
+	syncTo := func(feedID int64, entries []CatalogEntry) []ModeCategoryGrowth {
+		t.Helper()
+		var growth []ModeCategoryGrowth
+		if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+			before, err := SnapshotFeedModePrefixesTx(ctx, tx, feedID)
+			if err != nil {
+				return err
+			}
+			if err := ReplaceCatalogEntries(ctx, tx, feedID, entries); err != nil {
+				return err
+			}
+			if err := RebuildModeEntriesForFeedTx(ctx, tx, feedID); err != nil {
+				return err
+			}
+			after, err := SnapshotFeedModePrefixesTx(ctx, tx, feedID)
+			if err != nil {
+				return err
+			}
+			growth = ModeGrowth(before, after)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return growth
+	}
+	g := syncTo(feedA, []CatalogEntry{
+		{Category: "cat-a", Service: "svc1", CIDR: "21.0.0.0/8"},
+		{Category: "cat-a", Service: "svc3", CIDR: "22.0.0.0/8"},
+	})
+	if len(g) != 1 || g[0].Category != "cat-a" || g[0].Added != 1 {
+		t.Fatalf("growth = %+v, want exactly cat-a +1 (22/8 only)", g)
+	}
+
+	// Feed B adds a service whose prefix (21/8) the mode already announces.
+	g = syncTo(feedB, []CatalogEntry{
+		{Category: "cat-a", Service: "svc2", CIDR: "21.0.0.0/8"},
+		{Category: "cat-b", Service: "svc4", CIDR: "21.0.0.0/8"},
+	})
+	if len(g) != 0 {
+		t.Fatalf("growth = %+v, want none: 21/8 was already announced", g)
 	}
 }

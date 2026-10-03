@@ -1664,8 +1664,8 @@ describe('UserPage', () => {
       modes: [{ id: 1, name: 'Mode A', enabled: true, feed_count: 1 }],
     }
     const changes = [
-      { change_id: 101, feed_name: 'opencck-main', synced_at: 1700000100, categories: [{ category: 'ai', added_services: 2 }] },
-      { change_id: 102, feed_name: 'opencck-main', synced_at: 1700000100, categories: [{ category: 'ai', added_services: 1 }] },
+      { change_id: 101, feed_name: 'opencck-main', synced_at: 1700000100, categories: [{ category: 'ai', added_prefixes: 2 }] },
+      { change_id: 102, feed_name: 'opencck-main', synced_at: 1700000100, categories: [{ category: 'ai', added_prefixes: 1 }] },
     ]
     mockGet.mockImplementation((url: string) => {
       if (url === '/user/feed-changes') return Promise.resolve({ data: { changes } })

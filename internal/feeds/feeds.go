@@ -388,18 +388,20 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 			return err
 		}
 		next := toCatalogEntries(entries)
-		if err := store.ReplaceCatalogEntries(ctx, tx, feed.ID, next); err != nil {
-			return err
-		}
 		// A feed that has never synced successfully has nothing to compare
 		// against, so its first import isn't drift. A feed that synced before,
 		// even to an empty catalog, is compared — repopulating it is growth.
-		if lastSuccess > 0 || len(prev) > 0 {
-			if diff := store.DiffCatalogEntries(prev, next); diff.HasChanges() {
-				if err := store.RecordFeedSyncChangeTx(ctx, tx, feed.ID, diff, time.Now().Unix()); err != nil {
-					return err
-				}
+		recordable := lastSuccess > 0 || len(prev) > 0
+		diff := store.DiffCatalogEntries(prev, next)
+		record := recordable && diff.HasChanges()
+		var before store.ModePrefixCategories
+		if record {
+			if before, err = store.SnapshotFeedModePrefixesTx(ctx, tx, feed.ID); err != nil {
+				return err
 			}
+		}
+		if err := store.ReplaceCatalogEntries(ctx, tx, feed.ID, next); err != nil {
+			return err
 		}
 		if _, err = tx.ExecContext(ctx,
 			"UPDATE feeds SET last_success = ?, last_error = NULL WHERE id = ? AND url = ? AND enabled = 1",
@@ -408,10 +410,20 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		}
 		// Rebuild the materialized merge of every mode linking this feed
 		// (include or exclude role) in the SAME transaction: entries,
-		// last_success and the materialization commit or roll back as one
-		// unit, so a successful sync can never leave BGP announcing stale
-		// mode entries.
-		return store.RebuildModeEntriesForFeedTx(ctx, tx, feed.ID)
+		// last_success, the materialization and the recorded change commit or
+		// roll back as one unit, so a successful sync can never leave BGP
+		// announcing stale mode entries.
+		if err := store.RebuildModeEntriesForFeedTx(ctx, tx, feed.ID); err != nil {
+			return err
+		}
+		if !record {
+			return nil
+		}
+		after, err := store.SnapshotFeedModePrefixesTx(ctx, tx, feed.ID)
+		if err != nil {
+			return err
+		}
+		return store.RecordFeedSyncChangeTx(ctx, tx, feed.ID, diff, store.ModeGrowth(before, after), time.Now().Unix())
 	})
 	if errors.Is(err, errFeedChanged) {
 		return adapter.Revision, nil

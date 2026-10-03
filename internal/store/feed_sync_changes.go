@@ -107,7 +107,7 @@ WHERE ce.feed_id = ?`, feedID)
 
 // RecordFeedSyncChangeTx stores one sync's diff and trims the feed's history
 // to the retention bound, inside the sync's own transaction.
-func RecordFeedSyncChangeTx(ctx context.Context, tx *sql.Tx, feedID int64, diff FeedSyncDiff, syncedAt int64) error {
+func RecordFeedSyncChangeTx(ctx context.Context, tx *sql.Tx, feedID int64, diff FeedSyncDiff, growth []ModeCategoryGrowth, syncedAt int64) error {
 	res, err := tx.ExecContext(ctx, `
 INSERT INTO feed_sync_changes(feed_id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes)
 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -126,10 +126,21 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 			return err
 		}
 	}
+	for _, g := range growth {
+		if _, err := tx.ExecContext(ctx,
+			"INSERT INTO feed_sync_mode_growth(change_id, mode_id, category, added_prefixes) VALUES (?, ?, ?, ?)",
+			changeID, g.ModeID, g.Category, g.Added); err != nil {
+			return err
+		}
+	}
 	const stale = `SELECT id FROM feed_sync_changes WHERE feed_id = ?1 AND id NOT IN (
 		SELECT id FROM feed_sync_changes WHERE feed_id = ?1 ORDER BY synced_at DESC, id DESC LIMIT ?2)`
 	if _, err := tx.ExecContext(ctx,
 		"DELETE FROM feed_sync_change_categories WHERE change_id IN ("+stale+")", feedID, feedSyncChangeRetention); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM feed_sync_mode_growth WHERE change_id IN ("+stale+")", feedID, feedSyncChangeRetention); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, "DELETE FROM feed_sync_changes WHERE id IN ("+stale+")", feedID, feedSyncChangeRetention)
@@ -198,14 +209,19 @@ ORDER BY synced_at DESC, id DESC LIMIT ?`, feedID, limit)
 	return out, nil
 }
 
-// UserFeedChange is services a feed sync added to categories the user has
-// selected, in a mode that includes that feed. Selecting a category already
-// announces its services, so these are routes the user did not choose.
+// UserFeedChange is prefixes a feed sync newly made announced in the user's
+// mode, through categories they have selected. Those routes reached the user
+// because of the feed, not because of anything they did.
 type UserFeedChange struct {
-	ChangeID   int64              `json:"change_id"`
-	FeedName   string             `json:"feed_name"`
-	SyncedAt   int64              `json:"synced_at"`
-	Categories []FeedSyncCategory `json:"categories"`
+	ChangeID   int64                    `json:"change_id"`
+	FeedName   string                   `json:"feed_name"`
+	SyncedAt   int64                    `json:"synced_at"`
+	Categories []UserFeedChangeCategory `json:"categories"`
+}
+
+type UserFeedChangeCategory struct {
+	Category      string `json:"category"`
+	AddedPrefixes int    `json:"added_prefixes"`
 }
 
 // UserFeedChanges returns the feed-driven growth the user hasn't acknowledged
@@ -218,15 +234,14 @@ func (s *Store) UserFeedChanges(ctx context.Context, userID int64, now time.Time
 	}
 	since := now.Add(-userFeedChangeWindow).Unix()
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT f.name, c.id, c.synced_at, fc.category, fc.added_services
-FROM feed_sync_change_categories fc
-JOIN feed_sync_changes c ON c.id = fc.change_id
+SELECT f.name, c.id, c.synced_at, g.category, g.added_prefixes
+FROM feed_sync_mode_growth g
+JOIN feed_sync_changes c ON c.id = g.change_id
 JOIN feeds f ON f.id = c.feed_id
-JOIN catalog_mode_feeds cmf ON cmf.feed_id = c.feed_id AND cmf.mode_id = ? AND cmf.exclude = 0
-JOIN categories cat ON cat.name = fc.category
-JOIN selected_categories sc ON sc.user_id = ? AND sc.mode_id = cmf.mode_id AND sc.category_id = cat.id
-WHERE c.id > ? AND c.synced_at >= ? AND f.enabled = 1
-ORDER BY c.id, fc.category`, modeID, userID, seenID, since)
+JOIN categories cat ON cat.name = g.category
+JOIN selected_categories sc ON sc.user_id = ? AND sc.mode_id = g.mode_id AND sc.category_id = cat.id
+WHERE g.mode_id = ? AND c.id > ? AND c.synced_at >= ? AND f.enabled = 1
+ORDER BY c.id, g.category`, userID, modeID, seenID, since)
 	if err != nil {
 		return nil, err
 	}
@@ -241,11 +256,11 @@ ORDER BY c.id, fc.category`, modeID, userID, seenID, since)
 			return nil, err
 		}
 		if changeID != lastChangeID {
-			out = append(out, UserFeedChange{ChangeID: changeID, FeedName: feedName, SyncedAt: syncedAt, Categories: []FeedSyncCategory{}})
+			out = append(out, UserFeedChange{ChangeID: changeID, FeedName: feedName, SyncedAt: syncedAt, Categories: []UserFeedChangeCategory{}})
 			lastChangeID = changeID
 		}
 		last := &out[len(out)-1]
-		last.Categories = append(last.Categories, FeedSyncCategory{Category: category, AddedServices: added})
+		last.Categories = append(last.Categories, UserFeedChangeCategory{Category: category, AddedPrefixes: added})
 	}
 	return out, rows.Err()
 }

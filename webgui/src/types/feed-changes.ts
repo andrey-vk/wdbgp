@@ -14,9 +14,14 @@ export interface FeedSyncChange {
   categories: FeedSyncCategory[]
 }
 
+export interface UserFeedChangeCategory {
+  category: string
+  added_prefixes: number
+}
+
 export interface UserFeedChange {
   change_id: number
   feed_name: string
   synced_at: number
-  categories: FeedSyncCategory[]
+  categories: UserFeedChangeCategory[]
 }

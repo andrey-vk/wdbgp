@@ -434,13 +434,7 @@ last 20 changing syncs (`GET /api/admin/feeds/{id}/sync-changes`). The first imp
 recorded, since there is nothing to compare against, and only the 50 most recent changing
 syncs per feed are kept.
 
-Feed changes are the main way a user's announced routes grow without any action on their
-side: selecting a category includes all of its services, so a service a feed adds to a
-selected category is announced to that user right away. The user's own page shows a
-dismissible note of those additions for the categories they have selected in a mode that
-includes the feed. It covers the last 14 days, or since they last dismissed it, whichever
-is more recent. `GET /api/user/feed-changes` returns it, and `POST /api/user/feed-changes/ack`
-acknowledges up to the newest change shown.
+Feed changes are the main way a user's announced routes grow without any action on their side: selecting a category includes all of its services, so a sync can make prefixes newly announced to a user who changed nothing. The user's own page shows a dismissible note of the prefixes a sync newly announced in their mode through categories they have selected. The count is taken from the mode's effective prefix set, so a prefix another feed already covered, or one an exclude feed cuts, isn't listed. The note covers the last 14 days, or since they last dismissed it, whichever is more recent. `GET /api/user/feed-changes` returns it, and `POST /api/user/feed-changes/ack` acknowledges up to the newest change shown.
 
 ### Blast-radius preview
 
