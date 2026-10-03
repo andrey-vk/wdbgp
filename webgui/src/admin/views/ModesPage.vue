@@ -43,6 +43,7 @@ const allFeeds = ref<FeedItem[]>([])
 const assignedFeedIds = ref<number[]>([])
 const excludedFeedIds = ref<number[]>([])
 const loadingFeeds = ref(false)
+const loadingAllFeeds = ref(false)
 // Overlapping loads (quick successive selections) must not let an older
 // mode's response overwrite the feed snapshots of the one now selected.
 const feedsRequests = useSequencedRequest()
@@ -313,11 +314,11 @@ async function loadModeFeeds() {
 }
 
 async function loadAllFeeds() {
-  loadingFeeds.value = true
+  loadingAllFeeds.value = true
   try {
     const resp = await apiClient.get('/admin/feeds')
     allFeeds.value = resp.data.feeds || []
-  } finally { loadingFeeds.value = false }
+  } finally { loadingAllFeeds.value = false }
 }
 
 function isFeedAssigned(feedId: number): boolean {
@@ -461,7 +462,7 @@ defineExpose({
             <div class="flex flex-col gap-1">
               <span class="font-medium">{{ t('modes.view_feeds') }}</span>
               <div
-                v-if="loadingFeeds"
+                v-if="loadingFeeds || loadingAllFeeds"
                 class="flex justify-content-center py-2"
               >
                 <i class="pi pi-spin pi-spinner" />
@@ -516,7 +517,7 @@ defineExpose({
             <div class="flex flex-col gap-1.5 mt-1">
               <label class="font-medium">{{ t('modes.view_feeds') }}</label>
               <div
-                v-if="loadingFeeds"
+                v-if="loadingFeeds || loadingAllFeeds"
                 class="flex justify-content-center py-2"
               >
                 <i class="pi pi-spin pi-spinner" />
