@@ -18,6 +18,7 @@ type Settings struct {
 	AdminCookieSecure             Setting[string, string]
 	AdminPassword                 Setting[string, string]
 	AllowDynamicPeers             Setting[bool, bool]
+	AuditLogRetentionDays         Setting[int, int]
 	AutoRestoreEnabled            Setting[bool, bool]
 	BGPHoldTime                   Setting[uint16, uint16]
 	BGPPort                       Setting[uint16, uint16]
@@ -67,6 +68,7 @@ type SettingsJSON struct {
 	AdminCookieSecure             SettingJSON[string] `json:"admin_cookie_secure"`
 	AdminPassword                 SettingJSON[string] `json:"admin_password"`
 	AllowDynamicPeers             SettingJSON[bool]   `json:"allow_dynamic_peers"`
+	AuditLogRetentionDays         SettingJSON[int]    `json:"audit_log_retention_days"`
 	AutoRestoreEnabled            SettingJSON[bool]   `json:"auto_restore_enabled"`
 	BGPHoldTime                   SettingJSON[uint16] `json:"bgp_hold_time"`
 	BGPPort                       SettingJSON[uint16] `json:"bgp_port"`
@@ -372,6 +374,12 @@ func New(store Store) (*Settings, error) {
 		return nil, err
 	}
 
+	// AuditLogRetentionDays.
+	s.AuditLogRetentionDays, err = newSimple(30, "audit_log_retention_days", "WDBGP_AUDIT_LOG_RETENTION_DAYS", parseInt, nil, store, dbSettings)
+	if err != nil {
+		return nil, err
+	}
+
 	// DynamicPeerMD5Match: default off. Authenticates dynamic (0.0.0.0/::)
 	// BGP peers by bruteforce-matching a real TCP MD5 (RFC 2385) signature
 	// on the inbound SYN against configured dynamic-peer passwords, via an
@@ -460,6 +468,7 @@ func (s *Settings) JSON(ctx context.Context) SettingsJSON {
 		AdminCookieSecure:             s.AdminCookieSecure.JSON(dbSettings),
 		AdminPassword:                 s.AdminPassword.JSON(dbSettings),
 		AllowDynamicPeers:             s.AllowDynamicPeers.JSON(dbSettings),
+		AuditLogRetentionDays:         s.AuditLogRetentionDays.JSON(dbSettings),
 		AutoRestoreEnabled:            s.AutoRestoreEnabled.JSON(dbSettings),
 		BGPHoldTime:                   s.BGPHoldTime.JSON(dbSettings),
 		BGPPort:                       s.BGPPort.JSON(dbSettings),

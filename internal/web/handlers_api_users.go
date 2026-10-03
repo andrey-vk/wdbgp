@@ -493,6 +493,7 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	previousCatalogModeID := current.CatalogModeID
 
 	// Apply only provided fields
 	if body.Name != nil {
@@ -669,6 +670,7 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	// — otherwise omitting one field from the request silently wipes the
 	// other.
 	var filterAllow, filterDeny []string
+	var beforeFilters store.RouteFilters
 	filtersProvided := body.FilterAllow != nil || body.FilterDeny != nil
 	if filtersProvided {
 		existing, err := s.store.UserRouteFilters(r.Context(), id)
@@ -677,6 +679,7 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load existing route filters"})
 			return
 		}
+		beforeFilters = existing
 		filterAllow = existing.Allow
 		filterDeny = existing.Deny
 		if body.FilterAllow != nil {
@@ -706,6 +709,12 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save route filters"})
 			return
 		}
+		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "route_filters.user_updated", "user", strconv.FormatInt(id, 10),
+			beforeFilters, store.RouteFilters{Allow: filterAllow, Deny: filterDeny})
+	}
+	if body.CatalogModeID != nil {
+		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.mode_changed", "user", strconv.FormatInt(id, 10),
+			map[string]int64{"catalog_mode_id": previousCatalogModeID}, map[string]int64{"catalog_mode_id": current.CatalogModeID})
 	}
 
 	if s.bgp != nil {
@@ -1044,6 +1053,12 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 	}
 	switchingMode := body.ModeID > 0 && body.ModeID != user.CatalogModeID
 
+	beforeCats, beforeSvcs, err := s.store.UserModeSelection(r.Context(), id, user.CatalogModeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
 	err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
 		if switchingMode {
 			// Persist the mode switch alongside the selection rows below, in the
@@ -1072,6 +1087,17 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
+	}
+	if switchingMode {
+		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.mode_changed", "user", strconv.FormatInt(id, 10),
+			map[string]int64{"catalog_mode_id": user.CatalogModeID}, map[string]int64{"catalog_mode_id": modeID})
+	}
+	// Counts only, not the full selection list — see apiUserSaveSelections
+	// for the known limitation this carries.
+	if afterCats, afterSvcs, err := s.store.UserModeSelection(r.Context(), id, modeID); err == nil {
+		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.selections_changed", "user", strconv.FormatInt(id, 10),
+			map[string]int{"categories": len(beforeCats), "services": len(beforeSvcs)},
+			map[string]int{"categories": len(afterCats), "services": len(afterSvcs)})
 	}
 
 	if s.bgp != nil {

@@ -116,6 +116,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	mux.HandleFunc("GET /api/admin/bgp/status", server.apiRequireAdmin(server.apiBGPStatus))
 	mux.HandleFunc("POST /api/admin/bgp/reload", server.apiRequireAdmin(server.apiBGPReload))
 	mux.HandleFunc("GET /api/admin/debug", server.apiRequireAdmin(server.apiDebugCIDR))
+	mux.HandleFunc("GET /api/admin/audit-log", server.apiRequireAdmin(server.apiAuditLogList))
 	mux.HandleFunc("POST /api/admin/settings/purge-metrics", server.apiRequireAdmin(server.apiSettingsPurgeMetrics))
 
 	// User API routes (user-facing, cookie-based or IP-based auth)

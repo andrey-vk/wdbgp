@@ -30,6 +30,10 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	beforeFilters := map[string]string{
+		"filter_allow": s.settings.FilterAllow.Get(),
+		"filter_deny":  s.settings.FilterDeny.Get(),
+	}
 
 	// Validate every key before applying any of them. Without this, a
 	// request with one valid and one invalid field could persist the valid
@@ -61,6 +65,15 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 		if filterKeysAffectBGP[key] {
 			reconcileNeeded = true
 		}
+	}
+
+	if reconcileNeeded {
+		afterFilters := map[string]string{
+			"filter_allow": s.settings.FilterAllow.Get(),
+			"filter_deny":  s.settings.FilterDeny.Get(),
+		}
+		s.recordAuditIfChanged(ctx, r, s.adminActor(r), "route_filters.global_updated", "settings", "",
+			beforeFilters, afterFilters)
 	}
 
 	// Global route filters change what DesiredPrefixes() computes, so a
@@ -100,6 +113,8 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 		return callStringSetting(ctx, s.settings.AdminCookieSecure, raw)
 	case "allow_dynamic_peers":
 		return callBoolSetting(ctx, s.settings.AllowDynamicPeers, raw)
+	case "audit_log_retention_days":
+		return callIntSetting(ctx, s.settings.AuditLogRetentionDays, raw)
 	case "auto_restore_enabled":
 		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
 	case "bgp_hold_time":
@@ -218,6 +233,11 @@ func (s *Server) validateSettingKey(key string, raw json.RawMessage) error {
 			return nil
 		}
 		return callBoolValidate(s.settings.AllowDynamicPeers, raw)
+	case "audit_log_retention_days":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.AuditLogRetentionDays, raw)
 	case "auto_restore_enabled":
 		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
 	case "bgp_hold_time":
@@ -439,6 +459,8 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 		return s.settings.AdminCookieSecure.Reset(ctx)
 	case "allow_dynamic_peers":
 		return s.settings.AllowDynamicPeers.Reset(ctx)
+	case "audit_log_retention_days":
+		return s.settings.AuditLogRetentionDays.Reset(ctx)
 	case "auto_restore_enabled":
 		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
 	case "bgp_hold_time":

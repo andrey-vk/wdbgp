@@ -211,7 +211,8 @@ func serve(s *settings.Settings, db *store.Store) error {
 	return err
 }
 
-// purgeLoop periodically removes old metric snapshots based on metrics_history_days.
+// purgeLoop periodically removes old metric snapshots based on metrics_history_days,
+// and old audit log entries based on audit_log_retention_days.
 func purgeLoop(ctx context.Context, interval time.Duration, db *store.Store, s *settings.Settings) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -220,18 +221,25 @@ func purgeLoop(ctx context.Context, interval time.Duration, db *store.Store, s *
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !s.MetricsEnabled.Get() {
-				continue
+			if s.MetricsEnabled.Get() {
+				days := s.MetricsHistoryDays.Get()
+				if days <= 0 {
+					days = 14
+				}
+				if err := db.PurgeUserSnapshots(ctx, days); err != nil {
+					logging.Error("metrics purge failed for user snapshots", "error", err)
+				}
+				if err := db.PurgeFeedSnapshots(ctx, days); err != nil {
+					logging.Error("metrics purge failed for feed snapshots", "error", err)
+				}
 			}
-			days := s.MetricsHistoryDays.Get()
-			if days <= 0 {
-				days = 14
+
+			auditDays := s.AuditLogRetentionDays.Get()
+			if auditDays <= 0 {
+				auditDays = 30
 			}
-			if err := db.PurgeUserSnapshots(ctx, days); err != nil {
-				logging.Error("metrics purge failed for user snapshots", "error", err)
-			}
-			if err := db.PurgeFeedSnapshots(ctx, days); err != nil {
-				logging.Error("metrics purge failed for feed snapshots", "error", err)
+			if err := db.PurgeAuditLog(ctx, auditDays); err != nil {
+				logging.Error("audit log purge failed", "error", err)
 			}
 		}
 	}

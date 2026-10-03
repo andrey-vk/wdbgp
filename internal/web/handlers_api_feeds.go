@@ -205,6 +205,15 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 	if extraHosts := s.store.BuiltinAdapterAllowedHosts(r.Context(), body.AdapterID); extraHosts != "" {
 		body.AllowedHosts = mergeAllowedHosts(body.AllowedHosts, extraHosts)
 	}
+	before, err := s.store.Feed(r.Context(), id)
+	if err != nil {
+		if store.IsNotFound(err) {
+			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Feed not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
 	f := store.Feed{
 		ID: id, Name: body.Name, URL: body.URL, Enabled: body.Enabled,
 		SyncInterval: int(body.SyncInterval), Data: body.Data,
@@ -225,6 +234,8 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to read updated feed"})
 		return
 	}
+	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "feed.enabled_changed", "feed", strconv.FormatInt(id, 10),
+		map[string]bool{"enabled": before.Enabled}, map[string]bool{"enabled": updated.Enabled})
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after feed update", "error", err)

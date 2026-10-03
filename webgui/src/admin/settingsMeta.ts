@@ -22,6 +22,7 @@ export const defaults: Record<string, string> = {
   admin_cookie_secure: 'auto',
   admin_password: '',
   allow_dynamic_peers: 'false',
+  audit_log_retention_days: '30',
   auto_restore_enabled: 'false',
   bgp_hold_time: '90',
   bgp_port: '179',
@@ -155,6 +156,12 @@ export const sections: SettingsSection[] = [
     fields: {
       metrics_enabled:     { label: 'settings.metrics_enabled',     hint: 'settings.metrics_enabled_hint',     type: 'bool' },
       metrics_history_days:{ label: 'settings.metrics_history_days', hint: 'settings.metrics_history_days_hint', type: 'number' },
+    },
+  },
+  {
+    name: 'settings.section_audit_log',
+    fields: {
+      audit_log_retention_days: { label: 'settings.audit_log_retention_days', hint: 'settings.audit_log_retention_days_hint', type: 'number', envVar: 'WDBGP_AUDIT_LOG_RETENTION_DAYS' },
     },
   },
   {

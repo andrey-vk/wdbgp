@@ -406,6 +406,26 @@ side contributed which entry.
 `GET /api/user/route-filters` powers it, deriving everything from the authenticated session —
 there is no parameter to request anyone else's filters.
 
+### Audit log
+
+An append-only log of who changed what, scoped to the actions most likely to cause the
+kind of "what changed in the last 24h" question that's otherwise unanswerable: community
+assignments (manual edits, reset, generate), route filters (the global settings and any
+per-user override), feed enable/disable, moving a user between catalog modes, and selection
+changes (self-service and admin-direct). Each entry records an actor, action, object type
+and ID, a timestamp, and a before/after snapshot of just the fields that changed — nothing
+is recorded when a request doesn't actually change anything (e.g. re-submitting the same
+filter value, or a feed update that doesn't touch `enabled`).
+
+There is no multi-admin identity in this codebase today — the admin session is a single
+shared password/token — so the actor for an admin-triggered change is `admin:<ip>`; a
+self-service change made by an end user is `user:<id>`.
+
+`GET /api/admin/audit-log` lists entries with `actor`/`action`/`object_type`/`object_id`/
+`since`/`until` filters and `limit`/`offset` pagination (surfaced on the admin "Audit Log"
+page). Entries are retained for `audit_log_retention_days` (default 30) and purged hourly
+alongside the metrics snapshot purge.
+
 ### Validation and constraints
 
 All values are validated on startup with helpful error messages. If not specified, defaults apply.

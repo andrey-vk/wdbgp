@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -422,7 +423,13 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.store.Transaction(ctx, func(tx *sql.Tx) error {
+	beforeCats, beforeSvcs, err := s.store.UserModeSelection(ctx, user.ID, user.CatalogModeID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
+	err = s.store.Transaction(ctx, func(tx *sql.Tx) error {
 		for _, c := range body.Categories {
 			if err := store.ToggleSelectedCategory(ctx, tx, user.ID, user.CatalogModeID, c.Category, c.Checked); err != nil {
 				return err
@@ -438,6 +445,16 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
+	}
+	// Counts only, not the full selection list (could be large) — this means
+	// a request that swaps one selected category for a different one while
+	// leaving the total count unchanged won't be flagged as a change. A
+	// known, accepted limitation of summarizing rather than diffing the
+	// full list.
+	if afterCats, afterSvcs, err := s.store.UserModeSelection(ctx, user.ID, user.CatalogModeID); err == nil {
+		s.recordAuditIfChanged(ctx, r, userActor(user.ID), "user.selections_changed", "user", strconv.FormatInt(user.ID, 10),
+			map[string]int{"categories": len(beforeCats), "services": len(beforeSvcs)},
+			map[string]int{"categories": len(afterCats), "services": len(afterSvcs)})
 	}
 
 	if s.bgp != nil {
@@ -472,10 +489,18 @@ func (s *Server) apiUserSaveFilters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	before, err := s.store.UserRouteFilters(ctx, user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+
 	if err := s.store.SetUserRouteFilters(ctx, user.ID, body); err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	s.recordAuditIfChanged(ctx, r, userActor(user.ID), "route_filters.user_updated", "user", strconv.FormatInt(user.ID, 10),
+		before, body)
 
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(ctx); err != nil {
@@ -610,6 +635,8 @@ func (s *Server) apiUserSwitchMode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to update catalog mode"})
 		return
 	}
+	s.recordAuditIfChanged(r.Context(), r, userActor(user.ID), "user.mode_changed", "user", strconv.FormatInt(user.ID, 10),
+		map[string]int64{"catalog_mode_id": user.CatalogModeID}, map[string]int64{"catalog_mode_id": body.ModeID})
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Catalog mode updated but BGP reconciliation failed: " + err.Error()})
