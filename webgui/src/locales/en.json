@@ -281,6 +281,7 @@
   "modes.saved": "Mode saved.",
   "modes.deleted": "Mode deleted.",
   "modes.feeds_save_failed": "Failed to save feed assignments",  "modes.feeds_saved": "Feed assignments updated.",
+  "modes.save_failed": "Failed to save the mode",
   "modes.feeds_hint": "Select which feeds belong to this catalog mode.",
   "communities.reset": "Reset to defaults",
   "communities.regenerate": "Regenerate missing",

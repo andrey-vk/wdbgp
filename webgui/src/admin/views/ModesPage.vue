@@ -103,7 +103,9 @@ function openCommunities() {
 }
 
 async function toggleModeEnabled() {
-  if (!selected.value) return
+  // Feeds still loading means the persisted feed set this preview relies on
+  // isn't known yet, so previewing now could report a false 0 -> 0.
+  if (!selected.value || loadingFeeds.value) return
   const newEnabled = !selected.value.enabled
   try {
     // Previewed against the persisted feed set, not the form's in-progress
@@ -191,31 +193,43 @@ async function handleSave() {
 
     let savedMode: Mode
     let feedsSaveFailed = false
-    if (enabling) {
-      if (!await saveFeeds(selected.value!.id)) {
-        await loadModeFeeds()
-        toast.add({ severity: 'error', summary: t('modes.feeds_save_failed'), life: 3000 })
-        return
-      }
-      savedMode = (await apiClient.put<Mode>('/admin/modes/' + selected.value!.id, {
-        name: form.value.name,
-        enabled: form.value.enabled,
-      })).data
-    } else {
-      let resp: AxiosResponse<Mode>
-      if (!selected.value) {
-        resp = await apiClient.post<Mode>('/admin/modes', {
+    try {
+      if (enabling) {
+        // The rename goes first, while still disabled: a name conflict then
+        // fails before any feed change lands.
+        await apiClient.put('/admin/modes/' + selected.value!.id, {
           name: form.value.name,
-          enabled: form.value.enabled,
+          enabled: false,
         })
+        if (!await saveFeeds(selected.value!.id)) {
+          await loadModeFeeds()
+          toast.add({ severity: 'error', summary: t('modes.feeds_save_failed'), life: 3000 })
+          return
+        }
+        savedMode = (await apiClient.put<Mode>('/admin/modes/' + selected.value!.id, {
+          name: form.value.name,
+          enabled: true,
+        })).data
       } else {
-        resp = await apiClient.put<Mode>('/admin/modes/' + selected.value.id, {
-          name: form.value.name,
-          enabled: form.value.enabled,
-        })
+        let resp: AxiosResponse<Mode>
+        if (!selected.value) {
+          resp = await apiClient.post<Mode>('/admin/modes', {
+            name: form.value.name,
+            enabled: form.value.enabled,
+          })
+        } else {
+          resp = await apiClient.put<Mode>('/admin/modes/' + selected.value.id, {
+            name: form.value.name,
+            enabled: form.value.enabled,
+          })
+        }
+        savedMode = resp.data
+        feedsSaveFailed = !await saveFeeds(savedMode.id)
       }
-      savedMode = resp.data
-      feedsSaveFailed = !await saveFeeds(savedMode.id)
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { error?: string } } }).response?.data?.error || t('modes.save_failed')
+      toast.add({ severity: 'error', summary: msg, life: 4000 })
+      return
     }
 
     // The mode itself (name/enabled) is already persisted at this point
@@ -406,7 +420,7 @@ defineExpose({
               <Button v-if="selected && !editMode" :label="t('modes.communities_button')" icon="pi pi-hashtag" severity="secondary" size="small" @click="openCommunities" />
               <div v-if="selected && !editMode" class="switch-row">
                 <FormField :label="t('modes.enabled')" input-id="menabled-hdr">
-                  <ToggleSwitch id="menabled-hdr" :modelValue="selected.enabled" @change="toggleModeEnabled" />
+                  <ToggleSwitch id="menabled-hdr" :modelValue="selected.enabled" :disabled="loadingFeeds" @change="toggleModeEnabled" />
                 </FormField>
               </div>
             </div>

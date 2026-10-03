@@ -327,7 +327,7 @@ describe('ModesPage', () => {
   // Regression: a mode's enabled flag reconciles BGP on save, so enabling a
   // mode must save its feeds first — otherwise it announces its old feed set
   // before the previewed one is installed.
-  it('saves feeds before enabling a disabled mode, so nothing unpreviewed is announced', async () => {
+  it('renames while still disabled, then saves feeds, then enables, so nothing unpreviewed is announced', async () => {
     mockGet.mockImplementation((url: string) => {
       if (url === '/admin/modes') {
         return Promise.resolve({ data: { modes: [{ id: 9, name: 'existing-mode', enabled: false, feed_count: 1 }] } })
@@ -354,13 +354,13 @@ describe('ModesPage', () => {
       return Promise.resolve({ data: {} })
     })
     const order: string[] = []
-    mockPut.mockImplementation((url: string) => {
-      order.push(url)
+    mockPut.mockImplementation((url: string, body: { enabled?: boolean }) => {
+      order.push(url + (body && 'enabled' in body ? `:enabled=${body.enabled}` : ''))
       return Promise.resolve({ data: { id: 9, name: 'existing-mode', enabled: true, feed_count: 1 } })
     })
 
     await vm.handleSave()
 
-    expect(order).toEqual(['/admin/modes/9/feeds', '/admin/modes/9'])
+    expect(order).toEqual(['/admin/modes/9:enabled=false', '/admin/modes/9/feeds', '/admin/modes/9:enabled=true'])
   })
 })
