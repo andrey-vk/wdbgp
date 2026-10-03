@@ -360,7 +360,22 @@ type AuditCommunityList struct {
 // storage.
 func boundCommunitiesForAudit(entries []Community) AuditCommunityList {
 	capped, truncated := BoundSlice(entries, MaxAuditDiffEntries)
-	return AuditCommunityList{Entries: capped, Truncated: truncated}
+	// Category/Service are also bounded per entry, not just the entry
+	// count: apiModeCommunitiesPut lets an admin supply arbitrary
+	// category/service names, and a synced feed can supply much larger
+	// ones, so MaxAuditDiffEntries alone doesn't bound an individual
+	// entry's size — the same gap route-filter audits had before
+	// MaxAuditEntryBytes.
+	bounded := make([]Community, len(capped))
+	for i, c := range capped {
+		bounded[i] = Community{
+			ModeID:    c.ModeID,
+			Category:  truncateUTF8(c.Category, MaxAuditEntryBytes),
+			Service:   truncateUTF8(c.Service, MaxAuditEntryBytes),
+			Community: c.Community,
+		}
+	}
+	return AuditCommunityList{Entries: bounded, Truncated: truncated}
 }
 
 // CommunityChange is one community assignment that a reset would alter.

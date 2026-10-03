@@ -42,6 +42,37 @@ func TestDiffCommunityRows(t *testing.T) {
 	}
 }
 
+// TestBoundCommunitiesForAuditCapsCategoryAndServiceBytes checks that
+// boundCommunitiesForAudit truncates Category/Service per entry, not just
+// the entry count — apiModeCommunitiesPut lets an admin supply an
+// arbitrary category/service name with no length limit of its own.
+func TestBoundCommunitiesForAuditCapsCategoryAndServiceBytes(t *testing.T) {
+	hugeCategory := strings.Repeat("A", MaxAuditEntryBytes*4)
+	hugeService := strings.Repeat("B", MaxAuditEntryBytes*4)
+	entries := []Community{
+		{ModeID: 1, Category: hugeCategory, Service: hugeService, Community: 100},
+	}
+
+	bounded := boundCommunitiesForAudit(entries)
+
+	if bounded.Truncated != 0 {
+		t.Fatalf("Truncated = %d, want 0 (only one entry, none omitted)", bounded.Truncated)
+	}
+	if len(bounded.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1", len(bounded.Entries))
+	}
+	e := bounded.Entries[0]
+	if len(e.Category) > MaxAuditEntryBytes {
+		t.Fatalf("Category len = %d, want <= %d", len(e.Category), MaxAuditEntryBytes)
+	}
+	if len(e.Service) > MaxAuditEntryBytes {
+		t.Fatalf("Service len = %d, want <= %d", len(e.Service), MaxAuditEntryBytes)
+	}
+	if e.ModeID != 1 || e.Community != 100 {
+		t.Fatalf("entry = %+v, want ModeID=1 Community=100 preserved", e)
+	}
+}
+
 // TestGenerateCommunitiesHandlesMultiServiceCategoriesAndIsIdempotent covers
 // the refactor that replaced genCommunitiesRuntime's per-category N+1
 // service query with a single batched (category, service) query, and

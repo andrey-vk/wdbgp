@@ -218,6 +218,45 @@ func TestAuditHookCommunitiesGenerateNoopWhenNothingToGenerate(t *testing.T) {
 	}
 }
 
+// TestAuditHookCommunitiesPutCapsOversizedCategoryName checks that a PUT
+// introducing a community for a brand-new (category, service) pair with
+// an oversized name — apiModeCommunitiesPut validates none of this, and
+// SetCommunities creates dictionary rows for a name it's never seen
+// before — records an audit entry with that name truncated, not stored
+// verbatim.
+func TestAuditHookCommunitiesPutCapsOversizedCategoryName(t *testing.T) {
+	srv, st, modeID := modeWithCatalogFixture(t)
+
+	hugeCategory := strings.Repeat("A", store.MaxAuditEntryBytes*4)
+	body := fmt.Sprintf(`{"communities":[{"category":%q,"service":"svc-x","community":99999}]}`, hugeCategory)
+	req := httptest.NewRequest("PUT", "/api/admin/modes/x/communities", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w := httptest.NewRecorder()
+	srv.apiModeCommunitiesPut(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("put: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "communities.updated")
+	var afterList store.AuditCommunityList
+	if err := json.Unmarshal([]byte(e.After), &afterList); err != nil {
+		t.Fatalf("unmarshal after: %v", err)
+	}
+	found := false
+	for _, c := range afterList.Entries {
+		if c.Service == "svc-x" {
+			found = true
+			if len(c.Category) > store.MaxAuditEntryBytes {
+				t.Fatalf("Category len = %d, want <= %d", len(c.Category), store.MaxAuditEntryBytes)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("after entries = %+v, want an entry for svc-x", afterList.Entries)
+	}
+}
+
 // TestAuditHookCommunitiesGenerateOnlyRecordsNewAssignments checks that
 // generating communities for a mode that already has some assignments
 // filled records an audit after containing only the newly filled entries
