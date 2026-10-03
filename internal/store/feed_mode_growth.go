@@ -84,29 +84,47 @@ WHERE cme.mode_id = ?`, modeID)
 }
 
 // ModeGrowth lists, per mode and category, the prefixes announced after a sync
-// that weren't announced through that category before it.
+// that weren't announced through that category before it. Each category's set
+// is normalized first: a prefix covered by a broader one in the same category
+// adds no route, so it isn't growth (prefixfilter.Apply drops such prefixes too).
 func ModeGrowth(before, after ModePrefixCategories) []ModeCategoryGrowth {
 	type key struct {
 		mode     int64
 		category string
 	}
-	added := map[key][]netip.Prefix{}
-	for modeID, afterPrefixes := range after {
-		for prefixID, a := range afterPrefixes {
-			prior := before[modeID][prefixID]
-			for category := range a.categories {
-				if prior != nil && prior.categories[category] {
-					continue
+	beforeSets := map[key]map[netip.Prefix]bool{}
+	afterSets := map[key]map[netip.Prefix]bool{}
+	collect := func(snap ModePrefixCategories, into map[key]map[netip.Prefix]bool) {
+		for modeID, prefixes := range snap {
+			for _, a := range prefixes {
+				for category := range a.categories {
+					k := key{modeID, category}
+					if into[k] == nil {
+						into[k] = map[netip.Prefix]bool{}
+					}
+					into[k][a.prefix] = true
 				}
-				k := key{modeID, category}
-				added[k] = append(added[k], a.prefix)
 			}
 		}
 	}
-	out := make([]ModeCategoryGrowth, 0, len(added))
-	for k, prefixes := range added {
-		sort.Slice(prefixes, func(i, j int) bool { return prefixes[i].String() < prefixes[j].String() })
-		out = append(out, ModeCategoryGrowth{ModeID: k.mode, Category: k.category, Prefixes: prefixes})
+	collect(before, beforeSets)
+	collect(after, afterSets)
+
+	var out []ModeCategoryGrowth
+	for k, set := range afterSets {
+		normAfter := normalizeCovered(set)
+		normBefore := normalizeCovered(beforeSets[k])
+		var added []netip.Prefix
+		for p := range normAfter {
+			if !normBefore[p] {
+				added = append(added, p)
+			}
+		}
+		if len(added) == 0 {
+			continue
+		}
+		sort.Slice(added, func(i, j int) bool { return added[i].String() < added[j].String() })
+		out = append(out, ModeCategoryGrowth{ModeID: k.mode, Category: k.category, Prefixes: added})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].ModeID != out[j].ModeID {
@@ -115,4 +133,25 @@ func ModeGrowth(before, after ModePrefixCategories) []ModeCategoryGrowth {
 		return out[i].Category < out[j].Category
 	})
 	return out
+}
+
+// normalizeCovered drops every prefix that a broader prefix in the set covers.
+func normalizeCovered(set map[netip.Prefix]bool) map[netip.Prefix]bool {
+	out := make(map[netip.Prefix]bool, len(set))
+	for p := range set {
+		if !covered(p, set) {
+			out[p] = true
+		}
+	}
+	return out
+}
+
+// covered reports whether a strictly broader prefix in the set contains p.
+func covered(p netip.Prefix, set map[netip.Prefix]bool) bool {
+	for bits := p.Bits() - 1; bits >= 0; bits-- {
+		if set[netip.PrefixFrom(p.Addr(), bits).Masked()] {
+			return true
+		}
+	}
+	return false
 }

@@ -446,7 +446,7 @@ async function loadList() {
               <span class="font-medium">{{ t('feeds.sync_changes_title') }}</span>
               <div
                 v-for="change in syncChanges"
-                :key="change.synced_at"
+                :key="change.change_id"
                 class="text-sm flex flex-col gap-0.5 border-b border-gray-100 dark:border-gray-800 pb-2"
               >
                 <span class="text-gray-500 dark:text-gray-400">{{ new Date(change.synced_at * 1000).toLocaleString() }}</span>

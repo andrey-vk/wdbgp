@@ -179,6 +179,7 @@ type FeedSyncCategory struct {
 }
 
 type FeedSyncChange struct {
+	ID              int64              `json:"change_id"`
 	SyncedAt        int64              `json:"synced_at"`
 	AddedServices   int                `json:"added_services"`
 	RemovedServices int                `json:"removed_services"`
@@ -200,14 +201,13 @@ ORDER BY synced_at DESC, id DESC LIMIT ?`, feedID, limit)
 	var out []FeedSyncChange
 	var ids []int64
 	for rows.Next() {
-		var id int64
 		var c FeedSyncChange
-		if err := rows.Scan(&id, &c.SyncedAt, &c.AddedServices, &c.RemovedServices, &c.AddedPrefixes, &c.RemovedPrefixes); err != nil {
+		if err := rows.Scan(&c.ID, &c.SyncedAt, &c.AddedServices, &c.RemovedServices, &c.AddedPrefixes, &c.RemovedPrefixes); err != nil {
 			return nil, err
 		}
 		c.Categories = []FeedSyncCategory{}
 		out = append(out, c)
-		ids = append(ids, id)
+		ids = append(ids, c.ID)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

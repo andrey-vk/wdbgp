@@ -6,6 +6,7 @@ export interface FeedSyncCategory {
 }
 
 export interface FeedSyncChange {
+  change_id: number
   synced_at: number
   added_services: number
   removed_services: number
