@@ -706,6 +706,32 @@ func TestAuditHookFeedEnabledChanged(t *testing.T) {
 	}
 }
 
+// TestAuditHookTruncatesOversizedUserAgent checks the auditEntryTx insert
+// path (every tx-folded hook since round 8) truncates an oversized
+// User-Agent header the same way RecordAuditLog's direct path does — an
+// authenticated caller could otherwise send a huge User-Agent on every
+// mutating request to grow audit_log arbitrarily fast.
+func TestAuditHookTruncatesOversizedUserAgent(t *testing.T) {
+	srv, st, feedID := feedFixture(t)
+	idStr := strconv.FormatInt(feedID, 10)
+
+	req := httptest.NewRequest("PUT", "/api/admin/feeds/"+idStr, strings.NewReader(
+		`{"name":"audit-feed","url":"http://example.com/feed.json","enabled":false,"sync_interval":3600,"mode_id":1,"adapter_id":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", strings.Repeat("A", 10_000))
+	req.SetPathValue("id", idStr)
+	w := httptest.NewRecorder()
+	srv.apiFeedsUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "feed.enabled_changed")
+	if len(e.UserAgent) >= 10_000 {
+		t.Fatalf("stored UserAgent len = %d, want far less than 10000", len(e.UserAgent))
+	}
+}
+
 func TestAuditHookFeedEnabledNoopWhenUnchanged(t *testing.T) {
 	srv, st, feedID := feedFixture(t)
 	idStr := strconv.FormatInt(feedID, 10)

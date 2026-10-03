@@ -6,7 +6,33 @@ import (
 	"encoding/json"
 	"log"
 	"time"
+	"unicode/utf8"
 )
+
+// maxAuditUserAgent bounds the User-Agent header value stored per audit
+// row. It comes straight from the request with no length check of its
+// own, and HTTP headers can be sent close to a server's ~1MiB header
+// limit — without a cap, an authenticated caller alternating two valid
+// mutation values on repeated requests could grow audit_log arbitrarily
+// fast just by sending a huge User-Agent every time. Real User-Agent
+// strings are a few hundred bytes at most, so this has no effect on any
+// legitimate one.
+const maxAuditUserAgent = 512
+
+// truncateUserAgent bounds s to maxAuditUserAgent bytes, cutting at a
+// valid UTF-8 rune boundary so truncation can't produce invalid UTF-8 that
+// a later consumer (the admin UI, an API client decoding the stored
+// value) chokes on.
+func truncateUserAgent(s string) string {
+	if len(s) <= maxAuditUserAgent {
+		return s
+	}
+	cut := maxAuditUserAgent
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
 
 // AuditLogEntry is one row of the append-only audit_log table.
 type AuditLogEntry struct {
@@ -32,7 +58,7 @@ func (s *Store) RecordAuditLog(ctx context.Context, e AuditLogEntry) error {
 	_, err := s.DB.ExecContext(ctx, `
 		INSERT INTO audit_log (recorded_at, actor, user_agent, action, object_type, object_id, before, after)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		recordedAt.Unix(), e.Actor, e.UserAgent, e.Action, e.ObjectType, e.ObjectID, e.Before, e.After)
+		recordedAt.Unix(), e.Actor, truncateUserAgent(e.UserAgent), e.Action, e.ObjectType, e.ObjectID, e.Before, e.After)
 	return err
 }
 
@@ -159,7 +185,7 @@ func auditEntryTx(ctx context.Context, tx *sql.Tx, meta AuditMeta, objectType, o
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO audit_log (recorded_at, actor, user_agent, action, object_type, object_id, before, after)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		time.Now().UTC().Unix(), meta.Actor, meta.UserAgent, meta.Action, objectType, objectID,
+		time.Now().UTC().Unix(), meta.Actor, truncateUserAgent(meta.UserAgent), meta.Action, objectType, objectID,
 		string(beforeJSON), string(afterJSON))
 	return err
 }

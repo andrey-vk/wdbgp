@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestRecordAndListAuditLog(t *testing.T) {
@@ -213,5 +215,61 @@ func TestPurgeAuditLogExtremeRetentionDoesNotDeleteEverything(t *testing.T) {
 	}
 	if total != 1 {
 		t.Fatalf("total = %d, want 1 (an absurd retention-days value must not delete everything via integer overflow)", total)
+	}
+}
+
+// TestTruncateUserAgent covers the boundary cases directly: short values
+// pass through untouched, an oversized value is cut to exactly the limit,
+// and a multi-byte UTF-8 rune straddling the cut point is excluded
+// entirely rather than split (which would store invalid UTF-8).
+func TestTruncateUserAgent(t *testing.T) {
+	short := "Mozilla/5.0 (test)"
+	if got := truncateUserAgent(short); got != short {
+		t.Fatalf("short value changed: got %q, want unchanged %q", got, short)
+	}
+
+	long := strings.Repeat("A", maxAuditUserAgent+100)
+	got := truncateUserAgent(long)
+	if len(got) != maxAuditUserAgent {
+		t.Fatalf("len(got) = %d, want exactly %d", len(got), maxAuditUserAgent)
+	}
+
+	// A 3-byte rune ("€", U+20AC) placed so it straddles the cut boundary.
+	runeStraddling := strings.Repeat("A", maxAuditUserAgent-1) + "€" + strings.Repeat("B", 100)
+	got = truncateUserAgent(runeStraddling)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncated value is not valid UTF-8: %q", got)
+	}
+	if len(got) >= maxAuditUserAgent {
+		t.Fatalf("len(got) = %d, want < %d (the straddling rune must be excluded, not split)", len(got), maxAuditUserAgent)
+	}
+}
+
+// TestRecordAuditLogTruncatesOversizedUserAgent checks the actual insert
+// path: a caller-supplied UserAgent far beyond any real browser's, as an
+// authenticated caller could send on every request via the User-Agent
+// header (no length limit of its own, up to the server's own header-size
+// cap), must not be stored verbatim — the next request's row would just
+// keep growing the table.
+func TestRecordAuditLogTruncatesOversizedUserAgent(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	oversized := strings.Repeat("A", maxAuditUserAgent*4)
+	if err := s.RecordAuditLog(ctx, AuditLogEntry{
+		Actor: "user:1", UserAgent: oversized, Action: "test.oversized_ua", ObjectType: "t", ObjectID: "1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, total, err := s.ListAuditLog(ctx, AuditLogFilter{Action: "test.oversized_ua"}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if len(entries[0].UserAgent) > maxAuditUserAgent {
+		t.Fatalf("stored UserAgent len = %d, want <= %d", len(entries[0].UserAgent), maxAuditUserAgent)
 	}
 }
