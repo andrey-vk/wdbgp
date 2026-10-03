@@ -216,7 +216,7 @@ async function handleLogout(): Promise<void> {
   countData.value = null
   checkedCategories.value = new Set()
   checkedServices.value = new Set()
-  routeFiltersInfo.value = null
+  invalidateRouteFiltersInfo()
   lookupQuery.value = ''
   invalidateLookup()
   loginForm.login = ''
@@ -260,13 +260,25 @@ async function loadUserData(userData: UserDataResponse): Promise<void> {
   await fetchRouteFiltersInfo()
 }
 
+// Bumps routeFiltersRequest's sequence so a GET still in flight at logout
+// can't land in the next user's session: loadUserData awaits fetchCounts()
+// before starting that user's own fetchRouteFiltersInfo call, and until
+// that call starts nothing else advances the sequence — so a stale
+// response arriving during that wait (e.g. because the next user's own
+// count fetch is slow) would otherwise still read as "current" and
+// restore the previous user's filters into their view, indefinitely if
+// that count fetch stalls.
+function invalidateRouteFiltersInfo(): void {
+  routeFiltersRequest.next()
+  routeFiltersInfo.value = null
+}
+
 // Filters in effect don't depend on catalog mode or selections, but
 // loadUserData already re-runs on login/mode-switch/initial-auth, so
 // refetching here is the simplest correct place for a cheap, idempotent GET.
-// Sequenced like fetchCounts: if user A logs out (or switches mode) while
-// this is in flight and B logs in (or a newer fetch starts) before it
-// resolves, the token guard below drops A's stale response instead of
-// letting it overwrite B's already-displayed data.
+// Sequenced like fetchCounts: if a newer fetch starts (a mode switch, a
+// save) before this one resolves, the token guard below drops the stale
+// response instead of letting it overwrite the newer one's data.
 async function fetchRouteFiltersInfo(): Promise<void> {
   const token = routeFiltersRequest.next()
   try {

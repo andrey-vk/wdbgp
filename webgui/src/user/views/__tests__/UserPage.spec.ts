@@ -1444,5 +1444,106 @@ describe('UserPage', () => {
       expect(routeFiltersCalls).toBe(2)
       expect(wrapper.find('[data-testid="route-filters-effective"]').text()).toContain('192.168.0.0/16')
     })
+
+    it('never shows a previous user\'s stale filters to the next user who logs in on the same page', async () => {
+      // User A has a route-filters request in flight (triggered by a
+      // filter save) when they log out; user B logs in while B's own
+      // count-prefixes fetch is still pending — loadUserData awaits that
+      // before starting B's own route-filters fetch. A's stale response
+      // must never become visible in B's session, however it resolves.
+      const aliceData = { ...baseUserData, user: { ...baseUserData.user, filter_editable: true } }
+      const bobData = {
+        ...baseUserData,
+        user: { ...baseUserData.user, id: 2, name: 'Bob' },
+      }
+      let resolveAliceStale: (v: { data: unknown }) => void = () => {}
+      let resolveBobCounts: (v: { data: unknown }) => void = () => {}
+      let routeFiltersCalls = 0
+      let meCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') {
+          meCalls++
+          return Promise.resolve({ data: aliceData }) // only the initial mount uses /user/me here
+        }
+        if (url === '/user/route-filters') {
+          routeFiltersCalls++
+          if (routeFiltersCalls === 1) {
+            return Promise.resolve({
+              data: { mode: 'global', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+            })
+          }
+          if (routeFiltersCalls === 2) return new Promise((resolve) => { resolveAliceStale = resolve }) // Alice's save-triggered refetch
+          return Promise.resolve({
+            data: { mode: 'override', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+          }) // Bob's own refetch
+        }
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      let countCalls = 0
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/user/filters') return Promise.resolve({ data: { ok: true } })
+        if (url === '/user/logout') return Promise.resolve({ data: { ok: true } })
+        if (url === '/user/login') return Promise.resolve({ data: bobData })
+        if (url === '/user/count-prefixes') {
+          countCalls++
+          if (countCalls === 1) return Promise.resolve({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } }) // Alice's initial load
+          return new Promise((resolve) => { resolveBobCounts = resolve }) // Bob's own, left pending
+        }
+        return Promise.resolve({ data: {} })
+      })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(meCalls).toBe(1)
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_global')
+
+      // Alice saves her filters — the post-save refetch (call #2) is left pending.
+      const saveButton = wrapper.findAll('button').find((b) => b.text().includes('user.save_filters'))
+      await saveButton?.trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Alice logs out while that refetch is still in flight.
+      await wrapper.find('[data-testid="logout-button"]').trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(false)
+
+      // Bob logs in; his own count-prefixes fetch is left pending, so his
+      // route-filters fetch (call #3) hasn't started yet.
+      await wrapper.find('input[type="text"]').setValue('bob')
+      await wrapper.find('input[type="password"]').setValue('secret')
+      await wrapper.find('form').trigger('submit')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Alice's stale refetch resolves now — it must not reappear in Bob's
+      // session even though Bob's own fetch hasn't fired yet.
+      resolveAliceStale({
+        data: { mode: 'extend', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(false)
+
+      // Bob's own count fetch resolves, unblocking his own route-filters
+      // fetch (call #3) — his real data must display correctly.
+      resolveBobCounts({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_override')
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).not.toContain('user.route_filters_mode_extend')
+    })
+
   })
 })

@@ -460,7 +460,7 @@
   "user.route_filters_title": "Действующие фильтры",
   "user.route_filters_mode_global": "На вас действуют только глобальные фильтры ниже.",
   "user.route_filters_mode_extend": "Ваши собственные фильтры действуют в дополнение к глобальным.",
-  "user.route_filters_mode_override": "Ваши собственные фильтры заменяют глобальные — список глобальных фильтров ниже на вас не действует.",
+  "user.route_filters_mode_override": "Ваши собственные фильтры заменяют глобальные — глобальные фильтры на вас не действуют.",
   "user.route_filters_allow": "Разрешено",
   "user.route_filters_deny": "Запрещено",
   "user.route_filters_global": "Глобальные",

@@ -461,7 +461,7 @@
   "user.route_filters_title": "Filters in effect",
   "user.route_filters_mode_global": "Only the global filters below apply to you.",
   "user.route_filters_mode_extend": "Your own filters apply in addition to the global filters.",
-  "user.route_filters_mode_override": "Your own filters replace the global filters — the global list below does not apply to you.",
+  "user.route_filters_mode_override": "Your own filters replace the global filters — the global filters do not apply to you.",
   "user.route_filters_allow": "Allowed",
   "user.route_filters_deny": "Denied",
   "user.route_filters_global": "Global",
