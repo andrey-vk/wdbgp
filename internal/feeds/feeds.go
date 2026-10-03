@@ -394,9 +394,9 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		recordable := lastSuccess > 0 || len(prev) > 0
 		diff := store.DiffCatalogEntries(prev, next)
 		record := recordable && diff.HasChanges()
-		var before store.ModePrefixCategories
+		var growthCheck *store.GrowthCheck
 		if record {
-			if before, err = store.SnapshotFeedModePrefixesTx(ctx, tx, feed.ID); err != nil {
+			if growthCheck, err = store.BeginGrowthCheckTx(ctx, tx, feed.ID, diff); err != nil {
 				return err
 			}
 		}
@@ -419,11 +419,11 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		if !record {
 			return nil
 		}
-		after, err := store.SnapshotFeedModePrefixesTx(ctx, tx, feed.ID)
+		growth, err := growthCheck.FinishTx(ctx, tx)
 		if err != nil {
 			return err
 		}
-		return store.RecordFeedSyncChangeTx(ctx, tx, feed.ID, diff, store.ModeGrowth(before, after), time.Now().Unix())
+		return store.RecordFeedSyncChangeTx(ctx, tx, feed.ID, diff, growth, time.Now().Unix())
 	})
 	if errors.Is(err, errFeedChanged) {
 		return adapter.Revision, nil

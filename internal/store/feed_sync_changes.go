@@ -28,6 +28,9 @@ type FeedSyncDiff struct {
 	AddedAssociations   int
 	RemovedAssociations int
 	AddedByCategory     map[string]int
+
+	addedAssoc   []assocKey
+	removedAssoc []assocKey
 }
 
 func (d FeedSyncDiff) HasChanges() bool {
@@ -87,11 +90,13 @@ func DiffCatalogEntries(prev, next []CatalogEntry) FeedSyncDiff {
 	for a := range nextAssoc {
 		if !prevAssoc[a] {
 			d.AddedAssociations++
+			d.addedAssoc = append(d.addedAssoc, assocKey{a.category, a.prefix})
 		}
 	}
 	for a := range prevAssoc {
 		if !nextAssoc[a] {
 			d.RemovedAssociations++
+			d.removedAssoc = append(d.removedAssoc, assocKey{a.category, a.prefix})
 		}
 	}
 	return d
@@ -334,6 +339,21 @@ ORDER BY c.id, g.category, g.prefix_ip, g.prefix_bits`, userID, modeID, seenID, 
 			return nil, err
 		}
 		fragments[p] = len(kept)
+	}
+
+	// Growth a broader prefix the user already announces covers adds no route.
+	distinctList := make([]netip.Prefix, 0, len(fragments))
+	for p, n := range fragments {
+		if n > 0 {
+			distinctList = append(distinctList, p)
+		}
+	}
+	covered, err := announcedCoverers(ctx, s.DB, userID, modeID, filters, distinctList)
+	if err != nil {
+		return nil, err
+	}
+	for p := range covered {
+		fragments[p] = 0
 	}
 
 	var out []UserFeedChange

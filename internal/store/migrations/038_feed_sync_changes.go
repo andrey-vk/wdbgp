@@ -30,6 +30,9 @@ func V038(ctx context.Context, tx *sql.Tx) error {
 			prefix_bits INTEGER NOT NULL,
 			PRIMARY KEY (change_id, mode_id, category, prefix_ip, prefix_bits)
 		)`,
+		// Growth checks look materialized entries up by prefix within a mode.
+		// The table's primary key starts with service_id, so it can't serve that.
+		`CREATE INDEX IF NOT EXISTS idx_catalog_mode_entries_mode_prefix ON catalog_mode_entries(mode_id, prefix_id)`,
 		`CREATE TABLE IF NOT EXISTS user_feed_changes_seen (
 			user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			mode_id   INTEGER NOT NULL,
