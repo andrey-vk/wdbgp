@@ -332,23 +332,21 @@ func (s *Server) apiModeCommunitiesGet(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		communities[store.ServiceKey{Category: row.Category, Service: row.Service}] = row.Community
 	}
-	// Load catalog (categories and services) for this mode — enabled feeds
-	// only, which is what's actually listed below.
-	catalog, err := s.store.CatalogForMode(r.Context(), modeID, false)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load catalog"})
-		return
-	}
-	// A second, wider catalog read — including disabled feeds — purely to
-	// compute AutoCommunity/AutoGroupCommunity's positional index against
-	// the same ordering basis a real reset uses: genCommunitiesRuntime
-	// counts every include-linked feed's entries regardless of whether the
-	// feed is enabled, so a disabled feed whose category sorts earlier
-	// still shifts every later category's real assignment, even though it
-	// contributes no row to the list below. Computing the index from the
-	// enabled-only catalog instead would silently drift from what a reset
-	// actually produces whenever such a feed exists.
-	resetCatalog, err := s.store.CatalogForMode(r.Context(), modeID, true)
+	// Load the catalog twice over: the enabled-feeds-only scope that's
+	// actually listed below, and the wider reset scope (including disabled
+	// feeds) purely to compute AutoCommunity/AutoGroupCommunity's
+	// positional index against the same ordering basis a real reset uses —
+	// genCommunitiesRuntime counts every include-linked feed's entries
+	// regardless of whether the feed is enabled, so a disabled feed whose
+	// category sorts earlier still shifts every later category's real
+	// assignment, even though it contributes no row to the list below.
+	// Both scopes come from one transaction: two independent reads could
+	// each see their own, separately-committed snapshot if a feed sync
+	// landed between them, and since the reset scope is a superset of the
+	// visible one by construction, any visible category/service is
+	// guaranteed to be found in it too only when both come from the same
+	// point in time.
+	catalog, resetCatalog, err := s.store.CatalogScopesForMode(r.Context(), modeID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load catalog"})
 		return

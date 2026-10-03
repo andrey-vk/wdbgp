@@ -22,6 +22,26 @@ func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisable
 	return catalogForMode(ctx, s.DB, modeID, includeDisabled)
 }
 
+// CatalogScopesForMode reads the enabled-only catalog (what the admin
+// Communities list actually shows) and the reset-scope catalog (every
+// include-linked feed, regardless of whether it's enabled — the same scope
+// genCommunitiesRuntime counts when it decides each category's real
+// position) in one transaction. Two separate CatalogForMode calls here
+// would each see their own, independently-committed snapshot, so a feed
+// sync landing between them could leave the two maps describing different
+// catalog versions — e.g. a service the first read saw already removed
+// from the second, silently defaulting a position lookup against it to
+// zero instead of erroring. One transaction closes that window the same
+// way AllModeCommunitySnapshots does for the community export.
+func (s *Store) CatalogScopesForMode(ctx context.Context, modeID int64) (visible, reset map[string][]string, err error) {
+	visible, err = catalogForMode(ctx, s.DB, modeID, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	reset, err = catalogForMode(ctx, s.DB, modeID, true)
+	return visible, reset, err
+}
+
 // catalogForMode is CatalogForMode's implementation, parameterized on
 // queryer so a caller that needs it inside a larger transaction (e.g. a
 // consistent snapshot alongside communities and prefix counts) can pass a
