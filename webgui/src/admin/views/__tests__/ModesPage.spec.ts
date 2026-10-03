@@ -285,4 +285,82 @@ describe('ModesPage', () => {
 
     expect(mockPut).toHaveBeenCalled()
   })
+
+  it('previews the header enable switch before persisting the new enabled state', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/modes') {
+        return Promise.resolve({ data: { modes: [{ id: 9, name: 'existing-mode', enabled: true, feed_count: 1 }] } })
+      }
+      if (url === '/admin/modes/9/feeds') {
+        return Promise.resolve({ data: { feeds: [{ id: 1, name: 'inc', url: 'u1', enabled: true, adapter_name: 'a' }] } })
+      }
+      return Promise.resolve({ data: {} })
+    })
+
+    const { wrapper } = await mountModesPage()
+    const vm = wrapper.vm as ModesPageVM
+    vm.selectMode({ id: 9, name: 'existing-mode', enabled: true, feed_count: 1 })
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    mockPost.mockResolvedValue({
+      data: {
+        affected_users: [{ user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }],
+        total_delta_v4: -1, total_delta_v6: 0,
+      },
+    })
+    mockPut.mockResolvedValue({ data: {} })
+
+    const togglePromise = vm.toggleModeEnabled()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/modes/9/feeds/preview', {
+      feeds: [{ id: 1, exclude: false }],
+      enabled: false,
+    })
+    expect(mockPut).not.toHaveBeenCalled()
+
+    vm.applyBlastRadius()
+    await togglePromise
+    expect(mockPut).toHaveBeenCalledWith('/admin/modes/9', { enabled: false })
+  })
+
+  // Regression: a mode's enabled flag reconciles BGP on save, so enabling a
+  // mode must save its feeds first — otherwise it announces its old feed set
+  // before the previewed one is installed.
+  it('saves feeds before enabling a disabled mode, so nothing unpreviewed is announced', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/modes') {
+        return Promise.resolve({ data: { modes: [{ id: 9, name: 'existing-mode', enabled: false, feed_count: 1 }] } })
+      }
+      if (url === '/admin/modes/9/feeds') {
+        return Promise.resolve({ data: { feeds: [{ id: 1, name: 'inc', url: 'u1', enabled: true, adapter_name: 'a' }] } })
+      }
+      if (url === '/admin/feeds') {
+        return Promise.resolve({ data: { feeds: [{ id: 1, name: 'inc', url: 'u1', enabled: true, adapter_name: 'a' }] } })
+      }
+      return Promise.resolve({ data: {} })
+    })
+
+    const { wrapper } = await mountModesPage()
+    const vm = wrapper.vm as ModesPageVM
+    vm.selectMode({ id: 9, name: 'existing-mode', enabled: false, feed_count: 1 })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    vm.form.enabled = true
+
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/admin/modes/9/feeds/preview') {
+        return Promise.resolve({ data: { affected_users: [], total_delta_v4: 0, total_delta_v6: 0 } })
+      }
+      return Promise.resolve({ data: {} })
+    })
+    const order: string[] = []
+    mockPut.mockImplementation((url: string) => {
+      order.push(url)
+      return Promise.resolve({ data: { id: 9, name: 'existing-mode', enabled: true, feed_count: 1 } })
+    })
+
+    await vm.handleSave()
+
+    expect(order).toEqual(['/admin/modes/9/feeds', '/admin/modes/9'])
+  })
 })

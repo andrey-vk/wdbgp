@@ -106,6 +106,22 @@ async function toggleModeEnabled() {
   if (!selected.value) return
   const newEnabled = !selected.value.enabled
   try {
+    // Previewed against the persisted feed set, not the form's in-progress
+    // edits — this switch saves only the enabled flag.
+    const ok = await confirmBlastRadius(async () => {
+      const resp = await apiClient.post<BlastRadiusPreview>(
+        '/admin/modes/' + selected.value!.id + '/feeds/preview',
+        {
+          feeds: originalAssignedFeedIds.value.map((id) => ({
+            id,
+            exclude: originalExcludedFeedIds.value.includes(id),
+          })),
+          enabled: newEnabled,
+        },
+      )
+      return resp.data
+    })
+    if (!ok) return
     await apiClient.put('/admin/modes/' + selected.value.id, { enabled: newEnabled })
     selected.value.enabled = newEnabled
     await loadList()
@@ -155,29 +171,52 @@ async function handleSave() {
 
   saving.value = true
   try {
-    let resp: AxiosResponse<Mode>
-    if (!selected.value) {
-      resp = await apiClient.post<Mode>('/admin/modes', {
-        name: form.value.name,
-        enabled: form.value.enabled,
-      })
-    } else {
-      resp = await apiClient.put<Mode>('/admin/modes/' + selected.value.id, {
-        name: form.value.name,
-        enabled: form.value.enabled,
-      })
+    // A mode's enabled flag reconciles BGP the moment it's saved, so when
+    // enabling, the feed set has to land first (the mode is still disabled,
+    // so nothing is announced yet) — otherwise the mode would announce its
+    // old feeds before the previewed ones are installed. When disabling, the
+    // mode goes off first for the same reason in reverse.
+    const enabling = !!selected.value && !selected.value.enabled && form.value.enabled
+    const saveFeeds = async (modeId: number): Promise<boolean> => {
+      savingFeeds.value = true
+      try {
+        await apiClient.put('/admin/modes/' + modeId + '/feeds', feedsBody())
+        // Fire-and-forget regenerate communities
+        apiClient.post('/admin/modes/' + modeId + '/communities/generate').catch(() => {})
+        return true
+      } catch {
+        return false
+      } finally { savingFeeds.value = false }
     }
-    const savedMode: Mode = resp.data
-    // Save feed assignments
-    savingFeeds.value = true
+
+    let savedMode: Mode
     let feedsSaveFailed = false
-    try {
-      await apiClient.put('/admin/modes/' + savedMode.id + '/feeds', feedsBody())
-      // Fire-and-forget regenerate communities
-      apiClient.post('/admin/modes/' + savedMode.id + '/communities/generate').catch(() => {})
-    } catch {
-      feedsSaveFailed = true
-    } finally { savingFeeds.value = false }
+    if (enabling) {
+      if (!await saveFeeds(selected.value!.id)) {
+        await loadModeFeeds()
+        toast.add({ severity: 'error', summary: t('modes.feeds_save_failed'), life: 3000 })
+        return
+      }
+      savedMode = (await apiClient.put<Mode>('/admin/modes/' + selected.value!.id, {
+        name: form.value.name,
+        enabled: form.value.enabled,
+      })).data
+    } else {
+      let resp: AxiosResponse<Mode>
+      if (!selected.value) {
+        resp = await apiClient.post<Mode>('/admin/modes', {
+          name: form.value.name,
+          enabled: form.value.enabled,
+        })
+      } else {
+        resp = await apiClient.put<Mode>('/admin/modes/' + selected.value.id, {
+          name: form.value.name,
+          enabled: form.value.enabled,
+        })
+      }
+      savedMode = resp.data
+      feedsSaveFailed = !await saveFeeds(savedMode.id)
+    }
 
     // The mode itself (name/enabled) is already persisted at this point
     // regardless of whether the feed assignment succeeded — resync the UI
@@ -286,6 +325,7 @@ defineExpose({
   handleSave,
   startNew,
   selectMode,
+  toggleModeEnabled,
   blastRadiusVisible,
   applyBlastRadius,
   cancelBlastRadius,
