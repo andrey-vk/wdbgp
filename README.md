@@ -426,6 +426,22 @@ self-service change made by an end user is `user:<id>`.
 page). Entries are retained for `audit_log_retention_days` (default 30) and purged hourly
 alongside the metrics snapshot purge.
 
+### Feed sync changes
+
+Every sync that changes a feed's entries records what it added and removed: services and
+prefixes, with the added services broken down by category. The Feeds page lists a feed's
+last 20 changing syncs (`GET /api/admin/feeds/{id}/sync-changes`). The first import is not
+recorded, since there is nothing to compare against, and only the 50 most recent changing
+syncs per feed are kept.
+
+Feed changes are the main way a user's announced routes grow without any action on their
+side: selecting a category includes all of its services, so a service a feed adds to a
+selected category is announced to that user right away. The user's own page shows a
+dismissible note of those additions for the categories they have selected in a mode that
+includes the feed. It covers the last 14 days, or since they last dismissed it, whichever
+is more recent. `GET /api/user/feed-changes` returns it, and `POST /api/user/feed-changes/ack`
+acknowledges up to the newest change shown.
+
 ### Blast-radius preview
 
 Four admin edits change which prefixes a user actually receives: the global route

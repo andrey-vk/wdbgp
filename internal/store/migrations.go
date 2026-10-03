@@ -50,4 +50,5 @@ var migrations = []Migration{
 	{35, "feed snapshot counts table replaces JSON", m.V035, m.V035NoTxSQL},
 	{36, "mode feed roles and materialized mode entries", m.V036, nil},
 	{37, "audit log", m.V037, nil},
+	{38, "feed sync changes", m.V038, nil},
 }

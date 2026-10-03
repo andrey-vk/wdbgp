@@ -382,8 +382,21 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 			!enabled {
 			return errFeedChanged
 		}
-		if err := store.ReplaceCatalogEntries(ctx, tx, feed.ID, toCatalogEntries(entries)); err != nil {
+		prev, err := store.CatalogEntriesForFeedTx(ctx, tx, feed.ID)
+		if err != nil {
 			return err
+		}
+		next := toCatalogEntries(entries)
+		if err := store.ReplaceCatalogEntries(ctx, tx, feed.ID, next); err != nil {
+			return err
+		}
+		// The first import has nothing to compare against, so it isn't drift.
+		if len(prev) > 0 {
+			if diff := store.DiffCatalogEntries(prev, next); diff.HasChanges() {
+				if err := store.RecordFeedSyncChangeTx(ctx, tx, feed.ID, diff, time.Now().Unix()); err != nil {
+					return err
+				}
+			}
 		}
 		if _, err = tx.ExecContext(ctx,
 			"UPDATE feeds SET last_success = ?, last_error = NULL WHERE id = ? AND url = ? AND enabled = 1",

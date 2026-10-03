@@ -44,6 +44,7 @@ const defaultRouteFiltersInfo = {
 function mockUserDataGet(userData: unknown): void {
   mockGet.mockImplementation((url: string) => {
     if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
+    if (url === '/user/feed-changes') return Promise.resolve({ data: { changes: [] } })
     return Promise.resolve({ data: userData })
   })
 }
@@ -124,8 +125,8 @@ describe('UserPage', () => {
       },
     })
     await new Promise((r) => setTimeout(r, 0))
-    // One load = /user/me + /user/route-filters.
-    expect(mockGet).toHaveBeenCalledTimes(2)
+    // One load = /user/me + /user/route-filters + /user/feed-changes.
+    expect(mockGet).toHaveBeenCalledTimes(3)
 
     const select = wrapper.find('select')
     await select.setValue('2')
@@ -133,7 +134,7 @@ describe('UserPage', () => {
 
     // Even though the PUT failed, the UI must re-fetch the authoritative
     // server state rather than silently keep showing pre-switch data.
-    expect(mockGet).toHaveBeenCalledTimes(4)
+    expect(mockGet).toHaveBeenCalledTimes(6)
   })
 
   it('returns to the login screen when a count-prefixes fetch gets a 401 mid-session, instead of getting stuck on a dead authenticated view', async () => {
@@ -569,6 +570,7 @@ describe('UserPage', () => {
       mockGet.mockImplementation((url: string) => {
         if (url === '/user/me') return Promise.resolve({ data: baseUserData })
         if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
+        if (url === '/user/feed-changes') return Promise.resolve({ data: { changes: [] } })
         if (url === '/user/debug') return lookupHandler(url)
         return Promise.reject(new Error(`unexpected GET ${url}`))
       })
@@ -807,6 +809,7 @@ describe('UserPage', () => {
       mockGet.mockImplementation((url: string) => {
         if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
         if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
+        if (url === '/user/feed-changes') return Promise.resolve({ data: { changes: [] } })
         if (url === '/user/debug') return Promise.resolve({ data: lookupResultData })
         return Promise.reject(new Error(`unexpected GET ${url}`))
       })
@@ -863,6 +866,7 @@ describe('UserPage', () => {
           return Promise.resolve({ data: modeAData })
         }
         if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
+        if (url === '/user/feed-changes') return Promise.resolve({ data: { changes: [] } })
         if (url === '/user/debug') return Promise.resolve({ data: lookupResultData })
         return Promise.reject(new Error(`unexpected GET ${url}`))
       })
@@ -933,6 +937,7 @@ describe('UserPage', () => {
       mockGet.mockImplementation((url: string) => {
         if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
         if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
+        if (url === '/user/feed-changes') return Promise.resolve({ data: { changes: [] } })
         if (url === '/user/debug') return new Promise((resolve) => { resolveLookup = resolve })
         return Promise.reject(new Error(`unexpected GET ${url}`))
       })
@@ -1031,6 +1036,7 @@ describe('UserPage', () => {
           return Promise.reject({ isAxiosError: true, response: { status: 500 } })
         }
         if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
+        if (url === '/user/feed-changes') return Promise.resolve({ data: { changes: [] } })
         if (url === '/user/debug') return Promise.resolve({ data: lookupResultData })
         return Promise.reject(new Error(`unexpected GET ${url}`))
       })
@@ -1075,6 +1081,7 @@ describe('UserPage', () => {
       mockGet.mockImplementation((url: string) => {
         if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
         if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
+        if (url === '/user/feed-changes') return Promise.resolve({ data: { changes: [] } })
         if (url === '/user/debug') return Promise.resolve({
           data: {
             query: '8.8.8.0/24',
@@ -1139,6 +1146,7 @@ describe('UserPage', () => {
       mockGet.mockImplementation((url: string) => {
         if (url === '/user/me') return Promise.resolve({ data: { ...baseUserData, catalog: { AI: ['ChatGPT'] } } })
         if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
+        if (url === '/user/feed-changes') return Promise.resolve({ data: { changes: [] } })
         if (url === '/user/debug') return Promise.resolve({
           data: {
             query: '8.8.8.0/24',
@@ -1645,5 +1653,45 @@ describe('UserPage', () => {
       expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_override')
       expect(wrapper.find('[data-testid="route-filters-mode"]').text()).not.toContain('user.route_filters_mode_extend')
     })
+  })
+
+  it('shows feed-driven growth and acknowledges up to the newest sync on dismiss', async () => {
+    const userData = {
+      user: { id: 1, name: 'Alice', catalog_mode_id: 1, catalog_mode_name: 'Mode A', selection_locked: false,
+        filter_editable: false, filter_override: false, filter_mode: 'allow', catalog_editable: true, networks: [] },
+      catalog: {}, selections: { categories: ['ai'], services: [] }, communities: [],
+      prefix_counts: { v4: {}, v6: {} }, filters: { allow: [], deny: [] },
+      modes: [{ id: 1, name: 'Mode A', enabled: true, feed_count: 1 }],
+    }
+    const changes = [
+      { feed_name: 'opencck-main', synced_at: 1700000100, categories: [{ category: 'ai', added_services: 2 }] },
+      { feed_name: 'opencck-main', synced_at: 1700000200, categories: [{ category: 'ai', added_services: 1 }] },
+    ]
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/user/feed-changes') return Promise.resolve({ data: { changes } })
+      if (url === '/user/route-filters') return Promise.resolve({ data: defaultRouteFiltersInfo })
+      return Promise.resolve({ data: userData })
+    })
+    mockPost.mockResolvedValue({ data: { ok: true } })
+
+    const UserPage = (await import('../UserPage.vue')).default
+    const wrapper = mount(UserPage, {
+      global: {
+        plugins: [i18n, PrimeVue],
+        stubs: {
+          LanguageSwitcher: { template: '<div />' },
+          Toast: { template: '<div />' },
+        },
+      },
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('[data-testid="feed-changes-section"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="feed-changes-dismiss"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/user/feed-changes/ack', { through: 1700000200 })
+    expect(wrapper.find('[data-testid="feed-changes-section"]').exists()).toBe(false)
   })
 })
