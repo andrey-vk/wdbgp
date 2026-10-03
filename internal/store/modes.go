@@ -148,7 +148,7 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64, meta AuditMeta)
 		before := map[string]int64{"catalog_mode_id": id}
 		after := map[string]int64{"catalog_mode_id": 1}
 		for _, userID := range attemptIDs {
-			if err := auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), before, after, false); err != nil {
+			if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), before, after, false); err != nil {
 				return err
 			}
 		}

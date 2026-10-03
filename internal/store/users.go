@@ -460,7 +460,7 @@ func (s *Store) UpdateUser(ctx context.Context, user User, meta, filterModeMeta 
 		if err := replaceNetworks(ctx, tx, user.ID, user.Networks); err != nil {
 			return err
 		}
-		if err := auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(user.ID, 10),
+		if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(user.ID, 10),
 			map[string]int64{"catalog_mode_id": prevCatalogModeID}, map[string]int64{"catalog_mode_id": user.CatalogModeID}, false); err != nil {
 			return err
 		}
@@ -471,7 +471,7 @@ func (s *Store) UpdateUser(ctx context.Context, user User, meta, filterModeMeta 
 		// themselves change, so this needs its own entry or a mode switch
 		// alone (e.g. global -> override) would leave no audit trace at
 		// all despite changing what gets announced.
-		return auditEntryTx(ctx, tx, filterModeMeta, "user", strconv.FormatInt(user.ID, 10),
+		return AuditEntryTx(ctx, tx, filterModeMeta, "user", strconv.FormatInt(user.ID, 10),
 			map[string]string{"filter_mode": filterModeFromInt(prevFilterModeInt)}, map[string]string{"filter_mode": filterMode}, false)
 	})
 	return prevCatalogModeID, err
@@ -688,7 +688,7 @@ func (s *Store) SaveUserSelectionCounts(
 		afterCats, afterSvcs = len(ac), len(as)
 		before := map[string]int{"categories": beforeCats, "services": beforeSvcs}
 		after := map[string]int{"categories": afterCats, "services": afterSvcs}
-		return auditEntryTx(ctx, tx, selectionsMeta, "user", strconv.FormatInt(userID, 10), before, after, false)
+		return AuditEntryTx(ctx, tx, selectionsMeta, "user", strconv.FormatInt(userID, 10), before, after, false)
 	})
 	return beforeCats, beforeSvcs, afterCats, afterSvcs, prevModeID, err
 }
@@ -991,7 +991,7 @@ WHERE id = ?
 	} else if count == 0 {
 		return 0, sql.ErrNoRows
 	}
-	if err := auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10),
+	if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10),
 		map[string]int64{"catalog_mode_id": prevModeID}, map[string]int64{"catalog_mode_id": modeID}, false); err != nil {
 		return 0, err
 	}

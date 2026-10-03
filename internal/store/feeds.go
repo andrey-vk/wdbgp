@@ -243,7 +243,7 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed, meta AuditMeta) (prev
 		if updateFeedPreCommitHook != nil {
 			updateFeedPreCommitHook()
 		}
-		return auditEntryTx(ctx, tx, meta, "feed", strconv.FormatInt(feed.ID, 10),
+		return AuditEntryTx(ctx, tx, meta, "feed", strconv.FormatInt(feed.ID, 10),
 			map[string]bool{"enabled": prevEnabled}, map[string]bool{"enabled": feed.Enabled}, false)
 	})
 	return prevEnabled, err

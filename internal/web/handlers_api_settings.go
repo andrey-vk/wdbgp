@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -44,6 +45,14 @@ var filterKeysAffectBGP = map[string]bool{"filter_allow": true, "filter_deny": t
 // captured — a test seam used to force two concurrent calls to overlap
 // deterministically and verify the lock actually serializes them.
 var settingsPutFilterApplyHook func()
+
+// settingsPutFilterTxPreCommitHook, if set, runs once per filter-settings
+// transaction, after both SetTx/ResetTx calls but before the audit insert
+// and commit — a test seam used to force the transaction to fail right
+// before it would otherwise commit, so a test can verify the already-
+// applied SetTx/ResetTx writes roll back together with the audit insert
+// rather than leaving the setting persisted with no audit trace.
+var settingsPutFilterTxPreCommitHook func() error
 
 // apiSettingsPut handles PUT /api/admin/settings.
 func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
@@ -88,38 +97,115 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 			settingsPutFilterApplyHook()
 		}
 
+		// Non-filter keys: applied via the existing non-tx path — they
+		// aren't audited and don't need the atomicity filter_allow/
+		// filter_deny get below.
 		for key, raw := range body {
+			if filterKeysAffectBGP[key] {
+				continue
+			}
 			if string(raw) == "null" {
-				// Reset to default
 				if err := s.resetSetting(ctx, key); err != nil {
 					return err
 				}
-			} else {
-				// Set new value
-				if err := s.setSetting(ctx, key, raw); err != nil {
-					return err
-				}
-			}
-			if filterKeysAffectBGP[key] {
-				reconcileNeeded = true
+			} else if err := s.setSetting(ctx, key, raw); err != nil {
+				return err
 			}
 		}
 
-		if reconcileNeeded {
-			afterFilters := map[string]string{
-				"filter_allow": s.settings.FilterAllow.Get(),
-				"filter_deny":  s.settings.FilterDeny.Get(),
+		// filter_allow/filter_deny: persisted and audited in ONE
+		// transaction, so the audit insert commits atomically with the
+		// setting write and lands in audit_log in true commit order
+		// relative to every other audited mutation — unlike every other
+		// hook (folded into its own mutation's transaction already), this
+		// one had no transaction of its own to fold into before
+		// SetTx/ResetTx existed. The in-memory cached value and OnChange
+		// callbacks (the commit funcs collected below) only run after
+		// this transaction actually commits.
+		_, filterAllowProvided := body["filter_allow"]
+		_, filterDenyProvided := body["filter_deny"]
+		if !filterAllowProvided && !filterDenyProvided {
+			return nil
+		}
+		reconcileNeeded = true
+
+		if s.store == nil {
+			// No audit-log store available (some tests construct a
+			// *Server without one, for handlers that otherwise don't
+			// need it) — apply filter keys the same way as any other
+			// key, with no tx/audit wrapping; there's no audit_log table
+			// to write to anyway.
+			for _, key := range [2]string{"filter_allow", "filter_deny"} {
+				raw, ok := body[key]
+				if !ok {
+					continue
+				}
+				if string(raw) == "null" {
+					if err := s.resetSetting(ctx, key); err != nil {
+						return err
+					}
+				} else if err := s.setSetting(ctx, key, raw); err != nil {
+					return err
+				}
 			}
+			return nil
+		}
+
+		var commits []func()
+		txErr := s.store.Transaction(ctx, func(tx *sql.Tx) error {
+			commits = nil // attempt-local: Store.Transaction may retry
+			after := map[string]string{
+				"filter_allow": beforeFilters["filter_allow"],
+				"filter_deny":  beforeFilters["filter_deny"],
+			}
+			apply := func(st settings.Setting[string, string], key string) error {
+				raw, ok := body[key]
+				if !ok {
+					return nil
+				}
+				var v string
+				var commit func()
+				var err error
+				if string(raw) == "null" {
+					v, commit, err = st.ResetTx(ctx, tx)
+				} else {
+					v, commit, err = callStringSettingTx(ctx, tx, st, raw)
+				}
+				if err != nil {
+					return err
+				}
+				after[key] = v
+				commits = append(commits, commit)
+				return nil
+			}
+			if err := apply(s.settings.FilterAllow, "filter_allow"); err != nil {
+				return err
+			}
+			if err := apply(s.settings.FilterDeny, "filter_deny"); err != nil {
+				return err
+			}
+			if settingsPutFilterTxPreCommitHook != nil {
+				if err := settingsPutFilterTxPreCommitHook(); err != nil {
+					return err
+				}
+			}
+
 			// Bounded to just the lines that changed — the full text has
 			// no size limit (filter_allow/filter_deny accept arbitrarily
 			// large lists), so logging it whole on every edit could make
 			// a single audit row, or a page of them, arbitrarily large.
-			removedAllow, addedAllow := store.DiffStringSet(splitFilterLines(beforeFilters["filter_allow"]), splitFilterLines(afterFilters["filter_allow"]))
-			removedDeny, addedDeny := store.DiffStringSet(splitFilterLines(beforeFilters["filter_deny"]), splitFilterLines(afterFilters["filter_deny"]))
+			removedAllow, addedAllow := store.DiffStringSet(splitFilterLines(beforeFilters["filter_allow"]), splitFilterLines(after["filter_allow"]))
+			removedDeny, addedDeny := store.DiffStringSet(splitFilterLines(beforeFilters["filter_deny"]), splitFilterLines(after["filter_deny"]))
 			removed := map[string][]string{"filter_allow": removedAllow, "filter_deny": removedDeny}
 			added := map[string][]string{"filter_allow": addedAllow, "filter_deny": addedDeny}
-			s.recordAuditIfChanged(ctx, r, s.adminActor(r), "route_filters.global_updated", "settings", "",
-				removed, added)
+			meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "route_filters.global_updated"}
+			return store.AuditEntryTx(ctx, tx, meta, "settings", "", removed, added, false)
+		})
+		if txErr != nil {
+			return txErr
+		}
+		for _, commit := range commits {
+			commit()
 		}
 		return nil
 	}()
@@ -619,6 +705,16 @@ func callStringSetting(ctx context.Context, st settings.Setting[string, string],
 		return fmt.Errorf("invalid string: %w", err)
 	}
 	return st.Set(ctx, v)
+}
+
+// callStringSettingTx is callStringSetting's tx-scoped counterpart — see
+// Setting.SetTx.
+func callStringSettingTx(ctx context.Context, tx *sql.Tx, st settings.Setting[string, string], raw json.RawMessage) (string, func(), error) {
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return "", nil, fmt.Errorf("invalid string: %w", err)
+	}
+	return st.SetTx(ctx, tx, v)
 }
 
 func callUint16Setting(ctx context.Context, st settings.Setting[uint16, uint16], raw json.RawMessage) error {

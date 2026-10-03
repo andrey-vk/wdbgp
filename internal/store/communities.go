@@ -302,7 +302,7 @@ func (s *Store) SetCommunities(ctx context.Context, modeID int64, updates []Comm
 		}
 		after = a
 		changedBefore, changedAfter := diffCommunityRows(before, after)
-		return auditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, false)
+		return AuditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, false)
 	})
 	return before, after, err
 }
@@ -533,7 +533,7 @@ func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDige
 		// because of that), worth recording even on the rare occasion the
 		// recomputed values happen to match what was there before.
 		changedBefore, changedAfter := diffCommunityRows(before, after)
-		return auditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, true)
+		return AuditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, true)
 	})
 	return before, after, generated, err
 }
@@ -611,7 +611,7 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64, meta Audi
 		}
 		after = a
 		changedBefore, changedAfter := diffCommunityRows(before, after)
-		return auditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, false)
+		return AuditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, false)
 	})
 	return before, after, count, err
 }

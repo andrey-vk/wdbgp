@@ -149,7 +149,7 @@ type AuditMeta struct {
 	Action    string
 }
 
-// auditEntryTx inserts one audit entry via tx — the same transaction as
+// AuditEntryTx inserts one audit entry via tx — the same transaction as
 // the mutation it describes, not a separate statement run after that
 // transaction commits. Folding the write in here guarantees two things a
 // separate post-commit write cannot: the audit row can never be recorded
@@ -159,7 +159,9 @@ type AuditMeta struct {
 // in (an INSERT's rowid is assigned in commit order, same as the
 // mutation's own writes in that same transaction; two separate post-commit
 // INSERTs from different connections have no such guarantee relative to
-// each other).
+// each other). Exported so a caller outside this package that manages its
+// own Store.Transaction (e.g. apiSettingsPut, folding a generic Setting's
+// SetTx/ResetTx write together with its audit entry) can use it directly.
 //
 // Skipped silently (no error) when meta.Actor is empty (auditing not
 // requested) or, unless force is set, when before/after marshal to the
@@ -167,7 +169,7 @@ type AuditMeta struct {
 // every hook point needs. force is for callers like a confirmed community
 // reset that must always leave a record of the action even on the rare
 // occasion the recomputed values happen to match what was there before.
-func auditEntryTx(ctx context.Context, tx *sql.Tx, meta AuditMeta, objectType, objectID string, before, after any, force bool) error {
+func AuditEntryTx(ctx context.Context, tx *sql.Tx, meta AuditMeta, objectType, objectID string, before, after any, force bool) error {
 	if meta.Actor == "" {
 		return nil
 	}

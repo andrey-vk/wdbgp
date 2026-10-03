@@ -386,7 +386,7 @@ func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters R
 		}
 		after = a
 		removed, added := diffRouteFilters(before, after)
-		return auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), removed, added, false)
+		return AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), removed, added, false)
 	})
 	return before, after, err
 }

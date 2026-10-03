@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
 
@@ -37,30 +38,6 @@ func auditLogCount(t *testing.T, st *store.Store, action string) int {
 		t.Fatalf("list audit log: %v", err)
 	}
 	return total
-}
-
-// --- recordAudit / request-cancellation isolation --------------------------
-
-// TestRecordAuditSurvivesRequestCancellation simulates a client disconnect
-// right after the mutation it's auditing has already committed: the
-// request's own context is canceled before recordAudit runs. The audit
-// write must still succeed — it's no longer in the client's cancellation
-// path by the time the mutation itself has committed.
-func TestRecordAuditSurvivesRequestCancellation(t *testing.T) {
-	srv, st, _ := setupUserTestServer(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	req := httptest.NewRequest("GET", "/", nil)
-	srv.recordAudit(ctx, req, store.AuditLogEntry{
-		Actor: "admin:test", Action: "test.cancel_survives", ObjectType: "x", ObjectID: "1",
-		Before: "a", After: "b",
-	})
-
-	if n := auditLogCount(t, st, "test.cancel_survives"); n != 1 {
-		t.Fatalf("audit log count = %d, want 1 (write must survive request cancellation)", n)
-	}
 }
 
 // --- Communities hooks ---------------------------------------------------
@@ -656,6 +633,53 @@ func TestAuditHookGlobalRouteFiltersConcurrentPutsAreSerialized(t *testing.T) {
 	}
 	if !strings.Contains(bEntry.After, "172.16.0.0/12") {
 		t.Fatalf("B entry after=%q, want it to mention 172.16.0.0/12", bEntry.After)
+	}
+}
+
+// TestAuditHookGlobalRouteFiltersSettingRollsBackWithAuditFailure proves
+// the filter_allow/filter_deny setting write and its audit entry commit
+// or roll back together, the same atomicity guarantee every other
+// tx-folded hook has — by forcing the audit insert to fail (via
+// settingsPutFilterTxPreCommitHook) after the setting's own SetTx write
+// already ran, and checking that write rolled back too. Before this hook
+// folded its audit write into the setting's own transaction, the setting
+// commit and the audit write were two separate statements with no
+// atomicity between them at all, so a failure here couldn't have rolled
+// the setting back — this is a stronger property than the pre-fix code
+// had, and the ordering guarantee this finding asked for follows directly
+// from it (two statements that always commit together can't land out of
+// commit order with anything else in the same transaction).
+func TestAuditHookGlobalRouteFiltersSettingRollsBackWithAuditFailure(t *testing.T) {
+	_, st, _ := feedFixture(t)
+
+	// apiSettingsPut needs settings actually backed by st — not the fake,
+	// in-memory settings.NewTestStore() testSettings()/setupUserTestServer
+	// normally use — so its SetTx call performs a real SQL write on the
+	// same transaction this test forces to fail.
+	realSettings, err := settings.New(st)
+	if err != nil {
+		t.Fatalf("settings.New: %v", err)
+	}
+	srv := &Server{settings: realSettings, store: st}
+
+	settingsPutFilterTxPreCommitHook = func() error {
+		return fmt.Errorf("forced failure")
+	}
+	t.Cleanup(func() { settingsPutFilterTxPreCommitHook = nil })
+
+	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"filter_allow":"10.0.0.0/8"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiSettingsPut(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("settings put: %d body=%s, want 400 (forced audit failure)", w.Code, w.Body.String())
+	}
+
+	if got := realSettings.FilterAllow.Get(); got != "" {
+		t.Fatalf("FilterAllow = %q, want unchanged (the whole transaction, including the already-applied SetTx, must roll back)", got)
+	}
+	if n := auditLogCount(t, st, "route_filters.global_updated"); n != 0 {
+		t.Fatalf("audit log count = %d, want 0 (rolled back)", n)
 	}
 }
 

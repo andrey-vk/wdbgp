@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"testing"
@@ -46,6 +47,14 @@ func (m *mockStore) DeleteSetting(_ context.Context, key string) error {
 	m.deleted = append(m.deleted, key)
 	delete(m.settings, key)
 	return nil
+}
+
+func (m *mockStore) SaveSettingTx(ctx context.Context, _ *sql.Tx, key, value string) error {
+	return m.SaveSetting(ctx, key, value)
+}
+
+func (m *mockStore) DeleteSettingTx(ctx context.Context, _ *sql.Tx, key string) error {
+	return m.DeleteSetting(ctx, key)
 }
 
 // =============================================================================

@@ -63,3 +63,20 @@ func (s *Store) SaveSetting(ctx context.Context, key, value string) error {
 		key, value)
 	return err
 }
+
+// SaveSettingTx is SaveSetting's tx-scoped counterpart — persists via tx
+// instead of s.DB directly, so a caller (settings.Setting.SetTx) can commit
+// it atomically with other work in the same transaction.
+func (s *Store) SaveSettingTx(ctx context.Context, tx *sql.Tx, key, value string) error {
+	_, err := tx.ExecContext(ctx,
+		"INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES (?, ?, unixepoch())",
+		key, value)
+	return err
+}
+
+// DeleteSettingTx is DeleteSetting's tx-scoped counterpart — see
+// SaveSettingTx.
+func (s *Store) DeleteSettingTx(ctx context.Context, tx *sql.Tx, key string) error {
+	_, err := tx.ExecContext(ctx, "DELETE FROM app_settings WHERE key = ?", key)
+	return err
+}
