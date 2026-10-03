@@ -53,6 +53,7 @@ const filterDeny = ref('')
 
 // ── Filters-in-effect state (read-only) ──────────────────────
 const routeFiltersInfo = ref<UserRouteFiltersResult | null>(null)
+const routeFiltersRequest = useSequencedRequest()
 
 // ── Catalog mode ────────────────────────────────────────────
 const selectedModeId = ref<number>(0)
@@ -146,8 +147,12 @@ function formatDelta(n: number): string {
   return ''
 }
 
-function formatFilterList(cidrs: string[]): string {
-  return cidrs.length ? cidrs.join(', ') : t('user.route_filters_empty')
+// cidrs is nullable: an empty RouteFilters.Allow/Deny is a nil slice on the
+// Go side, which encoding/json serializes as null rather than [] — the same
+// reason userData.filters?.allow is read with a `|| []` fallback elsewhere
+// in this file.
+function formatFilterList(cidrs: string[] | null | undefined): string {
+  return cidrs?.length ? cidrs.join(', ') : t('user.route_filters_empty')
 }
 
 // ── Auth functions ──────────────────────────────────────────
@@ -258,11 +263,18 @@ async function loadUserData(userData: UserDataResponse): Promise<void> {
 // Filters in effect don't depend on catalog mode or selections, but
 // loadUserData already re-runs on login/mode-switch/initial-auth, so
 // refetching here is the simplest correct place for a cheap, idempotent GET.
+// Sequenced like fetchCounts: if user A logs out (or switches mode) while
+// this is in flight and B logs in (or a newer fetch starts) before it
+// resolves, the token guard below drops A's stale response instead of
+// letting it overwrite B's already-displayed data.
 async function fetchRouteFiltersInfo(): Promise<void> {
+  const token = routeFiltersRequest.next()
   try {
     const resp = await userApi.get('/user/route-filters')
+    if (!routeFiltersRequest.isCurrent(token)) return
     routeFiltersInfo.value = resp.data
   } catch (err) {
+    if (!routeFiltersRequest.isCurrent(token)) return
     if (handleAuthError(err)) return
     routeFiltersInfo.value = null
   }
@@ -444,6 +456,10 @@ async function saveFilters(): Promise<void> {
       .filter(Boolean)
     await invalidatingLookup(userApi.post('/user/filters', { allow, deny }))
     toast.add({ severity: 'success', summary: t('user.filters_saved'), life: 3000 })
+    // The "filters in effect" section reads the user's own allow/deny lists
+    // too (in extend/override mode) — without this it keeps showing the
+    // pre-save lists until the next mode switch or page reload.
+    await fetchRouteFiltersInfo()
   } catch (err) {
     if (handleAuthError(err)) return
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })

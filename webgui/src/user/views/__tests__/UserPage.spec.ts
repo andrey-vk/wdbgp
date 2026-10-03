@@ -1303,5 +1303,146 @@ describe('UserPage', () => {
 
       expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(false)
     })
+
+    it('renders null allow/deny lists (as Go serializes an empty slice) without crashing', async () => {
+      // RouteFilters.Allow/Deny are nil slices when empty; encoding/json
+      // marshals a nil slice as null, not [] — a real API response, not
+      // just a sloppy test fixture.
+      const wrapper = await mountWithRouteFilters({
+        mode: 'global',
+        global: { allow: null, deny: null },
+        own: { allow: null, deny: null },
+        effective: { allow: null, deny: null },
+      })
+
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="route-filters-effective"]').text()).toContain('user.route_filters_empty')
+    })
+
+    it('drops a stale route-filters response from a save that resolves after a later mode switch already fetched a newer one', async () => {
+      // A real, user-reachable overlap: saveFilters's own post-save refetch
+      // is slow, and the mode switcher isn't disabled while it's in
+      // flight (only the save button is), so the user can switch modes
+      // before it lands — that resync's refetch must win.
+      const userData = {
+        ...baseUserData,
+        user: { ...baseUserData.user, catalog_mode_id: 1, catalog_editable: true, filter_editable: true },
+        modes: [
+          { id: 1, name: 'Mode A', enabled: true, feed_count: 0 },
+          { id: 2, name: 'Mode B', enabled: true, feed_count: 0 },
+        ],
+      }
+      let resolveStale: (v: { data: unknown }) => void = () => {}
+      let routeFiltersCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') return Promise.resolve({ data: userData })
+        if (url === '/user/route-filters') {
+          routeFiltersCalls++
+          if (routeFiltersCalls === 1) {
+            return Promise.resolve({
+              data: { mode: 'global', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+            })
+          }
+          if (routeFiltersCalls === 2) return new Promise((resolve) => { resolveStale = resolve }) // triggered by saveFilters below
+          return Promise.resolve({
+            data: { mode: 'extend', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+          })
+        }
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/user/filters') return Promise.resolve({ data: { ok: true } })
+        return Promise.resolve({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+      })
+      mockPut.mockResolvedValue({ data: { ok: true } })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_global')
+
+      // Save filters — its post-save refetch (call #2) is left pending.
+      const saveButton = wrapper.findAll('button').find((b) => b.text().includes('user.save_filters'))
+      await saveButton?.trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Switch mode before the save's own refetch lands — its resync
+      // (call #3) resolves immediately.
+      await wrapper.find('select').setValue('2')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_extend')
+
+      // The stale save-triggered refetch finally resolves — without the
+      // sequencing guard this would silently clobber the mode switch's
+      // newer answer.
+      resolveStale({
+        data: { mode: 'override', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_extend')
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).not.toContain('user.route_filters_mode_override')
+    })
+
+    it('refreshes the filters in effect after a self-service filter save', async () => {
+      let routeFiltersCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') {
+          return Promise.resolve({
+            data: { ...baseUserData, user: { ...baseUserData.user, filter_editable: true } },
+          })
+        }
+        if (url === '/user/route-filters') {
+          routeFiltersCalls++
+          return Promise.resolve({
+            data: {
+              mode: 'override',
+              global: { allow: [], deny: [] },
+              own: { allow: [], deny: [] },
+              effective: { allow: routeFiltersCalls === 1 ? [] : ['192.168.0.0/16'], deny: [] },
+            },
+          })
+        }
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/user/filters') return Promise.resolve({ data: { ok: true } })
+        return Promise.resolve({ data: {} })
+      })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-effective"]').text()).toContain('user.route_filters_empty')
+
+      await wrapper.find('#ufallow').setValue('192.168.0.0/16')
+      const saveButton = wrapper.findAll('button').find((b) => b.text().includes('user.save_filters'))
+      await saveButton?.trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      expect(routeFiltersCalls).toBe(2)
+      expect(wrapper.find('[data-testid="route-filters-effective"]').text()).toContain('192.168.0.0/16')
+    })
   })
 })
