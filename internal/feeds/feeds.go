@@ -390,16 +390,10 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		next := toCatalogEntries(entries)
 		// A feed that has never synced successfully has nothing to compare
 		// against, so its first import isn't drift. A feed that synced before,
-		// even to an empty catalog, is compared — repopulating it is growth.
+		// even to an empty catalog, is compared — repopulating it is a change.
 		recordable := lastSuccess > 0 || len(prev) > 0
 		diff := store.DiffCatalogEntries(prev, next)
 		record := recordable && diff.HasChanges()
-		var growthCheck *store.GrowthCheck
-		if record {
-			if growthCheck, err = store.BeginGrowthCheckTx(ctx, tx, feed.ID, diff); err != nil {
-				return err
-			}
-		}
 		if err := store.ReplaceCatalogEntries(ctx, tx, feed.ID, next); err != nil {
 			return err
 		}
@@ -419,11 +413,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		if !record {
 			return nil
 		}
-		growth, err := growthCheck.FinishTx(ctx, tx)
-		if err != nil {
-			return err
-		}
-		return store.RecordFeedSyncChangeTx(ctx, tx, feed.ID, diff, growth, time.Now().Unix())
+		return store.RecordFeedSyncChangeTx(ctx, tx, feed.ID, diff, time.Now().Unix())
 	})
 	if errors.Is(err, errFeedChanged) {
 		return adapter.Revision, nil

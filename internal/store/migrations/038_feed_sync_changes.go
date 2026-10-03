@@ -6,10 +6,9 @@ import (
 )
 
 // V038 records what each feed sync changed — services and prefixes added or
-// removed, with the added services broken down by category, and the prefixes
-// each mode newly announces through each category — plus, per user and mode,
-// the newest change acknowledged. The cursor is a change ID, not a timestamp,
-// so changes committed in the same second can't hide one another.
+// removed, with the added services broken down by category — and, per user and
+// mode, the newest change acknowledged. The cursor is a change ID, not a
+// timestamp, so changes committed in the same second can't hide one another.
 func V038(ctx context.Context, tx *sql.Tx) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS feed_sync_changes (
@@ -22,17 +21,6 @@ func V038(ctx context.Context, tx *sql.Tx) error {
 			removed_prefixes INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_feed_sync_changes_feed ON feed_sync_changes(feed_id, synced_at)`,
-		`CREATE TABLE IF NOT EXISTS feed_sync_mode_growth (
-			change_id   INTEGER NOT NULL REFERENCES feed_sync_changes(id) ON DELETE CASCADE,
-			mode_id     INTEGER NOT NULL,
-			category    TEXT NOT NULL,
-			prefix_ip   BLOB NOT NULL,
-			prefix_bits INTEGER NOT NULL,
-			PRIMARY KEY (change_id, mode_id, category, prefix_ip, prefix_bits)
-		)`,
-		// Growth checks look materialized entries up by prefix within a mode.
-		// The table's primary key starts with service_id, so it can't serve that.
-		`CREATE INDEX IF NOT EXISTS idx_catalog_mode_entries_mode_prefix ON catalog_mode_entries(mode_id, prefix_id)`,
 		`CREATE TABLE IF NOT EXISTS user_feed_changes_seen (
 			user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			mode_id   INTEGER NOT NULL,

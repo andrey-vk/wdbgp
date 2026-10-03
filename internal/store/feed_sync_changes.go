@@ -28,9 +28,6 @@ type FeedSyncDiff struct {
 	AddedAssociations   int
 	RemovedAssociations int
 	AddedByCategory     map[string]int
-
-	addedAssoc   []assocKey
-	removedAssoc []assocKey
 }
 
 func (d FeedSyncDiff) HasChanges() bool {
@@ -90,13 +87,11 @@ func DiffCatalogEntries(prev, next []CatalogEntry) FeedSyncDiff {
 	for a := range nextAssoc {
 		if !prevAssoc[a] {
 			d.AddedAssociations++
-			d.addedAssoc = append(d.addedAssoc, assocKey{a.category, a.prefix})
 		}
 	}
 	for a := range prevAssoc {
 		if !nextAssoc[a] {
 			d.RemovedAssociations++
-			d.removedAssoc = append(d.removedAssoc, assocKey{a.category, a.prefix})
 		}
 	}
 	return d
@@ -135,7 +130,7 @@ WHERE ce.feed_id = ?`, feedID)
 
 // RecordFeedSyncChangeTx stores one sync's diff and trims the feed's history
 // to the retention bound, inside the sync's own transaction.
-func RecordFeedSyncChangeTx(ctx context.Context, tx *sql.Tx, feedID int64, diff FeedSyncDiff, growth []ModeCategoryGrowth, syncedAt int64) error {
+func RecordFeedSyncChangeTx(ctx context.Context, tx *sql.Tx, feedID int64, diff FeedSyncDiff, syncedAt int64) error {
 	res, err := tx.ExecContext(ctx, `
 INSERT INTO feed_sync_changes(feed_id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes)
 VALUES (?, ?, ?, ?, ?, ?)`,
@@ -154,24 +149,10 @@ VALUES (?, ?, ?, ?, ?, ?)`,
 			return err
 		}
 	}
-	for _, g := range growth {
-		for _, prefix := range g.Prefixes {
-			ip, bits := EncodePrefix(prefix)
-			if _, err := tx.ExecContext(ctx,
-				"INSERT INTO feed_sync_mode_growth(change_id, mode_id, category, prefix_ip, prefix_bits) VALUES (?, ?, ?, ?, ?)",
-				changeID, g.ModeID, g.Category, ip, bits); err != nil {
-				return err
-			}
-		}
-	}
 	const stale = `SELECT id FROM feed_sync_changes WHERE feed_id = ?1 AND id NOT IN (
 		SELECT id FROM feed_sync_changes WHERE feed_id = ?1 ORDER BY synced_at DESC, id DESC LIMIT ?2)`
 	if _, err := tx.ExecContext(ctx,
 		"DELETE FROM feed_sync_change_categories WHERE change_id IN ("+stale+")", feedID, feedSyncChangeRetention); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx,
-		"DELETE FROM feed_sync_mode_growth WHERE change_id IN ("+stale+")", feedID, feedSyncChangeRetention); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, "DELETE FROM feed_sync_changes WHERE id IN ("+stale+")", feedID, feedSyncChangeRetention)
@@ -240,10 +221,9 @@ ORDER BY synced_at DESC, id DESC LIMIT ?`, feedID, limit)
 	return out, nil
 }
 
-// UserFeedChange is prefixes a feed sync newly made announced in the user's
-// mode, through categories they have selected and that their route filters
-// let through. Those routes reached the user because of the feed, not because
-// of anything they did.
+// UserFeedChange is services a feed update added to categories the user has
+// selected, in their current mode. A selected category includes all of its
+// services, so these may add routes, or be already covered by another feed.
 type UserFeedChange struct {
 	ChangeID   int64                    `json:"change_id"`
 	ModeID     int64                    `json:"mode_id"`
@@ -254,19 +234,15 @@ type UserFeedChange struct {
 
 type UserFeedChangeCategory struct {
 	Category      string `json:"category"`
-	AddedPrefixes int    `json:"added_prefixes"`
+	AddedServices int    `json:"added_services"`
 }
 
-// UserFeedChanges returns the feed-driven growth the user hasn't acknowledged
-// in their current mode (within userFeedChangeWindow), oldest first. Growth
-// is re-checked against the mode's current entries, so a prefix a later sync
-// removed stops being reported. Growth their route filters remove is left out,
-// and a prefix split into fragments counts once per surviving fragment.
+// UserFeedChanges returns the feed updates the user hasn't acknowledged in their
+// current mode (within userFeedChangeWindow), oldest first.
 func (s *Store) UserFeedChanges(ctx context.Context, userID int64, now time.Time) ([]UserFeedChange, error) {
 	var modeID int64
-	var filterModeInt int
 	if err := s.DB.QueryRowContext(ctx,
-		"SELECT catalog_mode_id, filter_mode FROM users WHERE id = ?", userID).Scan(&modeID, &filterModeInt); err != nil {
+		"SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&modeID); err != nil {
 		return nil, err
 	}
 	var seenID int64
@@ -277,104 +253,37 @@ func (s *Store) UserFeedChanges(ctx context.Context, userID int64, now time.Time
 	}
 	since := now.Add(-userFeedChangeWindow).Unix()
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT f.name, c.id, c.synced_at, g.category, g.prefix_ip, g.prefix_bits
-FROM feed_sync_mode_growth g
-JOIN feed_sync_changes c ON c.id = g.change_id
-JOIN feeds f ON f.id = c.feed_id
-JOIN catalog_modes m ON m.id = g.mode_id AND m.enabled = 1
-JOIN categories cat ON cat.name = g.category
-JOIN selected_categories sc ON sc.user_id = ? AND sc.mode_id = g.mode_id AND sc.category_id = cat.id
-WHERE g.mode_id = ? AND c.id > ? AND c.synced_at >= ? AND f.enabled = 1
-  AND EXISTS (
-    SELECT 1 FROM catalog_mode_entries cme
-    JOIN services sv ON sv.id = cme.service_id
-    JOIN categories c2 ON c2.id = sv.category_id
-    JOIN prefixes p ON p.id = cme.prefix_id
-    WHERE cme.mode_id = g.mode_id AND c2.name = g.category AND p.ip = g.prefix_ip AND p.bits = g.prefix_bits)
-ORDER BY c.id, g.category, g.prefix_ip, g.prefix_bits`, userID, modeID, seenID, since)
+SELECT f.name, c.id, c.synced_at, fc.category, fc.added_services
+FROM feed_sync_change_categories fc
+JOIN feed_sync_changes c ON c.id = fc.change_id
+JOIN feeds f ON f.id = c.feed_id AND f.enabled = 1
+JOIN catalog_mode_feeds cmf ON cmf.feed_id = c.feed_id AND cmf.mode_id = ? AND cmf.exclude = 0
+JOIN catalog_modes m ON m.id = cmf.mode_id AND m.enabled = 1
+JOIN categories cat ON cat.name = fc.category
+JOIN selected_categories sc ON sc.user_id = ? AND sc.mode_id = cmf.mode_id AND sc.category_id = cat.id
+WHERE c.id > ? AND c.synced_at >= ?
+ORDER BY c.id, fc.category`, modeID, userID, seenID, since)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }() //nolint:errcheck
-
-	type growthRow struct {
-		feedName, category string
-		changeID, syncedAt int64
-		prefix             netip.Prefix
-	}
-	var all []growthRow
-	distinct := map[netip.Prefix]bool{}
-	for rows.Next() {
-		var g growthRow
-		var ip []byte
-		var bits int
-		if err := rows.Scan(&g.feedName, &g.changeID, &g.syncedAt, &g.category, &ip, &bits); err != nil {
-			return nil, err
-		}
-		prefix, err := DecodePrefix(ip, bits)
-		if err != nil {
-			return nil, err
-		}
-		g.prefix = prefix
-		all = append(all, g)
-		distinct[prefix] = true
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(all) == 0 {
-		return nil, nil
-	}
-
-	filters, err := loadEffectiveRouteFilters(ctx, s.DB, userID, filterModeFromInt(filterModeInt))
-	if err != nil {
-		return nil, err
-	}
-	// Each growth prefix is filtered on its own: a deny that splits it leaves
-	// fragments, and each surviving fragment is one announced prefix.
-	fragments := make(map[netip.Prefix]int, len(distinct))
-	for p := range distinct {
-		kept, err := applyRouteFiltersToPrefixes([]netip.Prefix{p}, filters)
-		if err != nil {
-			return nil, err
-		}
-		fragments[p] = len(kept)
-	}
-
-	// Growth a broader prefix the user already announces covers adds no route.
-	distinctList := make([]netip.Prefix, 0, len(fragments))
-	for p, n := range fragments {
-		if n > 0 {
-			distinctList = append(distinctList, p)
-		}
-	}
-	covered, err := announcedCoverers(ctx, s.DB, userID, modeID, filters, distinctList)
-	if err != nil {
-		return nil, err
-	}
-	for p := range covered {
-		fragments[p] = 0
-	}
-
 	var out []UserFeedChange
 	var lastChangeID int64 = -1
-	for _, g := range all {
-		n := fragments[g.prefix]
-		if n == 0 {
-			continue
+	for rows.Next() {
+		var feedName, category string
+		var changeID, syncedAt int64
+		var added int
+		if err := rows.Scan(&feedName, &changeID, &syncedAt, &category, &added); err != nil {
+			return nil, err
 		}
-		if g.changeID != lastChangeID {
-			out = append(out, UserFeedChange{ChangeID: g.changeID, ModeID: modeID, FeedName: g.feedName, SyncedAt: g.syncedAt, Categories: []UserFeedChangeCategory{}})
-			lastChangeID = g.changeID
+		if changeID != lastChangeID {
+			out = append(out, UserFeedChange{ChangeID: changeID, ModeID: modeID, FeedName: feedName, SyncedAt: syncedAt, Categories: []UserFeedChangeCategory{}})
+			lastChangeID = changeID
 		}
 		last := &out[len(out)-1]
-		if k := len(last.Categories); k > 0 && last.Categories[k-1].Category == g.category {
-			last.Categories[k-1].AddedPrefixes += n
-		} else {
-			last.Categories = append(last.Categories, UserFeedChangeCategory{Category: g.category, AddedPrefixes: n})
-		}
+		last.Categories = append(last.Categories, UserFeedChangeCategory{Category: category, AddedServices: added})
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // AckUserFeedChanges marks changes up to throughID as seen in modeID — the

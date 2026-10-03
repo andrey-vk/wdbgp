@@ -904,7 +904,7 @@ onMounted(() => {
           <div v-for="change in feedChanges" :key="change.change_id" class="text-sm mb-2">
             <span class="text-gray-500 dark:text-gray-400">{{ new Date(change.synced_at * 1000).toLocaleString() }} · {{ change.feed_name }}</span>
             <div v-for="cat in change.categories" :key="cat.category" class="pl-3 text-gray-700 dark:text-gray-300">
-              {{ t('user.feed_changes_line', { category: cat.category, added: cat.added_prefixes }) }}
+              {{ t('user.feed_changes_line', { category: cat.category, added: cat.added_services }) }}
             </div>
           </div>
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{{ t('user.feed_changes_hint') }}</p>

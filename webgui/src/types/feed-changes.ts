@@ -17,7 +17,7 @@ export interface FeedSyncChange {
 
 export interface UserFeedChangeCategory {
   category: string
-  added_prefixes: number
+  added_services: number
 }
 
 export interface UserFeedChange {
