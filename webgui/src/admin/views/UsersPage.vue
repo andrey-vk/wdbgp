@@ -21,12 +21,16 @@ import Tag from 'primevue/tag'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
 import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
+import BlastRadiusPreviewDialog from '@/admin/components/BlastRadiusPreviewDialog.vue'
+import { useBlastRadiusConfirm } from '@/composables/useBlastRadiusConfirm'
+import type { BlastRadiusPreview } from '@/types/blast-radius'
 
 const { t } = useI18n()
 const router = useRouter()
 const confirmDialog = useConfirm()
 const toast = useToast()
 const { loading, loadError, run } = useAsyncPageLoad()
+const { dialogVisible: blastRadiusVisible, preview: blastRadiusPreview, confirm: confirmBlastRadius, onApply: applyBlastRadius, onCancel: cancelBlastRadius } = useBlastRadiusConfirm()
 
 const users = ref<User[]>([])
 const modes = ref<Mode[]>([])
@@ -328,6 +332,42 @@ async function handleSave() {
   if (!form.value.peer_ip.trim()) { toast.add({ severity: 'error', summary: t('users.error_peer_ip'), life: 3000 }); return }
   const networks = form.value.networks_text.split('\n').map(s => s.trim()).filter(Boolean)
   if (networksRequired.value && networks.length === 0) { toast.add({ severity: 'error', summary: t('users.error_networks'), life: 3000 }); return }
+
+  const newFilterAllow = form.value.filter_allow_text.split('\n').map(s => s.trim()).filter(s => s !== '')
+  const newFilterDeny = form.value.filter_deny_text.split('\n').map(s => s.trim()).filter(s => s !== '')
+
+  // Only an existing user has prior filters/mode to diff against and
+  // actual selections that a preview could report an impact on — a
+  // brand-new user doesn't exist yet for either preview endpoint to look up.
+  if (selected.value) {
+    try {
+      if (!sameNetworkSet(newFilterAllow, selected.value.filter_allow || []) ||
+          !sameNetworkSet(newFilterDeny, selected.value.filter_deny || [])) {
+        const ok = await confirmBlastRadius(async () => {
+          const resp = await apiClient.post<BlastRadiusPreview>(
+            '/admin/users/' + selected.value!.id + '/route-filters/preview',
+            { allow: newFilterAllow, deny: newFilterDeny },
+          )
+          return resp.data
+        })
+        if (!ok) return
+      }
+      if (form.value.catalog_mode_id !== selected.value.catalog_mode_id) {
+        const ok = await confirmBlastRadius(async () => {
+          const resp = await apiClient.post<BlastRadiusPreview>(
+            '/admin/users/' + selected.value!.id + '/mode/preview',
+            { catalog_mode_id: form.value.catalog_mode_id },
+          )
+          return resp.data
+        })
+        if (!ok) return
+      }
+    } catch {
+      toast.add({ severity: 'error', summary: t('blast_radius.preview_failed'), life: 3000 })
+      return
+    }
+  }
+
   saving.value = true
   try {
     const payload: UserSavePayload = {
@@ -350,8 +390,8 @@ async function handleSave() {
       // touch a user's existing networks just because this save happened
       // to include an unrelated field change while networks weren't shown.
       networks: showNetworks.value ? networks : undefined,
-      filter_allow: form.value.filter_allow_text.split('\n').map(s => s.trim()).filter(s => s !== ''),
-      filter_deny: form.value.filter_deny_text.split('\n').map(s => s.trim()).filter(s => s !== ''),
+      filter_allow: newFilterAllow,
+      filter_deny: newFilterDeny,
     }
     let resp: AxiosResponse<User>
     if (!selected.value) {
@@ -533,6 +573,10 @@ defineExpose({
   applyNetworksNormalization,
   handleSave,
   filterModeSelect,
+  selectUser,
+  blastRadiusVisible,
+  applyBlastRadius,
+  cancelBlastRadius,
 })
 </script>
 
@@ -1178,6 +1222,14 @@ defineExpose({
       <Button label="OK" severity="primary" :loading="credSaving" @click="handleResetPassword" />
     </template>
   </Dialog>
+
+  <BlastRadiusPreviewDialog
+    v-if="blastRadiusPreview"
+    v-model:visible="blastRadiusVisible"
+    :preview="blastRadiusPreview"
+    @apply="applyBlastRadius"
+    @cancel="cancelBlastRadius"
+  />
 </template>
 
 <style scoped>

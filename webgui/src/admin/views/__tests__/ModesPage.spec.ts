@@ -175,4 +175,59 @@ describe('ModesPage', () => {
       ],
     })
   })
+
+  it('previews a feed-membership change on an existing mode and gates the real save behind Apply', async () => {
+    mockGet.mockImplementation((url: string) => {
+      if (url === '/admin/modes') {
+        return Promise.resolve({ data: { modes: [{ id: 9, name: 'existing-mode', enabled: true, feed_count: 1 }] } })
+      }
+      if (url === '/admin/modes/9/feeds') {
+        return Promise.resolve({ data: { feeds: [{ id: 1, name: 'inc', url: 'u1', enabled: true, adapter_name: 'a' }] } })
+      }
+      if (url === '/admin/feeds') {
+        return Promise.resolve({ data: { feeds: [
+          { id: 1, name: 'inc', url: 'u1', enabled: true, adapter_name: 'a' },
+          { id: 2, name: 'new', url: 'u2', enabled: true, adapter_name: 'a' },
+        ] } })
+      }
+      return Promise.resolve({ data: {} })
+    })
+
+    const { wrapper } = await mountModesPage()
+    const vm = wrapper.vm as ModesPageVM
+
+    vm.selectMode({ id: 9, name: 'existing-mode', enabled: true, feed_count: 1 })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    vm.form.name = 'existing-mode'
+    vm.assignedFeedIds.push(2)
+
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/admin/modes/9/feeds/preview') {
+        return Promise.resolve({
+          data: {
+            affected_users: [{ user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 2, after_v6: 0, lost_routes: false }],
+            total_delta_v4: 1, total_delta_v6: 0,
+          },
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+    mockPut.mockResolvedValue({ data: { id: 9, name: 'existing-mode', enabled: true, feed_count: 2 } })
+
+    const savePromise = vm.handleSave()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/modes/9/feeds/preview', {
+      feeds: [{ id: 1, exclude: false }, { id: 2, exclude: false }],
+    })
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(vm.blastRadiusVisible).toBe(true)
+
+    vm.applyBlastRadius()
+    await savePromise
+
+    expect(mockPut).toHaveBeenCalledWith('/admin/modes/9/feeds', {
+      feeds: [{ id: 1, exclude: false }, { id: 2, exclude: false }],
+    })
+  })
 })

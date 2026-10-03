@@ -426,6 +426,29 @@ self-service change made by an end user is `user:<id>`.
 page). Entries are retained for `audit_log_retention_days` (default 30) and purged hourly
 alongside the metrics snapshot purge.
 
+### Blast-radius preview
+
+Four admin edits change which prefixes a user actually receives: the global route
+filters, a user's own route filter override, a mode's feed membership, and moving a
+user to a different catalog mode. Each one now previews its impact before saving —
+a dialog lists every affected user's IPv4/IPv6 prefix count before and after, flags
+anyone who would lose routes, and shows the aggregate change — with the save itself
+gated behind an explicit Apply. If nobody's counts would actually move, the save goes
+through directly; the dialog only interrupts when there's something to review.
+
+Generalizes the same technique "Reset to defaults" (above) already used for its own
+preview: run the real mutation inside a database transaction, measure the result
+against every affected user, then always roll back — so the preview can never drift
+from what the mutation would actually do, since it IS the mutation, just discarded
+afterward. Unlike the reset preview, there is no digest/staleness contract here —
+applying afterward is just the existing save action (the settings form, the user-edit
+dialog, the mode feed editor), called normally.
+
+`POST /api/admin/settings/preview-filters`, `POST /api/admin/users/{id}/route-filters/preview`,
+`POST /api/admin/modes/{id}/feeds/preview`, and `POST /api/admin/users/{id}/mode/preview`
+power the four dialogs; each takes the same body its corresponding save endpoint does
+and is read-only (the trial transaction never commits).
+
 ### Validation and constraints
 
 All values are validated on startup with helpful error messages. If not specified, defaults apply.

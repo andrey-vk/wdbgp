@@ -273,7 +273,13 @@ func (s *Store) EffectiveRouteFilters(ctx context.Context, user User) (global, o
 }
 
 func (s *Store) GlobalRouteFilters(ctx context.Context) (RouteFilters, error) {
-	settings, err := s.GetAllSettings(ctx)
+	return globalRouteFilters(ctx, s.DB)
+}
+
+// globalRouteFilters is GlobalRouteFilters' queryer-parameterized
+// implementation — see countSelectionPrefixesTx (catalog.go).
+func globalRouteFilters(ctx context.Context, q queryer) (RouteFilters, error) {
+	settings, err := getAllSettings(ctx, q)
 	if err != nil {
 		return RouteFilters{}, err
 	}
@@ -476,6 +482,7 @@ func mergeRouteFilters(global, user RouteFilters) RouteFilters {
 
 type queryer interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 func readRouteFilters(ctx context.Context, db queryer, query string, args ...any) (RouteFilters, error) {

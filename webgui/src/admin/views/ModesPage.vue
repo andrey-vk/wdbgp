@@ -15,6 +15,9 @@ import Checkbox from 'primevue/checkbox'
 import FormField from '@/components/FormField.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
 import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
+import BlastRadiusPreviewDialog from '@/admin/components/BlastRadiusPreviewDialog.vue'
+import { useBlastRadiusConfirm } from '@/composables/useBlastRadiusConfirm'
+import type { BlastRadiusPreview } from '@/types/blast-radius'
 
 interface FeedItem {
   id: number; name: string; url: string; enabled: boolean; adapter_name: string; exclude?: boolean
@@ -25,6 +28,7 @@ const router = useRouter()
 const confirmDialog = useConfirm()
 const toast = useToast()
 const { loading, loadError, run } = useAsyncPageLoad()
+const { dialogVisible: blastRadiusVisible, preview: blastRadiusPreview, confirm: confirmBlastRadius, onApply: applyBlastRadius, onCancel: cancelBlastRadius } = useBlastRadiusConfirm()
 
 const modes = ref<Mode[]>([])
 const selected = ref<Mode | null>(null)
@@ -39,6 +43,19 @@ const assignedFeedIds = ref<number[]>([])
 const excludedFeedIds = ref<number[]>([])
 const loadingFeeds = ref(false)
 const savingFeeds = ref(false)
+// Snapshot of assignedFeedIds/excludedFeedIds as last loaded from the
+// server — handleSave diffs the current form against this to decide
+// whether the feed membership actually changed and a blast-radius preview
+// is worth showing, rather than previewing every save unconditionally.
+const originalAssignedFeedIds = ref<number[]>([])
+const originalExcludedFeedIds = ref<number[]>([])
+
+function sameFeedSet(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false
+  const sa = [...a].sort((x, y) => x - y)
+  const sb = [...b].sort((x, y) => x - y)
+  return sa.every((v, i) => v === sb[i])
+}
 
 onMounted(async () => {
   await run(async () => {
@@ -63,6 +80,8 @@ function startNew() {
   allFeeds.value = []
   assignedFeedIds.value = []
   excludedFeedIds.value = []
+  originalAssignedFeedIds.value = []
+  originalExcludedFeedIds.value = []
   loadAllFeeds()
 }
 
@@ -96,8 +115,37 @@ async function toggleModeEnabled() {
   }
 }
 
+const feedsBody = () => ({
+  feeds: assignedFeedIds.value.map((id) => ({
+    id,
+    exclude: excludedFeedIds.value.includes(id),
+  })),
+})
+
 async function handleSave() {
   if (!form.value.name.trim()) { toast.add({ severity: 'error', summary: t('modes.error_name'), life: 3000 }); return }
+
+  // Only an existing mode has users already on it and prior feed
+  // membership to diff against — a brand-new mode has neither, so there's
+  // nothing to preview yet.
+  if (selected.value && (
+    !sameFeedSet(assignedFeedIds.value, originalAssignedFeedIds.value) ||
+    !sameFeedSet(excludedFeedIds.value, originalExcludedFeedIds.value)
+  )) {
+    try {
+      const ok = await confirmBlastRadius(async () => {
+        const resp = await apiClient.post<BlastRadiusPreview>(
+          '/admin/modes/' + selected.value!.id + '/feeds/preview', feedsBody(),
+        )
+        return resp.data
+      })
+      if (!ok) return
+    } catch {
+      toast.add({ severity: 'error', summary: t('blast_radius.preview_failed'), life: 3000 })
+      return
+    }
+  }
+
   saving.value = true
   try {
     let resp: AxiosResponse<Mode>
@@ -117,12 +165,7 @@ async function handleSave() {
     savingFeeds.value = true
     let feedsSaveFailed = false
     try {
-      await apiClient.put('/admin/modes/' + savedMode.id + '/feeds', {
-        feeds: assignedFeedIds.value.map((id) => ({
-          id,
-          exclude: excludedFeedIds.value.includes(id),
-        })),
-      })
+      await apiClient.put('/admin/modes/' + savedMode.id + '/feeds', feedsBody())
       // Fire-and-forget regenerate communities
       apiClient.post('/admin/modes/' + savedMode.id + '/communities/generate').catch(() => {})
     } catch {
@@ -185,6 +228,8 @@ async function loadModeFeeds() {
     assignedFeeds.value = resp.data.feeds || []
     assignedFeedIds.value = assignedFeeds.value.map((f: FeedItem) => f.id)
     excludedFeedIds.value = assignedFeeds.value.filter((f: FeedItem) => f.exclude).map((f: FeedItem) => f.id)
+    originalAssignedFeedIds.value = [...assignedFeedIds.value]
+    originalExcludedFeedIds.value = [...excludedFeedIds.value]
   } finally { loadingFeeds.value = false }
 }
 
@@ -233,6 +278,10 @@ defineExpose({
   excludedFeedIds,
   handleSave,
   startNew,
+  selectMode,
+  blastRadiusVisible,
+  applyBlastRadius,
+  cancelBlastRadius,
 })
 </script>
 
@@ -473,6 +522,14 @@ defineExpose({
         </div>
       </div>
     </div>
+
+    <BlastRadiusPreviewDialog
+      v-if="blastRadiusPreview"
+      v-model:visible="blastRadiusVisible"
+      :preview="blastRadiusPreview"
+      @apply="applyBlastRadius"
+      @cancel="cancelBlastRadius"
+    />
   </div>
 </template>
 

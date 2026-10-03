@@ -445,6 +445,15 @@
   "audit_log.after": "После",
   "audit_log.empty": "Нет записей журнала аудита по текущим фильтрам.",
 
+  "blast_radius.title": "Предпросмотр влияния",
+  "blast_radius.count": "У {count} пользователь(ей) изменятся маршруты:",
+  "blast_radius.v4": "IPv4",
+  "blast_radius.v6": "IPv6",
+  "blast_radius.loses_routes": "Теряет маршруты",
+  "blast_radius.total": "Итоговое изменение: {v4} IPv4, {v6} IPv6 префиксов",
+  "blast_radius.apply": "Всё равно применить",
+  "blast_radius.preview_failed": "Не удалось получить предпросмотр изменения",
+
   "error.generic_title": "Что-то пошло не так",
   "error.generic_message": "Произошла непредвиденная ошибка. Попробуйте перезагрузить страницу.",
   "error.reload": "Перезагрузить",

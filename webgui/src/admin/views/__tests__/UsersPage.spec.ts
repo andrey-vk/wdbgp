@@ -308,3 +308,100 @@ describe('UsersPage filter_mode / filter_editable independence', () => {
     expect(vm.form.filter_editable).toBe(true)
   })
 })
+
+describe('UsersPage blast-radius preview', () => {
+  const existingUser = {
+    id: 1, name: 'Test User', peer_ip: '10.0.0.1', peer_asn: 65001,
+    has_password: false, next_hop: '', web_auth: 'network',
+    enabled: true, active_dial: false, catalog_mode_id: 1, catalog_mode_name: 'Default',
+    networks: ['192.168.0.0/24'], selection_locked: false, catalog_editable: true,
+    filter_editable: false, filter_override: false, filter_mode: 'global',
+    filter_allow: [], filter_deny: [], peer_state: '',
+  }
+
+  it('previews a route-filter change and gates the real PUT behind Apply', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    vm.form.filter_deny_text = '21.0.0.0/8'
+
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/admin/users/1/route-filters/preview') {
+        return Promise.resolve({
+          data: {
+            affected_users: [{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }],
+            total_delta_v4: -1, total_delta_v6: 0,
+          },
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+    mockPut.mockResolvedValue({ data: { ...existingUser, filter_deny: ['21.0.0.0/8'] } })
+
+    const savePromise = vm.handleSave()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/route-filters/preview', { allow: [], deny: ['21.0.0.0/8'] })
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(vm.blastRadiusVisible).toBe(true)
+
+    vm.applyBlastRadius()
+    await savePromise
+
+    expect(mockPut).toHaveBeenCalledWith('/admin/users/1', expect.objectContaining({ filter_deny: ['21.0.0.0/8'] }))
+  })
+
+  it('previews a catalog-mode move and gates the real PUT behind Apply', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    vm.form.catalog_mode_id = 2
+
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/admin/users/1/mode/preview') {
+        return Promise.resolve({
+          data: {
+            affected_users: [{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }],
+            total_delta_v4: -1, total_delta_v6: 0,
+          },
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+    mockPut.mockResolvedValue({ data: { ...existingUser, catalog_mode_id: 2 } })
+
+    const savePromise = vm.handleSave()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/mode/preview', { catalog_mode_id: 2 })
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(vm.blastRadiusVisible).toBe(true)
+
+    vm.applyBlastRadius()
+    await savePromise
+
+    expect(mockPut).toHaveBeenCalledWith('/admin/users/1', expect.objectContaining({ catalog_mode_id: 2 }))
+  })
+
+  it('does not call either preview endpoint when neither filters nor mode changed', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    vm.form.name = 'Test User renamed'
+
+    mockPut.mockResolvedValue({ data: { ...existingUser, name: 'Test User renamed' } })
+    mockPost.mockClear()
+
+    await vm.handleSave()
+
+    expect(mockPost).not.toHaveBeenCalledWith('/admin/users/1/route-filters/preview', expect.anything())
+    expect(mockPost).not.toHaveBeenCalledWith('/admin/users/1/mode/preview', expect.anything())
+    expect(mockPut).toHaveBeenCalled()
+  })
+})

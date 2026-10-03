@@ -8,6 +8,9 @@ import { settingsSchema } from '@/types/settings'
 import { sections } from '@/admin/settingsMeta'
 import type { SettingMeta } from '@/admin/settingsMeta'
 import SettingField from '@/components/SettingField.vue'
+import BlastRadiusPreviewDialog from '@/admin/components/BlastRadiusPreviewDialog.vue'
+import { useBlastRadiusConfirm } from '@/composables/useBlastRadiusConfirm'
+import type { BlastRadiusPreview } from '@/types/blast-radius'
 
 const metaMap: Record<string, SettingMeta> = {}
 for (const s of sections) {
@@ -20,6 +23,7 @@ import Message from 'primevue/message'
 
 const { t } = useI18n()
 const toast = useToast()
+const { dialogVisible: blastRadiusVisible, preview: blastRadiusPreview, confirm: confirmBlastRadius, onApply: applyBlastRadius, onCancel: cancelBlastRadius } = useBlastRadiusConfirm()
 
 const loading = ref(true)
 const saving = ref(false)
@@ -128,6 +132,19 @@ async function handleSave() {
       if (val === savedValues.value[key]) continue
       body[key] = val
     }
+
+    if ('filter_allow' in body || 'filter_deny' in body) {
+      const newAllow = (body.filter_allow ?? values.value.filter_allow ?? '') as string
+      const newDeny = (body.filter_deny ?? values.value.filter_deny ?? '') as string
+      const ok = await confirmBlastRadius(async () => {
+        const resp = await apiClient.post<BlastRadiusPreview>('/admin/settings/preview-filters', {
+          filter_allow: newAllow, filter_deny: newDeny,
+        })
+        return resp.data
+      })
+      if (!ok) return
+    }
+
     const resp = await apiClient.put('/admin/settings', body)
     dirty.value = false
     if (resp.data?.warning) {
@@ -167,7 +184,7 @@ async function handlePurgeMetrics() {
 // Exposed for SettingsPage.spec.ts, which drives saves and inspects local
 // state directly rather than through the DOM — without this, a rename here
 // would silently break those tests with no static warning.
-defineExpose({ values, envOverrides, saving, dirty, saved, handleSave })
+defineExpose({ values, envOverrides, saving, dirty, saved, handleSave, blastRadiusVisible, applyBlastRadius, cancelBlastRadius })
 </script>
 
 <template>
@@ -239,6 +256,14 @@ defineExpose({ values, envOverrides, saving, dirty, saved, handleSave })
         />
       </div>
     </div>
+
+    <BlastRadiusPreviewDialog
+      v-if="blastRadiusPreview"
+      v-model:visible="blastRadiusVisible"
+      :preview="blastRadiusPreview"
+      @apply="applyBlastRadius"
+      @cancel="cancelBlastRadius"
+    />
   </div>
 </template>
 

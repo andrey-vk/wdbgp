@@ -446,6 +446,15 @@
   "audit_log.after": "After",
   "audit_log.empty": "No audit log entries match the current filters.",
 
+  "blast_radius.title": "Preview impact",
+  "blast_radius.count": "{count} user(s) will see their routes change:",
+  "blast_radius.v4": "IPv4",
+  "blast_radius.v6": "IPv6",
+  "blast_radius.loses_routes": "Loses routes",
+  "blast_radius.total": "Total change: {v4} IPv4, {v6} IPv6 prefixes",
+  "blast_radius.apply": "Apply anyway",
+  "blast_radius.preview_failed": "Failed to preview this change",
+
   "error.generic_title": "Something went wrong",
   "error.generic_message": "An unexpected error occurred. Please try reloading the page.",
   "error.reload": "Reload",

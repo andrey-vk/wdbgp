@@ -15,7 +15,14 @@ type AppSetting struct {
 
 // GetAllSettings returns all rows from app_settings as a map[key]value.
 func (s *Store) GetAllSettings(ctx context.Context) (map[string]string, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT key, value FROM app_settings")
+	return getAllSettings(ctx, s.DB)
+}
+
+// getAllSettings is GetAllSettings' queryer-parameterized implementation —
+// see countSelectionPrefixesTx (catalog.go) for why a tx-scoped caller
+// needs this.
+func getAllSettings(ctx context.Context, q queryer) (map[string]string, error) {
+	rows, err := q.QueryContext(ctx, "SELECT key, value FROM app_settings")
 	if err != nil {
 		return nil, err
 	}

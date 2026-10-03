@@ -307,17 +307,29 @@ WHERE cme.mode_id = ?1
 // prefixes matching the user's selection, then apply allow/deny lists according
 // to the filter mode.
 func (s *Store) CountSelectionPrefixes(ctx context.Context, userID int64) (v4, v6 int, err error) {
+	return countSelectionPrefixes(ctx, s.DB, userID)
+}
+
+// countSelectionPrefixesTx is CountSelectionPrefixes' tx-scoped twin, for a
+// caller measuring prefix counts inside a transaction that hasn't
+// committed yet (see blastradius.go) — s.DB-backed queries run on a
+// different connection and can't see uncommitted writes from tx, or would
+// block on the write lock tx is still holding.
+func countSelectionPrefixesTx(ctx context.Context, tx *sql.Tx, userID int64) (v4, v6 int, err error) {
+	return countSelectionPrefixes(ctx, tx, userID)
+}
+
+func countSelectionPrefixes(ctx context.Context, q queryer, userID int64) (v4, v6 int, err error) {
 	var catalogModeID int64
 	var filterModeInt int
-	err = s.DB.QueryRowContext(ctx,
-		"SELECT catalog_mode_id, filter_mode FROM users WHERE id = ?", userID).
+	err = q.QueryRowContext(ctx, "SELECT catalog_mode_id, filter_mode FROM users WHERE id = ?", userID).
 		Scan(&catalogModeID, &filterModeInt)
 	if err != nil {
 		return 0, 0, err
 	}
 	filterMode := filterModeFromInt(filterModeInt)
 
-	prefixes, err := s.queryPrefixes(ctx, `
+	prefixes, err := queryPrefixes(ctx, q, `
 SELECT DISTINCT p.ip, p.bits
 FROM catalog_mode_entries cme
 JOIN catalog_modes m ON m.id = cme.mode_id
@@ -346,14 +358,20 @@ WHERE cme.mode_id = ?1
 		return 0, 0, nil
 	}
 
-	return s.countFilteredPrefixes(ctx, userID, filterMode, prefixes)
+	return countFilteredPrefixes(ctx, q, userID, filterMode, prefixes)
 }
 
 // queryPrefixes runs a query returning (ip BLOB, bits) rows and decodes
 // them, skipping default routes (a feed-provided default route is never a
 // useful service route).
 func (s *Store) queryPrefixes(ctx context.Context, query string, args ...any) ([]netip.Prefix, error) {
-	rows, err := s.DB.QueryContext(ctx, query, args...)
+	return queryPrefixes(ctx, s.DB, query, args...)
+}
+
+// queryPrefixes is queryPrefixes' queryer-parameterized implementation —
+// see countSelectionPrefixesTx for why a tx-scoped caller needs this.
+func queryPrefixes(ctx context.Context, q queryer, query string, args ...any) ([]netip.Prefix, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -385,12 +403,19 @@ func (s *Store) queryPrefixes(ctx context.Context, query string, args ...any) ([
 // countFilteredPrefixes applies the user's effective route filters to the
 // prefixes and counts the IPv4/IPv6 survivors.
 func (s *Store) countFilteredPrefixes(ctx context.Context, userID int64, filterMode string, prefixes []netip.Prefix) (v4, v6 int, err error) {
-	userFilters, err := s.UserRouteFilters(ctx, userID)
+	return countFilteredPrefixes(ctx, s.DB, userID, filterMode, prefixes)
+}
+
+// countFilteredPrefixes is countFilteredPrefixes' queryer-parameterized
+// implementation — see countSelectionPrefixesTx.
+func countFilteredPrefixes(ctx context.Context, q queryer, userID int64, filterMode string, prefixes []netip.Prefix) (v4, v6 int, err error) {
+	userFilters, err := readRouteFilters(ctx, q,
+		"SELECT action, ip, bits FROM user_route_filters WHERE user_id = ? ORDER BY action, ip, bits", userID)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	globalFilters, err := s.GlobalRouteFilters(ctx)
+	globalFilters, err := globalRouteFilters(ctx, q)
 	if err != nil {
 		return 0, 0, err
 	}
