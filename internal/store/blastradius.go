@@ -53,7 +53,12 @@ func (s *Store) previewBlastRadius(ctx context.Context, users []User, mutate fun
 		// Attempt-local: Store.Transaction may retry this closure on a
 		// transient error, and a retry must start the preview from
 		// scratch, not accumulate onto a prior attempt's partial result.
-		preview = BlastRadiusPreview{}
+		// AffectedUsers starts as a non-nil empty slice, not the zero
+		// value's nil — an empty users (e.g. a mode nobody is on, or a
+		// global filter change where everyone is in override mode)
+		// otherwise serializes to JSON null, and the frontend's
+		// preview.affected_users.filter(...) throws on null.
+		preview = BlastRadiusPreview{AffectedUsers: make([]AffectedUser, 0, len(users))}
 
 		before := make(map[int64][2]int, len(users))
 		for _, u := range users {
@@ -153,21 +158,6 @@ func (s *Store) PreviewGlobalRouteFilterChange(ctx context.Context, newAllow, ne
 	})
 }
 
-// PreviewUserRouteFilterChange reports the blast radius of replacing
-// userID's own route filters with filters, without persisting anything.
-func (s *Store) PreviewUserRouteFilterChange(ctx context.Context, userID int64, filters RouteFilters) (BlastRadiusPreview, error) {
-	user, err := s.User(ctx, userID)
-	if err != nil {
-		return BlastRadiusPreview{}, err
-	}
-	return s.previewBlastRadius(ctx, []User{user}, func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM user_route_filters WHERE user_id = ?", userID); err != nil {
-			return err
-		}
-		return insertRouteFilters(ctx, tx, userID, filters)
-	})
-}
-
 // PreviewModeFeedChange reports the blast radius of replacing modeID's
 // feed membership with links, without persisting anything.
 func (s *Store) PreviewModeFeedChange(ctx context.Context, modeID int64, links []ModeFeedLink) (BlastRadiusPreview, error) {
@@ -180,28 +170,39 @@ func (s *Store) PreviewModeFeedChange(ctx context.Context, modeID int64, links [
 	})
 }
 
-// PreviewUserModeMove reports the blast radius of moving userID to
-// newModeID, without persisting anything. Before/after naturally differ
-// because selections are already mode-scoped (selected_categories/
-// selected_services keyed by (user_id, mode_id)) — "after" reflects
-// whatever userID already has saved for newModeID (zero if they've never
-// used it), with no extra logic needed to carry anything over.
+// PreviewUserEdit reports the combined blast radius of changing userID's
+// filter_mode/filter_override, route filters, and catalog_mode_id all
+// together, without persisting anything. A single trial simulating every
+// field at once — rather than one preview per field, run independently
+// against the original state — because the admin user-edit form saves all
+// three in one PUT: a filter-only preview and a mode-only preview can each
+// show no impact computed against the ORIGINAL state, while the save that
+// actually applies both changes together produces a real impact neither
+// isolated preview could see (e.g. a user with a route only visible under
+// the old mode's old filters can lose it to the combination even though
+// swapping just one side keeps it).
 //
-// mutate is a plain UPDATE, deliberately not SetUserCatalogModeTx — that
-// helper's enabled-mode gate (and sql.ErrNoRows on a miss) exists for the
-// end-user self-service switch-mode flow, and the real admin save this
-// previews (apiUsersUpdate -> Store.UpdateUser) applies no such gate at
-// the database layer at all, validating the target mode in the handler
-// instead. Gating here too would make an admin's already-validated,
-// disabled-or-nonexistent-mode case surface as a misleading
-// store.IsNotFound "user not found" instead of the handler's real 400.
-func (s *Store) PreviewUserModeMove(ctx context.Context, userID, newModeID int64) (BlastRadiusPreview, error) {
+// Mirrors Store.UpdateUser's own filter_mode normalization and catalog_mode_id
+// UPDATE exactly (no enabled-mode gate — see PreviewModeFeedChange's removed
+// SetUserCatalogModeTx note, same reasoning: that gate belongs to the
+// end-user self-service switch-mode flow, not the admin save this previews,
+// which validates the target mode in the handler instead) plus
+// SetUserRouteFilters' delete+insert, so the preview can never drift from
+// what the real save would do.
+func (s *Store) PreviewUserEdit(ctx context.Context, userID int64, filterMode string, filterOverride bool, filters RouteFilters, catalogModeID int64) (BlastRadiusPreview, error) {
 	user, err := s.User(ctx, userID)
 	if err != nil {
 		return BlastRadiusPreview{}, err
 	}
+	normalizedMode := normalizeFilterMode(filterMode, filterOverride)
 	return s.previewBlastRadius(ctx, []User{user}, func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, "UPDATE users SET catalog_mode_id = ? WHERE id = ?", newModeID, userID)
-		return err
+		if _, err := tx.ExecContext(ctx, "UPDATE users SET filter_mode = ?, catalog_mode_id = ? WHERE id = ?",
+			filterModeToInt(normalizedMode), catalogModeID, userID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM user_route_filters WHERE user_id = ?", userID); err != nil {
+			return err
+		}
+		return insertRouteFilters(ctx, tx, userID, filters)
 	})
 }

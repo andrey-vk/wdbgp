@@ -336,32 +336,37 @@ async function handleSave() {
   const newFilterAllow = form.value.filter_allow_text.split('\n').map(s => s.trim()).filter(s => s !== '')
   const newFilterDeny = form.value.filter_deny_text.split('\n').map(s => s.trim()).filter(s => s !== '')
 
-  // Only an existing user has prior filters/mode to diff against and
-  // actual selections that a preview could report an impact on — a
-  // brand-new user doesn't exist yet for either preview endpoint to look up.
-  if (selected.value) {
+  // Only an existing user has a prior state to diff against and actual
+  // selections that a preview could report an impact on — a brand-new user
+  // doesn't exist yet for the preview endpoint to look up. One combined
+  // preview call, not one per changed field: filter_mode/filter_override,
+  // route filters, and catalog_mode_id all save together in the single PUT
+  // below, and simulating each in isolation against the ORIGINAL state can
+  // miss (or wrongly report) an impact the combination actually produces —
+  // e.g. a route only visible under the old mode's old filters can survive
+  // either change alone but not both together.
+  if (selected.value && (
+    form.value.filter_mode !== selected.value.filter_mode ||
+    form.value.filter_override !== selected.value.filter_override ||
+    !sameNetworkSet(newFilterAllow, selected.value.filter_allow || []) ||
+    !sameNetworkSet(newFilterDeny, selected.value.filter_deny || []) ||
+    form.value.catalog_mode_id !== selected.value.catalog_mode_id
+  )) {
     try {
-      if (!sameNetworkSet(newFilterAllow, selected.value.filter_allow || []) ||
-          !sameNetworkSet(newFilterDeny, selected.value.filter_deny || [])) {
-        const ok = await confirmBlastRadius(async () => {
-          const resp = await apiClient.post<BlastRadiusPreview>(
-            '/admin/users/' + selected.value!.id + '/route-filters/preview',
-            { allow: newFilterAllow, deny: newFilterDeny },
-          )
-          return resp.data
-        })
-        if (!ok) return
-      }
-      if (form.value.catalog_mode_id !== selected.value.catalog_mode_id) {
-        const ok = await confirmBlastRadius(async () => {
-          const resp = await apiClient.post<BlastRadiusPreview>(
-            '/admin/users/' + selected.value!.id + '/mode/preview',
-            { catalog_mode_id: form.value.catalog_mode_id },
-          )
-          return resp.data
-        })
-        if (!ok) return
-      }
+      const ok = await confirmBlastRadius(async () => {
+        const resp = await apiClient.post<BlastRadiusPreview>(
+          '/admin/users/' + selected.value!.id + '/preview',
+          {
+            filter_mode: form.value.filter_mode,
+            filter_override: form.value.filter_override,
+            allow: newFilterAllow,
+            deny: newFilterDeny,
+            catalog_mode_id: form.value.catalog_mode_id,
+          },
+        )
+        return resp.data
+      })
+      if (!ok) return
     } catch {
       toast.add({ severity: 'error', summary: t('blast_radius.preview_failed'), life: 3000 })
       return

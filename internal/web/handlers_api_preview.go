@@ -37,26 +37,63 @@ func (s *Server) apiSettingsPreviewFilters(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, preview)
 }
 
-// apiUserRouteFiltersPreview handles
-// POST /api/admin/users/{id}/route-filters/preview. Reports the blast
-// radius of replacing userID's own route filters with the submitted
-// values, without persisting anything.
-func (s *Server) apiUserRouteFiltersPreview(w http.ResponseWriter, r *http.Request) {
+// apiUserPreview handles POST /api/admin/users/{id}/preview. Reports the
+// combined blast radius of the admin user-edit form's three route-affecting
+// fields — filter_mode/filter_override, route filters, and catalog_mode_id —
+// changed together in one save, without persisting anything. A single
+// combined preview rather than one per field: the admin edit dialog saves
+// all three in one PUT, and simulating each field's change independently
+// against the original state can miss an impact the combination actually
+// produces (or report one that the combination actually avoids).
+func (s *Server) apiUserPreview(w http.ResponseWriter, r *http.Request) {
 	userID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid user ID"})
 		return
 	}
-	var body store.RouteFilters
+	var body struct {
+		FilterMode     string   `json:"filter_mode"`
+		FilterOverride bool     `json:"filter_override"`
+		Allow          []string `json:"allow"`
+		Deny           []string `json:"deny"`
+		CatalogModeID  int64    `json:"catalog_mode_id"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	if _, err := store.NormalizeRouteFilters(body); err != nil {
+	filters := store.RouteFilters{Allow: body.Allow, Deny: body.Deny}
+	if _, err := store.NormalizeRouteFilters(filters); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	preview, err := s.store.PreviewUserRouteFilterChange(r.Context(), userID, body)
+	if body.CatalogModeID <= 0 {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
+		return
+	}
+	current, err := s.store.User(r.Context(), userID)
+	if store.IsNotFound(err) {
+		writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	// Same validation apiUsersUpdate applies, and under the same condition
+	// — only when catalog_mode_id is actually changing, so an update that
+	// doesn't touch it still works even if the user's current mode was
+	// disabled sometime after assignment.
+	if body.CatalogModeID != current.CatalogModeID {
+		if mode, err := s.store.CatalogMode(r.Context(), body.CatalogModeID); err != nil {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode not found"})
+			return
+		} else if !mode.Enabled {
+			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode is disabled"})
+			return
+		}
+	}
+	preview, err := s.store.PreviewUserEdit(r.Context(), userID, body.FilterMode, body.FilterOverride, filters, body.CatalogModeID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
@@ -101,50 +138,6 @@ func (s *Server) apiModeFeedsPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	preview, err := s.store.PreviewModeFeedChange(r.Context(), modeID, links)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, preview)
-}
-
-// apiUserModePreview handles POST /api/admin/users/{id}/mode/preview.
-// Reports the blast radius of moving userID to the submitted
-// catalog_mode_id, without persisting anything.
-func (s *Server) apiUserModePreview(w http.ResponseWriter, r *http.Request) {
-	userID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid user ID"})
-		return
-	}
-	var body struct {
-		CatalogModeID int64 `json:"catalog_mode_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
-		return
-	}
-	if body.CatalogModeID <= 0 {
-		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
-		return
-	}
-	// Same validation apiUsersUpdate applies before actually changing
-	// catalog_mode_id — without it, a disabled or nonexistent target mode
-	// would reach previewBlastRadius's trial UPDATE, which affects zero
-	// rows and surfaces as a misleading 404 "User not found" rather than
-	// the real save's own 400 for this exact case.
-	if mode, err := s.store.CatalogMode(r.Context(), body.CatalogModeID); err != nil {
-		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode not found"})
-		return
-	} else if !mode.Enabled {
-		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode is disabled"})
-		return
-	}
-	preview, err := s.store.PreviewUserModeMove(r.Context(), userID, body.CatalogModeID)
-	if err != nil {
-		if store.IsNotFound(err) {
-			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
-			return
-		}
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}

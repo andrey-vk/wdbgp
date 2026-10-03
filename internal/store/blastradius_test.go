@@ -121,15 +121,15 @@ func TestPreviewGlobalRouteFilterChangeExcludesOverrideUsers(t *testing.T) {
 	}
 }
 
-// TestPreviewUserRouteFilterChange checks the per-user filter preview
-// reports that one user's own before/after prefix counts and nothing
-// else, and doesn't persist the trial filters.
-func TestPreviewUserRouteFilterChange(t *testing.T) {
+// TestPreviewUserEditFilterChange checks the combined user-edit preview
+// reports one user's own before/after prefix counts and nothing else when
+// only the route filters change, and doesn't persist the trial filters.
+func TestPreviewUserEditFilterChange(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	userID := addBlastRadiusTestUser(t, s, DefaultCatalogModeID, FilterModeOverride, "cat-a", 1)
 
-	preview, err := s.PreviewUserRouteFilterChange(ctx, userID, RouteFilters{Deny: []string{"21.0.0.0/8"}})
+	preview, err := s.PreviewUserEdit(ctx, userID, FilterModeOverride, false, RouteFilters{Deny: []string{"21.0.0.0/8"}}, DefaultCatalogModeID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,10 +189,11 @@ func TestPreviewModeFeedChange(t *testing.T) {
 	}
 }
 
-// TestPreviewUserModeMove checks that moving a user to a mode they've
-// never used reports a drop to zero (selections are mode-scoped, so the
-// destination mode's selection starts empty), without persisting the move.
-func TestPreviewUserModeMove(t *testing.T) {
+// TestPreviewUserEditModeMove checks that moving a user to a mode they've
+// never used (filters unchanged) reports a drop to zero (selections are
+// mode-scoped, so the destination mode's selection starts empty), without
+// persisting the move.
+func TestPreviewUserEditModeMove(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	modeAID, err := s.AddCatalogMode(ctx, "Mode A", true)
@@ -219,7 +220,7 @@ func TestPreviewUserModeMove(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	preview, err := s.PreviewUserModeMove(ctx, userID, modeBID)
+	preview, err := s.PreviewUserEdit(ctx, userID, FilterModeGlobal, false, RouteFilters{}, modeBID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,5 +238,89 @@ func TestPreviewUserModeMove(t *testing.T) {
 	}
 	if user.CatalogModeID != modeAID {
 		t.Fatalf("CatalogModeID = %d after a preview, want unchanged %d", user.CatalogModeID, modeAID)
+	}
+}
+
+// TestPreviewUserEditCombinedChangeCatchesWhatNeitherIsolatedChangeWould
+// reproduces the exact gap Codex's review flagged: previewing a filter
+// change and a mode move independently, each against the ORIGINAL state,
+// can both report "no impact" even though applying them together — which
+// is what the real admin save actually does in one PUT — does have one.
+// The user here already has a saved selection on mode B from before this
+// edit (selections are mode-scoped, so switching to a mode doesn't need a
+// fresh selection); the new deny only targets mode B's route, so neither
+// the filter-only nor the mode-only trial alone shows a count change, but
+// the combination does.
+func TestPreviewUserEditCombinedChangeCatchesWhatNeitherIsolatedChangeWould(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	modeAID, err := s.AddCatalogMode(ctx, "Mode A", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modeBID, err := s.AddCatalogMode(ctx, "Mode B", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// addBlastRadiusTestUser sets the user up on mode A, override filter
+	// mode, with "cat-a" selected at 21.0.0.0/8 (n=1 -> 20+1).
+	userID := addBlastRadiusTestUser(t, s, modeAID, FilterModeOverride, "cat-a", 1)
+
+	feedID, err := s.AddFeed(ctx, "mode-b-feed", "https://example.test/modeb.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeBID, feedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "cat-b", Service: "svc", CIDR: "22.0.0.0/8"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserModeSelection(ctx, tx, userID, modeBID, []string{"cat-b"}, nil)
+	}); err != nil {
+		t.Fatalf("pre-save mode B selection: %v", err)
+	}
+
+	filterOnly, err := s.PreviewUserEdit(ctx, userID, FilterModeOverride, false, RouteFilters{Deny: []string{"22.0.0.0/8"}}, modeAID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filterOnly.AffectedUsers[0].BeforeV4 != 1 || filterOnly.AffectedUsers[0].AfterV4 != 1 {
+		t.Fatalf("filter-only preview = %+v, want 1 -> 1 (deny targets mode B's route, user stays on mode A)", filterOnly.AffectedUsers[0])
+	}
+
+	modeOnly, err := s.PreviewUserEdit(ctx, userID, FilterModeOverride, false, RouteFilters{}, modeBID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modeOnly.AffectedUsers[0].BeforeV4 != 1 || modeOnly.AffectedUsers[0].AfterV4 != 1 {
+		t.Fatalf("mode-only preview = %+v, want 1 -> 1 (same count, different route, filters stay empty)", modeOnly.AffectedUsers[0])
+	}
+
+	combined, err := s.PreviewUserEdit(ctx, userID, FilterModeOverride, false, RouteFilters{Deny: []string{"22.0.0.0/8"}}, modeBID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := combined.AffectedUsers[0]
+	if c.BeforeV4 != 1 || c.AfterV4 != 0 || !c.LostRoutes {
+		t.Fatalf("combined preview = %+v, want 1 -> 0, LostRoutes true — the impact neither isolated preview showed", c)
+	}
+
+	user, err := s.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.CatalogModeID != modeAID {
+		t.Fatalf("CatalogModeID = %d after previews, want unchanged %d", user.CatalogModeID, modeAID)
+	}
+	filters, err := s.UserRouteFilters(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filters.Deny) != 0 {
+		t.Fatalf("UserRouteFilters changed after previews: %+v", filters)
 	}
 }

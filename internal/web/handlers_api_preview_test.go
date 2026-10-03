@@ -95,17 +95,18 @@ func TestAPISettingsPreviewFilters(t *testing.T) {
 	}
 }
 
-func TestAPIUserRouteFiltersPreview(t *testing.T) {
+func TestAPIUserPreviewFilterChange(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 	userID := addPreviewTestUser(t, st, store.DefaultCatalogModeID, store.FilterModeOverride, "cat-a", 1)
 	idStr := strconv.FormatInt(userID, 10)
 
-	req := httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/route-filters/preview", strings.NewReader(`{"allow":[],"deny":["21.0.0.0/8"]}`))
+	req := httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/preview", strings.NewReader(
+		`{"filter_mode":"override","allow":[],"deny":["21.0.0.0/8"],"catalog_mode_id":`+strconv.FormatInt(store.DefaultCatalogModeID, 10)+`}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", idStr)
 	w := httptest.NewRecorder()
-	srv.apiUserRouteFiltersPreview(w, req)
+	srv.apiUserPreview(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("preview: %d body=%s", w.Code, w.Body.String())
 	}
@@ -127,13 +128,14 @@ func TestAPIUserRouteFiltersPreview(t *testing.T) {
 	}
 }
 
-func TestAPIUserRouteFiltersPreviewNotFound(t *testing.T) {
+func TestAPIUserPreviewNotFound(t *testing.T) {
 	srv, _, _ := setupUserTestServer(t)
-	req := httptest.NewRequest("POST", "/api/admin/users/999/route-filters/preview", strings.NewReader(`{"allow":[],"deny":[]}`))
+	req := httptest.NewRequest("POST", "/api/admin/users/999/preview", strings.NewReader(
+		`{"filter_mode":"global","allow":[],"deny":[],"catalog_mode_id":`+strconv.FormatInt(store.DefaultCatalogModeID, 10)+`}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", "999")
 	w := httptest.NewRecorder()
-	srv.apiUserRouteFiltersPreview(w, req)
+	srv.apiUserPreview(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("preview: %d body=%s, want 404", w.Code, w.Body.String())
 	}
@@ -184,7 +186,7 @@ func TestAPIModeFeedsPreview(t *testing.T) {
 	}
 }
 
-func TestAPIUserModePreview(t *testing.T) {
+func TestAPIUserPreviewModeMove(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 
 	req := httptest.NewRequest("POST", "/api/admin/modes", strings.NewReader(`{"name":"Mode B","enabled":true}`))
@@ -202,12 +204,12 @@ func TestAPIUserModePreview(t *testing.T) {
 	userID := addPreviewTestUser(t, st, store.DefaultCatalogModeID, store.FilterModeGlobal, "cat-a", 1)
 	idStr := strconv.FormatInt(userID, 10)
 
-	req = httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/mode/preview",
-		strings.NewReader(fmt.Sprintf(`{"catalog_mode_id":%d}`, modeBID)))
+	req = httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/preview",
+		strings.NewReader(fmt.Sprintf(`{"filter_mode":"global","allow":[],"deny":[],"catalog_mode_id":%d}`, modeBID)))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", idStr)
 	w = httptest.NewRecorder()
-	srv.apiUserModePreview(w, req)
+	srv.apiUserPreview(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("preview: %d body=%s", w.Code, w.Body.String())
 	}
@@ -229,14 +231,15 @@ func TestAPIUserModePreview(t *testing.T) {
 	}
 }
 
-// TestAPIUserModePreviewRejectsDisabledOrMissingMode checks that previewing
-// a move into a disabled or nonexistent catalog mode answers the same way
-// apiUsersUpdate's own real-save validation does (400, with a message
-// naming the actual problem) — not the misleading 404 "User not found" that
-// PreviewUserModeMove used to produce by reusing SetUserCatalogModeTx's
-// enabled-mode gate (sql.ErrNoRows -> store.IsNotFound), a gate the real
-// admin save applies nowhere at the database layer.
-func TestAPIUserModePreviewRejectsDisabledOrMissingMode(t *testing.T) {
+// TestAPIUserPreviewRejectsDisabledOrMissingModeWhenModeChanges checks that
+// previewing a move into a disabled or nonexistent catalog mode answers the
+// same way apiUsersUpdate's own real-save validation does (400, with a
+// message naming the actual problem) — not the misleading 404 "User not
+// found" that the old, now-removed PreviewUserModeMove used to produce by
+// reusing SetUserCatalogModeTx's enabled-mode gate (sql.ErrNoRows ->
+// store.IsNotFound), a gate the real admin save applies nowhere at the
+// database layer.
+func TestAPIUserPreviewRejectsDisabledOrMissingModeWhenModeChanges(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 	ctx := context.Background()
 
@@ -255,15 +258,43 @@ func TestAPIUserModePreviewRejectsDisabledOrMissingMode(t *testing.T) {
 		{"nonexistent mode", disabledModeID + 1000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/mode/preview",
-				strings.NewReader(fmt.Sprintf(`{"catalog_mode_id":%d}`, tc.modeID)))
+			req := httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/preview",
+				strings.NewReader(fmt.Sprintf(`{"filter_mode":"global","allow":[],"deny":[],"catalog_mode_id":%d}`, tc.modeID)))
 			req.Header.Set("Content-Type", "application/json")
 			req.SetPathValue("id", idStr)
 			w := httptest.NewRecorder()
-			srv.apiUserModePreview(w, req)
+			srv.apiUserPreview(w, req)
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("preview: %d body=%s, want 400", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// TestAPIUserPreviewAllowsUnchangedDisabledMode checks the mirror case:
+// when catalog_mode_id in the preview body equals the user's CURRENT mode
+// (only filters are actually changing), the preview must succeed even if
+// that mode has since been disabled — matching apiUsersUpdate's own "only
+// validate the mode when this request actually asks to change it" rule, so
+// an unrelated filter edit isn't blocked by a mode that was fine when
+// assigned.
+func TestAPIUserPreviewAllowsUnchangedDisabledMode(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	userID := addPreviewTestUser(t, st, store.DefaultCatalogModeID, store.FilterModeOverride, "cat-a", 1)
+	if err := st.UpdateCatalogMode(ctx, store.CatalogMode{ID: store.DefaultCatalogModeID, Name: "OpenCCK", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	idStr := strconv.FormatInt(userID, 10)
+
+	req := httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/preview", strings.NewReader(
+		`{"filter_mode":"override","allow":[],"deny":["21.0.0.0/8"],"catalog_mode_id":`+strconv.FormatInt(store.DefaultCatalogModeID, 10)+`}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w := httptest.NewRecorder()
+	srv.apiUserPreview(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("preview: %d body=%s, want 200 (mode unchanged, so not re-validated)", w.Code, w.Body.String())
 	}
 }

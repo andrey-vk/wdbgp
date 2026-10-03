@@ -319,6 +319,17 @@ describe('UsersPage blast-radius preview', () => {
     filter_allow: [], filter_deny: [], peer_state: '',
   }
 
+  function mockCombinedPreview(affectedUsers: Array<Record<string, unknown>>) {
+    mockPost.mockImplementation((url: string) => {
+      if (url === '/admin/users/1/preview') {
+        return Promise.resolve({
+          data: { affected_users: affectedUsers, total_delta_v4: -1, total_delta_v6: 0 },
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+  }
+
   it('previews a route-filter change and gates the real PUT behind Apply', async () => {
     const { wrapper } = await mountUsersPage()
     const vm = wrapper.vm as UsersPageVM
@@ -327,23 +338,15 @@ describe('UsersPage blast-radius preview', () => {
 
     vm.form.filter_deny_text = '21.0.0.0/8'
 
-    mockPost.mockImplementation((url: string) => {
-      if (url === '/admin/users/1/route-filters/preview') {
-        return Promise.resolve({
-          data: {
-            affected_users: [{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }],
-            total_delta_v4: -1, total_delta_v6: 0,
-          },
-        })
-      }
-      return Promise.resolve({ data: {} })
-    })
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }])
     mockPut.mockResolvedValue({ data: { ...existingUser, filter_deny: ['21.0.0.0/8'] } })
 
     const savePromise = vm.handleSave()
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/route-filters/preview', { allow: [], deny: ['21.0.0.0/8'] })
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', {
+      filter_mode: 'global', filter_override: false, allow: [], deny: ['21.0.0.0/8'], catalog_mode_id: 1,
+    })
     expect(mockPut).not.toHaveBeenCalled()
     expect(vm.blastRadiusVisible).toBe(true)
 
@@ -361,23 +364,15 @@ describe('UsersPage blast-radius preview', () => {
 
     vm.form.catalog_mode_id = 2
 
-    mockPost.mockImplementation((url: string) => {
-      if (url === '/admin/users/1/mode/preview') {
-        return Promise.resolve({
-          data: {
-            affected_users: [{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }],
-            total_delta_v4: -1, total_delta_v6: 0,
-          },
-        })
-      }
-      return Promise.resolve({ data: {} })
-    })
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }])
     mockPut.mockResolvedValue({ data: { ...existingUser, catalog_mode_id: 2 } })
 
     const savePromise = vm.handleSave()
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/mode/preview', { catalog_mode_id: 2 })
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', {
+      filter_mode: 'global', filter_override: false, allow: [], deny: [], catalog_mode_id: 2,
+    })
     expect(mockPut).not.toHaveBeenCalled()
     expect(vm.blastRadiusVisible).toBe(true)
 
@@ -387,7 +382,37 @@ describe('UsersPage blast-radius preview', () => {
     expect(mockPut).toHaveBeenCalledWith('/admin/users/1', expect.objectContaining({ catalog_mode_id: 2 }))
   })
 
-  it('does not call either preview endpoint when neither filters nor mode changed', async () => {
+  // Regression: the gate used to check only the allow/deny arrays, so
+  // changing just filter_mode (e.g. Global -> Override) skipped the preview
+  // entirely even though it can change effective routes just as much as an
+  // allow/deny edit.
+  it('previews a filter_mode-only change (no allow/deny or mode edit)', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    vm.filterModeSelect = 'override'
+
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 5, after_v6: 0, lost_routes: false }])
+    mockPut.mockResolvedValue({ data: { ...existingUser, filter_mode: 'override', filter_override: true } })
+
+    const savePromise = vm.handleSave()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', {
+      filter_mode: 'override', filter_override: true, allow: [], deny: [], catalog_mode_id: 1,
+    })
+    expect(mockPut).not.toHaveBeenCalled()
+    expect(vm.blastRadiusVisible).toBe(true)
+
+    vm.applyBlastRadius()
+    await savePromise
+
+    expect(mockPut).toHaveBeenCalled()
+  })
+
+  it('does not call the preview endpoint when nothing route-affecting changed', async () => {
     const { wrapper } = await mountUsersPage()
     const vm = wrapper.vm as UsersPageVM
     vm.selectUser(existingUser)
@@ -400,8 +425,7 @@ describe('UsersPage blast-radius preview', () => {
 
     await vm.handleSave()
 
-    expect(mockPost).not.toHaveBeenCalledWith('/admin/users/1/route-filters/preview', expect.anything())
-    expect(mockPost).not.toHaveBeenCalledWith('/admin/users/1/mode/preview', expect.anything())
+    expect(mockPost).not.toHaveBeenCalledWith('/admin/users/1/preview', expect.anything())
     expect(mockPut).toHaveBeenCalled()
   })
 })

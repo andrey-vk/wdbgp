@@ -444,10 +444,15 @@ afterward. Unlike the reset preview, there is no digest/staleness contract here 
 applying afterward is just the existing save action (the settings form, the user-edit
 dialog, the mode feed editor), called normally.
 
-`POST /api/admin/settings/preview-filters`, `POST /api/admin/users/{id}/route-filters/preview`,
-`POST /api/admin/modes/{id}/feeds/preview`, and `POST /api/admin/users/{id}/mode/preview`
-power the four dialogs; each takes the same body its corresponding save endpoint does
-and is read-only (the trial transaction never commits).
+`POST /api/admin/settings/preview-filters` and `POST /api/admin/modes/{id}/feeds/preview`
+power the global-filter and mode-feed dialogs, each taking the same body its
+corresponding save endpoint does. The admin user-edit dialog's filter_mode,
+filter_override, route filters, and catalog_mode_id all save together in one PUT, so
+they're previewed together too, by one `POST /api/admin/users/{id}/preview` simulating
+the full target state in a single trial — simulating each field in isolation against
+the original state could miss (or wrongly report) an impact only the combination
+actually produces. All three endpoints are read-only; the trial transaction never
+commits.
 
 ### Validation and constraints
 
