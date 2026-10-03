@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/netip"
@@ -34,13 +35,28 @@ func (s *Store) CatalogForMode(ctx context.Context, modeID int64, includeDisable
 // zero instead of erroring. One transaction closes that window the same
 // way AllModeCommunitySnapshots does for the community export.
 func (s *Store) CatalogScopesForMode(ctx context.Context, modeID int64) (visible, reset map[string][]string, err error) {
-	visible, err = catalogForMode(ctx, s.DB, modeID, false)
-	if err != nil {
-		return nil, nil, err
-	}
-	reset, err = catalogForMode(ctx, s.DB, modeID, true)
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		var txErr error
+		visible, txErr = catalogForMode(ctx, tx, modeID, false)
+		if txErr != nil {
+			return txErr
+		}
+		if catalogScopesForModeHook != nil {
+			catalogScopesForModeHook()
+		}
+		reset, txErr = catalogForMode(ctx, tx, modeID, true)
+		return txErr
+	})
 	return visible, reset, err
 }
+
+// catalogScopesForModeHook, when set, runs once CatalogScopesForMode's
+// first read has returned and before its second read starts — a seam for
+// tests to inject a concurrent write at exactly that point and confirm
+// it's invisible to the second read, proving the two reads are genuinely
+// isolated within one transaction rather than two independent ones. A nil
+// hook (the default outside tests) is a no-op.
+var catalogScopesForModeHook func()
 
 // catalogForMode is CatalogForMode's implementation, parameterized on
 // queryer so a caller that needs it inside a larger transaction (e.g. a

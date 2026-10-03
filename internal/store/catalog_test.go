@@ -356,24 +356,22 @@ func TestCountSelectionPrefixes(t *testing.T) {
 	}
 }
 
-// TestCatalogScopesForModeTransactionIsolatesConcurrentWrite proves, the
-// deterministic way, the exact mechanism CatalogScopesForMode's own
-// single s.Transaction call relies on for its atomicity guarantee: the
-// race window between its two internal catalogForMode reads is a handful
-// of microseconds (two back-to-back SELECTs with no other work in
-// between), too narrow for a probabilistic concurrent-writer test to land
-// in reliably — TestCatalogScopesForModeIsConsistentUnderConcurrentChange
-// below still exercises realistic concurrent load, but a real regression
-// of the single-transaction guarantee could easily slip past it given how
-// tight that window is. This test instead reproduces
-// CatalogScopesForMode's own two-reads-in-one-transaction shape directly
-// (rather than timing a race against the real function) and proves the
-// mechanism it depends on: a write that commits, on a separate connection,
-// strictly between the two reads inside one already-open transaction must
-// still be invisible to the second read — exactly what sharing one
-// transaction buys, independent of how
-// fast or slow the two reads happen to run relative to each other.
-func TestCatalogScopesForModeTransactionIsolatesConcurrentWrite(t *testing.T) {
+// TestCatalogScopesForModeIsolatesConcurrentWrite proves, deterministically,
+// that CatalogScopesForMode's own two reads are genuinely isolated within
+// one transaction — not just that the underlying transaction mechanism can
+// provide isolation in principle. The race window between its two internal
+// catalogForMode reads is a handful of microseconds (two back-to-back
+// SELECTs with no other work in between), too narrow for a probabilistic
+// concurrent-writer test to land in reliably (confirmed empirically: 5,000
+// iterations of a realistic-load version never reproduced it) —
+// TestCatalogScopesForModeIsConsistentUnderConcurrentChange below still
+// exercises that realistic load, but a real regression of the
+// single-transaction guarantee could easily slip past it given how tight
+// the window is. This test instead calls CatalogScopesForMode itself, using
+// catalogScopesForModeHook to land a concurrent write — on a separate
+// connection — in exactly the gap between its two internal reads, and
+// asserts that write is invisible to the second one.
+func TestCatalogScopesForModeIsolatesConcurrentWrite(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
@@ -394,34 +392,25 @@ func TestCatalogScopesForModeTransactionIsolatesConcurrentWrite(t *testing.T) {
 		t.Fatalf("rebuild mode entries: %v", err)
 	}
 
-	var reset map[string][]string
-	err = s.Transaction(ctx, func(tx *sql.Tx) error {
-		// The first of CatalogScopesForMode's two reads.
-		if _, txErr := catalogForMode(ctx, tx, 1, false); txErr != nil {
-			return txErr
-		}
-
-		// A second service, committed on a SEPARATE connection while this
-		// transaction is still open — simulating a feed sync landing in
-		// exactly the gap between CatalogScopesForMode's two reads.
+	catalogScopesForModeHook = func() {
+		// A second service, committed on a separate connection while
+		// CatalogScopesForMode's transaction is still open — simulating a
+		// feed sync landing in exactly the gap between its two reads.
 		if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
 			{Category: "Aaa", Service: "Svc1", CIDR: "10.0.0.0/24"},
 			{Category: "Aaa", Service: "Svc2", CIDR: "10.1.0.0/24"},
 		}); err != nil {
-			return err
+			t.Fatalf("concurrent insert: %v", err)
 		}
 		if err := s.RebuildModeEntries(ctx, 1); err != nil {
-			return err
+			t.Fatalf("concurrent rebuild: %v", err)
 		}
+	}
+	t.Cleanup(func() { catalogScopesForModeHook = nil })
 
-		// The second of CatalogScopesForMode's two reads, still inside
-		// the same transaction as the first.
-		var txErr error
-		reset, txErr = catalogForMode(ctx, tx, 1, true)
-		return txErr
-	})
+	_, reset, err := s.CatalogScopesForMode(ctx, 1)
 	if err != nil {
-		t.Fatalf("transaction: %v", err)
+		t.Fatalf("CatalogScopesForMode: %v", err)
 	}
 
 	if len(reset["Aaa"]) != 1 {
