@@ -373,28 +373,35 @@ func applyRouteFiltersToPrefixes(prefixes []netip.Prefix, filters RouteFilters) 
 // it against their own "after", can otherwise double-log one real change
 // as two, or describe a transition that never actually happened).
 func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters RouteFilters, meta AuditMeta) (before, after RouteFilters, err error) {
-	const query = "SELECT action, ip, bits FROM user_route_filters WHERE user_id = ? ORDER BY action, ip, bits"
 	err = s.Transaction(ctx, func(tx *sql.Tx) error {
-		b, err := readRouteFilters(ctx, tx, query, userID)
-		if err != nil {
-			return err
-		}
-		before = b
-		if _, err := tx.ExecContext(ctx, "DELETE FROM user_route_filters WHERE user_id = ?", userID); err != nil {
-			return err
-		}
-		if err := insertRouteFilters(ctx, tx, userID, filters); err != nil {
-			return err
-		}
-		a, err := readRouteFilters(ctx, tx, query, userID)
-		if err != nil {
-			return err
-		}
-		after = a
-		removed, added := diffRouteFilters(before, after)
-		return AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10),
-			BoundRouteFiltersForAudit(removed), BoundRouteFiltersForAudit(added), false)
+		var txErr error
+		before, after, txErr = setUserRouteFiltersTx(ctx, tx, userID, filters, meta)
+		return txErr
 	})
+	return before, after, err
+}
+
+// setUserRouteFiltersTx replaces userID's route filters inside tx, recording
+// the audit entry in the same transaction.
+func setUserRouteFiltersTx(ctx context.Context, tx *sql.Tx, userID int64, filters RouteFilters, meta AuditMeta) (before, after RouteFilters, err error) {
+	const query = "SELECT action, ip, bits FROM user_route_filters WHERE user_id = ? ORDER BY action, ip, bits"
+	before, err = readRouteFilters(ctx, tx, query, userID)
+	if err != nil {
+		return before, after, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM user_route_filters WHERE user_id = ?", userID); err != nil {
+		return before, after, err
+	}
+	if err := insertRouteFilters(ctx, tx, userID, filters); err != nil {
+		return before, after, err
+	}
+	after, err = readRouteFilters(ctx, tx, query, userID)
+	if err != nil {
+		return before, after, err
+	}
+	removed, added := diffRouteFilters(before, after)
+	err = AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10),
+		BoundRouteFiltersForAudit(removed), BoundRouteFiltersForAudit(added), false)
 	return before, after, err
 }
 

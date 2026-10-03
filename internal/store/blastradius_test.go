@@ -418,3 +418,40 @@ func TestPreviewUserEditDisabledUserAnnouncesNothing(t *testing.T) {
 		t.Fatalf("disabled-to-disabled preview = %+v, want 0 -> 0", disabling.AffectedUsers[0])
 	}
 }
+
+// TestUpdateUserWithRouteFiltersRollsBackRowOnFilterFailure checks that the
+// admin user save commits the user row and its route filters together: a
+// filter write that fails must not leave the mode change committed.
+func TestUpdateUserWithRouteFiltersRollsBackRowOnFilterFailure(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	modeAID, err := s.AddCatalogMode(ctx, "Mode A", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	modeBID, err := s.AddCatalogMode(ctx, "Mode B", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := addBlastRadiusTestUser(t, s, modeAID, FilterModeOverride, "cat-a", 1)
+	user, err := s.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.CatalogModeID = modeBID
+	user.FilterMode = FilterModeOverride
+
+	_, err = s.UpdateUserWithRouteFilters(ctx, user, AuditMeta{}, AuditMeta{},
+		&RouteFilters{Deny: []string{"not-a-cidr"}}, AuditMeta{})
+	if err == nil {
+		t.Fatal("UpdateUserWithRouteFilters with a malformed filter = nil error, want failure")
+	}
+
+	after, err := s.User(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CatalogModeID != modeAID {
+		t.Fatalf("CatalogModeID = %d after a failed combined save, want rolled back to %d", after.CatalogModeID, modeAID)
+	}
+}

@@ -43,6 +43,10 @@ const allFeeds = ref<FeedItem[]>([])
 const assignedFeedIds = ref<number[]>([])
 const excludedFeedIds = ref<number[]>([])
 const loadingFeeds = ref(false)
+// False until the selected mode's persisted feeds have loaded successfully —
+// the header switch and save previews diff against those, so they must not
+// run off a snapshot left over from a previous mode or a failed load.
+const persistedFeedsKnown = ref(false)
 const loadingAllFeeds = ref(false)
 // Overlapping loads (quick successive selections) must not let an older
 // mode's response overwrite the feed snapshots of the one now selected.
@@ -110,7 +114,7 @@ function openCommunities() {
 async function toggleModeEnabled() {
   // Feeds still loading means the persisted feed set this preview relies on
   // isn't known yet, so previewing now could report a false 0 -> 0.
-  if (!selected.value || loadingFeeds.value) return
+  if (!selected.value || loadingFeeds.value || !persistedFeedsKnown.value) return
   const modeId = selected.value.id
   const newEnabled = !selected.value.enabled
   try {
@@ -170,6 +174,10 @@ async function handleSave() {
   // mode that is or stays disabled would always measure 0 -> 0 regardless
   // of the feed edit, hiding e.g. "enable this mode and give it feeds" in
   // one save.
+  if (selected.value && !persistedFeedsKnown.value) {
+    toast.add({ severity: 'error', summary: t('modes.feeds_save_failed'), life: 3000 })
+    return
+  }
   const snapshotBeforePreview = editSnapshot()
   if (selected.value && (
     !sameFeedSet(assignedFeedIds.value, originalAssignedFeedIds.value) ||
@@ -302,6 +310,7 @@ async function loadModeFeeds() {
   if (!selected.value) return
   const token = feedsRequests.next()
   loadingFeeds.value = true
+  persistedFeedsKnown.value = false
   try {
     const resp = await apiClient.get('/admin/modes/' + selected.value.id + '/feeds')
     if (!feedsRequests.isCurrent(token)) return
@@ -310,6 +319,7 @@ async function loadModeFeeds() {
     excludedFeedIds.value = assignedFeeds.value.filter((f: FeedItem) => f.exclude).map((f: FeedItem) => f.id)
     originalAssignedFeedIds.value = [...assignedFeedIds.value]
     originalExcludedFeedIds.value = [...excludedFeedIds.value]
+    persistedFeedsKnown.value = true
   } finally { if (feedsRequests.isCurrent(token)) loadingFeeds.value = false }
 }
 
@@ -440,7 +450,7 @@ defineExpose({
               <Button v-if="selected && !editMode" :label="t('modes.communities_button')" icon="pi pi-hashtag" severity="secondary" size="small" @click="openCommunities" />
               <div v-if="selected && !editMode" class="switch-row">
                 <FormField :label="t('modes.enabled')" input-id="menabled-hdr">
-                  <ToggleSwitch id="menabled-hdr" :modelValue="selected.enabled" :disabled="loadingFeeds" @change="toggleModeEnabled" />
+                  <ToggleSwitch id="menabled-hdr" :modelValue="selected.enabled" :disabled="loadingFeeds || !persistedFeedsKnown" @change="toggleModeEnabled" />
                 </FormField>
               </div>
             </div>

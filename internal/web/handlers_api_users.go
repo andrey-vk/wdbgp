@@ -723,7 +723,12 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	if apiUsersUpdatePreWriteHook != nil {
 		apiUsersUpdatePreWriteHook()
 	}
-	_, err = s.store.UpdateUser(r.Context(), current, modeMeta, filterModeMeta)
+	var filtersArg *store.RouteFilters
+	filtersMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "route_filters.user_updated"}
+	if filtersProvided {
+		filtersArg = &store.RouteFilters{Allow: filterAllow, Deny: filterDeny}
+	}
+	_, err = s.store.UpdateUserWithRouteFilters(r.Context(), current, modeMeta, filterModeMeta, filtersArg, filtersMeta)
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
@@ -731,18 +736,6 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
-	}
-
-	if filtersProvided {
-		// SetUserRouteFilters reads its own before/after and records its
-		// own audit entry inside the same transaction as the write.
-		filtersMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "route_filters.user_updated"}
-		_, _, err := s.store.SetUserRouteFilters(r.Context(), id, store.RouteFilters{Allow: filterAllow, Deny: filterDeny}, filtersMeta)
-		if err != nil {
-			logging.FromContext(r.Context()).Debug("route filters save after update failed", "error", err, "user_id", id)
-			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save route filters"})
-			return
-		}
 	}
 
 	if s.bgp != nil {
