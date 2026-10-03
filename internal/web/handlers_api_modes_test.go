@@ -664,6 +664,126 @@ func TestModeCommunitiesGetHandlesPipeInCategoryName(t *testing.T) {
 	}
 }
 
+// TestModeCommunitiesGetAutoValueAccountsForDisabledFeeds covers a real
+// drift between this list's auto_community (the UI's "what a reset would
+// assign" estimate) and what ResetCommunities actually assigns:
+// genCommunitiesRuntime counts every include-linked feed's categories
+// regardless of whether the feed is enabled (so disabled feeds keep their
+// pre-generated communities stable), but this handler only listed
+// enabled-feed categories when computing the position each one feeds into
+// AutoGroupCommunity/AutoCommunity. A disabled feed's category sorting
+// before a visible one shifted the real allocation without shifting the
+// displayed estimate.
+func TestModeCommunitiesGetAutoValueAccountsForDisabledFeeds(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+
+	createBody := strings.NewReader(`{"name":"Disabled Feed Mode","enabled":true}`)
+	req := httptest.NewRequest("POST", "/api/admin/modes", createBody)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiModesCreate(w, req)
+	var created modeJSON
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	modeID := created.ID
+
+	// Sorts alphabetically before "Zzz" below, but its feed is disabled —
+	// invisible in the admin list, yet still counted by a real reset.
+	hiddenFeedID, err := st.AddFeed(ctx, "Hidden Feed", "http://example.com/hidden.json", 1, false, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("create disabled feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, hiddenFeedID); err != nil {
+		t.Fatalf("assign disabled feed to mode: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, hiddenFeedID, []store.CatalogEntry{
+		{Category: "Aaa", Service: "Svc", CIDR: "172.17.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert catalog entries for disabled feed: %v", err)
+	}
+
+	visibleFeedID, err := st.AddFeed(ctx, "Visible Feed", "http://example.com/visible.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("create enabled feed: %v", err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, visibleFeedID); err != nil {
+		t.Fatalf("assign enabled feed to mode: %v", err)
+	}
+	if err := st.InsertCatalogEntries(ctx, visibleFeedID, []store.CatalogEntry{
+		{Category: "Zzz", Service: "Svc", CIDR: "172.18.0.0/24"},
+	}); err != nil {
+		t.Fatalf("insert catalog entries for enabled feed: %v", err)
+	}
+	if err := st.RebuildModeEntries(ctx, modeID); err != nil {
+		t.Fatalf("rebuild mode entries: %v", err)
+	}
+
+	req = httptest.NewRequest("POST", "/api/admin/modes/1/communities/generate", nil)
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeCommunitiesGenerate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("generate communities: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+
+	rows, err := st.CommunityRows(ctx, modeID)
+	if err != nil {
+		t.Fatalf("read community rows: %v", err)
+	}
+	var wantZzzGroup uint32
+	for _, row := range rows {
+		if row.Category == "Zzz" && row.Service == "" {
+			wantZzzGroup = row.Community
+		}
+	}
+	if wantZzzGroup == 0 {
+		t.Fatal("fixture did not produce a group assignment for Zzz")
+	}
+	// The hidden feed's "Aaa" sorts first (real groupIndex 0), so "Zzz" is
+	// the real groupIndex 1 — its stored community must be the second
+	// group's base (20000), not the first (10000), confirming the premise
+	// this test depends on rather than assuming it.
+	if wantZzzGroup != 20000 {
+		t.Fatalf("fixture premise failed: Zzz group community = %d, want 20000 (groupIndex 1)", wantZzzGroup)
+	}
+
+	req = httptest.NewRequest("GET", "/api/admin/modes/1/communities", nil)
+	req.SetPathValue("id", strconv.FormatInt(modeID, 10))
+	w = httptest.NewRecorder()
+	srv.apiModeCommunitiesGet(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get communities: status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var getCommResp struct {
+		Communities []communityItemJSON `json:"communities"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&getCommResp); err != nil {
+		t.Fatal(err)
+	}
+
+	var found bool
+	for _, c := range getCommResp.Communities {
+		if c.Category == "Aaa" {
+			t.Fatalf("disabled feed's category appeared in the list: %+v", c)
+		}
+		if c.Category == "Zzz" && c.Service == "" {
+			found = true
+			if c.AutoCommunity != wantZzzGroup {
+				t.Fatalf("Zzz auto_community = %d, want %d (the hidden feed's earlier-sorting "+
+					"category must still shift this position, matching what a real reset assigns)",
+					c.AutoCommunity, wantZzzGroup)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Zzz group entry missing from the response")
+	}
+}
+
 // TestModeCommunitiesPutDetectsDuplicateAcrossPipeCollision covers a real
 // collision in the naive "category|service"-joined comparison the duplicate
 // -community check used: category "a" service "b|c" and category "a|b"
