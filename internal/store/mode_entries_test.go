@@ -185,7 +185,7 @@ func TestRebuildTriggers(t *testing.T) {
 		t.Fatalf("load feed: %v", err)
 	}
 	feed.Enabled = false
-	if err := s.UpdateFeed(ctx, feed); err != nil {
+	if _, err := s.UpdateFeed(ctx, feed, AuditMeta{}); err != nil {
 		t.Fatalf("disable exclude feed: %v", err)
 	}
 	if got := modePrefixStrings(ctx, t, s, modeID); !equalStrings(got, []string{"Cat/Svc:10.0.0.0/24"}) {
@@ -195,7 +195,7 @@ func TestRebuildTriggers(t *testing.T) {
 	// Re-enable, then flip its role to include: entries reappear under the
 	// exclude feed's own labels.
 	feed.Enabled = true
-	if err := s.UpdateFeed(ctx, feed); err != nil {
+	if _, err := s.UpdateFeed(ctx, feed, AuditMeta{}); err != nil {
 		t.Fatalf("re-enable exclude feed: %v", err)
 	}
 	// UpdateFeed with unchanged config keeps entries; re-add them in case

@@ -9,6 +9,70 @@ import (
 	"time"
 )
 
+// TestDiffCommunityRows exercises diffCommunityRows directly: an unchanged
+// entry must be dropped, a changed entry kept on both sides, an
+// after-only (newly filled) entry kept only in after, and a before-only
+// (removed) entry kept only in before.
+func TestDiffCommunityRows(t *testing.T) {
+	before := []Community{
+		{Category: "cat-a", Service: "svc-a", Community: 100}, // unchanged
+		{Category: "cat-a", Service: "svc-b", Community: 200}, // changed below
+		{Category: "cat-b", Service: "svc-c", Community: 300}, // removed below
+	}
+	after := []Community{
+		{Category: "cat-a", Service: "svc-a", Community: 100}, // unchanged
+		{Category: "cat-a", Service: "svc-b", Community: 250}, // changed
+		{Category: "cat-c", Service: "svc-d", Community: 400}, // newly added
+	}
+
+	changedBefore, changedAfter := diffCommunityRows(before, after)
+
+	if len(changedBefore) != 2 || len(changedAfter) != 2 {
+		t.Fatalf("changedBefore=%+v changedAfter=%+v, want 2 entries each (unchanged cat-a/svc-a dropped)", changedBefore, changedAfter)
+	}
+	for _, c := range changedBefore {
+		if c.Category == "cat-a" && c.Service == "svc-a" {
+			t.Fatalf("changedBefore unexpectedly includes the unchanged entry: %+v", changedBefore)
+		}
+	}
+	for _, c := range changedAfter {
+		if c.Category == "cat-a" && c.Service == "svc-a" {
+			t.Fatalf("changedAfter unexpectedly includes the unchanged entry: %+v", changedAfter)
+		}
+	}
+}
+
+// TestBoundCommunitiesForAuditCapsCategoryAndServiceBytes checks that
+// boundCommunitiesForAudit truncates Category/Service per entry, not just
+// the entry count — apiModeCommunitiesPut lets an admin supply an
+// arbitrary category/service name with no length limit of its own.
+func TestBoundCommunitiesForAuditCapsCategoryAndServiceBytes(t *testing.T) {
+	hugeCategory := strings.Repeat("A", MaxAuditEntryBytes*4)
+	hugeService := strings.Repeat("B", MaxAuditEntryBytes*4)
+	entries := []Community{
+		{ModeID: 1, Category: hugeCategory, Service: hugeService, Community: 100},
+	}
+
+	bounded := boundCommunitiesForAudit(entries)
+
+	if bounded.Truncated != 0 {
+		t.Fatalf("Truncated = %d, want 0 (only one entry, none omitted)", bounded.Truncated)
+	}
+	if len(bounded.Entries) != 1 {
+		t.Fatalf("len(Entries) = %d, want 1", len(bounded.Entries))
+	}
+	e := bounded.Entries[0]
+	if len(e.Category) > MaxAuditEntryBytes {
+		t.Fatalf("Category len = %d, want <= %d", len(e.Category), MaxAuditEntryBytes)
+	}
+	if len(e.Service) > MaxAuditEntryBytes {
+		t.Fatalf("Service len = %d, want <= %d", len(e.Service), MaxAuditEntryBytes)
+	}
+	if e.ModeID != 1 || e.Community != 100 {
+		t.Fatalf("entry = %+v, want ModeID=1 Community=100 preserved", e)
+	}
+}
+
 // TestGenerateCommunitiesHandlesMultiServiceCategoriesAndIsIdempotent covers
 // the refactor that replaced genCommunitiesRuntime's per-category N+1
 // service query with a single batched (category, service) query, and
@@ -40,7 +104,7 @@ func TestGenerateCommunitiesHandlesMultiServiceCategoriesAndIsIdempotent(t *test
 		t.Fatalf("insert catalog entries: %v", err)
 	}
 
-	generated, err := s.GenerateCommunities(ctx, 1)
+	_, _, generated, err := s.GenerateCommunities(ctx, 1, AuditMeta{})
 	if err != nil {
 		t.Fatalf("GenerateCommunities: %v", err)
 	}
@@ -66,7 +130,7 @@ func TestGenerateCommunitiesHandlesMultiServiceCategoriesAndIsIdempotent(t *test
 		t.Errorf("got %d communities, want %d", len(comms), len(wantKeys))
 	}
 
-	generatedAgain, err := s.GenerateCommunities(ctx, 1)
+	_, _, generatedAgain, err := s.GenerateCommunities(ctx, 1, AuditMeta{})
 	if err != nil {
 		t.Fatalf("second GenerateCommunities: %v", err)
 	}
@@ -82,6 +146,63 @@ func TestGenerateCommunitiesHandlesMultiServiceCategoriesAndIsIdempotent(t *test
 		if commsAgain[k] != v {
 			t.Errorf("community for %q changed from %d to %d after second generate", k, v, commsAgain[k])
 		}
+	}
+}
+
+// TestGenerateCommunitiesCountMatchesGenerateCommunities checks that the
+// count-only path (added for callers like background feed sync that
+// discard GenerateCommunities' before/after snapshots and would otherwise
+// pay for two full-table scans per call for nothing) performs exactly the
+// same generation and reports the same count as GenerateCommunities.
+func TestGenerateCommunitiesCountMatchesGenerateCommunities(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	feedID, err := s.AddFeed(ctx, "count-only-feed", "https://example.test/count.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatalf("add feed: %v", err)
+	}
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (1, ?)", feedID); err != nil {
+		t.Fatalf("assign feed to mode: %v", err)
+	}
+	if err := s.InsertCatalogEntries(ctx, feedID, []CatalogEntry{
+		{Category: "cat-a", Service: "svc-1", CIDR: "10.0.0.0/24"},
+		{Category: "cat-a", Service: "svc-2", CIDR: "10.0.1.0/24"},
+	}); err != nil {
+		t.Fatalf("insert catalog entries: %v", err)
+	}
+
+	count, err := s.GenerateCommunitiesCount(ctx, 1)
+	if err != nil {
+		t.Fatalf("GenerateCommunitiesCount: %v", err)
+	}
+	const wantGenerated = 3 // 1 group + 2 service communities
+	if count != wantGenerated {
+		t.Fatalf("count = %d, want %d", count, wantGenerated)
+	}
+
+	comms, err := s.GetCommunities(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetCommunities: %v", err)
+	}
+	wantKeys := []string{"cat-a", "cat-a|svc-1", "cat-a|svc-2"}
+	for _, k := range wantKeys {
+		if _, ok := comms[k]; !ok {
+			t.Errorf("missing community for %q", k)
+		}
+	}
+	if len(comms) != len(wantKeys) {
+		t.Errorf("got %d communities, want %d", len(comms), len(wantKeys))
+	}
+
+	// Idempotent, like GenerateCommunities.
+	countAgain, err := s.GenerateCommunitiesCount(ctx, 1)
+	if err != nil {
+		t.Fatalf("second GenerateCommunitiesCount: %v", err)
+	}
+	if countAgain != 0 {
+		t.Fatalf("second GenerateCommunitiesCount = %d, want 0 (idempotent)", countAgain)
 	}
 }
 
@@ -105,7 +226,7 @@ func TestPreviewCommunityResetRollsBack(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert entries: %v", err)
 	}
-	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := s.GenerateCommunities(ctx, 1, AuditMeta{}); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 
@@ -153,7 +274,7 @@ func TestPreviewCommunityResetRollsBack(t *testing.T) {
 	}
 
 	// A stale digest must be rejected without writing anything.
-	if _, err := s.ResetCommunities(ctx, 1, "wrong-digest"); !errors.Is(err, ErrCommunityResetStale) {
+	if _, _, _, err := s.ResetCommunities(ctx, 1, "wrong-digest", AuditMeta{}); !errors.Is(err, ErrCommunityResetStale) {
 		t.Fatalf("reset with wrong digest: err = %v, want ErrCommunityResetStale", err)
 	}
 	stillCustom, err := s.GetCommunities(ctx, 1)
@@ -166,7 +287,7 @@ func TestPreviewCommunityResetRollsBack(t *testing.T) {
 
 	// An actual reset, given the digest the preview issued, must land on
 	// exactly what the preview predicted.
-	if _, err := s.ResetCommunities(ctx, 1, digest); err != nil {
+	if _, _, _, err := s.ResetCommunities(ctx, 1, digest, AuditMeta{}); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
 	applied, err := s.GetCommunities(ctx, 1)
@@ -202,7 +323,7 @@ func TestResetCommunitiesRejectsStaleDigestAfterConcurrentChange(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert entries: %v", err)
 	}
-	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := s.GenerateCommunities(ctx, 1, AuditMeta{}); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 
@@ -219,7 +340,7 @@ func TestResetCommunitiesRejectsStaleDigestAfterConcurrentChange(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert additional entry: %v", err)
 	}
-	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := s.GenerateCommunities(ctx, 1, AuditMeta{}); err != nil {
 		t.Fatalf("generate after change: %v", err)
 	}
 
@@ -228,7 +349,7 @@ func TestResetCommunitiesRejectsStaleDigestAfterConcurrentChange(t *testing.T) {
 		t.Fatalf("read communities before stale reset attempt: %v", err)
 	}
 
-	if _, err := s.ResetCommunities(ctx, 1, digest); !errors.Is(err, ErrCommunityResetStale) {
+	if _, _, _, err := s.ResetCommunities(ctx, 1, digest, AuditMeta{}); !errors.Is(err, ErrCommunityResetStale) {
 		t.Fatalf("reset with pre-change digest: err = %v, want ErrCommunityResetStale", err)
 	}
 
@@ -358,7 +479,7 @@ func TestAllModeCommunitySnapshotsIsConsistentAcrossModes(t *testing.T) {
 		if err := s.RebuildModeEntries(ctx, modeID); err != nil {
 			t.Fatalf("rebuild mode entries for %d: %v", modeID, err)
 		}
-		if _, err := s.GenerateCommunities(ctx, modeID); err != nil {
+		if _, _, _, err := s.GenerateCommunities(ctx, modeID, AuditMeta{}); err != nil {
 			t.Fatalf("generate for %d: %v", modeID, err)
 		}
 	}
@@ -397,7 +518,7 @@ func TestAllModeCommunitySnapshotsIsConsistentAcrossModes(t *testing.T) {
 					writerErr <- fmt.Errorf("rebuild mode %d: %w", modeID, err)
 					return
 				}
-				if _, err := s.GenerateCommunities(ctx, modeID); err != nil {
+				if _, _, _, err := s.GenerateCommunities(ctx, modeID, AuditMeta{}); err != nil {
 					writerErr <- fmt.Errorf("generate mode %d: %w", modeID, err)
 					return
 				}
@@ -473,7 +594,7 @@ func TestGenerateCommunitiesHandlesPipeInCategoryName(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert initial entries: %v", err)
 	}
-	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := s.GenerateCommunities(ctx, 1, AuditMeta{}); err != nil {
 		t.Fatalf("initial generate: %v", err)
 	}
 	before, err := s.CommunityRows(ctx, 1)
@@ -499,7 +620,7 @@ func TestGenerateCommunitiesHandlesPipeInCategoryName(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert second entries: %v", err)
 	}
-	if _, err := s.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := s.GenerateCommunities(ctx, 1, AuditMeta{}); err != nil {
 		t.Fatalf("second generate: %v", err)
 	}
 
@@ -572,7 +693,7 @@ func TestResetDigestDoesNotCollideAcrossModes(t *testing.T) {
 		if err := s.RebuildModeEntries(ctx, modeID); err != nil {
 			t.Fatalf("rebuild mode entries for %d: %v", modeID, err)
 		}
-		if _, err := s.GenerateCommunities(ctx, modeID); err != nil {
+		if _, _, _, err := s.GenerateCommunities(ctx, modeID, AuditMeta{}); err != nil {
 			t.Fatalf("generate for %d: %v", modeID, err)
 		}
 	}
@@ -610,12 +731,12 @@ func TestResetDigestDoesNotCollideAcrossModes(t *testing.T) {
 	}
 
 	// Mode 1's own preview must never authorize applying to mode B.
-	if _, err := s.ResetCommunities(ctx, modeB, digestA); !errors.Is(err, ErrCommunityResetStale) {
+	if _, _, _, err := s.ResetCommunities(ctx, modeB, digestA, AuditMeta{}); !errors.Is(err, ErrCommunityResetStale) {
 		t.Fatalf("reset mode %d with mode 1's digest: err = %v, want ErrCommunityResetStale", modeB, err)
 	}
 
 	// Its own digest must still work correctly.
-	if _, err := s.ResetCommunities(ctx, modeB, digestB); err != nil {
+	if _, _, _, err := s.ResetCommunities(ctx, modeB, digestB, AuditMeta{}); err != nil {
 		t.Fatalf("reset mode %d with its own digest: %v", modeB, err)
 	}
 }

@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -422,19 +421,26 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.store.Transaction(ctx, func(tx *sql.Tx) error {
-		for _, c := range body.Categories {
-			if err := store.ToggleSelectedCategory(ctx, tx, user.ID, user.CatalogModeID, c.Category, c.Checked); err != nil {
-				return err
-			}
-		}
-		for _, svc := range body.Services {
-			if err := store.ToggleSelectedService(ctx, tx, user.ID, user.CatalogModeID, svc.Category, svc.Service, svc.Checked); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	categoryToggles := make([]store.CategoryToggle, 0, len(body.Categories))
+	for _, c := range body.Categories {
+		categoryToggles = append(categoryToggles, store.CategoryToggle{Category: c.Category, Checked: c.Checked})
+	}
+	serviceToggles := make([]store.ServiceToggle, 0, len(body.Services))
+	for _, svc := range body.Services {
+		serviceToggles = append(serviceToggles, store.ServiceToggle{Category: svc.Category, Service: svc.Service, Checked: svc.Checked})
+	}
+	// Before/after counts are read inside the same transaction as the
+	// toggles — bracketing it with two independent UserModeSelection calls
+	// instead would let a concurrent save change either count out from
+	// under this request.
+	// Counts only, not the full selection list (could be large) — this means
+	// a request that swaps one selected category for a different one while
+	// leaving the total count unchanged won't be flagged as a change. A
+	// known, accepted limitation of summarizing rather than diffing the
+	// full list.
+	selectionsMeta := store.AuditMeta{Actor: userActor(user.ID), UserAgent: r.Header.Get("User-Agent"), Action: "user.selections_changed"}
+	_, _, _, _, _, err := s.store.SaveUserSelectionCounts(ctx, user.ID, user.CatalogModeID, false, categoryToggles, serviceToggles,
+		store.AuditMeta{}, selectionsMeta)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
@@ -472,7 +478,15 @@ func (s *Server) apiUserSaveFilters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.SetUserRouteFilters(ctx, user.ID, body); err != nil {
+	// SetUserRouteFilters reads the prior filters and the newly-persisted
+	// (normalized) filters inside the same transaction as the write, so
+	// the comparison below describes exactly this call's own change —
+	// bracketing it with independent reads before/after instead would let
+	// a concurrent save for the same user change either side out from
+	// under this request.
+	meta := store.AuditMeta{Actor: userActor(user.ID), UserAgent: r.Header.Get("User-Agent"), Action: "route_filters.user_updated"}
+	_, _, err := s.store.SetUserRouteFilters(ctx, user.ID, body, meta)
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
@@ -600,12 +614,14 @@ func (s *Server) apiUserSwitchMode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode is disabled"})
 		return
 	}
-	// Update user's catalog_mode_id
-	err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
-		_, execErr := tx.ExecContext(r.Context(),
-			"UPDATE users SET catalog_mode_id = ? WHERE id = ?", body.ModeID, user.ID)
-		return execErr
-	})
+	// SetUserCatalogMode reads the prior catalog_mode_id inside the same
+	// transaction as the write, so the audit entry below describes exactly
+	// this call's own transition — using user.CatalogModeID (the session
+	// snapshot taken at authentication) instead would let two overlapping
+	// switches (1→2 and 1→3, say) both log "from 1" even though the real
+	// sequence was 1→2→3.
+	meta := store.AuditMeta{Actor: userActor(user.ID), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
+	_, err = s.store.SetUserCatalogMode(r.Context(), user.ID, body.ModeID, false, meta)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to update catalog mode"})
 		return

@@ -208,7 +208,9 @@ func (s *Server) apiModesDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Built-in catalog modes cannot be deleted"})
 		return
 	}
-	if err := s.store.DeleteCatalogMode(r.Context(), id); err != nil {
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
+	_, err = s.store.DeleteCatalogMode(r.Context(), id, meta)
+	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Mode not found"})
 			return
@@ -280,7 +282,7 @@ func (s *Server) apiModeFeedsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Generate communities and reconcile (best-effort side effects, after commit)
-	s.store.GenerateCommunities(r.Context(), modeID) //nolint:errcheck,gosec // best-effort community generation
+	_, _ = s.store.GenerateCommunitiesCount(r.Context(), modeID) //nolint:errcheck,gosec // best-effort community generation
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after mode feeds save", "error", err)
@@ -445,25 +447,21 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 		}
 		used[c.Community] = key
 	}
-	// Save each community
-	updated := 0
+	// Save every community and fill any cleared/missing entries in one
+	// transaction, returning the before/after rows atomic with that write
+	// — either every update lands and the before/after describe exactly
+	// this call's result, or (e.g. a later item conflicts with an
+	// assignment this batch doesn't otherwise touch) none do.
+	updates := make([]store.CommunityUpdate, 0, len(body.Communities))
 	for _, c := range body.Communities {
-		if c.Community == 0 {
-			// Clear the manual override — delete row so auto value takes over.
-			if err := s.store.DeleteCommunity(r.Context(), modeID, c.Category, c.Service); err != nil {
-				writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-				return
-			}
-			continue
-		}
-		if err := s.store.SetCommunity(r.Context(), modeID, c.Category, c.Service, c.Community); err != nil {
-			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
-			return
-		}
-		updated++
+		updates = append(updates, store.CommunityUpdate{Category: c.Category, Service: c.Service, Community: c.Community})
 	}
-	// Auto-generate communities for any cleared or missing entries.
-	s.store.GenerateCommunities(r.Context(), modeID) //nolint:errcheck,gosec // best-effort, already called elsewhere
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "communities.updated"}
+	_, _, err = s.store.SetCommunities(r.Context(), modeID, updates, meta)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community set", "error", err)
@@ -505,7 +503,8 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	generated, err := s.store.ResetCommunities(r.Context(), modeID, body.Digest)
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "communities.reset"}
+	_, _, generated, err := s.store.ResetCommunities(r.Context(), modeID, body.Digest, meta)
 	if errors.Is(err, store.ErrCommunityResetStale) {
 		writePreview(w, r, s, modeID, true)
 		return
@@ -560,7 +559,8 @@ func (s *Server) apiModeCommunitiesGenerate(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
 		return
 	}
-	generated, err := s.store.GenerateCommunities(r.Context(), modeID)
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "communities.generated"}
+	_, _, generated, err := s.store.GenerateCommunities(r.Context(), modeID, meta)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return

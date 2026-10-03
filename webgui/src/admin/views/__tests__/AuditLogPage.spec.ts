@@ -1,0 +1,253 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { mount } from '@vue/test-utils'
+import { createI18n } from 'vue-i18n'
+import PrimeVue from 'primevue/config'
+
+const mockGet = vi.fn()
+
+vi.mock('@/api/client', () => ({
+  default: {
+    get: mockGet,
+    interceptors: { response: { use: vi.fn() } },
+  },
+}))
+
+const i18n = createI18n({ legacy: false, locale: 'en', messages: { en: {} } })
+
+function stubPrimeVueComponents() {
+  return {
+    InputText: {
+      props: ['modelValue'],
+      emits: ['update:modelValue'],
+      template: '<input class="stub-input" v-bind="$attrs" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+    },
+    Button: { props: ['label'], template: '<button class="stub-btn" @click="$emit(\'click\')">{{ label }}<slot /></button>' },
+    Paginator: {
+      props: ['rows', 'first', 'totalRecords'],
+      template: '<div class="stub-paginator" data-testid="paginator" @click="$emit(\'page\', { first: 50, rows: 50 })" />',
+    },
+  }
+}
+
+async function mountAuditLogPage() {
+  const AuditLogPage = (await import('../AuditLogPage.vue')).default
+  const wrapper = mount(AuditLogPage, {
+    global: {
+      plugins: [i18n, PrimeVue],
+      stubs: stubPrimeVueComponents(),
+    },
+  })
+  await wrapper.vm.$nextTick()
+  await new Promise((r) => setTimeout(r, 0))
+  return wrapper
+}
+
+describe('AuditLogPage', () => {
+  beforeEach(() => {
+    mockGet.mockReset()
+  })
+
+  it('fetches entries on mount with default pagination and renders them', async () => {
+    mockGet.mockResolvedValue({
+      data: {
+        entries: [
+          {
+            id: 1, recorded_at: '2026-01-01T00:00:00Z', actor: 'admin:1.2.3.4', user_agent: 'curl',
+            action: 'feed.enabled_changed', object_type: 'feed', object_id: '7',
+            before: '{"enabled":true}', after: '{"enabled":false}',
+          },
+        ],
+        total: 1,
+      },
+    })
+
+    const wrapper = await mountAuditLogPage()
+
+    expect(mockGet).toHaveBeenCalledWith('/admin/audit-log', { params: { limit: 50, offset: 0 } })
+    const rows = wrapper.findAll('[data-testid="audit-log-row"]')
+    expect(rows).toHaveLength(1)
+    expect(rows[0].text()).toContain('admin:1.2.3.4')
+    expect(rows[0].text()).toContain('feed.enabled_changed')
+    expect(rows[0].text()).toContain('feed/7')
+  })
+
+  it('shows the empty-state message when no entries match', async () => {
+    mockGet.mockResolvedValue({ data: { entries: [], total: 0 } })
+
+    const wrapper = await mountAuditLogPage()
+
+    expect(wrapper.text()).toContain('audit_log.empty')
+    expect(wrapper.find('[data-testid="audit-log-row"]').exists()).toBe(false)
+  })
+
+  it('re-fetches with the entered filter params when the filter button is clicked', async () => {
+    mockGet.mockResolvedValue({ data: { entries: [], total: 0 } })
+    const wrapper = await mountAuditLogPage()
+    mockGet.mockClear()
+
+    await wrapper.find('#audit-actor-input').setValue('user:42')
+    await wrapper.find('#audit-action-input').setValue('user.mode_changed')
+    await wrapper.find('[data-testid="audit-log-filter-button"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(mockGet).toHaveBeenCalledWith('/admin/audit-log', {
+      params: { limit: 50, offset: 0, actor: 'user:42', action: 'user.mode_changed' },
+    })
+  })
+
+  it('resets to the first page when filters are applied', async () => {
+    mockGet.mockResolvedValue({
+      data: { entries: Array.from({ length: 1 }, (_, i) => ({ id: i, recorded_at: '2026-01-01T00:00:00Z', actor: 'a', user_agent: '', action: 'a', object_type: 't', object_id: '1', before: '', after: '' })), total: 60 },
+    })
+    const wrapper = await mountAuditLogPage()
+
+    // Advance a page via the stubbed paginator.
+    await wrapper.find('[data-testid="paginator"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(mockGet).toHaveBeenLastCalledWith('/admin/audit-log', { params: { limit: 50, offset: 50 } })
+
+    mockGet.mockClear()
+    await wrapper.find('[data-testid="audit-log-filter-button"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(mockGet).toHaveBeenLastCalledWith('/admin/audit-log', { params: { limit: 50, offset: 0 } })
+  })
+
+  it('toggles the before/after detail panel for a row', async () => {
+    mockGet.mockResolvedValue({
+      data: {
+        entries: [
+          { id: 1, recorded_at: '2026-01-01T00:00:00Z', actor: 'a', user_agent: '', action: 'a', object_type: 't', object_id: '1', before: '{"x":1}', after: '{"x":2}' },
+        ],
+        total: 1,
+      },
+    })
+    const wrapper = await mountAuditLogPage()
+
+    expect(wrapper.find('[data-testid="audit-log-details"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="audit-log-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="audit-log-details"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="audit-log-details"]').text()).toContain('"x":1')
+    expect(wrapper.find('[data-testid="audit-log-details"]').text()).toContain('"x":2')
+
+    await wrapper.find('[data-testid="audit-log-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="audit-log-details"]').exists()).toBe(false)
+  })
+
+  it('shows the error page when the initial load fails', async () => {
+    mockGet.mockRejectedValue(new Error('network error'))
+    const wrapper = await mountAuditLogPage()
+
+    expect(wrapper.text()).toContain('error.generic_title')
+    expect(wrapper.find('[data-testid="audit-log-row"]').exists()).toBe(false)
+  })
+
+  it('drops a stale response that resolves after a newer filtered one', async () => {
+    let resolveStale: (v: unknown) => void = () => {}
+    let calls = 0
+    mockGet.mockImplementation(() => {
+      calls++
+      if (calls === 1) return new Promise((resolve) => { resolveStale = resolve }) // initial load, left pending
+      return Promise.resolve({
+        data: {
+          entries: [{ id: 2, recorded_at: '2026-01-02T00:00:00Z', actor: 'a', user_agent: '', action: 'fresh', object_type: 't', object_id: '1', before: '', after: '' }],
+          total: 1,
+        },
+      })
+    })
+
+    const AuditLogPage = (await import('../AuditLogPage.vue')).default
+    const wrapper = mount(AuditLogPage, {
+      global: { plugins: [i18n, PrimeVue], stubs: stubPrimeVueComponents() },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise((r) => setTimeout(r, 0))
+    // Initial load is still pending — nothing rendered as a result yet.
+    expect(wrapper.find('[data-testid="audit-log-row"]').exists()).toBe(false)
+
+    // A filter is applied before the initial load resolves — its request
+    // (call #2) resolves immediately with "fresh".
+    await wrapper.find('#audit-actor-input').setValue('admin:1.2.3.4')
+    await wrapper.find('[data-testid="audit-log-filter-button"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="audit-log-row"]').text()).toContain('fresh')
+
+    // The stale initial load finally resolves — it must not clobber the
+    // already-displayed, newer filtered result.
+    resolveStale({ data: { entries: [{ id: 1, recorded_at: '2026-01-01T00:00:00Z', actor: 'a', user_agent: '', action: 'stale', object_type: 't', object_id: '1', before: '', after: '' }], total: 1 } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="audit-log-row"]').text()).toContain('fresh')
+    expect(wrapper.find('[data-testid="audit-log-row"]').text()).not.toContain('stale')
+  })
+
+  it('does not show an error when a stale request rejects after a newer one succeeded', async () => {
+    let rejectStale: (e: unknown) => void = () => {}
+    let calls = 0
+    mockGet.mockImplementation(() => {
+      calls++
+      if (calls === 1) return new Promise((_resolve, reject) => { rejectStale = reject }) // initial load, left pending
+      return Promise.resolve({
+        data: {
+          entries: [{ id: 2, recorded_at: '2026-01-02T00:00:00Z', actor: 'a', user_agent: '', action: 'fresh', object_type: 't', object_id: '1', before: '', after: '' }],
+          total: 1,
+        },
+      })
+    })
+
+    const AuditLogPage = (await import('../AuditLogPage.vue')).default
+    const wrapper = mount(AuditLogPage, {
+      global: { plugins: [i18n, PrimeVue], stubs: stubPrimeVueComponents() },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise((r) => setTimeout(r, 0))
+
+    // A filter is applied before the initial load rejects — its request
+    // (call #2) resolves immediately with "fresh".
+    await wrapper.find('#audit-actor-input').setValue('admin:1.2.3.4')
+    await wrapper.find('[data-testid="audit-log-filter-button"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="audit-log-row"]').text()).toContain('fresh')
+
+    // The stale initial load finally rejects — it must not replace the
+    // already-displayed, newer successful result with the error page.
+    rejectStale(new Error('network error'))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.text()).not.toContain('error.generic_title')
+    expect(wrapper.find('[data-testid="audit-log-row"]').text()).toContain('fresh')
+  })
+
+  it('keeps loading while a newer request is pending, even after a stale one resolves', async () => {
+    let resolveStale: (v: unknown) => void = () => {}
+    let resolveFresh: (v: unknown) => void = () => {}
+    let calls = 0
+    mockGet.mockImplementation(() => {
+      calls++
+      if (calls === 1) return new Promise((resolve) => { resolveStale = resolve })
+      return new Promise((resolve) => { resolveFresh = resolve })
+    })
+
+    const AuditLogPage = (await import('../AuditLogPage.vue')).default
+    const wrapper = mount(AuditLogPage, {
+      global: { plugins: [i18n, PrimeVue], stubs: stubPrimeVueComponents() },
+    })
+    await wrapper.vm.$nextTick()
+    await new Promise((r) => setTimeout(r, 0))
+
+    // A filter is applied before the initial load resolves — both requests
+    // are now in flight, with the second (call #2) current.
+    await wrapper.find('#audit-actor-input').setValue('admin:1.2.3.4')
+    await wrapper.find('[data-testid="audit-log-filter-button"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+
+    // The stale initial load resolves first — it must not end the loading
+    // state while the current, newer request is still pending.
+    resolveStale({ data: { entries: [{ id: 1, recorded_at: '2026-01-01T00:00:00Z', actor: 'a', user_agent: '', action: 'stale', object_type: 't', object_id: '1', before: '', after: '' }], total: 1 } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('.pi-spinner').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="audit-log-row"]').exists()).toBe(false)
+
+    resolveFresh({ data: { entries: [{ id: 2, recorded_at: '2026-01-02T00:00:00Z', actor: 'a', user_agent: '', action: 'fresh', object_type: 't', object_id: '1', before: '', after: '' }], total: 1 } })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(wrapper.find('[data-testid="audit-log-row"]').text()).toContain('fresh')
+  })
+})

@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"strconv"
@@ -14,6 +15,12 @@ type Store interface {
 	GetAllSettings(ctx context.Context) (map[string]string, error)
 	SaveSetting(ctx context.Context, key, value string) error
 	DeleteSetting(ctx context.Context, key string) error
+	// SaveSettingTx and DeleteSettingTx persist via tx instead of an
+	// implicit transaction of their own, so a caller can commit a
+	// setting's write atomically with other work in the same transaction
+	// (e.g. an audit log entry) — see Setting.SetTx/ResetTx.
+	SaveSettingTx(ctx context.Context, tx *sql.Tx, key, value string) error
+	DeleteSettingTx(ctx context.Context, tx *sql.Tx, key string) error
 }
 
 // SettingJSON represents a setting value for JSON serialization.
@@ -35,6 +42,22 @@ type Setting[JSON, Runtime any] interface {
 	HasDBValue(ctx context.Context) bool
 	JSON(dbSettings map[string]string) SettingJSON[JSON]
 	OnChange(fn OnChangeFunc[Runtime]) func()
+
+	// SetTx behaves like Set, but persists via tx instead of an implicit
+	// transaction of its own, so a caller can commit this setting's write
+	// atomically with other work in the same transaction (e.g. an audit
+	// log entry) — using the returned newValue for that entry rather than
+	// Get(), which won't reflect it until commit runs. The in-memory
+	// cached value and OnChange callbacks are NOT updated here — only
+	// once the returned commit func is called, which the caller must do
+	// after (and only after) tx has successfully committed. Calling
+	// commit before that would let the cache describe a value that a
+	// later failure in the same transaction could still roll back,
+	// leaving Get() out of sync with what's actually stored.
+	SetTx(ctx context.Context, tx *sql.Tx, v JSON) (newValue Runtime, commit func(), err error)
+
+	// ResetTx is Reset's tx-scoped counterpart — see SetTx.
+	ResetTx(ctx context.Context, tx *sql.Tx) (newValue Runtime, commit func(), err error)
 
 	// Validate reports whether v would be accepted by Set — same parse and
 	// domain-validation steps, without persisting or mutating anything. Lets
@@ -296,6 +319,26 @@ func (s *simpleSetting[T]) Set(ctx context.Context, v T) error {
 	return nil
 }
 
+// SetTx is Set's tx-scoped counterpart — see the Setting interface.
+func (s *simpleSetting[T]) SetTx(ctx context.Context, tx *sql.Tx, v T) (T, func(), error) {
+	var zero T
+	if err := s.Validate(v); err != nil {
+		return zero, nil, err
+	}
+	raw := fmt.Sprintf("%v", v)
+	parsed, _ := s.parse(raw) //nolint:errcheck // Validate above already confirmed this parses cleanly
+
+	if err := s.store.SaveSettingTx(ctx, tx, s.dbKey, raw); err != nil {
+		return zero, nil, err
+	}
+	return parsed, func() {
+		s.mu.Lock()
+		s.value = parsed
+		s.mu.Unlock()
+		s.fireCallbacks(parsed)
+	}, nil
+}
+
 // Validate reports whether v would be accepted by Set, without persisting
 // or mutating anything.
 func (s *complexSetting[T]) Validate(v string) error {
@@ -339,6 +382,25 @@ func (s *complexSetting[T]) Set(ctx context.Context, v string) error {
 	return nil
 }
 
+// SetTx is Set's tx-scoped counterpart — see the Setting interface.
+func (s *complexSetting[T]) SetTx(ctx context.Context, tx *sql.Tx, v string) (T, func(), error) {
+	var zero T
+	if err := s.Validate(v); err != nil {
+		return zero, nil, err
+	}
+	parsed, _ := s.parse(v) //nolint:errcheck // Validate above already confirmed this parses cleanly
+
+	if err := s.store.SaveSettingTx(ctx, tx, s.dbKey, v); err != nil {
+		return zero, nil, err
+	}
+	return parsed, func() {
+		s.mu.Lock()
+		s.value = parsed
+		s.mu.Unlock()
+		s.fireCallbacks(parsed)
+	}, nil
+}
+
 // Reset deletes the stored database value and reverts to the default.
 func (s *simpleSetting[T]) Reset(ctx context.Context) error {
 	if s.dbKey == "" {
@@ -359,6 +421,27 @@ func (s *simpleSetting[T]) Reset(ctx context.Context) error {
 
 	s.fireCallbacks(s.defaultVal)
 	return nil
+}
+
+// ResetTx is Reset's tx-scoped counterpart — see the Setting interface.
+func (s *simpleSetting[T]) ResetTx(ctx context.Context, tx *sql.Tx) (T, func(), error) {
+	var zero T
+	if s.dbKey == "" {
+		return zero, nil, envOnlyError(s.envVar)
+	}
+	if s.envVar != "" && os.Getenv(s.envVar) != "" {
+		return zero, nil, fmt.Errorf("settings: cannot reset %s, overridden by %s", s.dbKey, s.envVar)
+	}
+
+	if err := s.store.DeleteSettingTx(ctx, tx, s.dbKey); err != nil {
+		return zero, nil, err
+	}
+	return s.defaultVal, func() {
+		s.mu.Lock()
+		s.value = s.defaultVal
+		s.mu.Unlock()
+		s.fireCallbacks(s.defaultVal)
+	}, nil
 }
 
 // Reset deletes the stored database value and reverts to parse(defaultJSON).
@@ -386,6 +469,32 @@ func (s *complexSetting[T]) Reset(ctx context.Context) error {
 
 	s.fireCallbacks(defaultParsed)
 	return nil
+}
+
+// ResetTx is Reset's tx-scoped counterpart — see the Setting interface.
+func (s *complexSetting[T]) ResetTx(ctx context.Context, tx *sql.Tx) (T, func(), error) {
+	var zero T
+	if s.dbKey == "" {
+		return zero, nil, envOnlyError(s.envVar)
+	}
+	if s.envVar != "" && os.Getenv(s.envVar) != "" {
+		return zero, nil, fmt.Errorf("settings: cannot reset %s, overridden by %s", s.dbKey, s.envVar)
+	}
+
+	defaultParsed, err := s.parse(s.defaultVal)
+	if err != nil {
+		return zero, nil, fmt.Errorf("settings: default value %q for %s does not parse: %w", s.defaultVal, s.dbKey, err)
+	}
+
+	if err := s.store.DeleteSettingTx(ctx, tx, s.dbKey); err != nil {
+		return zero, nil, err
+	}
+	return defaultParsed, func() {
+		s.mu.Lock()
+		s.value = defaultParsed
+		s.mu.Unlock()
+		s.fireCallbacks(defaultParsed)
+	}, nil
 }
 
 // IsEnvSet returns true if the setting value comes from an environment variable.

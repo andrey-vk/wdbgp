@@ -35,6 +35,12 @@ type feedJSON struct {
 	SyncAttemptedAt string `json:"sync_attempted_at,omitempty"`
 }
 
+// feedUpdatePostAuditHook, if set, runs in apiFeedsUpdate right after the
+// audit entry is recorded but before the post-update Feed lookup — a test
+// seam used to force that lookup to fail deterministically, to verify the
+// audit write already committed and doesn't depend on the lookup.
+var feedUpdatePostAuditHook func(id int64)
+
 func feedToJSON(f store.Feed) feedJSON {
 	// last_success is stored as Unix epoch seconds (schema >= 34); the
 	// JSON API keeps the RFC3339 string shape the frontend renders.
@@ -211,13 +217,27 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		AdapterID:    body.AdapterID,
 		AllowedHosts: body.AllowedHosts, RestrictHosts: body.RestrictHosts,
 	}
-	if err := s.store.UpdateFeed(r.Context(), f); err != nil {
+	// prevEnabled is read inside UpdateFeed's own transaction, atomically
+	// with the write — bracketing the update with two independent
+	// s.store.Feed() reads instead would let a concurrent update slip in
+	// between them, comparing this request's own before/after as equal
+	// (both reflecting the other request's write) even though this
+	// request's write did change enabled. UpdateFeed also records the
+	// audit entry itself, inside that same transaction, so it commits (or
+	// not) together with the mutation it describes and can never be lost
+	// or misordered relative to a concurrent request's own commit.
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "feed.enabled_changed"}
+	_, err = s.store.UpdateFeed(r.Context(), f, meta)
+	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Feed not found"})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
+	}
+	if feedUpdatePostAuditHook != nil {
+		feedUpdatePostAuditHook(id)
 	}
 	updated, err := s.store.Feed(r.Context(), id)
 	if err != nil {

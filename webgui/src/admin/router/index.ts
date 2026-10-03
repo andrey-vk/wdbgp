@@ -53,6 +53,11 @@ const router = createRouter({
                     path: '/debug',
                     name: 'debug',
                     component: () => import('@/admin/views/DebugPage.vue')
+                },
+                {
+                    path: '/audit-log',
+                    name: 'auditLog',
+                    component: () => import('@/admin/views/AuditLogPage.vue')
                 }
             ]
         },

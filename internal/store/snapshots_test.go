@@ -2,9 +2,35 @@ package store
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 )
+
+// =============================================================================
+// TestDaysCutoffClampsExtremeValues — guards the shared cutoff helper used
+// by every Get*/Purge* function here and by PurgeAuditLog against
+// time.Duration(days)*24*time.Hour silently overflowing int64 for an
+// absurdly large days value, which can flip the sign and turn a
+// "cutoff N days ago" into one in the future.
+// =============================================================================
+
+func TestDaysCutoffClampsExtremeValues(t *testing.T) {
+	now := time.Now().UTC().Unix()
+
+	if got := daysCutoff(math.MaxInt); got > now {
+		t.Errorf("daysCutoff(MaxInt) = %d, want a time at or before now (%d) — not a future cutoff from overflow", got, now)
+	}
+	if got := daysCutoff(-1); got > now {
+		t.Errorf("daysCutoff(-1) = %d, want a time at or before now (%d)", got, now)
+	}
+	// A normal value must still mean what it says.
+	got := daysCutoff(30)
+	wantApprox := time.Now().UTC().Add(-30 * 24 * time.Hour).Unix()
+	if got < wantApprox-5 || got > wantApprox+5 {
+		t.Errorf("daysCutoff(30) = %d, want ~%d (30 days ago)", got, wantApprox)
+	}
+}
 
 // =============================================================================
 // TestSaveUserSnapshotStores — SaveUserSnapshot → GetUserSnapshots returns it

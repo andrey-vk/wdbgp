@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -416,7 +417,13 @@ func encodeUserAddrs(user User) (peerIP []byte, nextHop any, err error) {
 	return peerIP, nextHop, nil
 }
 
-func (s *Store) UpdateUser(ctx context.Context, user User) error {
+// UpdateUser updates user and returns the catalog_mode_id it had
+// immediately before this update, read in the same transaction as the
+// write — so a caller logging a mode-change audit entry describes exactly
+// this call's own transition, not a value captured earlier (e.g. before
+// validating the request) that a since-committed concurrent update to the
+// same user could have already moved past.
+func (s *Store) UpdateUser(ctx context.Context, user User, meta, filterModeMeta AuditMeta) (prevCatalogModeID int64, err error) {
 	filterMode := normalizeFilterMode(user.FilterMode, user.FilterOverride)
 	if user.CatalogModeID == 0 {
 		user.CatalogModeID = DefaultCatalogModeID
@@ -426,9 +433,14 @@ func (s *Store) UpdateUser(ctx context.Context, user User) error {
 	}
 	peerIP, nextHop, err := encodeUserAddrs(user)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		var prevFilterModeInt int
+		if err := tx.QueryRowContext(ctx, "SELECT catalog_mode_id, filter_mode FROM users WHERE id = ?", user.ID).
+			Scan(&prevCatalogModeID, &prevFilterModeInt); err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE users SET name=?, peer_ip=?, peer_asn=?,
 			next_hop=?, bgp_password=?, selection_locked=?, enabled=?,
 			filter_mode=?, filter_editable=?,
@@ -445,8 +457,24 @@ func (s *Store) UpdateUser(ctx context.Context, user User) error {
 		} else if count == 0 {
 			return sql.ErrNoRows
 		}
-		return replaceNetworks(ctx, tx, user.ID, user.Networks)
+		if err := replaceNetworks(ctx, tx, user.ID, user.Networks); err != nil {
+			return err
+		}
+		if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(user.ID, 10),
+			map[string]int64{"catalog_mode_id": prevCatalogModeID}, map[string]int64{"catalog_mode_id": user.CatalogModeID}, false); err != nil {
+			return err
+		}
+		// filter_mode/filter_override change the user's effective route
+		// filtering (global vs. extend vs. override) without necessarily
+		// touching filter_allow/filter_deny — route_filters.user_updated
+		// (recorded by SetUserRouteFilters) only fires when those lists
+		// themselves change, so this needs its own entry or a mode switch
+		// alone (e.g. global -> override) would leave no audit trace at
+		// all despite changing what gets announced.
+		return AuditEntryTx(ctx, tx, filterModeMeta, "user", strconv.FormatInt(user.ID, 10),
+			map[string]string{"filter_mode": filterModeFromInt(prevFilterModeInt)}, map[string]string{"filter_mode": filterMode}, false)
 	})
+	return prevCatalogModeID, err
 }
 
 func (s *Store) DeleteUser(ctx context.Context, id int64) error {
@@ -551,9 +579,16 @@ func (s *Store) UserModeSelection(
 	userID int64,
 	modeID int64,
 ) (map[string]bool, map[ServiceKey]bool, error) {
+	return userModeSelection(ctx, s.DB, userID, modeID)
+}
+
+// userModeSelection is UserModeSelection's query logic against a queryer
+// (either *sql.DB or, for a caller that needs it alongside a write in the
+// same transaction, *sql.Tx).
+func userModeSelection(ctx context.Context, q queryer, userID, modeID int64) (map[string]bool, map[ServiceKey]bool, error) {
 	categories := map[string]bool{}
 	services := map[ServiceKey]bool{}
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := q.QueryContext(ctx, `
 SELECT c.name FROM selected_categories sc
 JOIN categories c ON c.id = sc.category_id
 WHERE sc.user_id = ? AND sc.mode_id = ?`, userID, modeID)
@@ -569,7 +604,7 @@ WHERE sc.user_id = ? AND sc.mode_id = ?`, userID, modeID)
 		categories[category] = true
 	}
 	_ = rows.Close() //nolint:errcheck
-	rows, err = s.DB.QueryContext(ctx, `
+	rows, err = q.QueryContext(ctx, `
 SELECT c.name, sv.name FROM selected_services ss
 JOIN services sv ON sv.id = ss.service_id
 JOIN categories c ON c.id = sv.category_id
@@ -587,6 +622,75 @@ WHERE ss.user_id = ? AND ss.mode_id = ?`, userID, modeID)
 		services[key] = true
 	}
 	return categories, services, rows.Err()
+}
+
+// CategoryToggle and ServiceToggle are one checkbox change each, as
+// submitted by the user/admin selection-save endpoints.
+type CategoryToggle struct {
+	Category string
+	Checked  bool
+}
+
+type ServiceToggle struct {
+	Category string
+	Service  string
+	Checked  bool
+}
+
+// SaveUserSelectionCounts applies categories/services toggles for
+// (userID, modeID) — optionally switching the user's catalog_mode_id to
+// modeID first, when switchMode is true — and returns the selected
+// category/service counts immediately before and after, all within one
+// transaction. Without this, a caller bracketing the mutation with two
+// independent UserModeSelection reads could have its "before" or "after"
+// changed by a concurrent request's own read or write landing in between,
+// misreporting what this call itself actually changed (e.g. two requests
+// both checking the same previously-unchecked category would each read
+// "before" as 0 and, after the second request's write is a no-op, both
+// read "after" as 1 — both logging a change when only one truly happened).
+func (s *Store) SaveUserSelectionCounts(
+	ctx context.Context,
+	userID, modeID int64,
+	switchMode bool,
+	categories []CategoryToggle,
+	services []ServiceToggle,
+	modeMeta, selectionsMeta AuditMeta,
+) (beforeCats, beforeSvcs, afterCats, afterSvcs int, prevModeID int64, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		bc, bs, err := userModeSelection(ctx, tx, userID, modeID)
+		if err != nil {
+			return err
+		}
+		beforeCats, beforeSvcs = len(bc), len(bs)
+
+		if switchMode {
+			p, err := SetUserCatalogModeTx(ctx, tx, userID, modeID, false, modeMeta)
+			if err != nil {
+				return err
+			}
+			prevModeID = p
+		}
+		for _, c := range categories {
+			if err := ToggleSelectedCategory(ctx, tx, userID, modeID, c.Category, c.Checked); err != nil {
+				return err
+			}
+		}
+		for _, svc := range services {
+			if err := ToggleSelectedService(ctx, tx, userID, modeID, svc.Category, svc.Service, svc.Checked); err != nil {
+				return err
+			}
+		}
+
+		ac, as, err := userModeSelection(ctx, tx, userID, modeID)
+		if err != nil {
+			return err
+		}
+		afterCats, afterSvcs = len(ac), len(as)
+		before := map[string]int{"categories": beforeCats, "services": beforeSvcs}
+		after := map[string]int{"categories": afterCats, "services": afterSvcs}
+		return AuditEntryTx(ctx, tx, selectionsMeta, "user", strconv.FormatInt(userID, 10), before, after, false)
+	})
+	return beforeCats, beforeSvcs, afterCats, afterSvcs, prevModeID, err
 }
 
 func SetUserSelection(
@@ -848,17 +952,27 @@ func uniqueServices(values []ServiceKey) []ServiceKey {
 
 // SetUserCatalogModeTx sets a user's catalog_mode_id within an existing
 // transaction, so callers that also need to persist selection changes in
-// the same transaction don't have to duplicate this query. Returns
-// sql.ErrNoRows if modeID doesn't reference an enabled catalog mode (or,
-// when requireEditable, if switching from the user's current mode isn't
-// allowed).
+// the same transaction don't have to duplicate this query. Returns the
+// mode the user was in immediately before this call, read in the same
+// transaction as the write — so a caller logging an audit entry describes
+// exactly this call's own transition, not a value captured earlier (e.g.
+// at authentication time) that a since-committed concurrent switch could
+// have already moved past, which would otherwise let two overlapping
+// switches (1→2 and 1→3, say) both log "from 1" even though the real
+// sequence was 1→2→3. Returns sql.ErrNoRows if modeID doesn't reference an
+// enabled catalog mode (or, when requireEditable, if switching from the
+// user's current mode isn't allowed).
 func SetUserCatalogModeTx(
 	ctx context.Context,
 	tx *sql.Tx,
 	userID int64,
 	modeID int64,
 	requireEditable bool,
-) error {
+	meta AuditMeta,
+) (prevModeID int64, err error) {
+	if err := tx.QueryRowContext(ctx, "SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&prevModeID); err != nil {
+		return 0, err
+	}
 	query := `UPDATE users
 SET catalog_mode_id = ?
 WHERE id = ?
@@ -870,14 +984,18 @@ WHERE id = ?
 	}
 	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if count, err := result.RowsAffected(); err != nil {
-		return fmt.Errorf("rows affected: %w", err)
+		return 0, fmt.Errorf("rows affected: %w", err)
 	} else if count == 0 {
-		return sql.ErrNoRows
+		return 0, sql.ErrNoRows
 	}
-	return nil
+	if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10),
+		map[string]int64{"catalog_mode_id": prevModeID}, map[string]int64{"catalog_mode_id": modeID}, false); err != nil {
+		return 0, err
+	}
+	return prevModeID, nil
 }
 
 func (s *Store) SetUserCatalogMode(
@@ -885,8 +1003,15 @@ func (s *Store) SetUserCatalogMode(
 	userID int64,
 	modeID int64,
 	requireEditable bool,
-) error {
-	return s.Transaction(ctx, func(tx *sql.Tx) error {
-		return SetUserCatalogModeTx(ctx, tx, userID, modeID, requireEditable)
+	meta AuditMeta,
+) (prevModeID int64, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		p, err := SetUserCatalogModeTx(ctx, tx, userID, modeID, requireEditable, meta)
+		if err != nil {
+			return err
+		}
+		prevModeID = p
+		return nil
 	})
+	return prevModeID, err
 }

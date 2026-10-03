@@ -1,6 +1,9 @@
 package settings
 
-import "context"
+import (
+	"context"
+	"database/sql"
+)
 
 // NewTestStore returns a Store implementation suitable for tests.
 // All settings start empty (only defaults and env vars apply).
@@ -35,6 +38,18 @@ func (m *testStore) SaveSetting(_ context.Context, key, value string) error {
 }
 
 func (m *testStore) DeleteSetting(_ context.Context, key string) error {
+	delete(m.settings, key)
+	return nil
+}
+
+// SaveSettingTx/DeleteSettingTx ignore tx — this in-memory fake has no
+// real transactions, so they behave exactly like their non-tx siblings.
+func (m *testStore) SaveSettingTx(_ context.Context, _ *sql.Tx, key, value string) error {
+	m.settings[key] = value
+	return nil
+}
+
+func (m *testStore) DeleteSettingTx(_ context.Context, _ *sql.Tx, key string) error {
 	delete(m.settings, key)
 	return nil
 }

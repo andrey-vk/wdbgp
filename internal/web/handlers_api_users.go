@@ -408,10 +408,10 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Save route filters
 	if len(body.FilterAllow) > 0 || len(body.FilterDeny) > 0 {
-		if err := s.store.SetUserRouteFilters(r.Context(), userID, store.RouteFilters{
+		if _, _, err := s.store.SetUserRouteFilters(r.Context(), userID, store.RouteFilters{
 			Allow: body.FilterAllow,
 			Deny:  body.FilterDeny,
-		}); err != nil {
+		}, store.AuditMeta{}); err != nil {
 			logging.FromContext(r.Context()).Debug("route filters save after create failed", "error", err, "user_id", userID)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save route filters"})
 			return
@@ -448,6 +448,13 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 	j.FilterDeny = filters.Deny
 	writeJSON(w, http.StatusCreated, j)
 }
+
+// apiUsersUpdatePreWriteHook, if set, runs in apiUsersUpdate right before
+// the UpdateUser call, after `current` has been loaded and merged with the
+// request body — a test seam used to force a concurrent request's own
+// mutation to land in that window deterministically, so a test can verify
+// this request's (stale-`current`) write still gets audited correctly.
+var apiUsersUpdatePreWriteHook func()
 
 // apiUsersUpdate handles PUT /api/admin/users/{id}.
 func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
@@ -493,7 +500,6 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-
 	// Apply only provided fields
 	if body.Name != nil {
 		current.Name = *body.Name
@@ -671,6 +677,12 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	var filterAllow, filterDeny []string
 	filtersProvided := body.FilterAllow != nil || body.FilterDeny != nil
 	if filtersProvided {
+		// Only to merge a partial update (touching just one of
+		// allow/deny) against the currently-saved value for the untouched
+		// side — not used for the audit log below, which instead uses
+		// SetUserRouteFilters' own atomic before/after once that call
+		// actually runs, so a concurrent save for the same user can't
+		// make this read stale for audit purposes.
 		existing, err := s.store.UserRouteFilters(r.Context(), id)
 		if err != nil {
 			logging.FromContext(r.Context()).Debug("route filters lookup before update failed", "error", err, "user_id", id)
@@ -685,13 +697,34 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		if body.FilterDeny != nil {
 			filterDeny = *body.FilterDeny
 		}
+		// Validate before committing anything below — a malformed CIDR
+		// must not leave the user record updated while the filter save
+		// itself still fails afterward.
 		if _, err := store.NormalizeRouteFilters(store.RouteFilters{Allow: filterAllow, Deny: filterDeny}); err != nil {
 			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 			return
 		}
 	}
 
-	if err := s.store.UpdateUser(r.Context(), current); err != nil {
+	// UpdateUser reads the prior catalog_mode_id/filter_mode inside the
+	// same transaction as the write and records both change audits
+	// atomically with it. meta is always populated (not conditioned on
+	// whether this request's body mentioned the field) — UpdateUser's
+	// UPDATE statement writes catalog_mode_id/filter_mode unconditionally
+	// regardless of what the request touched, so a request that didn't
+	// mention a field can still change it: if a concurrent request moved
+	// the user in between this handler's `current` read and this write,
+	// this write silently reverts that concurrent change back to the
+	// stale value `current` captured. auditEntryTx's own before/after
+	// equality check already skips the row when nothing really changed,
+	// so there's no cost to always checking — only a gap if we don't.
+	modeMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
+	filterModeMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.filter_mode_changed"}
+	if apiUsersUpdatePreWriteHook != nil {
+		apiUsersUpdatePreWriteHook()
+	}
+	_, err = s.store.UpdateUser(r.Context(), current, modeMeta, filterModeMeta)
+	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
 			return
@@ -701,7 +734,11 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if filtersProvided {
-		if err := s.store.SetUserRouteFilters(r.Context(), id, store.RouteFilters{Allow: filterAllow, Deny: filterDeny}); err != nil {
+		// SetUserRouteFilters reads its own before/after and records its
+		// own audit entry inside the same transaction as the write.
+		filtersMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "route_filters.user_updated"}
+		_, _, err := s.store.SetUserRouteFilters(r.Context(), id, store.RouteFilters{Allow: filterAllow, Deny: filterDeny}, filtersMeta)
+		if err != nil {
 			logging.FromContext(r.Context()).Debug("route filters save after update failed", "error", err, "user_id", id)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save route filters"})
 			return
@@ -1044,27 +1081,32 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 	}
 	switchingMode := body.ModeID > 0 && body.ModeID != user.CatalogModeID
 
-	err = s.store.Transaction(r.Context(), func(tx *sql.Tx) error {
-		if switchingMode {
-			// Persist the mode switch alongside the selection rows below, in the
-			// same transaction, so a save that changes mode doesn't leave the
-			// user's active catalog_mode_id pointing at the old mode.
-			if err := store.SetUserCatalogModeTx(r.Context(), tx, id, modeID, false); err != nil {
-				return err
-			}
-		}
-		for _, c := range body.Categories {
-			if err := store.ToggleSelectedCategory(r.Context(), tx, id, modeID, c.Category, c.Checked); err != nil {
-				return err
-			}
-		}
-		for _, svc := range body.Services {
-			if err := store.ToggleSelectedService(r.Context(), tx, id, modeID, svc.Category, svc.Service, svc.Checked); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	categoryToggles := make([]store.CategoryToggle, 0, len(body.Categories))
+	for _, c := range body.Categories {
+		categoryToggles = append(categoryToggles, store.CategoryToggle{Category: c.Category, Checked: c.Checked})
+	}
+	serviceToggles := make([]store.ServiceToggle, 0, len(body.Services))
+	for _, svc := range body.Services {
+		serviceToggles = append(serviceToggles, store.ServiceToggle{Category: svc.Category, Service: svc.Service, Checked: svc.Checked})
+	}
+	// Before/after counts (compared against the TARGET mode, not the
+	// user's current one — see the comment this carried before) are read
+	// inside the same transaction as the mode switch and the toggles, for
+	// the same reason apiUserSaveSelections needs that: bracketing it with
+	// independent reads would let a concurrent save change either count
+	// out from under this request.
+	// prevModeID (used by SaveUserSelectionCounts internally when
+	// switchingMode) is read inside the same transaction as the switch —
+	// using user.CatalogModeID (the session/pre-fetch snapshot) instead
+	// would let two overlapping switches both log "from" the same stale
+	// starting mode even though the real sequence moved through an
+	// intermediate one.
+	modeMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
+	// Counts only, not the full selection list — see apiUserSaveSelections
+	// for the known limitation this carries.
+	selectionsMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.selections_changed"}
+	_, _, _, _, _, err =
+		s.store.SaveUserSelectionCounts(r.Context(), id, modeID, switchingMode, categoryToggles, serviceToggles, modeMeta, selectionsMeta)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid or disabled mode"})
 		return

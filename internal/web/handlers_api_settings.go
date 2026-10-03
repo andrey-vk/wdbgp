@@ -2,12 +2,32 @@ package web
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/andrey-vk/wdbgp/internal/settings"
+	"github.com/andrey-vk/wdbgp/internal/store"
 )
+
+// splitFilterLines splits a filter_allow/filter_deny raw stored value (one
+// entry per line, stored verbatim — see validateFilterList) into a slice
+// for diffing, dropping blank lines. Comments are kept as literal entries:
+// they're real content an admin directly edited, and a diff should still
+// surface a comment-only change rather than silently hiding it.
+func splitFilterLines(text string) []string {
+	var lines []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
 
 // apiSettingsGet handles GET /api/admin/settings.
 func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
@@ -19,6 +39,20 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 // etc.), these take effect immediately — reconcileLocked() just needs to
 // run again with the new value already persisted, no speaker restart.
 var filterKeysAffectBGP = map[string]bool{"filter_allow": true, "filter_deny": true}
+
+// settingsPutFilterApplyHook, if set, runs once per apiSettingsPut call,
+// inside the globalFilterMu-guarded section right after beforeFilters is
+// captured — a test seam used to force two concurrent calls to overlap
+// deterministically and verify the lock actually serializes them.
+var settingsPutFilterApplyHook func()
+
+// settingsPutFilterTxPreCommitHook, if set, runs once per filter-settings
+// transaction, after both SetTx/ResetTx calls but before the audit insert
+// and commit — a test seam used to force the transaction to fail right
+// before it would otherwise commit, so a test can verify the already-
+// applied SetTx/ResetTx writes roll back together with the audit insert
+// rather than leaving the setting persisted with no audit trace.
+var settingsPutFilterTxPreCommitHook func() error
 
 // apiSettingsPut handles PUT /api/admin/settings.
 func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
@@ -44,23 +78,150 @@ func (s *Server) apiSettingsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reconcileNeeded := false
-	for key, raw := range body {
-		if string(raw) == "null" {
-			// Reset to default
-			if err := s.resetSetting(ctx, key); err != nil {
-				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
-				return
+	// The filter_allow/filter_deny before-capture, apply, and after-capture
+	// (for the audit entry below) run under globalFilterMu so two
+	// overlapping PUTs can't interleave — without it, both could capture
+	// the same "before" and each report its own "after", turning a real
+	// A->B->C sequence into misattributed or duplicated audit rows. The
+	// lock is released before Reconcile, which doesn't need to be
+	// serialized by it and can be comparatively slow.
+	applyErr := func() error {
+		s.globalFilterMu.Lock()
+		defer s.globalFilterMu.Unlock()
+
+		beforeFilters := map[string]string{
+			"filter_allow": s.settings.FilterAllow.Get(),
+			"filter_deny":  s.settings.FilterDeny.Get(),
+		}
+		if settingsPutFilterApplyHook != nil {
+			settingsPutFilterApplyHook()
+		}
+
+		// Non-filter keys: applied via the existing non-tx path — they
+		// aren't audited and don't need the atomicity filter_allow/
+		// filter_deny get below.
+		for key, raw := range body {
+			if filterKeysAffectBGP[key] {
+				continue
 			}
-		} else {
-			// Set new value
-			if err := s.setSetting(ctx, key, raw); err != nil {
-				writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
-				return
+			if string(raw) == "null" {
+				if err := s.resetSetting(ctx, key); err != nil {
+					return err
+				}
+			} else if err := s.setSetting(ctx, key, raw); err != nil {
+				return err
 			}
 		}
-		if filterKeysAffectBGP[key] {
-			reconcileNeeded = true
+
+		// filter_allow/filter_deny: persisted and audited in ONE
+		// transaction, so the audit insert commits atomically with the
+		// setting write and lands in audit_log in true commit order
+		// relative to every other audited mutation — unlike every other
+		// hook (folded into its own mutation's transaction already), this
+		// one had no transaction of its own to fold into before
+		// SetTx/ResetTx existed. The in-memory cached value and OnChange
+		// callbacks (the commit funcs collected below) only run after
+		// this transaction actually commits.
+		_, filterAllowProvided := body["filter_allow"]
+		_, filterDenyProvided := body["filter_deny"]
+		if !filterAllowProvided && !filterDenyProvided {
+			return nil
 		}
+		reconcileNeeded = true
+
+		if s.store == nil {
+			// No audit-log store available (some tests construct a
+			// *Server without one, for handlers that otherwise don't
+			// need it) — apply filter keys the same way as any other
+			// key, with no tx/audit wrapping; there's no audit_log table
+			// to write to anyway.
+			for _, key := range [2]string{"filter_allow", "filter_deny"} {
+				raw, ok := body[key]
+				if !ok {
+					continue
+				}
+				if string(raw) == "null" {
+					if err := s.resetSetting(ctx, key); err != nil {
+						return err
+					}
+				} else if err := s.setSetting(ctx, key, raw); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+
+		var commits []func()
+		txErr := s.store.Transaction(ctx, func(tx *sql.Tx) error {
+			commits = nil // attempt-local: Store.Transaction may retry
+			after := map[string]string{
+				"filter_allow": beforeFilters["filter_allow"],
+				"filter_deny":  beforeFilters["filter_deny"],
+			}
+			apply := func(st settings.Setting[string, string], key string) error {
+				raw, ok := body[key]
+				if !ok {
+					return nil
+				}
+				var v string
+				var commit func()
+				var err error
+				if string(raw) == "null" {
+					v, commit, err = st.ResetTx(ctx, tx)
+				} else {
+					v, commit, err = callStringSettingTx(ctx, tx, st, raw)
+				}
+				if err != nil {
+					return err
+				}
+				after[key] = v
+				commits = append(commits, commit)
+				return nil
+			}
+			if err := apply(s.settings.FilterAllow, "filter_allow"); err != nil {
+				return err
+			}
+			if err := apply(s.settings.FilterDeny, "filter_deny"); err != nil {
+				return err
+			}
+			if settingsPutFilterTxPreCommitHook != nil {
+				if err := settingsPutFilterTxPreCommitHook(); err != nil {
+					return err
+				}
+			}
+
+			// Bounded to just the lines that changed — the full text has
+			// no size limit (filter_allow/filter_deny accept arbitrarily
+			// large lists), so logging it whole on every edit could make
+			// a single audit row, or a page of them, arbitrarily large.
+			removedAllow, addedAllow := store.DiffStringSet(splitFilterLines(beforeFilters["filter_allow"]), splitFilterLines(after["filter_allow"]))
+			removedDeny, addedDeny := store.DiffStringSet(splitFilterLines(beforeFilters["filter_deny"]), splitFilterLines(after["filter_deny"]))
+			// Hard-capped (not just diffed): replacing an entire large
+			// filter_allow/filter_deny text with a disjoint large one
+			// would otherwise still put every old line in "removed" and
+			// every new line in "added", unbounded by the diff alone.
+			removed := map[string]store.AuditStringList{
+				"filter_allow": store.BoundStringListForAudit(removedAllow),
+				"filter_deny":  store.BoundStringListForAudit(removedDeny),
+			}
+			added := map[string]store.AuditStringList{
+				"filter_allow": store.BoundStringListForAudit(addedAllow),
+				"filter_deny":  store.BoundStringListForAudit(addedDeny),
+			}
+			meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "route_filters.global_updated"}
+			return store.AuditEntryTx(ctx, tx, meta, "settings", "", removed, added, false)
+		})
+		if txErr != nil {
+			return txErr
+		}
+		for _, commit := range commits {
+			commit()
+		}
+		return nil
+	}()
+	if applyErr != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: applyErr.Error()})
+		return
 	}
 
 	// Global route filters change what DesiredPrefixes() computes, so a
@@ -100,6 +261,8 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 		return callStringSetting(ctx, s.settings.AdminCookieSecure, raw)
 	case "allow_dynamic_peers":
 		return callBoolSetting(ctx, s.settings.AllowDynamicPeers, raw)
+	case "audit_log_retention_days":
+		return callIntSetting(ctx, s.settings.AuditLogRetentionDays, raw)
 	case "auto_restore_enabled":
 		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
 	case "bgp_hold_time":
@@ -218,6 +381,11 @@ func (s *Server) validateSettingKey(key string, raw json.RawMessage) error {
 			return nil
 		}
 		return callBoolValidate(s.settings.AllowDynamicPeers, raw)
+	case "audit_log_retention_days":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.AuditLogRetentionDays, raw)
 	case "auto_restore_enabled":
 		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
 	case "bgp_hold_time":
@@ -439,6 +607,8 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 		return s.settings.AdminCookieSecure.Reset(ctx)
 	case "allow_dynamic_peers":
 		return s.settings.AllowDynamicPeers.Reset(ctx)
+	case "audit_log_retention_days":
+		return s.settings.AuditLogRetentionDays.Reset(ctx)
 	case "auto_restore_enabled":
 		return fmt.Errorf("auto_restore_enabled is set via WDBGP_AUTO_RESTORE_ENABLED and cannot be changed here")
 	case "bgp_hold_time":
@@ -545,6 +715,16 @@ func callStringSetting(ctx context.Context, st settings.Setting[string, string],
 		return fmt.Errorf("invalid string: %w", err)
 	}
 	return st.Set(ctx, v)
+}
+
+// callStringSettingTx is callStringSetting's tx-scoped counterpart — see
+// Setting.SetTx.
+func callStringSettingTx(ctx context.Context, tx *sql.Tx, st settings.Setting[string, string], raw json.RawMessage) (string, func(), error) {
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return "", nil, fmt.Errorf("invalid string: %w", err)
+	}
+	return st.SetTx(ctx, tx, v)
 }
 
 func callUint16Setting(ctx context.Context, st settings.Setting[uint16, uint16], raw json.RawMessage) error {

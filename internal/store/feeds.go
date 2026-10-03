@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 )
 
@@ -189,8 +190,14 @@ func mergeHosts(hosts, host string) string {
 	return hosts + "," + host
 }
 
-func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
-	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+// UpdateFeed updates feed and returns the Enabled value it had immediately
+// before this update, read in the same transaction as the write — so a
+// caller comparing before/after enabled state (e.g. for an audit log) gets
+// the value this specific call actually overwrote, not a value read by an
+// independent, unsynchronized query that a concurrent update could have
+// already changed underneath it.
+func (s *Store) UpdateFeed(ctx context.Context, feed Feed, meta AuditMeta) (prevEnabled bool, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
 		var oldURL string
 		var oldAdapterID int64
 		var oldData string
@@ -198,8 +205,8 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		var oldAllowedHosts string
 		var oldRestrictHosts bool
 		if err := tx.QueryRowContext(ctx,
-			"SELECT url, adapter_id, data, name, allowed_hosts, restrict_hosts FROM feeds WHERE id = ?", feed.ID).
-			Scan(&oldURL, &oldAdapterID, &oldData, &oldName, &oldAllowedHosts, &oldRestrictHosts); err != nil {
+			"SELECT url, adapter_id, data, name, allowed_hosts, restrict_hosts, enabled FROM feeds WHERE id = ?", feed.ID).
+			Scan(&oldURL, &oldAdapterID, &oldData, &oldName, &oldAllowedHosts, &oldRestrictHosts, &prevEnabled); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -213,24 +220,41 @@ func (s *Store) UpdateFeed(ctx context.Context, feed Feed) error {
 		if oldURL == feed.URL && oldAdapterID == feed.AdapterID && oldData == feed.Data && oldName == feed.Name && oldAllowedHosts == feed.AllowedHosts && oldRestrictHosts == feed.RestrictHosts {
 			// Config unchanged — but enabled may have flipped, which
 			// changes what the feed contributes.
-			return RebuildModeEntriesForFeedTx(ctx, tx, feed.ID)
+			if err := RebuildModeEntriesForFeedTx(ctx, tx, feed.ID); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx,
+				"DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", feed.ID); err != nil {
+				return err
+			}
+			// The update may have flipped enabled or wiped the feed's
+			// entries — rebuild in the SAME transaction, so a
+			// disabled/reconfigured feed can never keep being announced
+			// from a stale materialized merge.
+			if err := RebuildModeEntriesForFeedTx(ctx, tx, feed.ID); err != nil {
+				return err
+			}
 		}
-		if _, err := tx.ExecContext(ctx,
-			"DELETE FROM catalog_entries WHERE feed_id = ?", feed.ID); err != nil {
-			return err
+		if updateFeedPreCommitHook != nil {
+			updateFeedPreCommitHook()
 		}
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE feeds SET last_success = NULL, last_error = NULL WHERE id = ?", feed.ID); err != nil {
-			return err
-		}
-		// The update may have flipped enabled or wiped the feed's entries
-		// (the config-change branch above) — rebuild in the SAME
-		// transaction, so a disabled/reconfigured feed can never keep
-		// being announced from a stale materialized merge.
-		return RebuildModeEntriesForFeedTx(ctx, tx, feed.ID)
+		return AuditEntryTx(ctx, tx, meta, "feed", strconv.FormatInt(feed.ID, 10),
+			map[string]bool{"enabled": prevEnabled}, map[string]bool{"enabled": feed.Enabled}, false)
 	})
-	return err
+	return prevEnabled, err
 }
+
+// updateFeedPreCommitHook, if set, runs once per UpdateFeed attempt, right
+// before its transaction's final write (the audit insert) and commit — a
+// test seam used to hold a transaction open deterministically, so a test
+// can verify a concurrent UpdateFeed call genuinely blocks until this one
+// commits, rather than relying on timing.
+var updateFeedPreCommitHook func()
 
 // FeedModes returns the mode IDs associated with a feed.
 func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {

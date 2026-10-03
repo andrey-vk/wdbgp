@@ -56,6 +56,12 @@ type Server struct {
 	// per-feed locks; this only dedupes the whole-catalog operation.
 	syncAllInFlight atomic.Bool
 
+	// globalFilterMu serializes apiSettingsPut's before-capture / apply /
+	// after-capture sequence for filter_allow and filter_deny, so the
+	// resulting audit entry reflects this request's own transition instead
+	// of racing an overlapping PUT touching the same keys.
+	globalFilterMu sync.Mutex
+
 	// appCtx and bg tie handler-spawned background work (the async 202
 	// feed syncs) to the application lifecycle: appCtx cancellation
 	// propagates into their contexts, and shutdown waits on bg so the

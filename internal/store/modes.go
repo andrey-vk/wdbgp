@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 )
 
 // CatalogMode represents a catalog mode (OpenCCK, IPRanges, sing-box SRS, etc.).
@@ -79,27 +80,94 @@ func (s *Store) AddCatalogMode(ctx context.Context, name string, enabled bool) (
 	return result.LastInsertId()
 }
 
-func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) error {
+// DeleteCatalogMode deletes mode id, reassigning any user still pointing at
+// it to the default mode (id=1) first to avoid a foreign-key violation.
+// Returns the IDs of users actually reassigned, read inside the same
+// transaction as the reassignment and the delete — so a caller logging an
+// audit entry per reassigned user sees exactly the set this call itself
+// moved, not a separately-queried snapshot a concurrent request could
+// change out from under it.
+func (s *Store) DeleteCatalogMode(ctx context.Context, id int64, meta AuditMeta) (reassignedUserIDs []int64, err error) {
 	if id <= 3 {
-		return fmt.Errorf("built-in catalog modes cannot be deleted")
+		return nil, fmt.Errorf("built-in catalog modes cannot be deleted")
 	}
-	// Reassign users referencing this mode to the default mode (id=1)
-	// before deleting, to avoid foreign key violations.
-	if _, err := s.DB.ExecContext(ctx,
-		"UPDATE users SET catalog_mode_id = 1 WHERE catalog_mode_id = ?", id); err != nil {
-		return err
-	}
-	result, err := s.DB.ExecContext(ctx, "DELETE FROM catalog_modes WHERE id = ?", id)
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		// Store.Transaction may invoke this closure more than once (it
+		// retries on a transient SQLite lock error), so the IDs collected
+		// here must stay attempt-local — appending straight to the named
+		// return (reassignedUserIDs) would duplicate a prior failed
+		// attempt's rows once a retry commits. Only published to the
+		// named return just before this closure returns nil, i.e. only
+		// for the attempt that actually commits.
+		var attemptIDs []int64
+		rows, err := tx.QueryContext(ctx, "SELECT id FROM users WHERE catalog_mode_id = ?", id)
+		if err != nil {
+			return err
+		}
+		scanErr := func() error {
+			defer func() {
+				if err := rows.Close(); err != nil {
+					log.Printf("WARNING: rows close: %v", err)
+				}
+			}()
+			for rows.Next() {
+				var userID int64
+				if err := rows.Scan(&userID); err != nil {
+					return err
+				}
+				attemptIDs = append(attemptIDs, userID)
+			}
+			return rows.Err()
+		}()
+		if scanErr != nil {
+			return scanErr
+		}
+		if deleteCatalogModeAttemptHook != nil {
+			if err := deleteCatalogModeAttemptHook(attemptIDs); err != nil {
+				return err
+			}
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE users SET catalog_mode_id = 1 WHERE catalog_mode_id = ?", id); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, "DELETE FROM catalog_modes WHERE id = ?", id)
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		} else if count == 0 {
+			return sql.ErrNoRows
+		}
+		// Every reassigned user gets its own audit row, inside this same
+		// transaction — without this, those moves would have no trace in
+		// the audit log despite user.mode_changed covering every other way
+		// a user's mode can change.
+		before := map[string]int64{"catalog_mode_id": id}
+		after := map[string]int64{"catalog_mode_id": 1}
+		for _, userID := range attemptIDs {
+			if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), before, after, false); err != nil {
+				return err
+			}
+		}
+		reassignedUserIDs = attemptIDs
+		return nil
+	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if count, err := result.RowsAffected(); err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	} else if count == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+	return reassignedUserIDs, nil
 }
+
+// deleteCatalogModeAttemptHook, if set, runs once per DeleteCatalogMode
+// transaction attempt, right after that attempt's local reassignedUserIDs
+// are collected and before the reassignment/delete writes. A test uses it
+// to force a retry (returning an error retry.TransientError accepts) and
+// confirm a later successful attempt doesn't duplicate an earlier failed
+// attempt's collected IDs onto the published result.
+var deleteCatalogModeAttemptHook func(attemptIDs []int64) error
 
 // ModeFeedCounts returns a map of mode_id→feed count.
 func (s *Store) ModeFeedCounts(ctx context.Context) (map[int64]int, error) {

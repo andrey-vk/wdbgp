@@ -27,6 +27,7 @@ export const settingsSchema = z.object({
   admin_cookie_secure: settingStringSchema,
   admin_password: settingStringSchema,
   allow_dynamic_peers: settingBoolSchema,
+  audit_log_retention_days: settingIntSchema,
   auto_restore_enabled: settingBoolSchema,
   bgp_hold_time: settingIntSchema,
   bgp_port: settingIntSchema,

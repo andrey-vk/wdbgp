@@ -419,7 +419,7 @@ func (s *Syncer) syncOne(ctx context.Context, feed store.Feed) (int64, error) {
 		logger.Warn("failed to get feed modes for community gen", "feed_id", feed.ID, "error", modeErr)
 	} else {
 		for _, mid := range modeIDs {
-			if _, genErr := s.Store.GenerateCommunities(ctx, mid); genErr != nil {
+			if _, genErr := s.Store.GenerateCommunitiesCount(ctx, mid); genErr != nil {
 				logger.Warn("failed to generate communities after sync", "mode_id", mid, "error", genErr)
 			}
 		}
