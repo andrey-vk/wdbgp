@@ -100,6 +100,7 @@ describe('settingsSchema', () => {
       admin_cookie_secure: mkStr('auto', 'auto', false),
       admin_password: mkStr(null, '', false),
       allow_dynamic_peers: mkBool(false, false, false),
+      audit_log_retention_days: mkInt(null, 30, false),
       auto_restore_enabled: mkBool(false, false, false),
       bgp_hold_time: mkInt(null, 90, false),
       bgp_port: mkInt(null, 179, false),
@@ -178,6 +179,7 @@ describe('settingsResponseSchema', () => {
       admin_cookie_secure: mkStr('auto', 'auto', false),
       admin_password: mkStr(null, '', false),
       allow_dynamic_peers: mkBool(false, false, false),
+      audit_log_retention_days: mkInt(null, 30, false),
       auto_restore_enabled: mkBool(false, false, false),
       bgp_hold_time: mkInt(null, 90, false),
       bgp_port: mkInt(null, 179, false),
@@ -229,6 +231,21 @@ describe('settingsResponseSchema', () => {
       port: { value: null, default_value: 8080, env_override: false },
       route_filters: { filter_allow: '', filter_deny: '' },
     })).toThrow()
+  })
+
+  // Regression: audit_log_retention_days was missing from settingsSchema,
+  // so SettingsPage.loadSettings()'s settingsSchema.partial().parse(...)
+  // silently stripped it from the backend response — the admin Settings
+  // page showed a blank value instead of the real default/current value,
+  // and (when WDBGP_AUDIT_LOG_RETENTION_DAYS was set) didn't know to treat
+  // the field as env-overridden.
+  it('retains audit_log_retention_days through a partial response', () => {
+    const response = {
+      audit_log_retention_days: { value: null, default_value: 30, env_override: false },
+    }
+    const result = settingsSchema.partial().parse(response)
+    expect(result.audit_log_retention_days?.default_value).toBe(30)
+    expect(result.audit_log_retention_days?.env_override).toBe(false)
   })
 })
 

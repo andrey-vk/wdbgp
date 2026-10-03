@@ -27,6 +27,7 @@ function buildSettings(): Record<string, unknown> {
     admin_cookie_secure: mkStr('auto', 'auto', false),
     admin_password: mkStr(null, '', false),
     allow_dynamic_peers: mkBool(false, false, false),
+    audit_log_retention_days: mkInt(null, 30, false),
     auto_restore_enabled: mkBool(false, false, false),
     bgp_port: mkInt(null, 179, false),
     backup_dir: mkStr(null, '/data', false),
