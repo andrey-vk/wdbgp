@@ -129,7 +129,7 @@ func TestPreviewUserEditFilterChange(t *testing.T) {
 	ctx := context.Background()
 	userID := addBlastRadiusTestUser(t, s, DefaultCatalogModeID, FilterModeOverride, "cat-a", 1)
 
-	preview, err := s.PreviewUserEdit(ctx, userID, FilterModeOverride, false, RouteFilters{Deny: []string{"21.0.0.0/8"}}, DefaultCatalogModeID)
+	preview, err := s.PreviewUserEdit(ctx, userID, true, FilterModeOverride, false, RouteFilters{Deny: []string{"21.0.0.0/8"}}, DefaultCatalogModeID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestPreviewUserEditModeMove(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	preview, err := s.PreviewUserEdit(ctx, userID, FilterModeGlobal, false, RouteFilters{}, modeBID)
+	preview, err := s.PreviewUserEdit(ctx, userID, true, FilterModeGlobal, false, RouteFilters{}, modeBID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestPreviewUserEditCombinedChangeCatchesWhatNeitherIsolatedChangeWould(t *t
 		t.Fatalf("pre-save mode B selection: %v", err)
 	}
 
-	filterOnly, err := s.PreviewUserEdit(ctx, userID, FilterModeOverride, false, RouteFilters{Deny: []string{"22.0.0.0/8"}}, modeAID)
+	filterOnly, err := s.PreviewUserEdit(ctx, userID, true, FilterModeOverride, false, RouteFilters{Deny: []string{"22.0.0.0/8"}}, modeAID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestPreviewUserEditCombinedChangeCatchesWhatNeitherIsolatedChangeWould(t *t
 		t.Fatalf("filter-only preview = %+v, want 1 -> 1 (deny targets mode B's route, user stays on mode A)", filterOnly.AffectedUsers[0])
 	}
 
-	modeOnly, err := s.PreviewUserEdit(ctx, userID, FilterModeOverride, false, RouteFilters{}, modeBID)
+	modeOnly, err := s.PreviewUserEdit(ctx, userID, true, FilterModeOverride, false, RouteFilters{}, modeBID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +364,7 @@ func TestPreviewUserEditCombinedChangeCatchesWhatNeitherIsolatedChangeWould(t *t
 		t.Fatalf("mode-only preview = %+v, want 1 -> 1 (same count, different route, filters stay empty)", modeOnly.AffectedUsers[0])
 	}
 
-	combined, err := s.PreviewUserEdit(ctx, userID, FilterModeOverride, false, RouteFilters{Deny: []string{"22.0.0.0/8"}}, modeBID)
+	combined, err := s.PreviewUserEdit(ctx, userID, true, FilterModeOverride, false, RouteFilters{Deny: []string{"22.0.0.0/8"}}, modeBID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,5 +386,35 @@ func TestPreviewUserEditCombinedChangeCatchesWhatNeitherIsolatedChangeWould(t *t
 	}
 	if len(filters.Deny) != 0 {
 		t.Fatalf("UserRouteFilters changed after previews: %+v", filters)
+	}
+}
+
+// TestPreviewUserEditDisabledUserAnnouncesNothing checks that a disabled
+// user's routes are not counted (DesiredPrefixes announces nothing for
+// u.enabled = 0), so disabling a user previews as losing their routes and
+// enabling one previews as gaining them, not the other way around.
+func TestPreviewUserEditDisabledUserAnnouncesNothing(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := addBlastRadiusTestUser(t, s, DefaultCatalogModeID, FilterModeGlobal, "cat-a", 1)
+	if _, err := s.DB.ExecContext(ctx, "UPDATE users SET enabled = 0 WHERE id = ?", userID); err != nil {
+		t.Fatal(err)
+	}
+
+	enabling, err := s.PreviewUserEdit(ctx, userID, true, FilterModeGlobal, false, RouteFilters{}, DefaultCatalogModeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := enabling.AffectedUsers[0]
+	if a.BeforeV4 != 0 || a.AfterV4 != 1 {
+		t.Fatalf("enabling preview = %+v, want 0 -> 1", a)
+	}
+
+	disabling, err := s.PreviewUserEdit(ctx, userID, false, FilterModeGlobal, false, RouteFilters{}, DefaultCatalogModeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabling.AffectedUsers[0].BeforeV4 != 0 || disabling.AffectedUsers[0].AfterV4 != 0 {
+		t.Fatalf("disabled-to-disabled preview = %+v, want 0 -> 0", disabling.AffectedUsers[0])
 	}
 }

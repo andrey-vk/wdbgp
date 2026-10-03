@@ -346,6 +346,7 @@ async function handleSave() {
   // e.g. a route only visible under the old mode's old filters can survive
   // either change alone but not both together.
   if (selected.value && (
+    form.value.enabled !== selected.value.enabled ||
     form.value.filter_mode !== selected.value.filter_mode ||
     form.value.filter_override !== selected.value.filter_override ||
     !sameNetworkSet(newFilterAllow, selected.value.filter_allow || []) ||
@@ -357,6 +358,7 @@ async function handleSave() {
         const resp = await apiClient.post<BlastRadiusPreview>(
           '/admin/users/' + selected.value!.id + '/preview',
           {
+            enabled: form.value.enabled,
             filter_mode: form.value.filter_mode,
             filter_override: form.value.filter_override,
             allow: newFilterAllow,

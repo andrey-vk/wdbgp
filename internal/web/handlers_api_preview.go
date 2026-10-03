@@ -54,6 +54,7 @@ func (s *Server) apiUserPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		Enabled        bool     `json:"enabled"`
 		FilterMode     string   `json:"filter_mode"`
 		FilterOverride bool     `json:"filter_override"`
 		Allow          []string `json:"allow"`
@@ -95,7 +96,7 @@ func (s *Server) apiUserPreview(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	preview, err := s.store.PreviewUserEdit(r.Context(), userID, body.FilterMode, body.FilterOverride, filters, body.CatalogModeID)
+	preview, err := s.store.PreviewUserEdit(r.Context(), userID, body.Enabled, body.FilterMode, body.FilterOverride, filters, body.CatalogModeID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
@@ -116,6 +117,7 @@ func (s *Server) apiUserPreview(w http.ResponseWriter, r *http.Request) {
 // 0 -> 0 regardless of the feed edit. Feed body shape matches
 // apiModeFeedsSet; enabled matches the mode PUT's own body field.
 func (s *Server) apiModeFeedsPreview(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // runs the prefix-count pipeline twice per affected user — same as apiModeFeedsSet
 	modeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})

@@ -345,6 +345,7 @@ describe('UsersPage blast-radius preview', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', {
+      enabled: true,
       filter_mode: 'global', filter_override: false, allow: [], deny: ['21.0.0.0/8'], catalog_mode_id: 1,
     })
     expect(mockPut).not.toHaveBeenCalled()
@@ -371,6 +372,7 @@ describe('UsersPage blast-radius preview', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', {
+      enabled: true,
       filter_mode: 'global', filter_override: false, allow: [], deny: [], catalog_mode_id: 2,
     })
     expect(mockPut).not.toHaveBeenCalled()
@@ -401,6 +403,7 @@ describe('UsersPage blast-radius preview', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', {
+      enabled: true,
       filter_mode: 'override', filter_override: true, allow: [], deny: [], catalog_mode_id: 1,
     })
     expect(mockPut).not.toHaveBeenCalled()
@@ -409,6 +412,28 @@ describe('UsersPage blast-radius preview', () => {
     vm.applyBlastRadius()
     await savePromise
 
+    expect(mockPut).toHaveBeenCalled()
+  })
+
+  it('previews an enabled-flag change on its own', async () => {
+    const { wrapper } = await mountUsersPage()
+    const vm = wrapper.vm as UsersPageVM
+    vm.selectUser(existingUser)
+    await nextTick()
+
+    vm.form.enabled = false
+
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }])
+    mockPut.mockResolvedValue({ data: { ...existingUser, enabled: false } })
+
+    const savePromise = vm.handleSave()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(mockPost).toHaveBeenCalledWith('/admin/users/1/preview', expect.objectContaining({ enabled: false }))
+    expect(mockPut).not.toHaveBeenCalled()
+
+    vm.applyBlastRadius()
+    await savePromise
     expect(mockPut).toHaveBeenCalled()
   })
 

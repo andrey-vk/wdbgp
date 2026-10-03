@@ -200,15 +200,15 @@ func (s *Store) PreviewModeFeedChange(ctx context.Context, modeID int64, links [
 // which validates the target mode in the handler instead) plus
 // SetUserRouteFilters' delete+insert, so the preview can never drift from
 // what the real save would do.
-func (s *Store) PreviewUserEdit(ctx context.Context, userID int64, filterMode string, filterOverride bool, filters RouteFilters, catalogModeID int64) (BlastRadiusPreview, error) {
+func (s *Store) PreviewUserEdit(ctx context.Context, userID int64, enabled bool, filterMode string, filterOverride bool, filters RouteFilters, catalogModeID int64) (BlastRadiusPreview, error) {
 	user, err := s.User(ctx, userID)
 	if err != nil {
 		return BlastRadiusPreview{}, err
 	}
 	normalizedMode := normalizeFilterMode(filterMode, filterOverride)
 	return s.previewBlastRadius(ctx, []User{user}, func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, "UPDATE users SET filter_mode = ?, catalog_mode_id = ? WHERE id = ?",
-			filterModeToInt(normalizedMode), catalogModeID, userID); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE users SET enabled = ?, filter_mode = ?, catalog_mode_id = ? WHERE id = ?",
+			enabled, filterModeToInt(normalizedMode), catalogModeID, userID); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM user_route_filters WHERE user_id = ?", userID); err != nil {

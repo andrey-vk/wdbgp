@@ -102,7 +102,7 @@ func TestAPIUserPreviewFilterChange(t *testing.T) {
 	idStr := strconv.FormatInt(userID, 10)
 
 	req := httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/preview", strings.NewReader(
-		`{"filter_mode":"override","allow":[],"deny":["21.0.0.0/8"],"catalog_mode_id":`+strconv.FormatInt(store.DefaultCatalogModeID, 10)+`}`))
+		`{"enabled":true,"filter_mode":"override","allow":[],"deny":["21.0.0.0/8"],"catalog_mode_id":`+strconv.FormatInt(store.DefaultCatalogModeID, 10)+`}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", idStr)
 	w := httptest.NewRecorder()
@@ -131,7 +131,7 @@ func TestAPIUserPreviewFilterChange(t *testing.T) {
 func TestAPIUserPreviewNotFound(t *testing.T) {
 	srv, _, _ := setupUserTestServer(t)
 	req := httptest.NewRequest("POST", "/api/admin/users/999/preview", strings.NewReader(
-		`{"filter_mode":"global","allow":[],"deny":[],"catalog_mode_id":`+strconv.FormatInt(store.DefaultCatalogModeID, 10)+`}`))
+		`{"enabled":true,"filter_mode":"global","allow":[],"deny":[],"catalog_mode_id":`+strconv.FormatInt(store.DefaultCatalogModeID, 10)+`}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", "999")
 	w := httptest.NewRecorder()
@@ -277,7 +277,7 @@ func TestAPIUserPreviewModeMove(t *testing.T) {
 	idStr := strconv.FormatInt(userID, 10)
 
 	req = httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/preview",
-		strings.NewReader(fmt.Sprintf(`{"filter_mode":"global","allow":[],"deny":[],"catalog_mode_id":%d}`, modeBID)))
+		strings.NewReader(fmt.Sprintf(`{"enabled":true,"filter_mode":"global","allow":[],"deny":[],"catalog_mode_id":%d}`, modeBID)))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", idStr)
 	w = httptest.NewRecorder()
@@ -331,7 +331,7 @@ func TestAPIUserPreviewRejectsDisabledOrMissingModeWhenModeChanges(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/preview",
-				strings.NewReader(fmt.Sprintf(`{"filter_mode":"global","allow":[],"deny":[],"catalog_mode_id":%d}`, tc.modeID)))
+				strings.NewReader(fmt.Sprintf(`{"enabled":true,"filter_mode":"global","allow":[],"deny":[],"catalog_mode_id":%d}`, tc.modeID)))
 			req.Header.Set("Content-Type", "application/json")
 			req.SetPathValue("id", idStr)
 			w := httptest.NewRecorder()
@@ -361,7 +361,7 @@ func TestAPIUserPreviewAllowsUnchangedDisabledMode(t *testing.T) {
 	idStr := strconv.FormatInt(userID, 10)
 
 	req := httptest.NewRequest("POST", "/api/admin/users/"+idStr+"/preview", strings.NewReader(
-		`{"filter_mode":"override","allow":[],"deny":["21.0.0.0/8"],"catalog_mode_id":`+strconv.FormatInt(store.DefaultCatalogModeID, 10)+`}`))
+		`{"enabled":true,"filter_mode":"override","allow":[],"deny":["21.0.0.0/8"],"catalog_mode_id":`+strconv.FormatInt(store.DefaultCatalogModeID, 10)+`}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.SetPathValue("id", idStr)
 	w := httptest.NewRecorder()

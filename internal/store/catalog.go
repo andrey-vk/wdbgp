@@ -322,10 +322,16 @@ func countSelectionPrefixesTx(ctx context.Context, tx *sql.Tx, userID int64) (v4
 func countSelectionPrefixes(ctx context.Context, q queryer, userID int64) (v4, v6 int, err error) {
 	var catalogModeID int64
 	var filterModeInt int
-	err = q.QueryRowContext(ctx, "SELECT catalog_mode_id, filter_mode FROM users WHERE id = ?", userID).
-		Scan(&catalogModeID, &filterModeInt)
+	var enabled bool
+	err = q.QueryRowContext(ctx, "SELECT catalog_mode_id, filter_mode, enabled FROM users WHERE id = ?", userID).
+		Scan(&catalogModeID, &filterModeInt, &enabled)
 	if err != nil {
 		return 0, 0, err
+	}
+	// A disabled user has nothing announced (DesiredPrefixes requires
+	// u.enabled = 1), so their announced-route count is zero.
+	if !enabled {
+		return 0, 0, nil
 	}
 	filterMode := filterModeFromInt(filterModeInt)
 
