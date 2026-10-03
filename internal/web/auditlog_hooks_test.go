@@ -847,6 +847,79 @@ func TestAuditHookAdminUserModeChangedNoopWhenSameMode(t *testing.T) {
 	}
 }
 
+// TestAuditHookAdminUserFilterModeChanged covers a gap the
+// route_filters.user_updated hook alone can't: switching a user's
+// filter_mode (global -> override) changes their effective route
+// filtering even when filter_allow/filter_deny themselves aren't part of
+// the request, so it needs its own audit entry.
+func TestAuditHookAdminUserFilterModeChanged(t *testing.T) {
+	srv, st, userID := adminUserFixture(t)
+	idStr := strconv.FormatInt(userID, 10)
+
+	req := httptest.NewRequest("PUT", "/api/admin/users/"+idStr, strings.NewReader(`{"filter_mode":"override"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w := httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "user.filter_mode_changed")
+	if e.ObjectType != "user" || e.ObjectID != idStr {
+		t.Fatalf("entry = %+v, want user/%s", e, idStr)
+	}
+	if e.Before != `{"filter_mode":"global"}` || e.After != `{"filter_mode":"override"}` {
+		t.Fatalf("before=%q after=%q, want global->override", e.Before, e.After)
+	}
+	// route_filters.user_updated must NOT fire for this — filter_allow/
+	// filter_deny were never touched.
+	if n := auditLogCount(t, st, "route_filters.user_updated"); n != 0 {
+		t.Fatalf("route_filters.user_updated count = %d, want 0 (allow/deny untouched)", n)
+	}
+}
+
+// TestAuditHookAdminUserFilterModeChangedViaLegacyOverrideField covers the
+// same transition via the legacy filter_override boolean instead of the
+// filter_mode string, since UpdateUser normalizes both into the same
+// persisted value.
+func TestAuditHookAdminUserFilterModeChangedViaLegacyOverrideField(t *testing.T) {
+	srv, st, userID := adminUserFixture(t)
+	idStr := strconv.FormatInt(userID, 10)
+
+	req := httptest.NewRequest("PUT", "/api/admin/users/"+idStr, strings.NewReader(`{"filter_override":true}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w := httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "user.filter_mode_changed")
+	if e.Before != `{"filter_mode":"global"}` || e.After != `{"filter_mode":"override"}` {
+		t.Fatalf("before=%q after=%q, want global->override", e.Before, e.After)
+	}
+}
+
+func TestAuditHookAdminUserFilterModeNoopWhenUnchanged(t *testing.T) {
+	srv, st, userID := adminUserFixture(t)
+	idStr := strconv.FormatInt(userID, 10)
+
+	req := httptest.NewRequest("PUT", "/api/admin/users/"+idStr, strings.NewReader(`{"name":"renamed-user"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w := httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: %d body=%s", w.Code, w.Body.String())
+	}
+
+	if n := auditLogCount(t, st, "user.filter_mode_changed"); n != 0 {
+		t.Fatalf("audit log count = %d, want 0 (filter mode untouched)", n)
+	}
+}
+
 func TestAuditHookAdminUserRouteFiltersUpdated(t *testing.T) {
 	srv, st, userID := adminUserFixture(t)
 	idStr := strconv.FormatInt(userID, 10)

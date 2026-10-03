@@ -699,15 +699,23 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// UpdateUser reads the prior catalog_mode_id inside the same
-	// transaction as the write and records the mode-change audit entry
-	// atomically with it — meta is zero-value (no audit) unless the
-	// request actually touched catalog_mode_id.
-	var modeMeta store.AuditMeta
+	// UpdateUser reads the prior catalog_mode_id/filter_mode inside the
+	// same transaction as the write and records both change audits
+	// atomically with it — each meta is zero-value (no audit) unless the
+	// request actually touched the corresponding field. filter_mode and
+	// filter_override change the user's effective route filtering (global
+	// vs. extend vs. override) even when filter_allow/filter_deny
+	// themselves aren't touched, so this needs its own entry — otherwise
+	// route_filters.user_updated (only recorded when the lists change)
+	// would leave a mode-only switch with no audit trace at all.
+	var modeMeta, filterModeMeta store.AuditMeta
 	if body.CatalogModeID != nil {
 		modeMeta = store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
 	}
-	_, err = s.store.UpdateUser(r.Context(), current, modeMeta)
+	if body.FilterMode != nil || body.FilterOverride != nil {
+		filterModeMeta = store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.filter_mode_changed"}
+	}
+	_, err = s.store.UpdateUser(r.Context(), current, modeMeta, filterModeMeta)
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})

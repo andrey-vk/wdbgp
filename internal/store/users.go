@@ -423,7 +423,7 @@ func encodeUserAddrs(user User) (peerIP []byte, nextHop any, err error) {
 // this call's own transition, not a value captured earlier (e.g. before
 // validating the request) that a since-committed concurrent update to the
 // same user could have already moved past.
-func (s *Store) UpdateUser(ctx context.Context, user User, meta AuditMeta) (prevCatalogModeID int64, err error) {
+func (s *Store) UpdateUser(ctx context.Context, user User, meta, filterModeMeta AuditMeta) (prevCatalogModeID int64, err error) {
 	filterMode := normalizeFilterMode(user.FilterMode, user.FilterOverride)
 	if user.CatalogModeID == 0 {
 		user.CatalogModeID = DefaultCatalogModeID
@@ -436,8 +436,9 @@ func (s *Store) UpdateUser(ctx context.Context, user User, meta AuditMeta) (prev
 		return 0, err
 	}
 	err = s.Transaction(ctx, func(tx *sql.Tx) error {
-		if err := tx.QueryRowContext(ctx, "SELECT catalog_mode_id FROM users WHERE id = ?", user.ID).
-			Scan(&prevCatalogModeID); err != nil {
+		var prevFilterModeInt int
+		if err := tx.QueryRowContext(ctx, "SELECT catalog_mode_id, filter_mode FROM users WHERE id = ?", user.ID).
+			Scan(&prevCatalogModeID, &prevFilterModeInt); err != nil {
 			return err
 		}
 		result, err := tx.ExecContext(ctx, `UPDATE users SET name=?, peer_ip=?, peer_asn=?,
@@ -459,8 +460,19 @@ func (s *Store) UpdateUser(ctx context.Context, user User, meta AuditMeta) (prev
 		if err := replaceNetworks(ctx, tx, user.ID, user.Networks); err != nil {
 			return err
 		}
-		return auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(user.ID, 10),
-			map[string]int64{"catalog_mode_id": prevCatalogModeID}, map[string]int64{"catalog_mode_id": user.CatalogModeID}, false)
+		if err := auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(user.ID, 10),
+			map[string]int64{"catalog_mode_id": prevCatalogModeID}, map[string]int64{"catalog_mode_id": user.CatalogModeID}, false); err != nil {
+			return err
+		}
+		// filter_mode/filter_override change the user's effective route
+		// filtering (global vs. extend vs. override) without necessarily
+		// touching filter_allow/filter_deny — route_filters.user_updated
+		// (recorded by SetUserRouteFilters) only fires when those lists
+		// themselves change, so this needs its own entry or a mode switch
+		// alone (e.g. global -> override) would leave no audit trace at
+		// all despite changing what gets announced.
+		return auditEntryTx(ctx, tx, filterModeMeta, "user", strconv.FormatInt(user.ID, 10),
+			map[string]string{"filter_mode": filterModeFromInt(prevFilterModeInt)}, map[string]string{"filter_mode": filterMode}, false)
 	})
 	return prevCatalogModeID, err
 }
