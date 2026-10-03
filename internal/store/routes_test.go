@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -188,6 +189,18 @@ func TestBoundDiffEntries(t *testing.T) {
 	}
 	if truncated != 25 {
 		t.Fatalf("truncated = %d, want 25", truncated)
+	}
+
+	// A single oversized entry (e.g. a huge filter_allow comment line,
+	// stored verbatim with no length limit of its own) must be truncated
+	// in bytes too — the entry-count cap alone doesn't bound this.
+	hugeEntry := "# " + strings.Repeat("A", MaxAuditEntryBytes*4)
+	capped, truncated = BoundDiffEntries([]string{hugeEntry})
+	if truncated != 0 {
+		t.Fatalf("truncated = %d, want 0 (only one entry, none omitted)", truncated)
+	}
+	if len(capped) != 1 || len(capped[0]) > MaxAuditEntryBytes {
+		t.Fatalf("capped = %v, want 1 entry of at most %d bytes", capped, MaxAuditEntryBytes)
 	}
 }
 

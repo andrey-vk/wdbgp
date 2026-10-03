@@ -555,6 +555,37 @@ func TestAuditHookGlobalRouteFiltersAuditCapsEntireDisjointReplacement(t *testin
 	}
 }
 
+// TestAuditHookGlobalRouteFiltersCapsOversizedCommentLine covers a gap
+// the entry-count cap alone doesn't: filter_allow/filter_deny accept
+// #-prefixed comment lines stored verbatim with no length limit of their
+// own, so a single huge comment line is still just one "entry" — well
+// under the 50-entry cap — but could be most of the request body. This
+// checks it's truncated in bytes too.
+func TestAuditHookGlobalRouteFiltersCapsOversizedCommentLine(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+
+	hugeComment := "# " + strings.Repeat("A", store.MaxAuditEntryBytes*4)
+	req := httptest.NewRequest("PUT", "/api/admin/settings", strings.NewReader(`{"filter_allow":"`+hugeComment+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.apiSettingsPut(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("settings put: %d body=%s", w.Code, w.Body.String())
+	}
+
+	e := latestAuditByAction(t, st, "route_filters.global_updated")
+	var after map[string]store.AuditStringList
+	if err := json.Unmarshal([]byte(e.After), &after); err != nil {
+		t.Fatalf("unmarshal after: %v", err)
+	}
+	if len(after["filter_allow"].Entries) != 1 {
+		t.Fatalf("after[filter_allow].Entries = %v, want exactly 1 entry", after["filter_allow"].Entries)
+	}
+	if len(after["filter_allow"].Entries[0]) > store.MaxAuditEntryBytes {
+		t.Fatalf("entry len = %d, want <= %d", len(after["filter_allow"].Entries[0]), store.MaxAuditEntryBytes)
+	}
+}
+
 func TestAuditHookGlobalRouteFiltersNoopWhenUnrelatedSettingChanges(t *testing.T) {
 	srv, st, _ := setupUserTestServer(t)
 

@@ -582,14 +582,30 @@ func diffRouteFilters(before, after RouteFilters) (removed, added RouteFilters) 
 // audit row approaching that size. This caps it explicitly.
 const MaxAuditDiffEntries = 50
 
+// MaxAuditEntryBytes caps how many bytes of a single entry an audit row
+// stores. MaxAuditDiffEntries alone bounds how many entries survive, but
+// not how large any one of them is — a route-filter entry is normally a
+// short CIDR (bounded by validation elsewhere), but filter_allow/
+// filter_deny also accept #-prefixed comment lines stored verbatim with
+// no length limit of their own, and one such line could be most of the
+// 8 MiB request body. Applied per entry alongside the count cap.
+const MaxAuditEntryBytes = 256
+
 // BoundDiffEntries caps entries to MaxAuditDiffEntries for audit storage,
-// returning the capped slice and how many entries were omitted (0 if
-// none were).
+// truncating each surviving entry to MaxAuditEntryBytes, and returns the
+// capped slice plus how many entries were omitted entirely (0 if none
+// were).
 func BoundDiffEntries(entries []string) (capped []string, truncated int) {
-	if len(entries) <= MaxAuditDiffEntries {
-		return entries, 0
+	n := len(entries)
+	if n > MaxAuditDiffEntries {
+		truncated = n - MaxAuditDiffEntries
+		n = MaxAuditDiffEntries
 	}
-	return entries[:MaxAuditDiffEntries], len(entries) - MaxAuditDiffEntries
+	capped = make([]string, n)
+	for i := 0; i < n; i++ {
+		capped[i] = truncateUTF8(entries[i], MaxAuditEntryBytes)
+	}
+	return capped, truncated
 }
 
 // AuditStringList is a capped, audit-safe representation of a changed

@@ -19,15 +19,21 @@ import (
 // legitimate one.
 const maxAuditUserAgent = 512
 
-// truncateUserAgent bounds s to maxAuditUserAgent bytes, cutting at a
-// valid UTF-8 rune boundary so truncation can't produce invalid UTF-8 that
-// a later consumer (the admin UI, an API client decoding the stored
-// value) chokes on.
+// truncateUserAgent bounds s to maxAuditUserAgent bytes — see
+// truncateUTF8.
 func truncateUserAgent(s string) string {
-	if len(s) <= maxAuditUserAgent {
+	return truncateUTF8(s, maxAuditUserAgent)
+}
+
+// truncateUTF8 bounds s to maxBytes, cutting at a valid UTF-8 rune
+// boundary so truncation can't produce invalid UTF-8 that a later
+// consumer (the admin UI, an API client decoding the stored value)
+// chokes on.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
 		return s
 	}
-	cut := maxAuditUserAgent
+	cut := maxBytes
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
