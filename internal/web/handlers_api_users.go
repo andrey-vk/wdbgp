@@ -536,6 +536,7 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	if body.FilterEditable != nil {
 		current.FilterEditable = *body.FilterEditable
 	}
+	prevCatalogModeID := current.CatalogModeID
 	if body.CatalogModeID != nil {
 		current.CatalogModeID = *body.CatalogModeID
 	}
@@ -605,7 +606,7 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	// an update that doesn't touch catalog_mode_id must still succeed even
 	// if the user's *current* mode was disabled sometime after assignment
 	// (same reasoning as apiAdminUserSaveSelections' switchingMode gate).
-	if body.CatalogModeID != nil {
+	if body.CatalogModeID != nil && current.CatalogModeID != prevCatalogModeID {
 		if mode, err := s.store.CatalogMode(r.Context(), current.CatalogModeID); err != nil {
 			writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Catalog mode not found"})
 			return

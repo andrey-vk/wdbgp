@@ -409,3 +409,26 @@ func TestAPIModeSaveAppliesRenameEnableAndFeedsTogether(t *testing.T) {
 		t.Fatalf("ModeFeeds = %+v, want exactly feed %d", feeds, feedID)
 	}
 }
+
+// TestAPIUsersUpdateKeepsUnchangedDisabledModeValid checks that a save which
+// resends the user's current catalog_mode_id — now disabled — still succeeds
+// when the mode itself isn't changing, matching the preview's own rule.
+func TestAPIUsersUpdateKeepsUnchangedDisabledModeValid(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	ctx := context.Background()
+	userID := addPreviewTestUser(t, st, store.DefaultCatalogModeID, store.FilterModeGlobal, "cat-a", 1)
+	if err := st.UpdateCatalogMode(ctx, store.CatalogMode{ID: store.DefaultCatalogModeID, Name: "OpenCCK", Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	idStr := strconv.FormatInt(userID, 10)
+
+	req := httptest.NewRequest("PUT", "/api/admin/users/"+idStr, strings.NewReader(
+		`{"name":"renamed","catalog_mode_id":`+strconv.FormatInt(store.DefaultCatalogModeID, 10)+`}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.SetPathValue("id", idStr)
+	w := httptest.NewRecorder()
+	srv.apiUsersUpdate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update: %d body=%s, want 200 (mode unchanged)", w.Code, w.Body.String())
+	}
+}
