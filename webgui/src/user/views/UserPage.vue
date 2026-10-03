@@ -156,6 +156,24 @@ function formatFilterList(cidrs: string[] | null | undefined): string {
 }
 
 // ── Auth functions ──────────────────────────────────────────
+// Clears every piece of per-user state that handleLogout and a 401-driven
+// handleAuthError both need to reset. Without this shared by both, only
+// explicit logout cleared it — a session that merely expired (any
+// authenticated action can hit this) left the previous user's data,
+// counts, and filters-in-effect sitting in memory, including a stale
+// filters-in-effect response still in flight, for the next user who logs
+// in on the same page to briefly (or indefinitely, if their own count
+// fetch stalls) see.
+function resetSessionState(): void {
+  data.value = null
+  countData.value = null
+  checkedCategories.value = new Set()
+  checkedServices.value = new Set()
+  invalidateRouteFiltersInfo()
+  lookupQuery.value = ''
+  invalidateLookup()
+}
+
 // Detects a 401 (expired/invalid session) and resets local auth state so
 // the login screen shows again. Without this, checkAuth was the only
 // function that ever noticed a 401 — every other authenticated action
@@ -166,6 +184,7 @@ function formatFilterList(cidrs: string[] | null | undefined): string {
 function handleAuthError(err: unknown): boolean {
   if (axios.isAxiosError(err) && err.response?.status === 401) {
     authenticated.value = false
+    resetSessionState()
     return true
   }
   return false
@@ -212,13 +231,7 @@ async function handleLogout(): Promise<void> {
     // ignore
   }
   authenticated.value = false
-  data.value = null
-  countData.value = null
-  checkedCategories.value = new Set()
-  checkedServices.value = new Set()
-  invalidateRouteFiltersInfo()
-  lookupQuery.value = ''
-  invalidateLookup()
+  resetSessionState()
   loginForm.login = ''
   loginForm.password = ''
 }

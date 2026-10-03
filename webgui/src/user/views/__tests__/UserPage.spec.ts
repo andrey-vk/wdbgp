@@ -1545,5 +1545,105 @@ describe('UserPage', () => {
       expect(wrapper.find('[data-testid="route-filters-mode"]').text()).not.toContain('user.route_filters_mode_extend')
     })
 
+    it('never shows a previous user\'s stale filters after a session expiry (401), not just an explicit logout', async () => {
+      // Same leak as above, but the session ends via a 401 picked up by
+      // handleAuthError (e.g. the mode-switch PUT below) rather than the
+      // user clicking "logout" — handleAuthError must invalidate the same
+      // state handleLogout does, since any authenticated action can hit a
+      // 401 once a session expires.
+      const aliceData = {
+        ...baseUserData,
+        user: { ...baseUserData.user, catalog_mode_id: 1, catalog_editable: true, filter_editable: true },
+        modes: [
+          { id: 1, name: 'Mode A', enabled: true, feed_count: 0 },
+          { id: 2, name: 'Mode B', enabled: true, feed_count: 0 },
+        ],
+      }
+      const bobData = { ...baseUserData, user: { ...baseUserData.user, id: 2, name: 'Bob' } }
+      let resolveAliceStale: (v: { data: unknown }) => void = () => {}
+      let resolveBobCounts: (v: { data: unknown }) => void = () => {}
+      let routeFiltersCalls = 0
+      mockGet.mockImplementation((url: string) => {
+        if (url === '/user/me') return Promise.resolve({ data: aliceData }) // only the initial mount uses /user/me here
+        if (url === '/user/route-filters') {
+          routeFiltersCalls++
+          if (routeFiltersCalls === 1) {
+            return Promise.resolve({
+              data: { mode: 'global', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+            })
+          }
+          if (routeFiltersCalls === 2) return new Promise((resolve) => { resolveAliceStale = resolve }) // Alice's save-triggered refetch
+          return Promise.resolve({
+            data: { mode: 'override', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+          }) // Bob's own refetch
+        }
+        return Promise.reject(new Error(`unexpected GET ${url}`))
+      })
+      let countCalls = 0
+      mockPost.mockImplementation((url: string) => {
+        if (url === '/user/filters') return Promise.resolve({ data: { ok: true } })
+        if (url === '/user/login') return Promise.resolve({ data: bobData })
+        if (url === '/user/count-prefixes') {
+          countCalls++
+          if (countCalls === 1) return Promise.resolve({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } }) // Alice's initial load
+          return new Promise((resolve) => { resolveBobCounts = resolve }) // Bob's own, left pending
+        }
+        return Promise.resolve({ data: {} })
+      })
+      mockPut.mockRejectedValue({ isAxiosError: true, response: { status: 401 } })
+
+      const UserPage = (await import('../UserPage.vue')).default
+      const wrapper = mount(UserPage, {
+        global: {
+          plugins: [i18n, PrimeVue],
+          stubs: {
+            LanguageSwitcher: { template: '<div class="stub-language-switcher" />' },
+            Toast: { template: '<div class="stub-toast" />' },
+          },
+        },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_global')
+
+      // Alice saves her filters — the post-save refetch (call #2) is left pending.
+      const saveButton = wrapper.findAll('button').find((b) => b.text().includes('user.save_filters'))
+      await saveButton?.trigger('click')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Alice's session expires via a 401 on an unrelated action (a mode
+      // switch) while that refetch is still in flight — not an explicit
+      // logout.
+      await wrapper.find('select').setValue('2')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(false)
+
+      // Bob logs in; his own count-prefixes fetch is left pending, so his
+      // route-filters fetch (call #3) hasn't started yet.
+      await wrapper.find('input[type="text"]').setValue('bob')
+      await wrapper.find('input[type="password"]').setValue('secret')
+      await wrapper.find('form').trigger('submit')
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+
+      // Alice's stale refetch resolves now — it must not reappear in Bob's
+      // session even though Bob's own fetch hasn't fired yet.
+      resolveAliceStale({
+        data: { mode: 'extend', global: { allow: [], deny: [] }, own: { allow: [], deny: [] }, effective: { allow: [], deny: [] } },
+      })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-section"]').exists()).toBe(false)
+
+      // Bob's own count fetch resolves, unblocking his own route-filters
+      // fetch (call #3) — his real data must display correctly.
+      resolveBobCounts({ data: { v4: 0, v6: 0, delta_v4: 0, delta_v6: 0 } })
+      await new Promise((r) => setTimeout(r, 0))
+      await wrapper.vm.$nextTick()
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).toContain('user.route_filters_mode_override')
+      expect(wrapper.find('[data-testid="route-filters-mode"]').text()).not.toContain('user.route_filters_mode_extend')
+    })
   })
 })
