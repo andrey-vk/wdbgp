@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/netip"
 )
 
 // AffectedUser is one user's prefix-count impact from a previewed change.
@@ -14,7 +15,8 @@ type AffectedUser struct {
 	BeforeV6   int    `json:"before_v6"`
 	AfterV4    int    `json:"after_v4"`
 	AfterV6    int    `json:"after_v6"`
-	LostRoutes bool   `json:"lost_routes"` // after < before on either family
+	LostRoutes bool   `json:"lost_routes"` // some prefix announced before is not after
+	Changed    bool   `json:"changed"`     // the announced set differs, even at equal counts
 }
 
 // BlastRadiusPreview reports a pending change's impact without applying
@@ -60,13 +62,13 @@ func (s *Store) previewBlastRadius(ctx context.Context, users []User, mutate fun
 		// preview.affected_users.filter(...) throws on null.
 		preview = BlastRadiusPreview{AffectedUsers: make([]AffectedUser, 0, len(users))}
 
-		before := make(map[int64][2]int, len(users))
+		before := make(map[int64][]netip.Prefix, len(users))
 		for _, u := range users {
-			v4, v6, err := countSelectionPrefixesTx(ctx, tx, u.ID)
+			ps, err := selectionPrefixesTx(ctx, tx, u.ID)
 			if err != nil {
 				return err
 			}
-			before[u.ID] = [2]int{v4, v6}
+			before[u.ID] = ps
 		}
 
 		if err := mutate(ctx, tx); err != nil {
@@ -74,18 +76,21 @@ func (s *Store) previewBlastRadius(ctx context.Context, users []User, mutate fun
 		}
 
 		for _, u := range users {
-			v4, v6, err := countSelectionPrefixesTx(ctx, tx, u.ID)
+			after, err := selectionPrefixesTx(ctx, tx, u.ID)
 			if err != nil {
 				return err
 			}
 			b := before[u.ID]
+			bv4, bv6 := countPrefixFamilies(b)
+			av4, av6 := countPrefixFamilies(after)
+			lost, changed := diffPrefixSets(b, after)
 			preview.AffectedUsers = append(preview.AffectedUsers, AffectedUser{
 				UserID: u.ID, Name: u.Name,
-				BeforeV4: b[0], BeforeV6: b[1], AfterV4: v4, AfterV6: v6,
-				LostRoutes: v4 < b[0] || v6 < b[1],
+				BeforeV4: bv4, BeforeV6: bv6, AfterV4: av4, AfterV6: av6,
+				LostRoutes: lost, Changed: changed,
 			})
-			preview.TotalDeltaV4 += v4 - b[0]
-			preview.TotalDeltaV6 += v6 - b[1]
+			preview.TotalDeltaV4 += av4 - bv4
+			preview.TotalDeltaV6 += av6 - bv6
 		}
 		return errBlastRadiusDiscard
 	})
@@ -100,6 +105,29 @@ func (s *Store) previewBlastRadius(ctx context.Context, users []User, mutate fun
 	// as a bug, the same way PreviewCommunityReset treats its own
 	// unexpectedly-committed trial.
 	return BlastRadiusPreview{}, errors.New("blast radius preview committed unexpectedly")
+}
+
+// diffPrefixSets reports whether any prefix in before is missing from after
+// (lost), and whether the two sets differ at all (changed).
+func diffPrefixSets(before, after []netip.Prefix) (lost, changed bool) {
+	inAfter := make(map[netip.Prefix]bool, len(after))
+	for _, p := range after {
+		inAfter[p] = true
+	}
+	inBefore := make(map[netip.Prefix]bool, len(before))
+	for _, p := range before {
+		inBefore[p] = true
+		if !inAfter[p] {
+			lost = true
+		}
+	}
+	changed = lost || len(inAfter) != len(inBefore)
+	for p := range inAfter {
+		if !inBefore[p] {
+			changed = true
+		}
+	}
+	return lost, changed
 }
 
 // usersByCatalogMode returns every user currently on modeID, for a mode

@@ -9,6 +9,7 @@ export interface AffectedUser {
   after_v4: number
   after_v6: number
   lost_routes: boolean
+  changed: boolean
 }
 
 export interface BlastRadiusPreview {
@@ -18,15 +19,12 @@ export interface BlastRadiusPreview {
 }
 
 // The backend's affected-user sets are membership-based (e.g. "everyone on
-// this mode", "everyone whose filter_mode uses the global filter") — most of
-// those users commonly see no change at all from a given edit. Narrowing to
-// only the users whose count actually moved is what decides whether showing
-// a preview dialog is worth interrupting the save for at all, matching
-// CommunitiesPage.vue's existing "no changes -> just save" shortcut.
+// this mode"), so most users commonly see no change. `changed` is the
+// backend's comparison of the announced prefix sets themselves — not just
+// counts, which can stay equal while the routes differ — and decides whether
+// the preview dialog is worth interrupting the save for at all.
 export function changedUsers(preview: BlastRadiusPreview): AffectedUser[] {
-  return preview.affected_users.filter(
-    (u) => u.before_v4 !== u.after_v4 || u.before_v6 !== u.after_v6,
-  )
+  return preview.affected_users.filter((u) => u.changed)
 }
 
 export function hasBlastRadiusImpact(preview: BlastRadiusPreview): boolean {

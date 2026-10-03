@@ -338,7 +338,7 @@ describe('UsersPage blast-radius preview', () => {
 
     vm.form.filter_deny_text = '21.0.0.0/8'
 
-    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }])
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }])
     mockPut.mockResolvedValue({ data: { ...existingUser, filter_deny: ['21.0.0.0/8'] } })
 
     const savePromise = vm.handleSave()
@@ -365,7 +365,7 @@ describe('UsersPage blast-radius preview', () => {
 
     vm.form.catalog_mode_id = 2
 
-    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }])
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }])
     mockPut.mockResolvedValue({ data: { ...existingUser, catalog_mode_id: 2 } })
 
     const savePromise = vm.handleSave()
@@ -396,7 +396,7 @@ describe('UsersPage blast-radius preview', () => {
 
     vm.filterModeSelect = 'override'
 
-    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 5, after_v6: 0, lost_routes: false }])
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 5, after_v6: 0, lost_routes: false, changed: true }])
     mockPut.mockResolvedValue({ data: { ...existingUser, filter_mode: 'override', filter_override: true } })
 
     const savePromise = vm.handleSave()
@@ -423,7 +423,7 @@ describe('UsersPage blast-radius preview', () => {
 
     vm.form.enabled = false
 
-    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }])
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }])
     mockPut.mockResolvedValue({ data: { ...existingUser, enabled: false } })
 
     const savePromise = vm.handleSave()
@@ -460,7 +460,7 @@ describe('UsersPage blast-radius preview', () => {
     vm.selectUser(existingUser)
     await nextTick()
 
-    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }])
+    mockCombinedPreview([{ user_id: 1, name: 'Test User', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }])
     mockPut.mockResolvedValue({ data: { ...existingUser, enabled: false } })
 
     const togglePromise = vm.toggleEnabled()

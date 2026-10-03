@@ -4,13 +4,13 @@ import type { BlastRadiusPreview } from '../blast-radius'
 
 function user(over: Partial<BlastRadiusPreview['affected_users'][number]> = {}) {
   return {
-    user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 1, after_v6: 0, lost_routes: false,
+    user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 1, after_v6: 0, lost_routes: false, changed: false,
     ...over,
   }
 }
 
 describe('changedUsers / hasBlastRadiusImpact', () => {
-  it('excludes a user whose before/after counts are identical', () => {
+  it('excludes a user the backend reports as unchanged', () => {
     const preview: BlastRadiusPreview = {
       affected_users: [user()],
       total_delta_v4: 0, total_delta_v6: 0,
@@ -20,7 +20,7 @@ describe('changedUsers / hasBlastRadiusImpact', () => {
   })
 
   it('includes a user whose v4 count moved', () => {
-    const changed = user({ user_id: 2, after_v4: 0, lost_routes: true })
+    const changed = user({ user_id: 2, after_v4: 0, lost_routes: true, changed: true })
     const preview: BlastRadiusPreview = {
       affected_users: [user(), changed],
       total_delta_v4: -1, total_delta_v6: 0,
@@ -30,7 +30,7 @@ describe('changedUsers / hasBlastRadiusImpact', () => {
   })
 
   it('includes a user whose v6 count moved even with v4 unchanged', () => {
-    const changed = user({ user_id: 3, after_v6: 2 })
+    const changed = user({ user_id: 3, after_v6: 2, changed: true })
     const preview: BlastRadiusPreview = {
       affected_users: [changed],
       total_delta_v4: 0, total_delta_v6: 2,
@@ -40,5 +40,15 @@ describe('changedUsers / hasBlastRadiusImpact', () => {
 
   it('reports no impact for an empty affected-user list', () => {
     expect(hasBlastRadiusImpact({ affected_users: [], total_delta_v4: 0, total_delta_v6: 0 })).toBe(false)
+  })
+
+  it('includes a user whose announced set changed even though the counts are equal', () => {
+    const swapped = user({ user_id: 4, lost_routes: true, changed: true })
+    const preview: BlastRadiusPreview = {
+      affected_users: [swapped],
+      total_delta_v4: 0, total_delta_v6: 0,
+    }
+    expect(changedUsers(preview)).toEqual([swapped])
+    expect(hasBlastRadiusImpact(preview)).toBe(true)
   })
 })

@@ -4,7 +4,7 @@ import type { BlastRadiusPreview } from '@/types/blast-radius'
 
 const noImpact: BlastRadiusPreview = { affected_users: [], total_delta_v4: 0, total_delta_v6: 0 }
 const withImpact: BlastRadiusPreview = {
-  affected_users: [{ user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }],
+  affected_users: [{ user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }],
   total_delta_v4: -1, total_delta_v6: 0,
 }
 

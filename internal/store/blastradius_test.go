@@ -360,8 +360,12 @@ func TestPreviewUserEditCombinedChangeCatchesWhatNeitherIsolatedChangeWould(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if modeOnly.AffectedUsers[0].BeforeV4 != 1 || modeOnly.AffectedUsers[0].AfterV4 != 1 {
-		t.Fatalf("mode-only preview = %+v, want 1 -> 1 (same count, different route, filters stay empty)", modeOnly.AffectedUsers[0])
+	mo := modeOnly.AffectedUsers[0]
+	if mo.BeforeV4 != 1 || mo.AfterV4 != 1 {
+		t.Fatalf("mode-only preview = %+v, want 1 -> 1 (same count, different route, filters stay empty)", mo)
+	}
+	if !mo.Changed || !mo.LostRoutes {
+		t.Fatalf("mode-only preview = %+v, want Changed and LostRoutes despite equal counts", mo)
 	}
 
 	combined, err := s.PreviewUserEdit(ctx, userID, true, FilterModeOverride, false, RouteFilters{Deny: []string{"22.0.0.0/8"}}, modeBID)

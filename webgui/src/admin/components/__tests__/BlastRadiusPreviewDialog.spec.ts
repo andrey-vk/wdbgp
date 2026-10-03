@@ -24,9 +24,9 @@ const i18n = createI18n({
 
 const preview: BlastRadiusPreview = {
   affected_users: [
-    { user_id: 1, name: 'unchanged-user', before_v4: 5, before_v6: 1, after_v4: 5, after_v6: 1, lost_routes: false },
-    { user_id: 2, name: 'loses-user', before_v4: 5, before_v6: 0, after_v4: 2, after_v6: 0, lost_routes: true },
-    { user_id: 3, name: 'gains-user', before_v4: 1, before_v6: 0, after_v4: 3, after_v6: 0, lost_routes: false },
+    { user_id: 1, name: 'unchanged-user', before_v4: 5, before_v6: 1, after_v4: 5, after_v6: 1, lost_routes: false, changed: false },
+    { user_id: 2, name: 'loses-user', before_v4: 5, before_v6: 0, after_v4: 2, after_v6: 0, lost_routes: true, changed: true },
+    { user_id: 3, name: 'gains-user', before_v4: 1, before_v6: 0, after_v4: 3, after_v6: 0, lost_routes: false, changed: true },
   ],
   total_delta_v4: -1, total_delta_v6: 0,
 }

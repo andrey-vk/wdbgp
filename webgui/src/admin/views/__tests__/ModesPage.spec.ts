@@ -205,7 +205,7 @@ describe('ModesPage', () => {
       if (url === '/admin/modes/9/feeds/preview') {
         return Promise.resolve({
           data: {
-            affected_users: [{ user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 2, after_v6: 0, lost_routes: false }],
+            affected_users: [{ user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 2, after_v6: 0, lost_routes: false, changed: true }],
             total_delta_v4: 1, total_delta_v6: 0,
           },
         })
@@ -263,7 +263,7 @@ describe('ModesPage', () => {
       if (url === '/admin/modes/9/feeds/preview') {
         return Promise.resolve({
           data: {
-            affected_users: [{ user_id: 1, name: 'u', before_v4: 0, before_v6: 0, after_v4: 1, after_v6: 0, lost_routes: false }],
+            affected_users: [{ user_id: 1, name: 'u', before_v4: 0, before_v6: 0, after_v4: 1, after_v6: 0, lost_routes: false, changed: true }],
             total_delta_v4: 1, total_delta_v6: 0,
           },
         })
@@ -306,7 +306,7 @@ describe('ModesPage', () => {
 
     mockPost.mockResolvedValue({
       data: {
-        affected_users: [{ user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true }],
+        affected_users: [{ user_id: 1, name: 'u', before_v4: 1, before_v6: 0, after_v4: 0, after_v6: 0, lost_routes: true, changed: true }],
         total_delta_v4: -1, total_delta_v6: 0,
       },
     })
