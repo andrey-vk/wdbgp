@@ -18,36 +18,48 @@ const feedSyncChangeRetention = 50
 const userFeedChangeWindow = 14 * 24 * time.Hour
 
 // FeedSyncDiff is what one sync changed for a feed, relative to the entries
-// it replaced.
+// it replaced. Associations are the full category/service/prefix triples, so
+// a feed that only moves prefixes between services still registers a change.
 type FeedSyncDiff struct {
-	AddedServices   int
-	RemovedServices int
-	AddedPrefixes   int
-	RemovedPrefixes int
-	AddedByCategory map[string]int
+	AddedServices       int
+	RemovedServices     int
+	AddedPrefixes       int
+	RemovedPrefixes     int
+	AddedAssociations   int
+	RemovedAssociations int
+	AddedByCategory     map[string]int
 }
 
 func (d FeedSyncDiff) HasChanges() bool {
-	return d.AddedServices+d.RemovedServices+d.AddedPrefixes+d.RemovedPrefixes > 0
+	return d.AddedServices+d.RemovedServices+d.AddedPrefixes+d.RemovedPrefixes+
+		d.AddedAssociations+d.RemovedAssociations > 0
 }
 
 type serviceIdentity struct{ category, service string }
 
+type associationIdentity struct {
+	category, service string
+	prefix            netip.Prefix
+}
+
 // DiffCatalogEntries compares a feed's previous and new entries by service
-// (category, name) and by distinct masked prefix.
+// (category, name), by distinct masked prefix, and by full association.
 func DiffCatalogEntries(prev, next []CatalogEntry) FeedSyncDiff {
 	prevServices, nextServices := map[serviceIdentity]bool{}, map[serviceIdentity]bool{}
 	prevPrefixes, nextPrefixes := map[netip.Prefix]bool{}, map[netip.Prefix]bool{}
+	prevAssoc, nextAssoc := map[associationIdentity]bool{}, map[associationIdentity]bool{}
 	for _, e := range prev {
 		prevServices[serviceIdentity{e.Category, e.Service}] = true
 		if p, err := netip.ParsePrefix(e.CIDR); err == nil {
 			prevPrefixes[p.Masked()] = true
+			prevAssoc[associationIdentity{e.Category, e.Service, p.Masked()}] = true
 		}
 	}
 	for _, e := range next {
 		nextServices[serviceIdentity{e.Category, e.Service}] = true
 		if p, err := netip.ParsePrefix(e.CIDR); err == nil {
 			nextPrefixes[p.Masked()] = true
+			nextAssoc[associationIdentity{e.Category, e.Service, p.Masked()}] = true
 		}
 	}
 	d := FeedSyncDiff{AddedByCategory: map[string]int{}}
@@ -70,6 +82,16 @@ func DiffCatalogEntries(prev, next []CatalogEntry) FeedSyncDiff {
 	for p := range prevPrefixes {
 		if !nextPrefixes[p] {
 			d.RemovedPrefixes++
+		}
+	}
+	for a := range nextAssoc {
+		if !prevAssoc[a] {
+			d.AddedAssociations++
+		}
+	}
+	for a := range prevAssoc {
+		if !nextAssoc[a] {
+			d.RemovedAssociations++
 		}
 	}
 	return d
@@ -250,6 +272,7 @@ SELECT f.name, c.id, c.synced_at, g.category, g.prefix
 FROM feed_sync_mode_growth g
 JOIN feed_sync_changes c ON c.id = g.change_id
 JOIN feeds f ON f.id = c.feed_id
+JOIN catalog_modes m ON m.id = g.mode_id AND m.enabled = 1
 JOIN categories cat ON cat.name = g.category
 JOIN selected_categories sc ON sc.user_id = ? AND sc.mode_id = g.mode_id AND sc.category_id = cat.id
 WHERE g.mode_id = ? AND c.id > ? AND c.synced_at >= ? AND f.enabled = 1
@@ -286,24 +309,23 @@ ORDER BY c.id, g.category, g.prefix`, userID, modeID, seenID, since)
 	if err != nil {
 		return nil, err
 	}
-	candidates := make([]netip.Prefix, 0, len(distinct))
+	// A prefix counts if any part of it survives the filters: a deny on a more
+	// specific prefix can split a growth prefix into fragments, which are still
+	// announced.
+	reported := make(map[netip.Prefix]bool, len(distinct))
 	for p := range distinct {
-		candidates = append(candidates, p)
-	}
-	allowedList, err := applyRouteFiltersToPrefixes(candidates, filters)
-	if err != nil {
-		return nil, err
-	}
-	allowed := make(map[netip.Prefix]bool, len(allowedList))
-	for _, p := range allowedList {
-		allowed[p] = true
+		kept, err := applyRouteFiltersToPrefixes([]netip.Prefix{p}, filters)
+		if err != nil {
+			return nil, err
+		}
+		reported[p] = len(kept) > 0
 	}
 
 	var out []UserFeedChange
 	var lastChangeID int64 = -1
 	for _, g := range all {
 		p, err := netip.ParsePrefix(g.prefix)
-		if err != nil || !allowed[p] {
+		if err != nil || !reported[p] {
 			continue
 		}
 		if g.changeID != lastChangeID {

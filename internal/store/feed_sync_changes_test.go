@@ -351,3 +351,64 @@ func TestUserFeedChangesAppliesRouteFilters(t *testing.T) {
 		t.Fatalf("UserFeedChanges = %+v, want one prefix (32/8) after the deny on 31/8", changes)
 	}
 }
+
+func TestDiffCatalogEntriesDetectsMovedAssociations(t *testing.T) {
+	prev := []CatalogEntry{
+		{Category: "a", Service: "s1", CIDR: "10.0.0.0/24"},
+		{Category: "b", Service: "s2", CIDR: "10.0.1.0/24"},
+	}
+	next := []CatalogEntry{
+		{Category: "a", Service: "s1", CIDR: "10.0.1.0/24"},
+		{Category: "b", Service: "s2", CIDR: "10.0.0.0/24"},
+	}
+	if !DiffCatalogEntries(prev, next).HasChanges() {
+		t.Fatal("swapping prefixes between services in different categories reported no change")
+	}
+}
+
+// A deny on a more specific prefix splits a growth prefix into fragments, and
+// the fragments are still announced, so the growth must still be reported.
+func TestUserFeedChangesKeepsPartiallyFilteredGrowth(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	if _, err := s.DB.ExecContext(ctx, "DELETE FROM feed_sync_mode_growth"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{AddedServices: 1, AddedByCategory: map[string]int{"ai": 1}},
+			[]ModeCategoryGrowth{{ModeID: DefaultCatalogModeID, Category: "ai", Prefixes: []string{"31.0.0.0/8"}}}, time.Now().Unix())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, "UPDATE users SET filter_mode = ? WHERE id = ?", filterModeToInt(FilterModeOverride), userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Deny: []string{"31.1.0.0/16"}}, AuditMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := s.UserFeedChanges(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 || changes[0].Categories[0].AddedPrefixes != 1 {
+		t.Fatalf("UserFeedChanges = %+v, want the partially filtered 31/8 reported", changes)
+	}
+}
+
+// A disabled mode announces nothing, so its growth isn't news to the user.
+func TestUserFeedChangesSkipsDisabledMode(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, _ := userSelectingFeedChange(t, s, "ai", false)
+	if _, err := s.DB.ExecContext(ctx, "UPDATE catalog_modes SET enabled = 0 WHERE id = ?", DefaultCatalogModeID); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := s.UserFeedChanges(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("growth shown for a disabled mode: %+v", changes)
+	}
+}
