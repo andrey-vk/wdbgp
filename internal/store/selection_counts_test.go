@@ -70,7 +70,7 @@ func TestSaveUserSelectionCountsBeforeAfterBracketingWouldDoubleCount(t *testing
 	// checked) using SaveUserSelectionCounts sees the TRUE current state
 	// as "before" — 1, not the stale 0 — and correctly reports a no-op.
 	beforeB, _, afterB, _, _, err := s.SaveUserSelectionCounts(ctx, userID, DefaultCatalogModeID, false,
-		[]CategoryToggle{{Category: "cat-b", Checked: true}}, nil)
+		[]CategoryToggle{{Category: "cat-b", Checked: true}}, nil, AuditMeta{}, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestSaveUserSelectionCountsReflectsImmediatelyPriorState(t *testing.T) {
 
 	// "Request A": checks cat-a. Real change: 0 -> 1.
 	beforeA, _, afterA, _, _, err := s.SaveUserSelectionCounts(ctx, userID, DefaultCatalogModeID, false,
-		[]CategoryToggle{{Category: "cat-a", Checked: true}}, nil)
+		[]CategoryToggle{{Category: "cat-a", Checked: true}}, nil, AuditMeta{}, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestSaveUserSelectionCountsReflectsImmediatelyPriorState(t *testing.T) {
 	// "before" of 0 here would wrongly report this as a second real
 	// change instead of the no-op it actually is.
 	beforeB, _, afterB, _, _, err := s.SaveUserSelectionCounts(ctx, userID, DefaultCatalogModeID, false,
-		[]CategoryToggle{{Category: "cat-a", Checked: true}}, nil)
+		[]CategoryToggle{{Category: "cat-a", Checked: true}}, nil, AuditMeta{}, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}

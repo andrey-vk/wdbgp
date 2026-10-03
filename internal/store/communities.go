@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 )
 
 // Community represents a catalog community assignment.
@@ -268,7 +269,7 @@ type CommunityUpdate struct {
 // committing between this call's write and an independent post-read would
 // have this request's audit entry describe the SECOND request's result,
 // not its own.
-func (s *Store) SetCommunities(ctx context.Context, modeID int64, updates []CommunityUpdate) (before, after []Community, err error) {
+func (s *Store) SetCommunities(ctx context.Context, modeID int64, updates []CommunityUpdate, meta AuditMeta) (before, after []Community, err error) {
 	err = s.Transaction(ctx, func(tx *sql.Tx) error {
 		b, err := communityRows(ctx, tx, modeID)
 		if err != nil {
@@ -300,9 +301,45 @@ func (s *Store) SetCommunities(ctx context.Context, modeID int64, updates []Comm
 			return err
 		}
 		after = a
-		return nil
+		changedBefore, changedAfter := diffCommunityRows(before, after)
+		return auditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, false)
 	})
 	return before, after, err
+}
+
+// diffCommunityRows returns only the (category, service) assignments whose
+// community number actually differs between before and after. before/after
+// are always a full snapshot of every assignment in the mode (needed to
+// compute the change itself), but logging that whole snapshot on every
+// edit — most of it unchanged — would add a full catalog's worth of JSON
+// to audit_log per edit on a large mode. Order is preserved from before,
+// then any after-only keys.
+func diffCommunityRows(before, after []Community) (changedBefore, changedAfter []Community) {
+	afterByKey := make(map[ServiceKey]Community, len(after))
+	for _, c := range after {
+		afterByKey[ServiceKey{Category: c.Category, Service: c.Service}] = c
+	}
+	seen := make(map[ServiceKey]bool, len(before))
+	for _, b := range before {
+		k := ServiceKey{Category: b.Category, Service: b.Service}
+		seen[k] = true
+		a, ok := afterByKey[k]
+		if ok && a.Community == b.Community {
+			continue
+		}
+		changedBefore = append(changedBefore, b)
+		if ok {
+			changedAfter = append(changedAfter, a)
+		}
+	}
+	for _, a := range after {
+		k := ServiceKey{Category: a.Category, Service: a.Service}
+		if seen[k] {
+			continue
+		}
+		changedAfter = append(changedAfter, a)
+	}
+	return changedBefore, changedAfter
 }
 
 // CommunityChange is one community assignment that a reset would alter.
@@ -466,7 +503,7 @@ func diffCommunities(before, after []Community) []CommunityChange {
 // reset, so a caller logging an audit entry describes exactly this call's
 // own result rather than a value an independent pre/post read (bracketing
 // this call) could have raced with a concurrent mutation to see instead.
-func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDigest string) (before, after []Community, generated int, err error) {
+func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDigest string, meta AuditMeta) (before, after []Community, generated int, err error) {
 	err = s.Transaction(ctx, func(tx *sql.Tx) error {
 		b, err := communityRows(ctx, tx, modeID)
 		if err != nil {
@@ -490,7 +527,13 @@ func (s *Store) ResetCommunities(ctx context.Context, modeID int64, expectedDige
 			generated = 0
 			return ErrCommunityResetStale
 		}
-		return nil
+		// Always recorded (force=true), unlike the other community hooks:
+		// a confirmed reset is a deliberate, consequential action in its
+		// own right (the digest-gated confirm flow exists precisely
+		// because of that), worth recording even on the rare occasion the
+		// recomputed values happen to match what was there before.
+		changedBefore, changedAfter := diffCommunityRows(before, after)
+		return auditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, true)
 	})
 	return before, after, generated, err
 }
@@ -551,7 +594,7 @@ type communityMapKey struct {
 // logging an audit entry describes exactly this call's own result rather
 // than a value an independent pre/post read (bracketing this call) could
 // have raced with a concurrent mutation to see instead.
-func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (before, after []Community, count int, err error) {
+func (s *Store) GenerateCommunities(ctx context.Context, modeID int64, meta AuditMeta) (before, after []Community, count int, err error) {
 	err = s.Transaction(ctx, func(tx *sql.Tx) error {
 		b, err := communityRows(ctx, tx, modeID)
 		if err != nil {
@@ -567,7 +610,8 @@ func (s *Store) GenerateCommunities(ctx context.Context, modeID int64) (before, 
 			return err
 		}
 		after = a
-		return nil
+		changedBefore, changedAfter := diffCommunityRows(before, after)
+		return auditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(modeID, 10), changedBefore, changedAfter, false)
 	})
 	return before, after, count, err
 }

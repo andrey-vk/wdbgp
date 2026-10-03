@@ -429,7 +429,7 @@ func TestUserMeReturnsLowercaseFilterKeys(t *testing.T) {
 	if _, _, err := st.SetUserRouteFilters(ctx, 1, store.RouteFilters{
 		Allow: []string{"10.0.0.0/8"},
 		Deny:  []string{"192.168.0.0/16"},
-	}); err != nil {
+	}, store.AuditMeta{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -584,7 +584,7 @@ func TestUserMeAndLoginReportCommunitiesWithoutPipeCollision(t *testing.T) {
 	if err := st.RebuildModeEntries(ctx, 1); err != nil {
 		t.Fatalf("rebuild mode entries: %v", err)
 	}
-	if _, _, _, err := st.GenerateCommunities(ctx, 1); err != nil {
+	if _, _, _, err := st.GenerateCommunities(ctx, 1, store.AuditMeta{}); err != nil {
 		t.Fatalf("generate communities: %v", err)
 	}
 

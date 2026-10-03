@@ -411,7 +411,7 @@ func (s *Server) apiUsersCreate(w http.ResponseWriter, r *http.Request) {
 		if _, _, err := s.store.SetUserRouteFilters(r.Context(), userID, store.RouteFilters{
 			Allow: body.FilterAllow,
 			Deny:  body.FilterDeny,
-		}); err != nil {
+		}, store.AuditMeta{}); err != nil {
 			logging.FromContext(r.Context()).Debug("route filters save after create failed", "error", err, "user_id", userID)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save route filters"})
 			return
@@ -700,9 +700,14 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// UpdateUser reads the prior catalog_mode_id inside the same
-	// transaction as the write and returns it, so the mode-change audit
-	// below describes exactly this call's own transition.
-	prevCatalogModeID, err := s.store.UpdateUser(r.Context(), current)
+	// transaction as the write and records the mode-change audit entry
+	// atomically with it — meta is zero-value (no audit) unless the
+	// request actually touched catalog_mode_id.
+	var modeMeta store.AuditMeta
+	if body.CatalogModeID != nil {
+		modeMeta = store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
+	}
+	_, err = s.store.UpdateUser(r.Context(), current, modeMeta)
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
@@ -711,26 +716,17 @@ func (s *Server) apiUsersUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	// Audited immediately after UpdateUser commits, before the filter
-	// save below — a later SetUserRouteFilters failure must not suppress
-	// an audit entry for a mode change that already took effect.
-	if body.CatalogModeID != nil {
-		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.mode_changed", "user", strconv.FormatInt(id, 10),
-			map[string]int64{"catalog_mode_id": prevCatalogModeID}, map[string]int64{"catalog_mode_id": current.CatalogModeID})
-	}
 
 	if filtersProvided {
-		// SetUserRouteFilters reads its own before/after inside the same
-		// transaction as the write, so this comparison describes exactly
-		// this call's own change.
-		before, after, err := s.store.SetUserRouteFilters(r.Context(), id, store.RouteFilters{Allow: filterAllow, Deny: filterDeny})
+		// SetUserRouteFilters reads its own before/after and records its
+		// own audit entry inside the same transaction as the write.
+		filtersMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "route_filters.user_updated"}
+		_, _, err := s.store.SetUserRouteFilters(r.Context(), id, store.RouteFilters{Allow: filterAllow, Deny: filterDeny}, filtersMeta)
 		if err != nil {
 			logging.FromContext(r.Context()).Debug("route filters save after update failed", "error", err, "user_id", id)
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to save route filters"})
 			return
 		}
-		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "route_filters.user_updated", "user", strconv.FormatInt(id, 10),
-			before, after)
 	}
 
 	if s.bgp != nil {
@@ -1083,8 +1079,18 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 	// the same reason apiUserSaveSelections needs that: bracketing it with
 	// independent reads would let a concurrent save change either count
 	// out from under this request.
-	beforeCats, beforeSvcs, afterCats, afterSvcs, prevModeID, err :=
-		s.store.SaveUserSelectionCounts(r.Context(), id, modeID, switchingMode, categoryToggles, serviceToggles)
+	// prevModeID (used by SaveUserSelectionCounts internally when
+	// switchingMode) is read inside the same transaction as the switch —
+	// using user.CatalogModeID (the session/pre-fetch snapshot) instead
+	// would let two overlapping switches both log "from" the same stale
+	// starting mode even though the real sequence moved through an
+	// intermediate one.
+	modeMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
+	// Counts only, not the full selection list — see apiUserSaveSelections
+	// for the known limitation this carries.
+	selectionsMeta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.selections_changed"}
+	_, _, _, _, _, err =
+		s.store.SaveUserSelectionCounts(r.Context(), id, modeID, switchingMode, categoryToggles, serviceToggles, modeMeta, selectionsMeta)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid or disabled mode"})
 		return
@@ -1093,20 +1099,6 @@ func (s *Server) apiAdminUserSaveSelections(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	if switchingMode {
-		// prevModeID is read inside the same transaction as the switch —
-		// using user.CatalogModeID (the session/pre-fetch snapshot)
-		// instead would let two overlapping switches both log "from" the
-		// same stale starting mode even though the real sequence moved
-		// through an intermediate one.
-		s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.mode_changed", "user", strconv.FormatInt(id, 10),
-			map[string]int64{"catalog_mode_id": prevModeID}, map[string]int64{"catalog_mode_id": modeID})
-	}
-	// Counts only, not the full selection list — see apiUserSaveSelections
-	// for the known limitation this carries.
-	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "user.selections_changed", "user", strconv.FormatInt(id, 10),
-		map[string]int{"categories": beforeCats, "services": beforeSvcs},
-		map[string]int{"categories": afterCats, "services": afterSvcs})
 
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {

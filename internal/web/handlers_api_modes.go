@@ -208,7 +208,8 @@ func (s *Server) apiModesDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Built-in catalog modes cannot be deleted"})
 		return
 	}
-	reassignedUserIDs, err := s.store.DeleteCatalogMode(r.Context(), id)
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
+	_, err = s.store.DeleteCatalogMode(r.Context(), id, meta)
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Mode not found"})
@@ -216,16 +217,6 @@ func (s *Server) apiModesDelete(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
-	}
-	// Every user still pointing at the deleted mode was just moved to mode
-	// 1 — without this, those moves have no trace in the audit log despite
-	// user.mode_changed covering every other way a user's mode can change.
-	for _, userID := range reassignedUserIDs {
-		s.recordAudit(r.Context(), r, store.AuditLogEntry{
-			Actor: s.adminActor(r), Action: "user.mode_changed", ObjectType: "user", ObjectID: strconv.FormatInt(userID, 10),
-			Before: `{"catalog_mode_id":` + strconv.FormatInt(id, 10) + `}`,
-			After:  `{"catalog_mode_id":1}`,
-		})
 	}
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
@@ -465,14 +456,12 @@ func (s *Server) apiModeCommunitiesPut(w http.ResponseWriter, r *http.Request) {
 	for _, c := range body.Communities {
 		updates = append(updates, store.CommunityUpdate{Category: c.Category, Service: c.Service, Community: c.Community})
 	}
-	beforeRows, afterRows, err := s.store.SetCommunities(r.Context(), modeID, updates)
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "communities.updated"}
+	_, _, err = s.store.SetCommunities(r.Context(), modeID, updates, meta)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	changedBefore, changedAfter := diffCommunityRows(beforeRows, afterRows)
-	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "communities.updated", "mode",
-		strconv.FormatInt(modeID, 10), changedBefore, changedAfter)
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community set", "error", err)
@@ -514,7 +503,8 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	beforeRows, afterRows, generated, err := s.store.ResetCommunities(r.Context(), modeID, body.Digest)
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "communities.reset"}
+	_, _, generated, err := s.store.ResetCommunities(r.Context(), modeID, body.Digest, meta)
 	if errors.Is(err, store.ErrCommunityResetStale) {
 		writePreview(w, r, s, modeID, true)
 		return
@@ -525,18 +515,6 @@ func (s *Server) apiModeCommunitiesReset(w http.ResponseWriter, r *http.Request)
 	}
 	s.logAdminAction(r, "COMMUNITIES_RESET",
 		fmt.Sprintf("mode_id=%d generated=%d", modeID, generated))
-	// Always logged, unlike the other community hooks: a confirmed reset is
-	// a deliberate, consequential action in its own right (the digest-gated
-	// confirm flow exists precisely because of that), so it's worth
-	// recording even on the rare occasion the recomputed values happen to
-	// match what was there before.
-	changedBefore, changedAfter := diffCommunityRows(beforeRows, afterRows)
-	beforeJSON, _ := json.Marshal(changedBefore) //nolint:errcheck // Community marshals trivially
-	afterJSON, _ := json.Marshal(changedAfter)   //nolint:errcheck // Community marshals trivially
-	s.recordAudit(r.Context(), r, store.AuditLogEntry{
-		Actor: s.adminActor(r), Action: "communities.reset", ObjectType: "mode", ObjectID: strconv.FormatInt(modeID, 10),
-		Before: string(beforeJSON), After: string(afterJSON),
-	})
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community reset", "error", err)
@@ -581,14 +559,12 @@ func (s *Server) apiModeCommunitiesGenerate(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid mode ID"})
 		return
 	}
-	beforeRows, afterRows, generated, err := s.store.GenerateCommunities(r.Context(), modeID)
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "communities.generated"}
+	_, _, generated, err := s.store.GenerateCommunities(r.Context(), modeID, meta)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	changedBefore, changedAfter := diffCommunityRows(beforeRows, afterRows)
-	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "communities.generated", "mode",
-		strconv.FormatInt(modeID, 10), changedBefore, changedAfter)
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community generate", "error", err)

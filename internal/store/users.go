@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -422,7 +423,7 @@ func encodeUserAddrs(user User) (peerIP []byte, nextHop any, err error) {
 // this call's own transition, not a value captured earlier (e.g. before
 // validating the request) that a since-committed concurrent update to the
 // same user could have already moved past.
-func (s *Store) UpdateUser(ctx context.Context, user User) (prevCatalogModeID int64, err error) {
+func (s *Store) UpdateUser(ctx context.Context, user User, meta AuditMeta) (prevCatalogModeID int64, err error) {
 	filterMode := normalizeFilterMode(user.FilterMode, user.FilterOverride)
 	if user.CatalogModeID == 0 {
 		user.CatalogModeID = DefaultCatalogModeID
@@ -455,7 +456,11 @@ func (s *Store) UpdateUser(ctx context.Context, user User) (prevCatalogModeID in
 		} else if count == 0 {
 			return sql.ErrNoRows
 		}
-		return replaceNetworks(ctx, tx, user.ID, user.Networks)
+		if err := replaceNetworks(ctx, tx, user.ID, user.Networks); err != nil {
+			return err
+		}
+		return auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(user.ID, 10),
+			map[string]int64{"catalog_mode_id": prevCatalogModeID}, map[string]int64{"catalog_mode_id": user.CatalogModeID}, false)
 	})
 	return prevCatalogModeID, err
 }
@@ -637,6 +642,7 @@ func (s *Store) SaveUserSelectionCounts(
 	switchMode bool,
 	categories []CategoryToggle,
 	services []ServiceToggle,
+	modeMeta, selectionsMeta AuditMeta,
 ) (beforeCats, beforeSvcs, afterCats, afterSvcs int, prevModeID int64, err error) {
 	err = s.Transaction(ctx, func(tx *sql.Tx) error {
 		bc, bs, err := userModeSelection(ctx, tx, userID, modeID)
@@ -646,7 +652,7 @@ func (s *Store) SaveUserSelectionCounts(
 		beforeCats, beforeSvcs = len(bc), len(bs)
 
 		if switchMode {
-			p, err := SetUserCatalogModeTx(ctx, tx, userID, modeID, false)
+			p, err := SetUserCatalogModeTx(ctx, tx, userID, modeID, false, modeMeta)
 			if err != nil {
 				return err
 			}
@@ -668,7 +674,9 @@ func (s *Store) SaveUserSelectionCounts(
 			return err
 		}
 		afterCats, afterSvcs = len(ac), len(as)
-		return nil
+		before := map[string]int{"categories": beforeCats, "services": beforeSvcs}
+		after := map[string]int{"categories": afterCats, "services": afterSvcs}
+		return auditEntryTx(ctx, tx, selectionsMeta, "user", strconv.FormatInt(userID, 10), before, after, false)
 	})
 	return beforeCats, beforeSvcs, afterCats, afterSvcs, prevModeID, err
 }
@@ -948,6 +956,7 @@ func SetUserCatalogModeTx(
 	userID int64,
 	modeID int64,
 	requireEditable bool,
+	meta AuditMeta,
 ) (prevModeID int64, err error) {
 	if err := tx.QueryRowContext(ctx, "SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&prevModeID); err != nil {
 		return 0, err
@@ -970,6 +979,10 @@ WHERE id = ?
 	} else if count == 0 {
 		return 0, sql.ErrNoRows
 	}
+	if err := auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10),
+		map[string]int64{"catalog_mode_id": prevModeID}, map[string]int64{"catalog_mode_id": modeID}, false); err != nil {
+		return 0, err
+	}
 	return prevModeID, nil
 }
 
@@ -978,9 +991,10 @@ func (s *Store) SetUserCatalogMode(
 	userID int64,
 	modeID int64,
 	requireEditable bool,
+	meta AuditMeta,
 ) (prevModeID int64, err error) {
 	err = s.Transaction(ctx, func(tx *sql.Tx) error {
-		p, err := SetUserCatalogModeTx(ctx, tx, userID, modeID, requireEditable)
+		p, err := SetUserCatalogModeTx(ctx, tx, userID, modeID, requireEditable, meta)
 		if err != nil {
 			return err
 		}

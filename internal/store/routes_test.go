@@ -114,7 +114,7 @@ func TestSetUserRouteFiltersBeforeAfterBracketingWouldMisattribute(t *testing.T)
 	ctx := context.Background()
 	userID := addFilteredTestUser(t, s, true)
 
-	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"1.1.1.1/32"}}); err != nil {
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"1.1.1.1/32"}}, AuditMeta{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,7 +155,7 @@ func TestSetUserRouteFiltersBeforeAfterBracketingWouldMisattribute(t *testing.T)
 
 	// The fix: "request B" via SetUserRouteFilters sees the TRUE current
 	// state as "before" — 2.2.2.2/32, not the stale 1.1.1.1/32.
-	beforeB, afterB, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"3.3.3.3/32"}})
+	beforeB, afterB, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"3.3.3.3/32"}}, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestDesiredPrefixesUsesUserOverride(t *testing.T) {
 		`INSERT OR REPLACE INTO app_settings(key, value, updated_at) VALUES ('filter_deny', '1.1.1.1/32', datetime('now'))`); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"1.1.0.0/16"}}); err != nil {
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"1.1.0.0/16"}}, AuditMeta{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -499,7 +499,7 @@ func TestEffectiveRouteFiltersGlobalMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Deny: []string{"9.9.9.0/24"}}); err != nil {
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Deny: []string{"9.9.9.0/24"}}, AuditMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SaveSetting(ctx, "filter_allow", "10.0.0.0/8"); err != nil {
@@ -548,7 +548,7 @@ func TestEffectiveRouteFiltersExtendMode(t *testing.T) {
 	}
 	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{
 		Allow: []string{"192.168.0.0/16"}, Deny: []string{"192.168.1.0/24"},
-	}); err != nil {
+	}, AuditMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SaveSetting(ctx, "filter_allow", "10.0.0.0/8"); err != nil {
@@ -595,7 +595,7 @@ func TestEffectiveRouteFiltersOverrideMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"192.168.0.0/16"}}); err != nil {
+	if _, _, err := s.SetUserRouteFilters(ctx, userID, RouteFilters{Allow: []string{"192.168.0.0/16"}}, AuditMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SaveSetting(ctx, "filter_allow", "10.0.0.0/8"); err != nil {

@@ -63,39 +63,6 @@ func TestRecordAuditSurvivesRequestCancellation(t *testing.T) {
 	}
 }
 
-// TestDiffCommunityRows exercises diffCommunityRows directly: an unchanged
-// entry must be dropped, a changed entry kept on both sides, an
-// after-only (newly filled) entry kept only in after, and a before-only
-// (removed) entry kept only in before.
-func TestDiffCommunityRows(t *testing.T) {
-	before := []store.Community{
-		{Category: "cat-a", Service: "svc-a", Community: 100}, // unchanged
-		{Category: "cat-a", Service: "svc-b", Community: 200}, // changed below
-		{Category: "cat-b", Service: "svc-c", Community: 300}, // removed below
-	}
-	after := []store.Community{
-		{Category: "cat-a", Service: "svc-a", Community: 100}, // unchanged
-		{Category: "cat-a", Service: "svc-b", Community: 250}, // changed
-		{Category: "cat-c", Service: "svc-d", Community: 400}, // newly added
-	}
-
-	changedBefore, changedAfter := diffCommunityRows(before, after)
-
-	if len(changedBefore) != 2 || len(changedAfter) != 2 {
-		t.Fatalf("changedBefore=%+v changedAfter=%+v, want 2 entries each (unchanged cat-a/svc-a dropped)", changedBefore, changedAfter)
-	}
-	for _, c := range changedBefore {
-		if c.Category == "cat-a" && c.Service == "svc-a" {
-			t.Fatalf("changedBefore unexpectedly includes the unchanged entry: %+v", changedBefore)
-		}
-	}
-	for _, c := range changedAfter {
-		if c.Category == "cat-a" && c.Service == "svc-a" {
-			t.Fatalf("changedAfter unexpectedly includes the unchanged entry: %+v", changedAfter)
-		}
-	}
-}
-
 // --- Communities hooks ---------------------------------------------------
 
 // modeWithCatalogFixture creates a mode with one feed/catalog entry, ready
@@ -169,7 +136,7 @@ func modeWithMultiCatalogFixture(t *testing.T) (*Server, *store.Store, int64) {
 	}); err != nil {
 		t.Fatalf("insert catalog: %v", err)
 	}
-	if _, _, _, err := st.GenerateCommunities(ctx, modeID); err != nil {
+	if _, _, _, err := st.GenerateCommunities(ctx, modeID, store.AuditMeta{}); err != nil {
 		t.Fatalf("pre-generate: %v", err)
 	}
 	return srv, st, modeID
@@ -255,7 +222,7 @@ func TestAuditHookCommunitiesGenerateNoopWhenNothingToGenerate(t *testing.T) {
 	ctx := context.Background()
 
 	// First generate fills everything; a second call has nothing left to do.
-	if _, _, _, err := st.GenerateCommunities(ctx, modeID); err != nil {
+	if _, _, _, err := st.GenerateCommunities(ctx, modeID, store.AuditMeta{}); err != nil {
 		t.Fatalf("pre-generate: %v", err)
 	}
 
@@ -463,7 +430,7 @@ func TestAuditHookCommunitiesPutIsAtomic(t *testing.T) {
 func TestAuditHookCommunitiesReset(t *testing.T) {
 	srv, st, modeID := modeWithCatalogFixture(t)
 	ctx := context.Background()
-	if _, _, _, err := st.GenerateCommunities(ctx, modeID); err != nil {
+	if _, _, _, err := st.GenerateCommunities(ctx, modeID, store.AuditMeta{}); err != nil {
 		t.Fatalf("pre-generate: %v", err)
 	}
 
@@ -1004,7 +971,7 @@ func TestAuditHookUserSaveFiltersAfterIsNormalized(t *testing.T) {
 func TestAuditHookUserSaveFiltersNoopWhenResubmittingNormalizedEquivalent(t *testing.T) {
 	srv, st, userID := selfServiceUserFixture(t, true, false)
 	ctx := context.Background()
-	if _, _, err := st.SetUserRouteFilters(ctx, userID, store.RouteFilters{Allow: []string{"10.1.0.1/32"}}); err != nil {
+	if _, _, err := st.SetUserRouteFilters(ctx, userID, store.RouteFilters{Allow: []string{"10.1.0.1/32"}}, store.AuditMeta{}); err != nil {
 		t.Fatalf("pre-set filters: %v", err)
 	}
 

@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strconv"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -87,7 +90,7 @@ func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 
 	feed.Name = "renamed"
 	feed.URL = "https://example.test/new.json"
-	if _, err := s.UpdateFeed(ctx, feed); err != nil {
+	if _, err := s.UpdateFeed(ctx, feed, AuditMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	feeds, err = s.Feeds(ctx, false)
@@ -178,7 +181,7 @@ func TestUpdateFeedPrevEnabledReflectsImmediatelyPriorState(t *testing.T) {
 	// actual current value (true), same as staleBefore here — not yet
 	// distinguishing, but establishes the baseline.
 	feed.Enabled = false
-	prevB, err := s.UpdateFeed(ctx, feed)
+	prevB, err := s.UpdateFeed(ctx, feed, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,11 +195,96 @@ func TestUpdateFeedPrevEnabledReflectsImmediatelyPriorState(t *testing.T) {
 	// and conclude nothing changed, even though the feed just flipped
 	// false→true.
 	feed.Enabled = true
-	prevA, err := s.UpdateFeed(ctx, feed)
+	prevA, err := s.UpdateFeed(ctx, feed, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if prevA != false {
 		t.Fatalf("request A's prevEnabled = %v, want false (request B's write), not staleBefore (%v)", prevA, staleBefore)
+	}
+}
+
+// TestUpdateFeedConcurrentCallsPreserveAuditCommitOrder forces two
+// UpdateFeed calls on the same feed to genuinely overlap (A pauses just
+// before its commit, via updateFeedPreCommitHook, while still holding
+// SQLite's write lock from its earlier UPDATE statement; B is launched
+// while A is paused) and checks the resulting audit rows land in true
+// commit order. Before UpdateFeed recorded its own audit entry inside its
+// own transaction, the audit write was a separate statement run after the
+// mutation's transaction committed, which gave two overlapping callers'
+// mutation-commit and audit-insert steps no guaranteed relative order
+// against each other.
+func TestUpdateFeedConcurrentCallsPreserveAuditCommitOrder(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	feedID, err := s.AddFeed(ctx, "concurrent-audit-feed", "https://example.test/concurrent.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feed, err := s.Feed(ctx, feedID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var hookCalls int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	updateFeedPreCommitHook = func() {
+		if atomic.AddInt32(&hookCalls, 1) == 1 {
+			close(entered)
+			<-release
+		}
+	}
+	t.Cleanup(func() { updateFeedPreCommitHook = nil })
+
+	update := func(enabled bool, action string) error {
+		f := feed
+		f.Enabled = enabled
+		_, err := s.UpdateFeed(ctx, f, AuditMeta{Actor: "admin:test", Action: action})
+		return err
+	}
+
+	aDone := make(chan error, 1)
+	go func() { aDone <- update(false, "a") }() // true -> false, pauses just before commit
+	<-entered
+
+	bDone := make(chan error, 1)
+	go func() { bDone <- update(true, "b") }() // false -> true, should block behind A's open write transaction
+
+	select {
+	case err := <-bDone:
+		t.Fatalf("B completed (err=%v) before A committed — expected SQLite's write lock to block it", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(release)
+
+	if err := <-aDone; err != nil {
+		t.Fatalf("A: %v", err)
+	}
+	select {
+	case err := <-bDone:
+		if err != nil {
+			t.Fatalf("B: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("B never completed after A committed")
+	}
+
+	entries, total, err := s.ListAuditLog(ctx, AuditLogFilter{ObjectType: "feed", ObjectID: strconv.FormatInt(feedID, 10)}, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2", total)
+	}
+	// Newest first: entries[0] is B (committed second), entries[1] is A.
+	bEntry, aEntry := entries[0], entries[1]
+	if aEntry.Action != "a" || bEntry.Action != "b" {
+		t.Fatalf("entries out of expected order: entries[0].Action=%q (want b, committed second), entries[1].Action=%q (want a, committed first)",
+			bEntry.Action, aEntry.Action)
+	}
+	if aEntry.After != bEntry.Before {
+		t.Fatalf("chain broken: A.after=%q != B.before=%q — audit insert order didn't match true commit order", aEntry.After, bEntry.Before)
 	}
 }

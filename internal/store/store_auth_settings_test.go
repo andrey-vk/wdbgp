@@ -422,7 +422,7 @@ func TestUpdateUserWebAuthChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	user.WebAuth = "login"
-	_, err = s.UpdateUser(ctx, user)
+	_, err = s.UpdateUser(ctx, user, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +437,7 @@ func TestUpdateUserWebAuthChanges(t *testing.T) {
 
 	// Change to both
 	user.WebAuth = "both"
-	_, err = s.UpdateUser(ctx, user)
+	_, err = s.UpdateUser(ctx, user, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,7 +550,7 @@ func TestGetCommunities(t *testing.T) {
 	syncTestData(ctx, t, s)
 
 	// Generate communities for mode 1 since a fresh test store may not have them
-	_, _, count, err := s.GenerateCommunities(ctx, 1)
+	_, _, count, err := s.GenerateCommunities(ctx, 1, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,7 +642,7 @@ func TestGenerateCommunitiesFillsMissing(t *testing.T) {
 	syncTestData(ctx, t, s)
 
 	// Generate
-	_, _, count, err := s.GenerateCommunities(ctx, 1)
+	_, _, count, err := s.GenerateCommunities(ctx, 1, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,7 +660,7 @@ func TestGenerateCommunitiesFillsMissing(t *testing.T) {
 	}
 
 	// Running again should not generate more
-	_, _, count2, err := s.GenerateCommunities(ctx, 1)
+	_, _, count2, err := s.GenerateCommunities(ctx, 1, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}

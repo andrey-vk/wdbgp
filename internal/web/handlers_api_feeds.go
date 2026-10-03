@@ -222,8 +222,12 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 	// s.store.Feed() reads instead would let a concurrent update slip in
 	// between them, comparing this request's own before/after as equal
 	// (both reflecting the other request's write) even though this
-	// request's write did change enabled.
-	prevEnabled, err := s.store.UpdateFeed(r.Context(), f)
+	// request's write did change enabled. UpdateFeed also records the
+	// audit entry itself, inside that same transaction, so it commits (or
+	// not) together with the mutation it describes and can never be lost
+	// or misordered relative to a concurrent request's own commit.
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "feed.enabled_changed"}
+	_, err = s.store.UpdateFeed(r.Context(), f, meta)
 	if err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Feed not found"})
@@ -232,12 +236,6 @@ func (s *Server) apiFeedsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	// Record the transition right away: prevEnabled and f.Enabled already
-	// describe the committed write and don't depend on the lookup below, so
-	// recording here means a later failure (e.g. the Feed read failing)
-	// can't leave a committed change unaudited.
-	s.recordAuditIfChanged(r.Context(), r, s.adminActor(r), "feed.enabled_changed", "feed", strconv.FormatInt(id, 10),
-		map[string]bool{"enabled": prevEnabled}, map[string]bool{"enabled": f.Enabled})
 	if feedUpdatePostAuditHook != nil {
 		feedUpdatePostAuditHook(id)
 	}

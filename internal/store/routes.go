@@ -366,7 +366,7 @@ func applyRouteFiltersToPrefixes(prefixes []netip.Prefix, filters RouteFilters) 
 // overlapping saves both reading the same "before", then each comparing
 // it against their own "after", can otherwise double-log one real change
 // as two, or describe a transition that never actually happened).
-func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters RouteFilters) (before, after RouteFilters, err error) {
+func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters RouteFilters, meta AuditMeta) (before, after RouteFilters, err error) {
 	const query = "SELECT action, ip, bits FROM user_route_filters WHERE user_id = ? ORDER BY action, ip, bits"
 	err = s.Transaction(ctx, func(tx *sql.Tx) error {
 		b, err := readRouteFilters(ctx, tx, query, userID)
@@ -385,7 +385,7 @@ func (s *Store) SetUserRouteFilters(ctx context.Context, userID int64, filters R
 			return err
 		}
 		after = a
-		return nil
+		return auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), before, after, false)
 	})
 	return before, after, err
 }

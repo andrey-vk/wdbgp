@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"log"
 	"time"
 )
@@ -105,6 +107,61 @@ func (s *Store) ListAuditLog(ctx context.Context, filter AuditLogFilter, limit, 
 		entries = append(entries, e)
 	}
 	return entries, total, rows.Err()
+}
+
+// AuditMeta carries the HTTP-request-derived fields for an audit entry
+// that a mutation function records atomically inside its own transaction.
+// ObjectType/ObjectID/before/after are supplied by the mutation function
+// itself, which already computes them as part of its own work. A
+// zero-value AuditMeta (empty Actor) means "don't audit this call" —
+// callers that intentionally skip auditing (e.g. background feed sync's
+// count-only community generation, or internal store tests) just pass
+// AuditMeta{}.
+type AuditMeta struct {
+	Actor     string
+	UserAgent string
+	Action    string
+}
+
+// auditEntryTx inserts one audit entry via tx — the same transaction as
+// the mutation it describes, not a separate statement run after that
+// transaction commits. Folding the write in here guarantees two things a
+// separate post-commit write cannot: the audit row can never be recorded
+// without the mutation it describes (or vice versa — they commit or roll
+// back together), and two concurrent requests' audit rows land in
+// audit_log in the same relative order their mutations actually committed
+// in (an INSERT's rowid is assigned in commit order, same as the
+// mutation's own writes in that same transaction; two separate post-commit
+// INSERTs from different connections have no such guarantee relative to
+// each other).
+//
+// Skipped silently (no error) when meta.Actor is empty (auditing not
+// requested) or, unless force is set, when before/after marshal to the
+// same JSON — the "no spurious row when nothing actually changed" guard
+// every hook point needs. force is for callers like a confirmed community
+// reset that must always leave a record of the action even on the rare
+// occasion the recomputed values happen to match what was there before.
+func auditEntryTx(ctx context.Context, tx *sql.Tx, meta AuditMeta, objectType, objectID string, before, after any, force bool) error {
+	if meta.Actor == "" {
+		return nil
+	}
+	beforeJSON, err := json.Marshal(before)
+	if err != nil {
+		return err
+	}
+	afterJSON, err := json.Marshal(after)
+	if err != nil {
+		return err
+	}
+	if !force && string(beforeJSON) == string(afterJSON) {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO audit_log (recorded_at, actor, user_agent, action, object_type, object_id, before, after)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		time.Now().UTC().Unix(), meta.Actor, meta.UserAgent, meta.Action, objectType, objectID,
+		string(beforeJSON), string(afterJSON))
+	return err
 }
 
 // PurgeAuditLog deletes entries older than `days`.

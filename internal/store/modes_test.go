@@ -46,7 +46,7 @@ func TestSetUserCatalogModePrevModeReflectsImmediatelyPriorState(t *testing.T) {
 	}
 
 	// "Request A": switches 1 -> B.
-	prevA, err := s.SetUserCatalogMode(ctx, userID, modeB, false)
+	prevA, err := s.SetUserCatalogMode(ctx, userID, modeB, false, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestSetUserCatalogModePrevModeReflectsImmediatelyPriorState(t *testing.T) {
 	// CatalogModeID (1) here would log the wrong transition (1→C instead
 	// of B→C), and two such overlapping requests would both claim "from
 	// 1" even though the real sequence moved through B.
-	prevB, err := s.SetUserCatalogMode(ctx, userID, modeC, false)
+	prevB, err := s.SetUserCatalogMode(ctx, userID, modeC, false, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestDeleteCatalogModeReassignsUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids, err := s.DeleteCatalogMode(ctx, modeID)
+	ids, err := s.DeleteCatalogMode(ctx, modeID, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestDeleteCatalogModeRetryDoesNotDuplicateReassignedUsers(t *testing.T) {
 	}
 	defer func() { deleteCatalogModeAttemptHook = nil }()
 
-	ids, err := s.DeleteCatalogMode(ctx, modeID)
+	ids, err := s.DeleteCatalogMode(ctx, modeID, AuditMeta{})
 	if err != nil {
 		t.Fatalf("DeleteCatalogMode: %v", err)
 	}

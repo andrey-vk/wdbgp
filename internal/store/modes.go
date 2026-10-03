@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strconv"
 )
 
 // CatalogMode represents a catalog mode (OpenCCK, IPRanges, sing-box SRS, etc.).
@@ -86,7 +87,7 @@ func (s *Store) AddCatalogMode(ctx context.Context, name string, enabled bool) (
 // audit entry per reassigned user sees exactly the set this call itself
 // moved, not a separately-queried snapshot a concurrent request could
 // change out from under it.
-func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) (reassignedUserIDs []int64, err error) {
+func (s *Store) DeleteCatalogMode(ctx context.Context, id int64, meta AuditMeta) (reassignedUserIDs []int64, err error) {
 	if id <= 3 {
 		return nil, fmt.Errorf("built-in catalog modes cannot be deleted")
 	}
@@ -139,6 +140,17 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64) (reassignedUser
 			return fmt.Errorf("rows affected: %w", err)
 		} else if count == 0 {
 			return sql.ErrNoRows
+		}
+		// Every reassigned user gets its own audit row, inside this same
+		// transaction — without this, those moves would have no trace in
+		// the audit log despite user.mode_changed covering every other way
+		// a user's mode can change.
+		before := map[string]int64{"catalog_mode_id": id}
+		after := map[string]int64{"catalog_mode_id": 1}
+		for _, userID := range attemptIDs {
+			if err := auditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), before, after, false); err != nil {
+				return err
+			}
 		}
 		reassignedUserIDs = attemptIDs
 		return nil

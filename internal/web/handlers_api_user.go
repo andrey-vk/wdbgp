@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -434,20 +433,18 @@ func (s *Server) apiUserSaveSelections(w http.ResponseWriter, r *http.Request) {
 	// toggles — bracketing it with two independent UserModeSelection calls
 	// instead would let a concurrent save change either count out from
 	// under this request.
-	beforeCats, beforeSvcs, afterCats, afterSvcs, _, err :=
-		s.store.SaveUserSelectionCounts(ctx, user.ID, user.CatalogModeID, false, categoryToggles, serviceToggles)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-		return
-	}
 	// Counts only, not the full selection list (could be large) — this means
 	// a request that swaps one selected category for a different one while
 	// leaving the total count unchanged won't be flagged as a change. A
 	// known, accepted limitation of summarizing rather than diffing the
 	// full list.
-	s.recordAuditIfChanged(ctx, r, userActor(user.ID), "user.selections_changed", "user", strconv.FormatInt(user.ID, 10),
-		map[string]int{"categories": beforeCats, "services": beforeSvcs},
-		map[string]int{"categories": afterCats, "services": afterSvcs})
+	selectionsMeta := store.AuditMeta{Actor: userActor(user.ID), UserAgent: r.Header.Get("User-Agent"), Action: "user.selections_changed"}
+	_, _, _, _, _, err := s.store.SaveUserSelectionCounts(ctx, user.ID, user.CatalogModeID, false, categoryToggles, serviceToggles,
+		store.AuditMeta{}, selectionsMeta)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
 
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(ctx); err != nil {
@@ -487,13 +484,12 @@ func (s *Server) apiUserSaveFilters(w http.ResponseWriter, r *http.Request) {
 	// bracketing it with independent reads before/after instead would let
 	// a concurrent save for the same user change either side out from
 	// under this request.
-	before, after, err := s.store.SetUserRouteFilters(ctx, user.ID, body)
+	meta := store.AuditMeta{Actor: userActor(user.ID), UserAgent: r.Header.Get("User-Agent"), Action: "route_filters.user_updated"}
+	_, _, err := s.store.SetUserRouteFilters(ctx, user.ID, body, meta)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
-	s.recordAuditIfChanged(ctx, r, userActor(user.ID), "route_filters.user_updated", "user", strconv.FormatInt(user.ID, 10),
-		before, after)
 
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(ctx); err != nil {
@@ -624,13 +620,12 @@ func (s *Server) apiUserSwitchMode(w http.ResponseWriter, r *http.Request) {
 	// snapshot taken at authentication) instead would let two overlapping
 	// switches (1→2 and 1→3, say) both log "from 1" even though the real
 	// sequence was 1→2→3.
-	prevModeID, err := s.store.SetUserCatalogMode(r.Context(), user.ID, body.ModeID, false)
+	meta := store.AuditMeta{Actor: userActor(user.ID), UserAgent: r.Header.Get("User-Agent"), Action: "user.mode_changed"}
+	_, err = s.store.SetUserCatalogMode(r.Context(), user.ID, body.ModeID, false, meta)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to update catalog mode"})
 		return
 	}
-	s.recordAuditIfChanged(r.Context(), r, userActor(user.ID), "user.mode_changed", "user", strconv.FormatInt(user.ID, 10),
-		map[string]int64{"catalog_mode_id": prevModeID}, map[string]int64{"catalog_mode_id": body.ModeID})
 	if s.bgp != nil {
 		if err := s.bgp.Reconcile(r.Context()); err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Catalog mode updated but BGP reconciliation failed: " + err.Error()})
