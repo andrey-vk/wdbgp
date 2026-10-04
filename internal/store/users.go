@@ -468,8 +468,16 @@ func (s *Store) UpdateUserWithRouteFilters(ctx context.Context, user User, meta,
 		if err := replaceNetworks(ctx, tx, user.ID, user.Networks); err != nil {
 			return err
 		}
+		prevMode, err := modeChangeState(ctx, tx, prevCatalogModeID)
+		if err != nil {
+			return err
+		}
+		newMode, err := modeChangeState(ctx, tx, user.CatalogModeID)
+		if err != nil {
+			return err
+		}
 		if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(user.ID, 10),
-			map[string]int64{"catalog_mode_id": prevCatalogModeID}, map[string]int64{"catalog_mode_id": user.CatalogModeID}, false); err != nil {
+			prevMode, newMode, false); err != nil {
 			return err
 		}
 		// filter_mode/filter_override change the user's effective route
@@ -493,17 +501,24 @@ func (s *Store) UpdateUserWithRouteFilters(ctx context.Context, user User, meta,
 	return prevCatalogModeID, err
 }
 
-func (s *Store) DeleteUser(ctx context.Context, id int64) error {
-	result, err := s.DB.ExecContext(ctx, "DELETE FROM users WHERE id = ?", id)
-	if err != nil {
-		return err
-	}
-	if count, err := result.RowsAffected(); err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	} else if count == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+// DeleteUser deletes a user and audits it as user.deleted. The users table
+// doesn't use AUTOINCREMENT, so the ID can be handed to a later user, and that
+// deletion record is what tells the change log where the new holder's history
+// starts (see userIdentityFloor).
+func (s *Store) DeleteUser(ctx context.Context, id int64, meta AuditMeta) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, "DELETE FROM users WHERE id = ?", id)
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		} else if count == 0 {
+			return sql.ErrNoRows
+		}
+		return AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(id, 10),
+			map[string]bool{"exists": true}, map[string]bool{"exists": false}, true)
+	})
 }
 
 func replaceNetworks(ctx context.Context, tx *sql.Tx, userID int64, networks []string) error {
@@ -702,8 +717,12 @@ func (s *Store) SaveUserSelectionCounts(
 			return err
 		}
 		afterCats, afterSvcs = len(ac), len(as)
-		before := map[string]int{"categories": beforeCats, "services": beforeSvcs}
-		after := map[string]int{"categories": afterCats, "services": afterSvcs}
+		modeName, err := modeNameTx(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		before := selectionAuditState(modeID, modeName, bc, bs)
+		after := selectionAuditState(modeID, modeName, ac, as)
 		return AuditEntryTx(ctx, tx, selectionsMeta, "user", strconv.FormatInt(userID, 10), before, after, false)
 	})
 	return beforeCats, beforeSvcs, afterCats, afterSvcs, prevModeID, err
@@ -1007,8 +1026,15 @@ WHERE id = ?
 	} else if count == 0 {
 		return 0, sql.ErrNoRows
 	}
-	if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10),
-		map[string]int64{"catalog_mode_id": prevModeID}, map[string]int64{"catalog_mode_id": modeID}, false); err != nil {
+	prevMode, err := modeChangeState(ctx, tx, prevModeID)
+	if err != nil {
+		return 0, err
+	}
+	newMode, err := modeChangeState(ctx, tx, modeID)
+	if err != nil {
+		return 0, err
+	}
+	if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), prevMode, newMode, false); err != nil {
 		return 0, err
 	}
 	return prevModeID, nil

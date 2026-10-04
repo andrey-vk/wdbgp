@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Feed represents a data feed source.
@@ -279,12 +281,130 @@ func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {
 	return modeIDs, rows.Err()
 }
 
-func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
+// selectionStateKey identifies one user's selection in one mode.
+type selectionStateKey struct{ userID, modeID int64 }
+
+// selectionStatesTx reads every user's selection in every mode in two queries,
+// with the mode names the audit rows carry. Users with no selection have no key.
+func selectionStatesTx(ctx context.Context, tx *sql.Tx) (map[selectionStateKey]selectionAuditPayload, error) {
+	names := map[int64]string{}
+	nameRows, err := tx.QueryContext(ctx, "SELECT id, name FROM catalog_modes")
+	if err != nil {
+		return nil, err
+	}
+	for nameRows.Next() {
+		var id int64
+		var name string
+		if err := nameRows.Scan(&id, &name); err != nil {
+			_ = nameRows.Close() //nolint:errcheck
+			return nil, err
+		}
+		names[id] = name
+	}
+	if err := nameRows.Close(); err != nil {
+		return nil, err
+	}
+	if err := nameRows.Err(); err != nil {
+		return nil, err
+	}
+
+	categories := map[selectionStateKey]map[string]bool{}
+	services := map[selectionStateKey]map[ServiceKey]bool{}
+	catRows, err := tx.QueryContext(ctx, `
+SELECT sc.user_id, sc.mode_id, c.name FROM selected_categories sc
+JOIN categories c ON c.id = sc.category_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = catRows.Close() }() //nolint:errcheck
+	for catRows.Next() {
+		var key selectionStateKey
+		var category string
+		if err := catRows.Scan(&key.userID, &key.modeID, &category); err != nil {
+			return nil, err
+		}
+		if categories[key] == nil {
+			categories[key] = map[string]bool{}
+		}
+		categories[key][category] = true
+	}
+	if err := catRows.Err(); err != nil {
+		return nil, err
+	}
+	svcRows, err := tx.QueryContext(ctx, `
+SELECT ss.user_id, ss.mode_id, c.name, sv.name FROM selected_services ss
+JOIN services sv ON sv.id = ss.service_id
+JOIN categories c ON c.id = sv.category_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = svcRows.Close() }() //nolint:errcheck
+	for svcRows.Next() {
+		var key selectionStateKey
+		var svc ServiceKey
+		if err := svcRows.Scan(&key.userID, &key.modeID, &svc.Category, &svc.Service); err != nil {
+			return nil, err
+		}
+		if services[key] == nil {
+			services[key] = map[ServiceKey]bool{}
+		}
+		services[key][svc] = true
+	}
+	if err := svcRows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := map[selectionStateKey]selectionAuditPayload{}
+	for key := range categories {
+		out[key] = selectionAuditState(key.modeID, names[key.modeID], categories[key], services[key])
+	}
+	for key := range services {
+		if _, ok := out[key]; !ok {
+			out[key] = selectionAuditState(key.modeID, names[key.modeID], nil, services[key])
+		}
+	}
+	return out, nil
+}
+
+// DeleteFeed deletes a feed and prunes the selections that no longer have any
+// service behind them. meta is the admin action; each pruned selection is
+// audited under it, and the services the feed took away are recorded as a sync
+// change, so the users' change logs can show both.
+func (s *Store) DeleteFeed(ctx context.Context, id int64, meta AuditMeta) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		// Collect the affected modes before the delete cascades the
 		// catalog_mode_feeds links away — inside the transaction, so the
 		// list can't race a concurrent membership change.
 		modeIDs, err := feedModeIDsTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		// Deleting the feed removes its services from every mode that used it.
+		// Record that as a sync change, so users' history still shows the
+		// services going away after the feed row is gone (migration 039 keeps
+		// the change rows with SET NULL). It is recorded before the pruning
+		// below, so its audit sequence orders it ahead of the selection rows
+		// the pruning writes, even within the same second.
+		// A disabled feed already left its modes when it was disabled, so its
+		// services were removed then, not now; recording them again would
+		// misdate the removal.
+		var enabled int
+		if err := tx.QueryRowContext(ctx, "SELECT enabled FROM feeds WHERE id = ?", id).Scan(&enabled); err != nil {
+			return err
+		}
+		prev, err := CatalogEntriesForFeedTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if diff := DiffCatalogEntries(prev, nil); enabled != 0 && diff.HasChanges() {
+			if err := RecordFeedSyncChangeTx(ctx, tx, id, diff, time.Now().Unix()); err != nil {
+				return err
+			}
+		}
+		// The pruning below is unscoped: it drops selections that no feed backs in
+		// any mode, including modes the feed was detached from earlier. So every
+		// selection is read before, not only the ones in the feed's current modes.
+		before, err := selectionStatesTx(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -328,6 +448,31 @@ WHERE NOT EXISTS (
 		for _, modeID := range modeIDs {
 			if err := rebuildModeEntriesTx(ctx, tx, modeID); err != nil {
 				return fmt.Errorf("rebuild mode %d: %w", modeID, err)
+			}
+		}
+		selectionMeta := AuditMeta{Actor: meta.Actor, UserAgent: meta.UserAgent, Action: "user.selections_changed"}
+		after, err := selectionStatesTx(ctx, tx)
+		if err != nil {
+			return err
+		}
+		keys := make([]selectionStateKey, 0, len(before))
+		for key := range before {
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i].userID != keys[j].userID {
+				return keys[i].userID < keys[j].userID
+			}
+			return keys[i].modeID < keys[j].modeID
+		})
+		for _, key := range keys {
+			b := before[key]
+			a, ok := after[key]
+			if !ok {
+				a = selectionAuditState(key.modeID, b.ModeName, nil, nil)
+			}
+			if err := AuditEntryTx(ctx, tx, selectionMeta, "user", strconv.FormatInt(key.userID, 10), b, a, false); err != nil {
+				return err
 			}
 		}
 		return nil

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/netip"
+	"sort"
 	"time"
 )
 
@@ -28,6 +29,10 @@ type FeedSyncDiff struct {
 	AddedAssociations   int
 	RemovedAssociations int
 	AddedByCategory     map[string]int
+	// AddedServiceKeys and RemovedServiceKeys name the services behind the
+	// counts above, sorted, so a user's change log can say which ones moved.
+	AddedServiceKeys   []ServiceKey
+	RemovedServiceKeys []ServiceKey
 }
 
 func (d FeedSyncDiff) HasChanges() bool {
@@ -67,13 +72,17 @@ func DiffCatalogEntries(prev, next []CatalogEntry) FeedSyncDiff {
 		if !prevServices[s] {
 			d.AddedServices++
 			d.AddedByCategory[s.category]++
+			d.AddedServiceKeys = append(d.AddedServiceKeys, ServiceKey{Category: s.category, Service: s.service})
 		}
 	}
 	for s := range prevServices {
 		if !nextServices[s] {
 			d.RemovedServices++
+			d.RemovedServiceKeys = append(d.RemovedServiceKeys, ServiceKey{Category: s.category, Service: s.service})
 		}
 	}
+	sortServiceKeys(d.AddedServiceKeys)
+	sortServiceKeys(d.RemovedServiceKeys)
 	for p := range nextPrefixes {
 		if !prevPrefixes[p] {
 			d.AddedPrefixes++
@@ -95,6 +104,15 @@ func DiffCatalogEntries(prev, next []CatalogEntry) FeedSyncDiff {
 		}
 	}
 	return d
+}
+
+func sortServiceKeys(keys []ServiceKey) {
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].Category != keys[j].Category {
+			return keys[i].Category < keys[j].Category
+		}
+		return keys[i].Service < keys[j].Service
+	})
 }
 
 // CatalogEntriesForFeedTx reads a feed's current entries in the same form
@@ -133,10 +151,11 @@ WHERE ce.feed_id = ?`, feedID)
 func RecordFeedSyncChangeTx(ctx context.Context, tx *sql.Tx, feedID int64, diff FeedSyncDiff, syncedAt int64) error {
 	res, err := tx.ExecContext(ctx, `
 INSERT INTO feed_sync_changes(feed_id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes,
-	added_associations, removed_associations)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+	added_associations, removed_associations, feed_name, audit_seq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT name FROM feeds WHERE id = ?), ''),
+	(SELECT COALESCE(MAX(id), 0) FROM audit_log))`,
 		feedID, syncedAt, diff.AddedServices, diff.RemovedServices, diff.AddedPrefixes, diff.RemovedPrefixes,
-		diff.AddedAssociations, diff.RemovedAssociations)
+		diff.AddedAssociations, diff.RemovedAssociations, feedID)
 	if err != nil {
 		return err
 	}
@@ -151,10 +170,36 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			return err
 		}
 	}
+	for kind, keys := range map[string][]ServiceKey{"added": diff.AddedServiceKeys, "removed": diff.RemovedServiceKeys} {
+		for _, k := range keys {
+			if _, err := tx.ExecContext(ctx,
+				"INSERT INTO feed_sync_change_services(change_id, kind, category, service) VALUES (?, ?, ?, ?)",
+				changeID, kind, k.Category, k.Service); err != nil {
+				return err
+			}
+		}
+	}
+	// The modes that include this feed right now are the ones this sync reaches,
+	// since the catalog it publishes is what those modes serve.
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO feed_sync_change_modes(change_id, mode_id, mode_name)
+SELECT ?, cmf.mode_id, m.name FROM catalog_mode_feeds cmf
+JOIN catalog_modes m ON m.id = cmf.mode_id AND m.enabled = 1
+WHERE cmf.feed_id = ? AND cmf.exclude = 0`, changeID, feedID); err != nil {
+		return err
+	}
 	const stale = `SELECT id FROM feed_sync_changes WHERE feed_id = ?1 AND id NOT IN (
 		SELECT id FROM feed_sync_changes WHERE feed_id = ?1 ORDER BY synced_at DESC, id DESC LIMIT ?2)`
 	if _, err := tx.ExecContext(ctx,
 		"DELETE FROM feed_sync_change_categories WHERE change_id IN ("+stale+")", feedID, feedSyncChangeRetention); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM feed_sync_change_services WHERE change_id IN ("+stale+")", feedID, feedSyncChangeRetention); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM feed_sync_change_modes WHERE change_id IN ("+stale+")", feedID, feedSyncChangeRetention); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, "DELETE FROM feed_sync_changes WHERE id IN ("+stale+")", feedID, feedSyncChangeRetention)

@@ -129,7 +129,7 @@ func TestUpdateFeedURLClearsSnapshotAndDeleteCascades(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteFeed(ctx, feed.ID); err != nil {
+	if err := s.DeleteFeed(ctx, feed.ID, AuditMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DB.QueryRow("SELECT COUNT(*) FROM catalog_entries WHERE feed_id = ?", feed.ID).

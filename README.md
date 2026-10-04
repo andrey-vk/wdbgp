@@ -436,6 +436,16 @@ syncs per feed are kept.
 
 Selecting a category includes all of its services, so a sync can add services to categories a user selected without any action on their side. The user's own page shows a dismissible note of the services a sync added, per category, for the categories they have selected in a mode that includes the feed. The note reports services, not routes: a service may already be covered by another feed, so it may add no route. The note covers the last 14 days, or since they last dismissed it, whichever is more recent. `GET /api/user/feed-changes` returns it, and `POST /api/user/feed-changes/ack` acknowledges up to the newest change shown, per mode.
 
+### User change log
+
+The user's page shows a change history for the last 30 days, or the audit retention if that is shorter. It lists every change to the user's own selection, route filters, and mode, and every feed sync that added or removed a service the user had selected. Each entry names who made the change: the user (`self`), an administrator (`admin`, with no address shown), or a feed sync, with the feed's name. Self and admin changes come from the audit log and are kept for `audit_log_retention_days`. Feed entries come from `feed_sync_change_services`, which is pruned along with the 50-sync feed history. `GET /api/user/change-log` returns the entries newest first, at most 200 per user. Each list (categories, services, routes) is capped at 100, and anything beyond that is counted in `omitted`.
+
+A feed sync is placed by the user's history, not by their current selection. It shows up if the user was in the feed's mode at that moment and had the service's category or the service itself selected then. The selection and mode at a sync come from the audit trail. Each audited change records the state before it, so the state at a sync is the state before the first change after it, or the current state if none followed. Changing a selection later does not rewrite what an earlier sync meant for the user. The modes a sync reaches are recorded when it runs, so later edits to a feed's mode assignments don't rewrite them either. A sync records the audit row it came after, so a change in the same second is ordered by commit, not by timestamp.
+
+Deleting a feed keeps its earlier syncs in the log, and records the services it took away as a removal. The selections that lose their last service are audited as administrator changes. Those rows are dropped once they are older than audit retention.
+
+Two limits follow from this. Selection changes recorded before the name payload existed hold only counts, so a sync that falls before one of them can't be placed and is left out. And the history reaches back only as far as the audit window.
+
 ### Blast-radius preview
 
 Four admin edits change which prefixes a user actually receives: the global route

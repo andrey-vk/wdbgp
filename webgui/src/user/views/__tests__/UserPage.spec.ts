@@ -125,8 +125,8 @@ describe('UserPage', () => {
       },
     })
     await new Promise((r) => setTimeout(r, 0))
-    // One load = /user/me + /user/route-filters + /user/feed-changes.
-    expect(mockGet).toHaveBeenCalledTimes(3)
+    // One load = /user/me + /user/route-filters + /user/feed-changes + /user/change-log.
+    expect(mockGet).toHaveBeenCalledTimes(4)
 
     const select = wrapper.find('select')
     await select.setValue('2')
@@ -134,7 +134,8 @@ describe('UserPage', () => {
 
     // Even though the PUT failed, the UI must re-fetch the authoritative
     // server state rather than silently keep showing pre-switch data.
-    expect(mockGet).toHaveBeenCalledTimes(6)
+    // Two loads of four GETs each (adds /user/change-log).
+    expect(mockGet).toHaveBeenCalledTimes(8)
   })
 
   it('returns to the login screen when a count-prefixes fetch gets a 401 mid-session, instead of getting stuck on a dead authenticated view', async () => {

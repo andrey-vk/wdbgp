@@ -51,4 +51,5 @@ var migrations = []Migration{
 	{36, "mode feed roles and materialized mode entries", m.V036, nil},
 	{37, "audit log", m.V037, nil},
 	{38, "feed sync changes", m.V038, nil},
+	{39, "feed sync change services", m.V039, m.V039NoTxSQL},
 }
