@@ -7,6 +7,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Feed represents a data feed source.
@@ -279,12 +280,67 @@ func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {
 	return modeIDs, rows.Err()
 }
 
-func (s *Store) DeleteFeed(ctx context.Context, id int64) error {
+// selectionSnapshot is one user's selection in one mode, as it stood before a
+// deletion pruned it.
+type selectionSnapshot struct {
+	userID int64
+	state  selectionAuditPayload
+}
+
+// modeSelectionSnapshotsTx snapshots every user's selection in each mode.
+func modeSelectionSnapshotsTx(ctx context.Context, tx *sql.Tx, modeIDs []int64) ([]selectionSnapshot, error) {
+	var out []selectionSnapshot
+	for _, modeID := range modeIDs {
+		name, err := modeNameTx(ctx, tx, modeID)
+		if err != nil {
+			return nil, err
+		}
+		userIDs, err := usersWithSelectionsTx(ctx, tx, modeID)
+		if err != nil {
+			return nil, err
+		}
+		for _, userID := range userIDs {
+			cats, svcs, err := userModeSelection(ctx, tx, userID, modeID)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, selectionSnapshot{userID: userID, state: selectionAuditState(modeID, name, cats, svcs)})
+		}
+	}
+	return out, nil
+}
+
+// DeleteFeed deletes a feed and prunes the selections that no longer have any
+// service behind them. meta is the admin action; each pruned selection is
+// audited under it, and the services the feed took away are recorded as a sync
+// change, so the users' change logs can show both.
+func (s *Store) DeleteFeed(ctx context.Context, id int64, meta AuditMeta) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		// Collect the affected modes before the delete cascades the
 		// catalog_mode_feeds links away — inside the transaction, so the
 		// list can't race a concurrent membership change.
 		modeIDs, err := feedModeIDsTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		// Deleting the feed removes its services from every mode that used it.
+		// Record that as a sync change, so users' history still shows the
+		// services going away after the feed row is gone (migration 039 keeps
+		// the change rows with SET NULL). It is stamped one second before the
+		// deletion: the selection rows written below take the deletion's own
+		// second, and a change at the same second as a sync can't be ordered
+		// against it. Stamped earlier, the removal orders before the pruning
+		// it caused, so the selections it touched are what the log sees.
+		prev, err := CatalogEntriesForFeedTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if diff := DiffCatalogEntries(prev, nil); diff.HasChanges() {
+			if err := RecordFeedSyncChangeTx(ctx, tx, id, diff, time.Now().Unix()-1); err != nil {
+				return err
+			}
+		}
+		snapshots, err := modeSelectionSnapshotsTx(ctx, tx, modeIDs)
 		if err != nil {
 			return err
 		}
@@ -328,6 +384,17 @@ WHERE NOT EXISTS (
 		for _, modeID := range modeIDs {
 			if err := rebuildModeEntriesTx(ctx, tx, modeID); err != nil {
 				return fmt.Errorf("rebuild mode %d: %w", modeID, err)
+			}
+		}
+		selectionMeta := AuditMeta{Actor: meta.Actor, UserAgent: meta.UserAgent, Action: "user.selections_changed"}
+		for _, snap := range snapshots {
+			cats, svcs, err := userModeSelection(ctx, tx, snap.userID, snap.state.ModeID)
+			if err != nil {
+				return err
+			}
+			after := selectionAuditState(snap.state.ModeID, snap.state.ModeName, cats, svcs)
+			if err := AuditEntryTx(ctx, tx, selectionMeta, "user", strconv.FormatInt(snap.userID, 10), snap.state, after, false); err != nil {
+				return err
 			}
 		}
 		return nil

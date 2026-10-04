@@ -309,30 +309,33 @@ func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) er
 	})
 }
 
-// auditDeletedModeSelectionsTx writes a selection audit row, emptying the
-// selection, for every user with selections in modeID. Called before the mode
-// is deleted, since the deletion cascades those selections away.
-func auditDeletedModeSelectionsTx(ctx context.Context, tx *sql.Tx, modeID int64, modeName string, meta AuditMeta) error {
+// usersWithSelectionsTx lists the users with any selection in modeID.
+func usersWithSelectionsTx(ctx context.Context, tx *sql.Tx, modeID int64) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx, `
 SELECT user_id FROM selected_categories WHERE mode_id = ?
 UNION
 SELECT user_id FROM selected_services WHERE mode_id = ?`, modeID, modeID)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck
 	var userIDs []int64
 	for rows.Next() {
 		var userID int64
 		if err := rows.Scan(&userID); err != nil {
-			_ = rows.Close() //nolint:errcheck
-			return err
+			return nil, err
 		}
 		userIDs = append(userIDs, userID)
 	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if err := rows.Err(); err != nil {
+	return userIDs, rows.Err()
+}
+
+// auditDeletedModeSelectionsTx writes a selection audit row, emptying the
+// selection, for every user with selections in modeID. Called before the mode
+// is deleted, since the deletion cascades those selections away.
+func auditDeletedModeSelectionsTx(ctx context.Context, tx *sql.Tx, modeID int64, modeName string, meta AuditMeta) error {
+	userIDs, err := usersWithSelectionsTx(ctx, tx, modeID)
+	if err != nil {
 		return err
 	}
 	empty := selectionAuditState(modeID, modeName, nil, nil)

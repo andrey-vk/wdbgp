@@ -442,6 +442,8 @@ The user's page shows a change history for the last 30 days, or the audit retent
 
 A feed sync is placed by the user's history, not by their current selection. It shows up if the user was in the feed's mode at that moment and had the service's category or the service itself selected then. The selection and mode at a sync come from the audit trail. Each audited change records the state before it, so the state at a sync is the state before the first change after it, or the current state if none followed. Changing a selection later does not rewrite what an earlier sync meant for the user. The modes a sync reaches are recorded when it runs, so later edits to a feed's mode assignments don't rewrite them either. A selection change in the same second as a sync can't be ordered against it at this resolution, so that sync is left out.
 
+Deleting a feed keeps its earlier syncs in the log, and records the services it took away as a removal. The selections that lose their last service are audited as administrator changes. Those rows are dropped once they are older than audit retention.
+
 Two limits follow from this. Selection changes recorded before the name payload existed hold only counts, so a sync that falls before one of them can't be placed and is left out. And the history reaches back only as far as the audit window.
 
 ### Blast-radius preview

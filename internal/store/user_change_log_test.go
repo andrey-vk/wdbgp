@@ -650,3 +650,69 @@ func TestUserChangeLogStopsAtPurgeBoundary(t *testing.T) {
 		t.Fatalf("after purge: feed entries = %+v, want none before the purge boundary", got)
 	}
 }
+
+// TestUserChangeLogKeepsHistoryOfDeletedFeed checks that deleting a feed keeps
+// its earlier syncs in the log, and records the services it took away.
+func TestUserChangeLogKeepsHistoryOfDeletedFeed(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return ReplaceCatalogEntries(ctx, tx, feedID, []CatalogEntry{{Category: "ai", Service: "kept-service", CIDR: "20.0.0.0/24"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recordHistorySync(t, s, feedID, time.Now().Add(-2*time.Hour).Unix(), ServiceKey{Category: "ai", Service: "added-earlier"})
+
+	if err := s.DeleteFeed(ctx, feedID, AuditMeta{Actor: "admin:203.0.113.7", UserAgent: "test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := feedSyncEntries(all)
+	if len(got) != 2 {
+		t.Fatalf("feed entries = %+v, want the earlier sync and the deletion", got)
+	}
+	deletion, earlier := got[0], got[1]
+	if deletion.FeedName != "ai-feed" || len(deletion.Removed.Services) != 1 || deletion.Removed.Services[0].Service != "kept-service" {
+		t.Fatalf("deletion entry = %+v, want ai-feed removing kept-service", deletion)
+	}
+	if len(earlier.Added.Services) != 1 || earlier.Added.Services[0].Service != "added-earlier" {
+		t.Fatalf("earlier entry = %+v, want added-earlier kept after the deletion", earlier)
+	}
+}
+
+// TestPurgeAuditLogPrunesDeletedFeedHistory checks that history of a deleted
+// feed is dropped once it is older than audit retention, and not before.
+func TestPurgeAuditLogPrunesDeletedFeedHistory(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	_, feedID := userSelectingFeedChange(t, s, "ai", false)
+	recordHistorySync(t, s, feedID, time.Now().Add(-20*24*time.Hour).Unix(), ServiceKey{Category: "ai", Service: "old"})
+	recordHistorySync(t, s, feedID, time.Now().Add(-1*time.Hour).Unix(), ServiceKey{Category: "ai", Service: "recent"})
+	if err := s.DeleteFeed(ctx, feedID, AuditMeta{Actor: "admin:203.0.113.7", UserAgent: "test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	countOrphans := func() int {
+		var n int
+		if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM feed_sync_changes WHERE feed_id IS NULL").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := countOrphans(); n != 3 {
+		t.Fatalf("orphaned changes = %d, want the two syncs and the deletion", n)
+	}
+	if err := s.PurgeAuditLog(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	// The 20-day-old sync and the deletion record of the same feed, which both
+	// predate the cutoff... the deletion is now, so only the old sync goes.
+	if n := countOrphans(); n != 2 {
+		t.Fatalf("orphaned changes after purge = %d, want 2 (the old sync is gone)", n)
+	}
+}

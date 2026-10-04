@@ -1020,7 +1020,7 @@ func TestAuditHookFeedEnabledChangedSurvivesPostLookupFailure(t *testing.T) {
 	idStr := strconv.FormatInt(feedID, 10)
 
 	feedUpdatePostAuditHook = func(id int64) {
-		if err := st.DeleteFeed(context.Background(), id); err != nil {
+		if err := st.DeleteFeed(context.Background(), id, store.AuditMeta{}); err != nil {
 			t.Fatalf("delete feed mid-update: %v", err)
 		}
 	}

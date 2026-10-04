@@ -213,7 +213,7 @@ func TestRebuildTriggers(t *testing.T) {
 	}
 
 	// Deleting the include feed empties the mode.
-	if err := s.DeleteFeed(ctx, include); err != nil {
+	if err := s.DeleteFeed(ctx, include, AuditMeta{}); err != nil {
 		t.Fatalf("delete include feed: %v", err)
 	}
 	if got := modePrefixStrings(ctx, t, s, modeID); len(got) != 0 {
