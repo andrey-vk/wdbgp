@@ -58,6 +58,11 @@ const router = createRouter({
                     path: '/audit-log',
                     name: 'auditLog',
                     component: () => import('@/admin/views/AuditLogPage.vue')
+                },
+                {
+                    path: '/communities/matrix',
+                    name: 'communityMatrix',
+                    component: () => import('@/admin/views/CommunityMatrixPage.vue')
                 }
             ]
         },

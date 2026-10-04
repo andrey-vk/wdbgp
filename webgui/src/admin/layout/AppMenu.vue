@@ -36,6 +36,7 @@ const model = computed<MenuItem[]>(() => [
             { label: t('menu.settings'),    icon: 'pi pi-fw pi-cog',      to: { name: 'settings' } },
             { label: t('menu.debug'),       icon: 'pi pi-fw pi-search',   to: { name: 'debug' } },
             { label: t('menu.audit_log'),   icon: 'pi pi-fw pi-list',     to: { name: 'auditLog' } },
+            { label: t('menu.community_matrix'), icon: 'pi pi-fw pi-table', to: { name: 'communityMatrix' } },
         ]
     },
 ]);

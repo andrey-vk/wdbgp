@@ -450,6 +450,10 @@ Reconstruction reads the newest 2000 audit rows of an account and the newest 100
 
 Two limits follow from this. Selection changes recorded before the name payload existed hold only counts, so a sync that falls before one of them can't be placed and is left out. And the history reaches back only as far as the audit window.
 
+### Community matrix
+
+The admin "Community Matrix" page shows each category's group-level community number in every mode, as a grid. A category whose number differs between modes, or that has no group-level number in one of them, is flagged, and the list can be narrowed to flagged categories. `GET /api/admin/communities/matrix` returns the same grid. Per-service numbers aren't in the grid; the matrix is for checking that category numbering agrees before a user moves between modes.
+
 ### Blast-radius preview
 
 Four admin edits change which prefixes a user actually receives: the global route

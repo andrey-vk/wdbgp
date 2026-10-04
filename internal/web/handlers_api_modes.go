@@ -628,3 +628,14 @@ func (s *Server) apiModeCommunitiesGenerate(w http.ResponseWriter, r *http.Reque
 		"generated": generated,
 	})
 }
+
+// apiCommunityMatrix handles GET /api/admin/communities/matrix: each category's
+// group-level community in every mode, with divergent categories flagged.
+func (s *Server) apiCommunityMatrix(w http.ResponseWriter, r *http.Request) {
+	matrix, err := s.store.CommunityMatrix(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to build community matrix"})
+		return
+	}
+	writeJSON(w, http.StatusOK, matrix)
+}

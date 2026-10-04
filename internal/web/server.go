@@ -99,6 +99,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	mux.HandleFunc("POST /api/admin/modes/{id}/feeds/preview", server.apiRequireAdmin(server.apiModeFeedsPreview))
 	mux.HandleFunc("GET /api/admin/modes/{id}/communities", server.apiRequireAdmin(server.apiModeCommunitiesGet))
 	mux.HandleFunc("PUT /api/admin/modes/{id}/communities", server.apiRequireAdmin(server.apiModeCommunitiesPut))
+	mux.HandleFunc("GET /api/admin/communities/matrix", server.apiRequireAdmin(server.apiCommunityMatrix))
 	mux.HandleFunc("POST /api/admin/modes/{id}/communities/reset", server.apiRequireAdmin(server.apiModeCommunitiesReset))
 	mux.HandleFunc("POST /api/admin/modes/{id}/communities/generate", server.apiRequireAdmin(server.apiModeCommunitiesGenerate))
 
