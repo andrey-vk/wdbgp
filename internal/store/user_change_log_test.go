@@ -428,3 +428,79 @@ func TestUserChangeLogSkipsSyncsMadeInAnotherMode(t *testing.T) {
 		t.Fatalf("entries = %+v, want only the sync made after the move", entries)
 	}
 }
+
+func TestUserChangeLogSameSecondChangeLeavesSyncUnplaced(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := plainChangeLogUser(t, s)
+	feedID := historyFeed(t, s)
+	t0 := time.Now().Add(-5 * time.Hour).Unix()
+
+	// Selection and sync land in the same second, so their order is unknowable
+	// at this resolution. The sync is left out rather than guessed at.
+	recordSelectionAudit(t, s, userID, t0, nil, []string{"ai"})
+	recordHistorySync(t, s, feedID, t0, ServiceKey{Category: "ai", Service: "same-second"})
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := feedSyncEntries(all); len(got) != 0 {
+		t.Fatalf("feed entries = %+v, want none for an ambiguous same-second sync", got)
+	}
+}
+
+func TestUserChangeLogPlacesSyncsByModesTheyReachedThen(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := plainChangeLogUser(t, s)
+	// The feed syncs while no mode includes it, then is attached to the user's
+	// mode afterwards. The sync reached nobody, so it must not appear now.
+	feedID, err := s.AddFeed(ctx, "late-feed", "https://example.test/late-log.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordHistorySync(t, s, feedID, time.Now().Add(-5*time.Hour).Unix(), ServiceKey{Category: "ai", Service: "unreached"})
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, 0)", DefaultCatalogModeID, feedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserModeSelection(ctx, tx, userID, DefaultCatalogModeID, []string{"ai"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := feedSyncEntries(all); len(got) != 0 {
+		t.Fatalf("feed entries = %+v, want none: the sync predates the feed's mode assignment", got)
+	}
+}
+
+func TestUserChangeLogKeepsSyncsOfFeedDisabledLater(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{
+			AddedServices: 1, AddedServiceKeys: []ServiceKey{{Category: "ai", Service: "kept"}},
+		}, time.Now().Unix()-600)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, "UPDATE feeds SET enabled = 0 WHERE id = ?", feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := feedSyncEntries(all)
+	if len(got) != 1 || got[0].Added.Services[0].Service != "kept" {
+		t.Fatalf("feed entries = %+v, want the earlier sync still listed after the feed was disabled", got)
+	}
+}

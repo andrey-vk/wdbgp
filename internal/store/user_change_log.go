@@ -336,17 +336,22 @@ ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since)
 	return h, rows.Err()
 }
 
-// modeAt returns the catalog mode the user was in at time at.
+// modeAt returns the catalog mode the user was in at time at. A change in the
+// same second as at is ambiguous at this resolution, so it reports unknown.
 func (h *userHistory) modeAt(at int64) (modeID int64, known bool) {
-	i := sort.Search(len(h.modes), func(i int) bool { return h.modes[i].at > at })
+	i := sort.Search(len(h.modes), func(i int) bool { return h.modes[i].at >= at })
 	if i == len(h.modes) {
 		return h.currentMode, true
+	}
+	if h.modes[i].at == at {
+		return 0, false
 	}
 	return h.modes[i].before, h.modes[i].known
 }
 
 // selectionAt returns the user's selection in modeID at time at. known is false
-// when the first change after at that could touch modeID is a legacy row.
+// when the first change that could touch modeID is a legacy row, or lands in the
+// same second as at, where its order against the sync can't be told apart.
 func (h *userHistory) selectionAt(ctx context.Context, at, modeID int64) (selectionValue, error) {
 	key := selectionKey{at: at, modeID: modeID}
 	if v, ok := h.selCache[key]; ok {
@@ -355,7 +360,7 @@ func (h *userHistory) selectionAt(ctx context.Context, at, modeID int64) (select
 	var v selectionValue
 	v.known = true
 	found := false
-	for i := sort.Search(len(h.selections), func(i int) bool { return h.selections[i].at > at }); i < len(h.selections); i++ {
+	for i := sort.Search(len(h.selections), func(i int) bool { return h.selections[i].at >= at }); i < len(h.selections); i++ {
 		c := h.selections[i]
 		if c.legacy {
 			v.known = false
@@ -364,6 +369,11 @@ func (h *userHistory) selectionAt(ctx context.Context, at, modeID int64) (select
 		}
 		if c.modeID != modeID {
 			continue
+		}
+		if c.at == at {
+			v.known = false
+			found = true
+			break
 		}
 		v.categories = make(map[string]bool, len(c.before.Categories))
 		for _, cat := range c.before.Categories {
@@ -397,17 +407,17 @@ func (s *Store) userFeedSyncChanges(ctx context.Context, userID, currentMode, si
 	if err != nil {
 		return nil, err
 	}
-	includeModes, err := s.includeModesByFeed(ctx)
-	if err != nil {
-		return nil, err
-	}
+	// A feed's enabled state and mode assignments today say nothing about the
+	// syncs already recorded, so neither filters here: each sync carries the
+	// modes it reached, and history outlives a feed being disabled.
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT c.feed_id, f.name, c.id, c.synced_at, s.kind, s.category, s.service
+SELECT cm.mode_id, c.id, f.name, c.synced_at, s.kind, s.category, s.service
 FROM feed_sync_change_services s
 JOIN feed_sync_changes c ON c.id = s.change_id
-JOIN feeds f ON f.id = c.feed_id AND f.enabled = 1
+JOIN feed_sync_change_modes cm ON cm.change_id = c.id
+JOIN feeds f ON f.id = c.feed_id
 WHERE c.synced_at >= ?
-ORDER BY c.synced_at DESC, c.id DESC, s.kind, s.category, s.service`, since)
+ORDER BY c.synced_at DESC, c.id DESC, cm.mode_id, s.kind, s.category, s.service`, since)
 	if err != nil {
 		return nil, err
 	}
@@ -416,42 +426,40 @@ ORDER BY c.synced_at DESC, c.id DESC, s.kind, s.category, s.service`, since)
 	var out []UserChangeEntry
 	index := map[entryKey]int{}
 	for rows.Next() {
-		var feedID, changeID, syncedAt int64
+		var modeID, changeID, syncedAt int64
 		var feedName, kind, category, service string
-		if err := rows.Scan(&feedID, &feedName, &changeID, &syncedAt, &kind, &category, &service); err != nil {
+		if err := rows.Scan(&modeID, &changeID, &feedName, &syncedAt, &kind, &category, &service); err != nil {
 			return nil, err
 		}
 		key := ServiceKey{Category: category, Service: service}
-		for _, modeID := range includeModes[feedID] {
-			mode, known := history.modeAt(syncedAt)
-			if !known || mode != modeID {
-				continue
-			}
-			sel, err := history.selectionAt(ctx, syncedAt, modeID)
-			if err != nil {
-				return nil, err
-			}
-			if !sel.known || (!sel.categories[category] && !sel.services[key]) {
-				continue
-			}
-			ek := entryKey{changeID: changeID, modeID: modeID}
-			i, ok := index[ek]
-			if !ok {
-				out = append(out, UserChangeEntry{
-					At:       syncedAt,
-					Source:   "feed_sync",
-					Kind:     "feed_sync",
-					Mode:     modeLabel(modeNames, modeID),
-					FeedName: feedName,
-				})
-				i = len(out) - 1
-				index[ek] = i
-			}
-			if kind == "added" {
-				out[i].Added.Services = append(out[i].Added.Services, key)
-			} else {
-				out[i].Removed.Services = append(out[i].Removed.Services, key)
-			}
+		mode, known := history.modeAt(syncedAt)
+		if !known || mode != modeID {
+			continue
+		}
+		sel, err := history.selectionAt(ctx, syncedAt, modeID)
+		if err != nil {
+			return nil, err
+		}
+		if !sel.known || (!sel.categories[category] && !sel.services[key]) {
+			continue
+		}
+		ek := entryKey{changeID: changeID, modeID: modeID}
+		i, ok := index[ek]
+		if !ok {
+			out = append(out, UserChangeEntry{
+				At:       syncedAt,
+				Source:   "feed_sync",
+				Kind:     "feed_sync",
+				Mode:     modeLabel(modeNames, modeID),
+				FeedName: feedName,
+			})
+			i = len(out) - 1
+			index[ek] = i
+		}
+		if kind == "added" {
+			out[i].Added.Services = append(out[i].Added.Services, key)
+		} else {
+			out[i].Removed.Services = append(out[i].Removed.Services, key)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -462,28 +470,6 @@ ORDER BY c.synced_at DESC, c.id DESC, s.kind, s.category, s.service`, since)
 		capChangeList(&out[i].Removed)
 	}
 	return out, nil
-}
-
-// includeModesByFeed maps each feed to the enabled modes that include it.
-func (s *Store) includeModesByFeed(ctx context.Context) (map[int64][]int64, error) {
-	rows, err := s.DB.QueryContext(ctx, `
-SELECT cmf.feed_id, cmf.mode_id
-FROM catalog_mode_feeds cmf
-JOIN catalog_modes m ON m.id = cmf.mode_id AND m.enabled = 1
-WHERE cmf.exclude = 0`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }() //nolint:errcheck
-	out := map[int64][]int64{}
-	for rows.Next() {
-		var feedID, modeID int64
-		if err := rows.Scan(&feedID, &modeID); err != nil {
-			return nil, err
-		}
-		out[feedID] = append(out[feedID], modeID)
-	}
-	return out, rows.Err()
 }
 
 // diffSets returns the elements only in after (added) and only in before

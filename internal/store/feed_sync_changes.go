@@ -178,6 +178,15 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			}
 		}
 	}
+	// The modes that include this feed right now are the ones this sync reaches,
+	// since the catalog it publishes is what those modes serve.
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO feed_sync_change_modes(change_id, mode_id)
+SELECT ?, cmf.mode_id FROM catalog_mode_feeds cmf
+JOIN catalog_modes m ON m.id = cmf.mode_id AND m.enabled = 1
+WHERE cmf.feed_id = ? AND cmf.exclude = 0`, changeID, feedID); err != nil {
+		return err
+	}
 	const stale = `SELECT id FROM feed_sync_changes WHERE feed_id = ?1 AND id NOT IN (
 		SELECT id FROM feed_sync_changes WHERE feed_id = ?1 ORDER BY synced_at DESC, id DESC LIMIT ?2)`
 	if _, err := tx.ExecContext(ctx,
@@ -186,6 +195,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 	}
 	if _, err := tx.ExecContext(ctx,
 		"DELETE FROM feed_sync_change_services WHERE change_id IN ("+stale+")", feedID, feedSyncChangeRetention); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM feed_sync_change_modes WHERE change_id IN ("+stale+")", feedID, feedSyncChangeRetention); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, "DELETE FROM feed_sync_changes WHERE id IN ("+stale+")", feedID, feedSyncChangeRetention)
