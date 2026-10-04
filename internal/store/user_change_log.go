@@ -726,27 +726,25 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 		var count int
 		if sel.categories[g.cat] {
 			// The whole category is selected: every service of it counts.
-			names, err = serviceNamesTx(ctx, q, g.changeID, g.kind, g.cat, nil, maxListedNames+1)
+			names, err = serviceNamesTx(ctx, q, g.changeID, g.kind, g.cat, maxListedNames+1)
 			if err != nil {
 				return nil, err
 			}
 			count = g.count
 		} else {
-			var selected []string
+			selected := map[string]bool{}
 			for svc := range sel.services {
 				if svc.Category == g.cat {
-					selected = append(selected, svc.Service)
+					selected[svc.Service] = true
 				}
 			}
 			if len(selected) == 0 {
 				continue
 			}
-			sort.Strings(selected)
-			names, err = serviceNamesTx(ctx, q, g.changeID, g.kind, g.cat, selected, 0)
+			names, count, err = matchedServiceNamesTx(ctx, q, g.changeID, g.kind, g.cat, selected, maxListedNames)
 			if err != nil {
 				return nil, err
 			}
-			count = len(names)
 		}
 		if count == 0 {
 			continue
@@ -803,39 +801,41 @@ ORDER BY c.synced_at DESC, c.id DESC, cm.mode_id, s.kind, s.category`
 // maxListedNames bounds the service names one side of an entry lists.
 const maxListedNames = userChangeLogListLimit
 
-// serviceNamesTx reads the service names one sync added or removed in one
-// category. A nil selected list means the whole category, read up to limit names
-// (0 for no limit); otherwise only the selected names, chunked for the bound
-// variable limit.
-func serviceNamesTx(ctx context.Context, q queryer, changeID int64, kind, category string, selected []string, limit int) ([]string, error) {
-	if selected == nil {
-		query := feedSyncNamesQuery + " LIMIT ?"
-		rows, err := q.QueryContext(ctx, query, changeID, kind, category, limit)
-		if err != nil {
-			return nil, err
-		}
-		return scanNames(rows)
+// serviceNamesTx reads up to limit service names one sync added or removed in
+// one category, in name order. A whole selected category is listed this way.
+func serviceNamesTx(ctx context.Context, q queryer, changeID int64, kind, category string, limit int) ([]string, error) {
+	rows, err := q.QueryContext(ctx, feedSyncNamesQuery+" LIMIT ?", changeID, kind, category, limit)
+	if err != nil {
+		return nil, err
 	}
-	var out []string
-	for start := 0; start < len(selected); start += maxScanCategories {
-		chunk := selected[start:min(start+maxScanCategories, len(selected))]
-		args := []any{changeID, kind, category}
-		for _, n := range chunk {
-			args = append(args, n)
-		}
-		query := strings.NewReplacer("__NAMES__", placeholders(len(chunk))).Replace(feedSyncNamesInQuery)
-		rows, err := q.QueryContext(ctx, query, args...)
-		if err != nil {
-			return nil, err
-		}
-		names, err := scanNames(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, names...)
+	return scanNames(rows)
+}
+
+// matchedServiceNamesTx streams one sync's services in a category and keeps the
+// first limit names the user selected individually, plus the exact number that
+// matched. Nothing else is materialized, however large the category is.
+func matchedServiceNamesTx(ctx context.Context, q queryer, changeID int64, kind, category string, selected map[string]bool, limit int) ([]string, int, error) {
+	rows, err := q.QueryContext(ctx, feedSyncNamesQuery, changeID, kind, category)
+	if err != nil {
+		return nil, 0, err
 	}
-	sort.Strings(out)
-	return out, nil
+	defer func() { _ = rows.Close() }() //nolint:errcheck
+	var names []string
+	count := 0
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, 0, err
+		}
+		if !selected[n] {
+			continue
+		}
+		count++
+		if len(names) < limit {
+			names = append(names, n)
+		}
+	}
+	return names, count, rows.Err()
 }
 
 func scanNames(rows *sql.Rows) ([]string, error) {
@@ -854,11 +854,6 @@ func scanNames(rows *sql.Rows) ([]string, error) {
 const feedSyncNamesQuery = `
 SELECT service FROM feed_sync_change_services
 WHERE change_id = ? AND kind = ? AND category = ?
-ORDER BY service`
-
-const feedSyncNamesInQuery = `
-SELECT service FROM feed_sync_change_services
-WHERE change_id = ? AND kind = ? AND category = ? AND service IN (__NAMES__)
 ORDER BY service`
 
 // placeholders returns n comma-separated "?" placeholders.

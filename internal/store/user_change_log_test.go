@@ -1047,3 +1047,32 @@ func TestUserChangeLogCountsOmittedNamesExactly(t *testing.T) {
 		t.Fatalf("entry = %d listed, omitted %d; want %d listed and 50 omitted", len(got[0].Added.Services), got[0].Added.Omitted, maxListedNames)
 	}
 }
+
+// TestUserChangeLogCountsIndividualSelectionsExactly checks the individually
+// selected branch: 150 selected services, all changed by one sync, list 100
+// names and count 50 omitted.
+func TestUserChangeLogCountsIndividualSelectionsExactly(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "other", false)
+	n := maxListedNames + 50
+	services := make([]ServiceKey, 0, n)
+	for i := 0; i < n; i++ {
+		services = append(services, ServiceKey{Category: "ai", Service: fmt.Sprintf("pick-%04d", i)})
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserModeSelection(ctx, tx, userID, DefaultCatalogModeID, nil, services)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recordHistorySync(t, s, feedID, time.Now().Add(-time.Hour).Unix(), services...)
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := feedSyncEntries(all)
+	if len(got) != 1 || len(got[0].Added.Services) != maxListedNames || got[0].Added.Omitted != 50 {
+		t.Fatalf("entry = %d listed, omitted %d; want %d listed and 50 omitted", len(got[0].Added.Services), got[0].Added.Omitted, maxListedNames)
+	}
+}
