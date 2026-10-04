@@ -118,15 +118,21 @@ func rebuildFeedSyncChangesOn(ctx context.Context, conn *sql.Conn) error {
 // Rows follow their feed_sync_changes row and are pruned with it.
 func V039(ctx context.Context, tx *sql.Tx) error {
 	// ADD COLUMN isn't idempotent, and the last migration can be re-run (see the
-	// backup tests), so add feed_name only when it's missing.
-	var hasFeedName int
-	if err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM pragma_table_info('feed_sync_changes') WHERE name = 'feed_name'").Scan(&hasFeedName); err != nil {
-		return err
-	}
-	if hasFeedName == 0 {
-		if _, err := tx.ExecContext(ctx, `ALTER TABLE feed_sync_changes ADD COLUMN feed_name TEXT NOT NULL DEFAULT ''`); err != nil {
+	// backup tests), so each column is added only when it's missing.
+	for _, col := range []struct{ name, def string }{
+		{"feed_name", "TEXT NOT NULL DEFAULT ''"},
+		// The audit row ID the sync came after; see syncPoint in user_change_log.go.
+		{"audit_seq", "INTEGER"},
+	} {
+		var n int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM pragma_table_info('feed_sync_changes') WHERE name = ?", col.name).Scan(&n); err != nil {
 			return err
+		}
+		if n == 0 {
+			if _, err := tx.ExecContext(ctx, "ALTER TABLE feed_sync_changes ADD COLUMN "+col.name+" "+col.def); err != nil {
+				return err
+			}
 		}
 	}
 	// The audit log is complete from this point on. Purges move the boundary

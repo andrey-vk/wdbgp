@@ -151,8 +151,9 @@ WHERE ce.feed_id = ?`, feedID)
 func RecordFeedSyncChangeTx(ctx context.Context, tx *sql.Tx, feedID int64, diff FeedSyncDiff, syncedAt int64) error {
 	res, err := tx.ExecContext(ctx, `
 INSERT INTO feed_sync_changes(feed_id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes,
-	added_associations, removed_associations, feed_name)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT name FROM feeds WHERE id = ?), ''))`,
+	added_associations, removed_associations, feed_name, audit_seq)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT name FROM feeds WHERE id = ?), ''),
+	(SELECT COALESCE(MAX(id), 0) FROM audit_log))`,
 		feedID, syncedAt, diff.AddedServices, diff.RemovedServices, diff.AddedPrefixes, diff.RemovedPrefixes,
 		diff.AddedAssociations, diff.RemovedAssociations, feedID)
 	if err != nil {

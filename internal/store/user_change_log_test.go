@@ -442,24 +442,45 @@ func TestUserChangeLogSkipsSyncsMadeInAnotherMode(t *testing.T) {
 	}
 }
 
-func TestUserChangeLogSameSecondChangeLeavesSyncUnplaced(t *testing.T) {
+func TestUserChangeLogSameSecondFollowsCommitOrder(t *testing.T) {
 	s := openChangeLogStore(t)
 	ctx := context.Background()
-	userID := plainChangeLogUser(t, s)
-	feedID := historyFeed(t, s)
 	t0 := time.Now().Add(-5 * time.Hour).Unix()
 
-	// Selection and sync land in the same second, so their order is unknowable
-	// at this resolution. The sync is left out rather than guessed at.
+	// The selection is committed first, then the sync, both in one second. The
+	// sync came after the selection, so it sees the selection and is listed.
+	userID := plainChangeLogUser(t, s)
+	feedID := historyFeed(t, s)
 	recordSelectionAudit(t, s, userID, t0, nil, []string{"ai"})
-	recordHistorySync(t, s, feedID, t0, ServiceKey{Category: "ai", Service: "same-second"})
-
+	recordHistorySync(t, s, feedID, t0, ServiceKey{Category: "ai", Service: "after-selection"})
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserModeSelection(ctx, tx, userID, DefaultCatalogModeID, []string{"ai"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
 	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got := feedSyncEntries(all); len(got) != 1 {
+		t.Fatalf("selected first, sync second: feed entries = %+v, want the sync listed", got)
+	}
+
+	// Reversed: the sync is committed first, then the selection in the same
+	// second. The sync saw no selection, so it stays out.
+	other, err := s.AddUser(ctx, User{Name: "log-other", PeerIP: "172.16.9.7", PeerASN: 65097, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID, Networks: []string{"192.168.7.0/24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordHistorySync(t, s, feedID, t0+10, ServiceKey{Category: "ai", Service: "before-selection"})
+	recordSelectionAudit(t, s, other, t0+10, nil, []string{"ai"})
+	all, err = s.UserChangeLog(ctx, other, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := feedSyncEntries(all); len(got) != 0 {
-		t.Fatalf("feed entries = %+v, want none for an ambiguous same-second sync", got)
+		t.Fatalf("sync first, selected second: feed entries = %+v, want none", got)
 	}
 }
 

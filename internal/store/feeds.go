@@ -382,17 +382,15 @@ func (s *Store) DeleteFeed(ctx context.Context, id int64, meta AuditMeta) error 
 		// Deleting the feed removes its services from every mode that used it.
 		// Record that as a sync change, so users' history still shows the
 		// services going away after the feed row is gone (migration 039 keeps
-		// the change rows with SET NULL). It is stamped one second before the
-		// deletion: the selection rows written below take the deletion's own
-		// second, and a change at the same second as a sync can't be ordered
-		// against it. Stamped earlier, the removal orders before the pruning
-		// it caused, so the selections it touched are what the log sees.
+		// the change rows with SET NULL). It is recorded before the pruning
+		// below, so its audit sequence orders it ahead of the selection rows
+		// the pruning writes, even within the same second.
 		prev, err := CatalogEntriesForFeedTx(ctx, tx, id)
 		if err != nil {
 			return err
 		}
 		if diff := DiffCatalogEntries(prev, nil); diff.HasChanges() {
-			if err := RecordFeedSyncChangeTx(ctx, tx, id, diff, time.Now().Unix()-1); err != nil {
+			if err := RecordFeedSyncChangeTx(ctx, tx, id, diff, time.Now().Unix()); err != nil {
 				return err
 			}
 		}

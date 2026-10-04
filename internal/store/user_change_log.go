@@ -63,7 +63,7 @@ var userChangeAuditActions = []string{
 const userChangeAuditQuery = `
 SELECT recorded_at, actor, action, COALESCE(before, ''), COALESCE(after, '')
 FROM audit_log
-WHERE object_type = 'user' AND object_id = ? AND recorded_at >= ?
+WHERE object_type = 'user' AND object_id = ? AND recorded_at >= ? AND id > ?
 	AND action IN (__ACTIONS__)
 ORDER BY recorded_at DESC, id DESC
 LIMIT ?`
@@ -140,14 +140,14 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		return nil, err
 	}
 	since := now.Add(-window).Unix()
-	floor, err := userIdentityFloor(ctx, tx, userID)
+	floorID, floorAt, err := userIdentityFloor(ctx, tx, userID)
 	if err != nil {
 		return nil, err
 	}
-	if floor > since {
-		since = floor
+	if floorAt > since {
+		since = floorAt
 	}
-	entries, err := userAuditChanges(ctx, tx, userID, since)
+	entries, err := userAuditChanges(ctx, tx, userID, since, floorID)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +157,7 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 	if err != nil {
 		return nil, err
 	}
-	feedEntries, err := userFeedSyncChanges(ctx, tx, userID, modeID, complete)
+	feedEntries, err := userFeedSyncChanges(ctx, tx, userID, modeID, complete, floorID, floorAt)
 	if err != nil {
 		return nil, err
 	}
@@ -172,15 +172,17 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 	return entries, nil
 }
 
-// userIdentityFloor returns when the current holder of userID's ID began: the
-// last deletion audited for it, or 0 if there was none. IDs are reused after a
-// deletion, so older audit rows describe a predecessor, not this user.
-func userIdentityFloor(ctx context.Context, q queryer, userID int64) (int64, error) {
-	var last sql.NullInt64
-	err := q.QueryRowContext(ctx,
-		"SELECT MAX(recorded_at) FROM audit_log WHERE object_type = 'user' AND object_id = ? AND action = 'user.deleted'",
-		strconv.FormatInt(userID, 10)).Scan(&last)
-	return last.Int64, err
+// userIdentityFloor returns the audit row ID and time of the last deletion
+// recorded for userID's ID, or zeros if there was none. IDs are reused after a
+// deletion, so audit rows up to that row describe a predecessor, not this user.
+func userIdentityFloor(ctx context.Context, q queryer, userID int64) (id, at int64, err error) {
+	err = q.QueryRowContext(ctx,
+		"SELECT id, recorded_at FROM audit_log WHERE object_type = 'user' AND object_id = ? AND action = 'user.deleted' ORDER BY id DESC LIMIT 1",
+		strconv.FormatInt(userID, 10)).Scan(&id, &at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, nil
+	}
+	return id, at, err
 }
 
 // auditCompleteSince returns the later of from and the audit log's completeness
@@ -244,8 +246,8 @@ func changeSource(actor string) string {
 	return "admin"
 }
 
-func userAuditChanges(ctx context.Context, q queryer, userID, since int64) ([]UserChangeEntry, error) {
-	args := []any{strconv.FormatInt(userID, 10), since}
+func userAuditChanges(ctx context.Context, q queryer, userID, since, floorID int64) ([]UserChangeEntry, error) {
+	args := []any{strconv.FormatInt(userID, 10), since, floorID}
 	placeholders := make([]string, 0, len(userChangeAuditActions))
 	for _, action := range userChangeAuditActions {
 		placeholders = append(placeholders, "?")
@@ -345,6 +347,7 @@ func routeLabels(f AuditRouteFilters) ([]string, int) {
 // a row written before payloads carried names: it could have changed any mode,
 // so the selection before it can't be recovered.
 type selectionChange struct {
+	id     int64
 	at     int64
 	legacy bool
 	modeID int64
@@ -354,6 +357,7 @@ type selectionChange struct {
 // modeChange is one audited catalog mode move. known is false if its payload
 // didn't decode, in which case the mode before it is unknown.
 type modeChange struct {
+	id     int64
 	at     int64
 	known  bool
 	before int64
@@ -371,7 +375,36 @@ type userHistory struct {
 	selCache    map[selectionKey]selectionValue
 }
 
-type selectionKey struct{ at, modeID int64 }
+// syncPoint places a sync against the audit trail. Where audit_seq is known,
+// the sync happened right after the audit row with that ID, which orders it
+// exactly, including within a second. Older syncs only have their time.
+type syncPoint struct {
+	at     int64
+	seq    int64
+	hasSeq bool
+}
+
+type selectionKey struct {
+	point  syncPoint
+	modeID int64
+}
+
+// startIndex is the first change that happened after the sync. Changes in the
+// sync's own second are ordered by ID when the sync has a sequence; without one,
+// a change in that second can't be ordered, and the caller has to treat it as
+// unknown (see modeAt and selectionAt).
+func startIndex(n int, at func(i int) (int64, int64), p syncPoint) int {
+	if p.hasSeq {
+		return sort.Search(n, func(i int) bool {
+			t, id := at(i)
+			return t > p.at || (t == p.at && id > p.seq)
+		})
+	}
+	return sort.Search(n, func(i int) bool {
+		t, _ := at(i)
+		return t >= p.at
+	})
+}
 
 type selectionValue struct {
 	categories map[string]bool
@@ -379,48 +412,48 @@ type selectionValue struct {
 	known      bool
 }
 
-func newUserHistory(ctx context.Context, q queryer, userID, currentMode, since int64) (*userHistory, error) {
+func newUserHistory(ctx context.Context, q queryer, userID, currentMode, since, floorID int64) (*userHistory, error) {
 	rows, err := q.QueryContext(ctx, `
-SELECT recorded_at, action, COALESCE(before, ''), COALESCE(after, '')
+SELECT id, recorded_at, action, COALESCE(before, ''), COALESCE(after, '')
 FROM audit_log
-WHERE object_type = 'user' AND object_id = ? AND recorded_at >= ?
+WHERE object_type = 'user' AND object_id = ? AND recorded_at >= ? AND id > ?
 	AND action IN ('user.selections_changed', 'user.mode_changed')
-ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since)
+ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since, floorID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }() //nolint:errcheck
 	h := &userHistory{q: q, userID: userID, currentMode: currentMode, selCache: map[selectionKey]selectionValue{}}
 	for rows.Next() {
-		var at int64
+		var id, at int64
 		var action, before, after string
-		if err := rows.Scan(&at, &action, &before, &after); err != nil {
+		if err := rows.Scan(&id, &at, &action, &before, &after); err != nil {
 			return nil, err
 		}
 		if action == "user.mode_changed" {
 			var b modeChangeAuditPayload
 			known := json.Unmarshal([]byte(before), &b) == nil
-			h.modes = append(h.modes, modeChange{at: at, known: known, before: b.CatalogModeID})
+			h.modes = append(h.modes, modeChange{id: id, at: at, known: known, before: b.CatalogModeID})
 			continue
 		}
 		var b, a selectionAuditPayload
 		if json.Unmarshal([]byte(before), &b) != nil || json.Unmarshal([]byte(after), &a) != nil {
-			h.selections = append(h.selections, selectionChange{at: at, legacy: true})
+			h.selections = append(h.selections, selectionChange{id: id, at: at, legacy: true})
 			continue
 		}
-		h.selections = append(h.selections, selectionChange{at: at, modeID: a.ModeID, before: b})
+		h.selections = append(h.selections, selectionChange{id: id, at: at, modeID: a.ModeID, before: b})
 	}
 	return h, rows.Err()
 }
 
 // modeAt returns the catalog mode the user was in at time at. A change in the
 // same second as at is ambiguous at this resolution, so it reports unknown.
-func (h *userHistory) modeAt(at int64) (modeID int64, known bool) {
-	i := sort.Search(len(h.modes), func(i int) bool { return h.modes[i].at >= at })
+func (h *userHistory) modeAt(p syncPoint) (modeID int64, known bool) {
+	i := startIndex(len(h.modes), func(i int) (int64, int64) { return h.modes[i].at, h.modes[i].id }, p)
 	if i == len(h.modes) {
 		return h.currentMode, true
 	}
-	if h.modes[i].at == at {
+	if !p.hasSeq && h.modes[i].at == p.at {
 		return 0, false
 	}
 	return h.modes[i].before, h.modes[i].known
@@ -429,15 +462,16 @@ func (h *userHistory) modeAt(at int64) (modeID int64, known bool) {
 // selectionAt returns the user's selection in modeID at time at. known is false
 // when the first change that could touch modeID is a legacy row, or lands in the
 // same second as at, where its order against the sync can't be told apart.
-func (h *userHistory) selectionAt(ctx context.Context, at, modeID int64) (selectionValue, error) {
-	key := selectionKey{at: at, modeID: modeID}
+func (h *userHistory) selectionAt(ctx context.Context, p syncPoint, modeID int64) (selectionValue, error) {
+	key := selectionKey{point: p, modeID: modeID}
 	if v, ok := h.selCache[key]; ok {
 		return v, nil
 	}
 	var v selectionValue
 	v.known = true
 	found := false
-	for i := sort.Search(len(h.selections), func(i int) bool { return h.selections[i].at >= at }); i < len(h.selections); i++ {
+	start := startIndex(len(h.selections), func(i int) (int64, int64) { return h.selections[i].at, h.selections[i].id }, p)
+	for i := start; i < len(h.selections); i++ {
 		c := h.selections[i]
 		if c.legacy {
 			v.known = false
@@ -447,7 +481,7 @@ func (h *userHistory) selectionAt(ctx context.Context, at, modeID int64) (select
 		if c.modeID != modeID {
 			continue
 		}
-		if c.at == at {
+		if !p.hasSeq && c.at == p.at {
 			v.known = false
 			found = true
 			break
@@ -523,8 +557,8 @@ func (h *userHistory) reach(ctx context.Context) (modes []int64, categories []st
 // Selection and mode at each sync come from the audit trail, so changing a
 // selection later doesn't rewrite what an earlier sync meant for the user.
 // A sync that falls before a change the trail can't reconstruct is left out.
-func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, since int64) ([]UserChangeEntry, error) {
-	history, err := newUserHistory(ctx, q, userID, currentMode, since)
+func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, since, floorID, floorAt int64) ([]UserChangeEntry, error) {
+	history, err := newUserHistory(ctx, q, userID, currentMode, since, floorID)
 	if err != nil {
 		return nil, err
 	}
@@ -561,16 +595,22 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 	index := map[entryKey]int{}
 	for rows.Next() {
 		var modeID, changeID, syncedAt int64
+		var seq sql.NullInt64
 		var modeName, feedName, kind, category, service string
-		if err := rows.Scan(&modeID, &modeName, &changeID, &feedName, &syncedAt, &kind, &category, &service); err != nil {
+		if err := rows.Scan(&modeID, &modeName, &changeID, &feedName, &syncedAt, &seq, &kind, &category, &service); err != nil {
 			return nil, err
 		}
+		point := syncPoint{at: syncedAt, seq: seq.Int64, hasSeq: seq.Valid}
+		// A sync from before the ID's last deletion belongs to a predecessor.
+		if floorID > 0 && ((point.hasSeq && point.seq < floorID) || (!point.hasSeq && syncedAt <= floorAt)) {
+			continue
+		}
 		key := ServiceKey{Category: category, Service: service}
-		mode, known := history.modeAt(syncedAt)
+		mode, known := history.modeAt(point)
 		if !known || mode != modeID {
 			continue
 		}
-		sel, err := history.selectionAt(ctx, syncedAt, modeID)
+		sel, err := history.selectionAt(ctx, point, modeID)
 		if err != nil {
 			return nil, err
 		}
@@ -610,7 +650,7 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 // and categories, oldest first within a sync. __MODES__ and __CATEGORIES__ are
 // replaced with one placeholder per value.
 const feedSyncScanQuery = `
-SELECT cm.mode_id, cm.mode_name, c.id, c.feed_name, c.synced_at, s.kind, s.category, s.service
+SELECT cm.mode_id, cm.mode_name, c.id, c.feed_name, c.synced_at, c.audit_seq, s.kind, s.category, s.service
 FROM feed_sync_change_services s
 JOIN feed_sync_changes c ON c.id = s.change_id
 JOIN feed_sync_change_modes cm ON cm.change_id = c.id
