@@ -22,6 +22,7 @@ func V039(ctx context.Context, tx *sql.Tx) error {
 		`CREATE TABLE IF NOT EXISTS feed_sync_change_modes (
 			change_id INTEGER NOT NULL REFERENCES feed_sync_changes(id) ON DELETE CASCADE,
 			mode_id   INTEGER NOT NULL,
+			mode_name TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (change_id, mode_id)
 		)`,
 	}

@@ -186,7 +186,7 @@ func TestUserChangeLogRouteAndModeAndFilterModeChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range []AuditLogEntry{
-		{Action: "user.mode_changed", Before: `{"catalog_mode_id":1}`, After: `{"catalog_mode_id":99}`},
+		{Action: "user.mode_changed", Before: `{"catalog_mode_id":1,"catalog_mode_name":"Default"}`, After: `{"catalog_mode_id":99,"catalog_mode_name":"Lab"}`},
 		{Action: "user.filter_mode_changed", Before: `{"filter_mode":"global"}`, After: `{"filter_mode":"extend"}`},
 	} {
 		e.Actor = "admin:203.0.113.7"
@@ -210,8 +210,8 @@ func TestUserChangeLogRouteAndModeAndFilterModeChanges(t *testing.T) {
 		t.Fatalf("route entry = %+v, want self added allow 10.0.0.0/8 and deny 192.168.0.0/16", route)
 	}
 	mode := byKind["mode"]
-	if mode.Source != "admin" || mode.From == "" || mode.To != "#99" {
-		t.Fatalf("mode entry = %+v, want admin move from mode 1 to #99 (deleted mode)", mode)
+	if mode.Source != "admin" || mode.From != "Default" || mode.To != "Lab" {
+		t.Fatalf("mode entry = %+v, want admin move from Default to Lab, names as recorded", mode)
 	}
 	fm := byKind["filter_mode"]
 	if fm.From != "global" || fm.To != "extend" {
@@ -515,5 +515,30 @@ func TestUserChangeLogWindowFollowsAuditRetention(t *testing.T) {
 	}
 	if got := UserChangeLogWindow(0); got != day {
 		t.Fatalf("window with zero retention = %v, want at least one day", got)
+	}
+}
+
+// TestUserChangeLogKeepsModeNameAsRecorded checks the snapshot: a mode renamed
+// after a sync is still shown under the name it had when the sync ran.
+func TestUserChangeLogKeepsModeNameAsRecorded(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	var oldName string
+	if err := s.DB.QueryRowContext(ctx, "SELECT name FROM catalog_modes WHERE id = ?", DefaultCatalogModeID).Scan(&oldName); err != nil {
+		t.Fatal(err)
+	}
+	recordHistorySync(t, s, feedID, time.Now().Add(-time.Hour).Unix(), ServiceKey{Category: "ai", Service: "named"})
+	if _, err := s.DB.ExecContext(ctx, "UPDATE catalog_modes SET name = 'Renamed' WHERE id = ?", DefaultCatalogModeID); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := feedSyncEntries(all)
+	if len(got) != 1 || got[0].Mode != oldName {
+		t.Fatalf("feed entries = %+v, want the mode shown as %q", got, oldName)
 	}
 }

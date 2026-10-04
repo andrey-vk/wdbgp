@@ -563,12 +563,15 @@ async function saveFilters(): Promise<void> {
     await fetchRouteFiltersInfo()
     // Route filters decide which of the notice's prefixes are announced.
     await fetchFeedChanges()
-    await fetchChangeLog()
   } catch (err) {
     if (handleAuthError(err)) return
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
   } finally {
     savingFilters.value = false
+    // The filters can be committed and audited even when a later step fails
+    // (the backend reports a reconciliation error after the commit), so the
+    // history is refreshed either way, as saveSelections does.
+    await fetchChangeLog()
   }
 }
 

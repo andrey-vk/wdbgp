@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,14 +62,15 @@ LIMIT ?`
 // one mode, sorted, so the change log can diff them by name.
 type selectionAuditPayload struct {
 	ModeID     int64        `json:"mode_id"`
+	ModeName   string       `json:"mode_name"`
 	Categories []string     `json:"categories"`
 	Services   []ServiceKey `json:"services"`
 }
 
 // selectionAuditState builds the audit payload for one mode's selection. Sorted
 // output keeps the JSON stable, so an unchanged selection compares equal.
-func selectionAuditState(modeID int64, categories map[string]bool, services map[ServiceKey]bool) selectionAuditPayload {
-	p := selectionAuditPayload{ModeID: modeID, Categories: []string{}, Services: []ServiceKey{}}
+func selectionAuditState(modeID int64, modeName string, categories map[string]bool, services map[ServiceKey]bool) selectionAuditPayload {
+	p := selectionAuditPayload{ModeID: modeID, ModeName: modeName, Categories: []string{}, Services: []ServiceKey{}}
 	for c := range categories {
 		p.Categories = append(p.Categories, c)
 	}
@@ -116,16 +119,12 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		"SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&modeID); err != nil {
 		return nil, err
 	}
-	modeNames, err := s.catalogModeNames(ctx)
-	if err != nil {
-		return nil, err
-	}
 	since := now.Add(-window).Unix()
-	entries, err := s.userAuditChanges(ctx, userID, since, modeNames)
+	entries, err := s.userAuditChanges(ctx, userID, since)
 	if err != nil {
 		return nil, err
 	}
-	feedEntries, err := s.userFeedSyncChanges(ctx, userID, modeID, since, modeNames)
+	feedEntries, err := s.userFeedSyncChanges(ctx, userID, modeID, since)
 	if err != nil {
 		return nil, err
 	}
@@ -140,27 +139,38 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 	return entries, nil
 }
 
-func (s *Store) catalogModeNames(ctx context.Context) (map[int64]string, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT id, name FROM catalog_modes")
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }() //nolint:errcheck
-	names := map[int64]string{}
-	for rows.Next() {
-		var id int64
-		var name string
-		if err := rows.Scan(&id, &name); err != nil {
-			return nil, err
-		}
-		names[id] = name
-	}
-	return names, rows.Err()
+// modeChangeAuditPayload is the before/after shape of a user.mode_changed row.
+// The name is captured when the change is written, so the log keeps the name
+// the mode had then, even after a rename or after the mode is deleted and its
+// ID reused.
+type modeChangeAuditPayload struct {
+	CatalogModeID   int64  `json:"catalog_mode_id"`
+	CatalogModeName string `json:"catalog_mode_name"`
 }
 
-// modeLabel names a mode, falling back to its ID once the mode is deleted.
-func modeLabel(names map[int64]string, id int64) string {
-	if name, ok := names[id]; ok {
+// modeChangeState reads a mode's audit payload inside tx.
+func modeChangeState(ctx context.Context, tx *sql.Tx, modeID int64) (modeChangeAuditPayload, error) {
+	name, err := modeNameTx(ctx, tx, modeID)
+	if err != nil {
+		return modeChangeAuditPayload{}, err
+	}
+	return modeChangeAuditPayload{CatalogModeID: modeID, CatalogModeName: name}, nil
+}
+
+// modeNameTx returns a catalog mode's name, or "" when no such mode exists.
+func modeNameTx(ctx context.Context, tx *sql.Tx, modeID int64) (string, error) {
+	var name string
+	err := tx.QueryRowContext(ctx, "SELECT name FROM catalog_modes WHERE id = ?", modeID).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return name, err
+}
+
+// modeNameOr is a snapshotted mode name, or the bare ID for a snapshot written
+// without one (a row that predates names, or a mode that had no name).
+func modeNameOr(name string, id int64) string {
+	if name != "" {
 		return name
 	}
 	return "#" + strconv.FormatInt(id, 10)
@@ -176,7 +186,7 @@ func changeSource(actor string) string {
 	return "admin"
 }
 
-func (s *Store) userAuditChanges(ctx context.Context, userID, since int64, modeNames map[int64]string) ([]UserChangeEntry, error) {
+func (s *Store) userAuditChanges(ctx context.Context, userID, since int64) ([]UserChangeEntry, error) {
 	args := []any{strconv.FormatInt(userID, 10), since}
 	placeholders := make([]string, 0, len(userChangeAuditActions))
 	for _, action := range userChangeAuditActions {
@@ -202,10 +212,10 @@ func (s *Store) userAuditChanges(ctx context.Context, userID, since int64, modeN
 		switch action {
 		case "user.selections_changed":
 			e.Kind = "selections"
-			fillSelectionChange(&e, before, after, modeNames)
+			fillSelectionChange(&e, before, after)
 		case "user.mode_changed":
 			e.Kind = "mode"
-			fillModeChange(&e, before, after, modeNames)
+			fillModeChange(&e, before, after)
 		case "user.filter_mode_changed":
 			e.Kind = "filter_mode"
 			fillFilterModeChange(&e, before, after)
@@ -223,23 +233,23 @@ func (s *Store) userAuditChanges(ctx context.Context, userID, since int64, modeN
 // fillSelectionChange diffs two selection payloads by name. Rows written
 // before the payload carried names hold only counts, which don't decode into
 // the name lists; those entries keep their kind and source but list nothing.
-func fillSelectionChange(e *UserChangeEntry, before, after string, modeNames map[int64]string) {
+func fillSelectionChange(e *UserChangeEntry, before, after string) {
 	var b, a selectionAuditPayload
 	if json.Unmarshal([]byte(before), &b) != nil || json.Unmarshal([]byte(after), &a) != nil {
 		return
 	}
-	e.Mode = modeLabel(modeNames, a.ModeID)
+	e.Mode = modeNameOr(a.ModeName, a.ModeID)
 	e.Added.Categories, e.Removed.Categories = diffSets(b.Categories, a.Categories)
 	e.Added.Services, e.Removed.Services = diffSets(b.Services, a.Services)
 }
 
-func fillModeChange(e *UserChangeEntry, before, after string, modeNames map[int64]string) {
-	var b, a map[string]int64
+func fillModeChange(e *UserChangeEntry, before, after string) {
+	var b, a modeChangeAuditPayload
 	if json.Unmarshal([]byte(before), &b) != nil || json.Unmarshal([]byte(after), &a) != nil {
 		return
 	}
-	e.From = modeLabel(modeNames, b["catalog_mode_id"])
-	e.To = modeLabel(modeNames, a["catalog_mode_id"])
+	e.From = modeNameOr(b.CatalogModeName, b.CatalogModeID)
+	e.To = modeNameOr(a.CatalogModeName, a.CatalogModeID)
 }
 
 func fillFilterModeChange(e *UserChangeEntry, before, after string) {
@@ -330,9 +340,9 @@ ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since)
 			return nil, err
 		}
 		if action == "user.mode_changed" {
-			var b map[string]int64
+			var b modeChangeAuditPayload
 			known := json.Unmarshal([]byte(before), &b) == nil
-			h.modes = append(h.modes, modeChange{at: at, known: known, before: b["catalog_mode_id"]})
+			h.modes = append(h.modes, modeChange{at: at, known: known, before: b.CatalogModeID})
 			continue
 		}
 		var b, a selectionAuditPayload
@@ -455,7 +465,7 @@ func (h *userHistory) reach(ctx context.Context) (modes []int64, categories []st
 // Selection and mode at each sync come from the audit trail, so changing a
 // selection later doesn't rewrite what an earlier sync meant for the user.
 // A sync that falls before a change the trail can't reconstruct is left out.
-func (s *Store) userFeedSyncChanges(ctx context.Context, userID, currentMode, since int64, modeNames map[int64]string) ([]UserChangeEntry, error) {
+func (s *Store) userFeedSyncChanges(ctx context.Context, userID, currentMode, since int64) ([]UserChangeEntry, error) {
 	history, err := s.newUserHistory(ctx, userID, currentMode, since)
 	if err != nil {
 		return nil, err
@@ -493,8 +503,8 @@ func (s *Store) userFeedSyncChanges(ctx context.Context, userID, currentMode, si
 	index := map[entryKey]int{}
 	for rows.Next() {
 		var modeID, changeID, syncedAt int64
-		var feedName, kind, category, service string
-		if err := rows.Scan(&modeID, &changeID, &feedName, &syncedAt, &kind, &category, &service); err != nil {
+		var modeName, feedName, kind, category, service string
+		if err := rows.Scan(&modeID, &modeName, &changeID, &feedName, &syncedAt, &kind, &category, &service); err != nil {
 			return nil, err
 		}
 		key := ServiceKey{Category: category, Service: service}
@@ -516,7 +526,7 @@ func (s *Store) userFeedSyncChanges(ctx context.Context, userID, currentMode, si
 				At:       syncedAt,
 				Source:   "feed_sync",
 				Kind:     "feed_sync",
-				Mode:     modeLabel(modeNames, modeID),
+				Mode:     modeNameOr(modeName, modeID),
 				FeedName: feedName,
 			})
 			i = len(out) - 1
@@ -542,7 +552,7 @@ func (s *Store) userFeedSyncChanges(ctx context.Context, userID, currentMode, si
 // and categories, oldest first within a sync. __MODES__ and __CATEGORIES__ are
 // replaced with one placeholder per value.
 const feedSyncScanQuery = `
-SELECT cm.mode_id, c.id, f.name, c.synced_at, s.kind, s.category, s.service
+SELECT cm.mode_id, cm.mode_name, c.id, f.name, c.synced_at, s.kind, s.category, s.service
 FROM feed_sync_change_services s
 JOIN feed_sync_changes c ON c.id = s.change_id
 JOIN feed_sync_change_modes cm ON cm.change_id = c.id

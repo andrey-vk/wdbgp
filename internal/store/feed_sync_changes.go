@@ -181,8 +181,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 	// The modes that include this feed right now are the ones this sync reaches,
 	// since the catalog it publishes is what those modes serve.
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO feed_sync_change_modes(change_id, mode_id)
-SELECT ?, cmf.mode_id FROM catalog_mode_feeds cmf
+INSERT INTO feed_sync_change_modes(change_id, mode_id, mode_name)
+SELECT ?, cmf.mode_id, m.name FROM catalog_mode_feeds cmf
 JOIN catalog_modes m ON m.id = cmf.mode_id AND m.enabled = 1
 WHERE cmf.feed_id = ? AND cmf.exclude = 0`, changeID, feedID); err != nil {
 		return err

@@ -468,8 +468,16 @@ func (s *Store) UpdateUserWithRouteFilters(ctx context.Context, user User, meta,
 		if err := replaceNetworks(ctx, tx, user.ID, user.Networks); err != nil {
 			return err
 		}
+		prevMode, err := modeChangeState(ctx, tx, prevCatalogModeID)
+		if err != nil {
+			return err
+		}
+		newMode, err := modeChangeState(ctx, tx, user.CatalogModeID)
+		if err != nil {
+			return err
+		}
 		if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(user.ID, 10),
-			map[string]int64{"catalog_mode_id": prevCatalogModeID}, map[string]int64{"catalog_mode_id": user.CatalogModeID}, false); err != nil {
+			prevMode, newMode, false); err != nil {
 			return err
 		}
 		// filter_mode/filter_override change the user's effective route
@@ -702,8 +710,12 @@ func (s *Store) SaveUserSelectionCounts(
 			return err
 		}
 		afterCats, afterSvcs = len(ac), len(as)
-		before := selectionAuditState(modeID, bc, bs)
-		after := selectionAuditState(modeID, ac, as)
+		modeName, err := modeNameTx(ctx, tx, modeID)
+		if err != nil {
+			return err
+		}
+		before := selectionAuditState(modeID, modeName, bc, bs)
+		after := selectionAuditState(modeID, modeName, ac, as)
 		return AuditEntryTx(ctx, tx, selectionsMeta, "user", strconv.FormatInt(userID, 10), before, after, false)
 	})
 	return beforeCats, beforeSvcs, afterCats, afterSvcs, prevModeID, err
@@ -1007,8 +1019,15 @@ WHERE id = ?
 	} else if count == 0 {
 		return 0, sql.ErrNoRows
 	}
-	if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10),
-		map[string]int64{"catalog_mode_id": prevModeID}, map[string]int64{"catalog_mode_id": modeID}, false); err != nil {
+	prevMode, err := modeChangeState(ctx, tx, prevModeID)
+	if err != nil {
+		return 0, err
+	}
+	newMode, err := modeChangeState(ctx, tx, modeID)
+	if err != nil {
+		return 0, err
+	}
+	if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), prevMode, newMode, false); err != nil {
 		return 0, err
 	}
 	return prevModeID, nil

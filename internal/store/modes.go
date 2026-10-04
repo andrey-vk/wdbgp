@@ -148,6 +148,12 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64, meta AuditMeta)
 			}
 		}
 
+		// Read the name before the row is deleted, so the audit entries record
+		// what the mode was called rather than a later reuse of its ID.
+		deletedName, err := modeNameTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE users SET catalog_mode_id = 1 WHERE catalog_mode_id = ?", id); err != nil {
 			return err
@@ -165,8 +171,12 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64, meta AuditMeta)
 		// transaction — without this, those moves would have no trace in
 		// the audit log despite user.mode_changed covering every other way
 		// a user's mode can change.
-		before := map[string]int64{"catalog_mode_id": id}
-		after := map[string]int64{"catalog_mode_id": 1}
+		before := modeChangeAuditPayload{CatalogModeID: id, CatalogModeName: deletedName}
+		fallbackName, err := modeNameTx(ctx, tx, 1)
+		if err != nil {
+			return err
+		}
+		after := modeChangeAuditPayload{CatalogModeID: 1, CatalogModeName: fallbackName}
 		for _, userID := range attemptIDs {
 			if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), before, after, false); err != nil {
 				return err
