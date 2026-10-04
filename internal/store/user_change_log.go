@@ -120,6 +120,15 @@ type boundedSelectionPayload struct {
 	Digest     string `json:"digest"`
 }
 
+// boundedSelectionOf returns the bounded side of a selection change, whichever
+// side was too large to store: a shrinking selection has one on the before side.
+func boundedSelectionOf(before, after string) (boundedSelectionPayload, bool) {
+	if b, ok := decodeBoundedSelection(after); ok {
+		return b, true
+	}
+	return decodeBoundedSelection(before)
+}
+
 // decodeBoundedSelection reports whether a selection audit value is a bounded
 // payload, and returns it if so.
 func decodeBoundedSelection(raw string) (boundedSelectionPayload, bool) {
@@ -353,7 +362,7 @@ func fillSelectionChange(e *UserChangeEntry, before, after string) {
 	var b, a selectionAuditPayload
 	if json.Unmarshal([]byte(before), &b) != nil || json.Unmarshal([]byte(after), &a) != nil {
 		// Too large to list: name the mode it was in and leave the lists empty.
-		if bounded, ok := decodeBoundedSelection(after); ok {
+		if bounded, ok := boundedSelectionOf(before, after); ok {
 			e.Mode = modeNameOr(bounded.ModeName, bounded.ModeID)
 		}
 		return
@@ -504,11 +513,8 @@ ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since, floorID
 		if json.Unmarshal([]byte(before), &b) != nil || json.Unmarshal([]byte(after), &a) != nil {
 			// A bounded row is unknown for its own mode only; any other row is
 			// unknown for every mode.
-			var modeID int64
-			if bounded, ok := decodeBoundedSelection(after); ok {
-				modeID = bounded.ModeID
-			}
-			h.selections = append(h.selections, selectionChange{id: id, at: at, legacy: true, modeID: modeID})
+			bounded, _ := boundedSelectionOf(before, after)
+			h.selections = append(h.selections, selectionChange{id: id, at: at, legacy: true, modeID: bounded.ModeID})
 			continue
 		}
 		h.selections = append(h.selections, selectionChange{id: id, at: at, modeID: a.ModeID, before: b})

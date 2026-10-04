@@ -1002,3 +1002,14 @@ func TestBoundedSelectionKeepsItsMode(t *testing.T) {
 		t.Fatalf("bounded value = %s, want mode 7 (Lab) kept", raw)
 	}
 }
+
+// TestBoundedSelectionOfShrinkingChange checks that a change whose bounded side
+// is the before value still finds its mode.
+func TestBoundedSelectionOfShrinkingChange(t *testing.T) {
+	bounded := `{"mode_id":7,"mode_name":"Lab","oversized":true,"categories":0,"services":1001,"digest":"x"}`
+	small := `{"mode_id":7,"mode_name":"Lab","categories":[],"services":[]}`
+	b, ok := boundedSelectionOf(bounded, small)
+	if !ok || b.ModeID != 7 {
+		t.Fatalf("shrinking change: bounded side not found (got %+v, %v)", b, ok)
+	}
+}
