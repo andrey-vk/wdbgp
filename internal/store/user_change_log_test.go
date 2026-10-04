@@ -863,3 +863,30 @@ func TestUserChangeLogOrdersSameSecondByCommit(t *testing.T) {
 		t.Fatalf("oldest = %+v, want the first selection (ai) last", all[2])
 	}
 }
+
+// TestDeleteDisabledFeedRecordsNoRemoval checks that deleting a feed that was
+// already disabled doesn't date its services' removal to the deletion: they
+// left the modes when it was disabled.
+func TestDeleteDisabledFeedRecordsNoRemoval(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return ReplaceCatalogEntries(ctx, tx, feedID, []CatalogEntry{{Category: "ai", Service: "gone-earlier", CIDR: "20.0.0.0/24"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB.ExecContext(ctx, "UPDATE feeds SET enabled = 0 WHERE id = ?", feedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteFeed(ctx, feedID, AuditMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := feedSyncEntries(all); len(got) != 0 {
+		t.Fatalf("feed entries = %+v, want none for a feed disabled before deletion", got)
+	}
+}

@@ -385,11 +385,18 @@ func (s *Store) DeleteFeed(ctx context.Context, id int64, meta AuditMeta) error 
 		// the change rows with SET NULL). It is recorded before the pruning
 		// below, so its audit sequence orders it ahead of the selection rows
 		// the pruning writes, even within the same second.
+		// A disabled feed already left its modes when it was disabled, so its
+		// services were removed then, not now; recording them again would
+		// misdate the removal.
+		var enabled int
+		if err := tx.QueryRowContext(ctx, "SELECT enabled FROM feeds WHERE id = ?", id).Scan(&enabled); err != nil {
+			return err
+		}
 		prev, err := CatalogEntriesForFeedTx(ctx, tx, id)
 		if err != nil {
 			return err
 		}
-		if diff := DiffCatalogEntries(prev, nil); diff.HasChanges() {
+		if diff := DiffCatalogEntries(prev, nil); enabled != 0 && diff.HasChanges() {
 			if err := RecordFeedSyncChangeTx(ctx, tx, id, diff, time.Now().Unix()); err != nil {
 				return err
 			}
