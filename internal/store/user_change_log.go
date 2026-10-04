@@ -61,7 +61,7 @@ var userChangeAuditActions = []string{
 // userChangeAuditQuery reads one user's change-log audit rows. __ACTIONS__ is
 // replaced with one placeholder per entry of userChangeAuditActions.
 const userChangeAuditQuery = `
-SELECT recorded_at, actor, action, COALESCE(before, ''), COALESCE(after, '')
+SELECT id, recorded_at, actor, action, COALESCE(before, ''), COALESCE(after, '')
 FROM audit_log
 WHERE object_type = 'user' AND object_id = ? AND recorded_at >= ? AND id > ?
 	AND action IN (__ACTIONS__)
@@ -109,6 +109,11 @@ type UserChangeList struct {
 // and To carry the old and new value for mode and filter_mode changes; Mode
 // names the mode a selection or feed change applies to.
 type UserChangeEntry struct {
+	// order is the commit position the entry was recorded at, on a doubled scale
+	// so a sync can sit between the audit rows on either side of it: an audit row
+	// is 2*ID, a sync that came after audit row S is 2*S+1. It orders entries that
+	// share a second; it isn't part of the response.
+	order    int64
 	At       int64          `json:"at"`
 	Source   string         `json:"source"`
 	Kind     string         `json:"kind"`
@@ -162,7 +167,12 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		return nil, err
 	}
 	entries = append(entries, feedEntries...)
-	sort.SliceStable(entries, func(i, j int) bool { return entries[i].At > entries[j].At })
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].At != entries[j].At {
+			return entries[i].At > entries[j].At
+		}
+		return entries[i].order > entries[j].order
+	})
 	if len(entries) > userChangeLogEntryLimit {
 		entries = entries[:userChangeLogEntryLimit]
 	}
@@ -197,6 +207,15 @@ func auditCompleteSince(ctx context.Context, q queryer, from int64) (int64, erro
 		return 0, err
 	}
 	return max(from, complete), nil
+}
+
+// syncOrder is a sync's commit position on the same scale as audit rows (see
+// UserChangeEntry.order). A sync without a sequence has no position to offer.
+func syncOrder(p syncPoint) int64 {
+	if !p.hasSeq {
+		return 0
+	}
+	return 2*p.seq + 1
 }
 
 // modeChangeAuditPayload is the before/after shape of a user.mode_changed row.
@@ -263,12 +282,12 @@ func userAuditChanges(ctx context.Context, q queryer, userID, since, floorID int
 	defer func() { _ = rows.Close() }() //nolint:errcheck
 	var out []UserChangeEntry
 	for rows.Next() {
-		var at int64
+		var id, at int64
 		var actor, action, before, after string
-		if err := rows.Scan(&at, &actor, &action, &before, &after); err != nil {
+		if err := rows.Scan(&id, &at, &actor, &action, &before, &after); err != nil {
 			return nil, err
 		}
-		e := UserChangeEntry{At: at, Source: changeSource(actor)}
+		e := UserChangeEntry{order: 2 * id, At: at, Source: changeSource(actor)}
 		switch action {
 		case "user.selections_changed":
 			e.Kind = "selections"
@@ -621,6 +640,7 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 		i, ok := index[ek]
 		if !ok {
 			out = append(out, UserChangeEntry{
+				order:    syncOrder(point),
 				At:       syncedAt,
 				Source:   "feed_sync",
 				Kind:     "feed_sync",

@@ -831,3 +831,35 @@ func TestUserChangeLogDoesNotInheritReusedUserID(t *testing.T) {
 		t.Fatalf("successor with reused ID %d inherited %+v", newID, entries)
 	}
 }
+
+// TestUserChangeLogOrdersSameSecondByCommit checks the listing itself: entries
+// in one second come back newest first by commit order, not by insertion into
+// the response.
+func TestUserChangeLogOrdersSameSecondByCommit(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID := plainChangeLogUser(t, s)
+	feedID := historyFeed(t, s)
+	t0 := time.Now().Add(-5 * time.Hour).Unix()
+
+	recordSelectionAudit(t, s, userID, t0, nil, []string{"ai"})
+	recordHistorySync(t, s, feedID, t0, ServiceKey{Category: "ai", Service: "middle"})
+	recordSelectionAudit(t, s, userID, t0, []string{"ai"}, []string{"ai", "tv"})
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("entries = %+v, want three", all)
+	}
+	if all[0].Kind != "selections" || len(all[0].Added.Categories) != 1 || all[0].Added.Categories[0] != "tv" {
+		t.Fatalf("newest = %+v, want the second selection (tv) first", all[0])
+	}
+	if all[1].Kind != "feed_sync" {
+		t.Fatalf("second = %+v, want the sync between the two selections", all[1])
+	}
+	if all[2].Kind != "selections" || len(all[2].Added.Categories) != 1 || all[2].Added.Categories[0] != "ai" {
+		t.Fatalf("oldest = %+v, want the first selection (ai) last", all[2])
+	}
+}
