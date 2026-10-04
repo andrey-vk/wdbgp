@@ -46,7 +46,7 @@ func TestUserChangeLogAttributesSelfAndAdminSelectionChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entries, err := s.UserChangeLog(ctx, userID, time.Now())
+	entries, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestUserChangeLogShowsFeedChangesOnlyForSelectedCategoriesAndServices(t *te
 		t.Fatal(err)
 	}
 
-	entries, err := s.UserChangeLog(ctx, userID, time.Now())
+	entries, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestUserChangeLogSkipsFeedChangesForUserWithoutSelection(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := s.UserChangeLog(ctx, other, time.Now())
+	entries, err := s.UserChangeLog(ctx, other, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestUserChangeLogReadsLegacyCountPayloadWithoutNames(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := s.UserChangeLog(ctx, userID, time.Now())
+	entries, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestUserChangeLogRouteAndModeAndFilterModeChanges(t *testing.T) {
 		}
 	}
 
-	entries, err := s.UserChangeLog(ctx, userID, time.Now())
+	entries, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestUserChangeLogExcludesOtherUsersAndOldRows(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	entries, err := s.UserChangeLog(ctx, userID, time.Now())
+	entries, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestUserChangeLogUsesSelectionAtSyncTime(t *testing.T) {
 	recordHistorySync(t, s, feedID, t0+1000, ServiceKey{Category: "ai", Service: "while-selected"})
 	recordHistorySync(t, s, feedID, t0+3000, ServiceKey{Category: "ai", Service: "after-dropped"})
 
-	all, err := s.UserChangeLog(ctx, userID, time.Now())
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestUserChangeLogLegacyRowsHideSyncsItCannotPlace(t *testing.T) {
 	recordHistorySync(t, s, feedID, t0-100, ServiceKey{Category: "ai", Service: "unplaceable"})
 	recordHistorySync(t, s, feedID, t0+1000, ServiceKey{Category: "ai", Service: "placeable"})
 
-	all, err := s.UserChangeLog(ctx, userID, time.Now())
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +419,7 @@ func TestUserChangeLogSkipsSyncsMadeInAnotherMode(t *testing.T) {
 	recordHistorySync(t, s, feedID, t0-100, ServiceKey{Category: "ai", Service: "old-mode"})
 	recordHistorySync(t, s, feedID, t0+100, ServiceKey{Category: "ai", Service: "current-mode"})
 
-	all, err := s.UserChangeLog(ctx, userID, time.Now())
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +441,7 @@ func TestUserChangeLogSameSecondChangeLeavesSyncUnplaced(t *testing.T) {
 	recordSelectionAudit(t, s, userID, t0, nil, []string{"ai"})
 	recordHistorySync(t, s, feedID, t0, ServiceKey{Category: "ai", Service: "same-second"})
 
-	all, err := s.UserChangeLog(ctx, userID, time.Now())
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +471,7 @@ func TestUserChangeLogPlacesSyncsByModesTheyReachedThen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	all, err := s.UserChangeLog(ctx, userID, time.Now())
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,12 +495,25 @@ func TestUserChangeLogKeepsSyncsOfFeedDisabledLater(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	all, err := s.UserChangeLog(ctx, userID, time.Now())
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := feedSyncEntries(all)
 	if len(got) != 1 || got[0].Added.Services[0].Service != "kept" {
 		t.Fatalf("feed entries = %+v, want the earlier sync still listed after the feed was disabled", got)
+	}
+}
+
+func TestUserChangeLogWindowFollowsAuditRetention(t *testing.T) {
+	day := 24 * time.Hour
+	if got := UserChangeLogWindow(90); got != userChangeLogWindow {
+		t.Fatalf("window with long retention = %v, want the %v cap", got, userChangeLogWindow)
+	}
+	if got := UserChangeLogWindow(7); got != 7*day {
+		t.Fatalf("window with 7-day retention = %v, want 7 days", got)
+	}
+	if got := UserChangeLogWindow(0); got != day {
+		t.Fatalf("window with zero retention = %v, want at least one day", got)
 	}
 }

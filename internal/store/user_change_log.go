@@ -9,9 +9,19 @@ import (
 	"time"
 )
 
-// userChangeLogWindow bounds how far back a user's change log reaches. It
-// matches the default audit retention, so the two sources age out together.
+// userChangeLogWindow is the longest span a user's change log reaches back.
 const userChangeLogWindow = 30 * 24 * time.Hour
+
+// UserChangeLogWindow is the span the change log may read: the 30-day cap, but
+// never longer than audit retention. Older audit rows are purged, and a feed
+// sync can only be placed if every change after it is still recorded.
+func UserChangeLogWindow(auditRetentionDays int) time.Duration {
+	window := userChangeLogWindow
+	if retention := time.Duration(max(auditRetentionDays, 1)) * 24 * time.Hour; retention < window {
+		window = retention
+	}
+	return window
+}
 
 // userChangeLogListLimit caps each list (categories, services, routes) within
 // one entry, so one large sync or bulk edit can't bloat the response. Anything
@@ -97,11 +107,10 @@ type UserChangeEntry struct {
 }
 
 // UserChangeLog returns the changes to one user's selection, route filters,
-// and mode over the last userChangeLogWindow, newest first. Admin and
-// self-service changes come from the audit log; feed syncs come from
-// feed_sync_change_services, limited to services the user has selected in
-// their current mode, so the log only shows changes that touch the user.
-func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time) ([]UserChangeEntry, error) {
+// and mode over the last window, newest first. Admin and self-service changes
+// come from the audit log; feed syncs are placed by the user's history at each
+// sync (see userFeedSyncChanges). window comes from UserChangeLogWindow.
+func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, window time.Duration) ([]UserChangeEntry, error) {
 	var modeID int64
 	if err := s.DB.QueryRowContext(ctx,
 		"SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&modeID); err != nil {
@@ -111,7 +120,7 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time) 
 	if err != nil {
 		return nil, err
 	}
-	since := now.Add(-userChangeLogWindow).Unix()
+	since := now.Add(-window).Unix()
 	entries, err := s.userAuditChanges(ctx, userID, since, modeNames)
 	if err != nil {
 		return nil, err
@@ -397,6 +406,50 @@ func (h *userHistory) selectionAt(ctx context.Context, at, modeID int64) (select
 	return v, nil
 }
 
+// reach returns every mode the user was in during the window and every category
+// they selected in one of those modes, whether currently or at some recorded
+// point. Each state the history can answer with is a recorded "before" or the
+// current selection, so nothing outside these sets can be relevant.
+func (h *userHistory) reach(ctx context.Context) (modes []int64, categories []string, err error) {
+	modeSet := map[int64]bool{h.currentMode: true}
+	for _, m := range h.modes {
+		if m.known {
+			modeSet[m.before] = true
+		}
+	}
+	catSet := map[string]bool{}
+	for _, c := range h.selections {
+		if c.legacy {
+			continue
+		}
+		for _, cat := range c.before.Categories {
+			catSet[cat] = true
+		}
+		for _, svc := range c.before.Services {
+			catSet[svc.Category] = true
+		}
+	}
+	for m := range modeSet {
+		modes = append(modes, m)
+		cats, svcs, err := userModeSelection(ctx, h.store.DB, h.userID, m)
+		if err != nil {
+			return nil, nil, err
+		}
+		for cat := range cats {
+			catSet[cat] = true
+		}
+		for svc := range svcs {
+			catSet[svc.Category] = true
+		}
+	}
+	for cat := range catSet {
+		categories = append(categories, cat)
+	}
+	sort.Slice(modes, func(i, j int) bool { return modes[i] < modes[j] })
+	sort.Strings(categories)
+	return modes, categories, nil
+}
+
 // userFeedSyncChanges lists the services feed syncs added or removed that the
 // user had selected at the time of each sync, in the mode the user was in then.
 // Selection and mode at each sync come from the audit trail, so changing a
@@ -407,17 +460,30 @@ func (s *Store) userFeedSyncChanges(ctx context.Context, userID, currentMode, si
 	if err != nil {
 		return nil, err
 	}
+	modes, categories, err := history.reach(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(modes) == 0 || len(categories) == 0 {
+		return nil, nil
+	}
+	// Only a service in a category the user selected at some point in the
+	// window can ever count (selecting a service also names its category), so
+	// the scan is narrowed to those modes and categories before expanding rows.
 	// A feed's enabled state and mode assignments today say nothing about the
 	// syncs already recorded, so neither filters here: each sync carries the
 	// modes it reached, and history outlives a feed being disabled.
-	rows, err := s.DB.QueryContext(ctx, `
-SELECT cm.mode_id, c.id, f.name, c.synced_at, s.kind, s.category, s.service
-FROM feed_sync_change_services s
-JOIN feed_sync_changes c ON c.id = s.change_id
-JOIN feed_sync_change_modes cm ON cm.change_id = c.id
-JOIN feeds f ON f.id = c.feed_id
-WHERE c.synced_at >= ?
-ORDER BY c.synced_at DESC, c.id DESC, cm.mode_id, s.kind, s.category, s.service`, since)
+	args := []any{since}
+	for _, m := range modes {
+		args = append(args, m)
+	}
+	for _, c := range categories {
+		args = append(args, c)
+	}
+	rows, err := s.DB.QueryContext(ctx, strings.NewReplacer(
+		"__MODES__", placeholders(len(modes)),
+		"__CATEGORIES__", placeholders(len(categories)),
+	).Replace(feedSyncScanQuery), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -470,6 +536,23 @@ ORDER BY c.synced_at DESC, c.id DESC, cm.mode_id, s.kind, s.category, s.service`
 		capChangeList(&out[i].Removed)
 	}
 	return out, nil
+}
+
+// feedSyncScanQuery reads the service rows of recorded syncs for the given modes
+// and categories, oldest first within a sync. __MODES__ and __CATEGORIES__ are
+// replaced with one placeholder per value.
+const feedSyncScanQuery = `
+SELECT cm.mode_id, c.id, f.name, c.synced_at, s.kind, s.category, s.service
+FROM feed_sync_change_services s
+JOIN feed_sync_changes c ON c.id = s.change_id
+JOIN feed_sync_change_modes cm ON cm.change_id = c.id
+JOIN feeds f ON f.id = c.feed_id
+WHERE c.synced_at >= ? AND cm.mode_id IN (__MODES__) AND s.category IN (__CATEGORIES__)
+ORDER BY c.synced_at DESC, c.id DESC, cm.mode_id, s.kind, s.category, s.service`
+
+// placeholders returns n comma-separated "?" placeholders.
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?, ", n), ", ")
 }
 
 // diffSets returns the elements only in after (added) and only in before
