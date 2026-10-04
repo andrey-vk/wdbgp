@@ -123,20 +123,29 @@ type UserChangeEntry struct {
 // come from the audit log; feed syncs are placed by the user's history at each
 // sync (see userFeedSyncChanges). window comes from UserChangeLogWindow.
 func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, window time.Duration) ([]UserChangeEntry, error) {
+	// One read transaction, so the current mode, the audit rows, and the feed
+	// rows describe the same moment. Read separately, a selection save committing
+	// between the reads could leave the reconstruction seeing a selection with no
+	// audit row for it.
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }() //nolint:errcheck
 	var modeID int64
-	if err := s.DB.QueryRowContext(ctx,
+	if err := tx.QueryRowContext(ctx,
 		"SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&modeID); err != nil {
 		return nil, err
 	}
-	since, err := s.auditCompleteSince(ctx, now.Add(-window).Unix())
+	since, err := auditCompleteSince(ctx, tx, now.Add(-window).Unix())
 	if err != nil {
 		return nil, err
 	}
-	entries, err := s.userAuditChanges(ctx, userID, since)
+	entries, err := userAuditChanges(ctx, tx, userID, since)
 	if err != nil {
 		return nil, err
 	}
-	feedEntries, err := s.userFeedSyncChanges(ctx, userID, modeID, since)
+	feedEntries, err := userFeedSyncChanges(ctx, tx, userID, modeID, since)
 	if err != nil {
 		return nil, err
 	}
@@ -153,9 +162,9 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 
 // auditCompleteSince returns the later of from and the audit log's completeness
 // boundary, so the window never reaches back over rows a purge already removed.
-func (s *Store) auditCompleteSince(ctx context.Context, from int64) (int64, error) {
+func auditCompleteSince(ctx context.Context, q queryer, from int64) (int64, error) {
 	var complete int64
-	err := s.DB.QueryRowContext(ctx, "SELECT complete_since FROM audit_log_coverage WHERE id = 1").Scan(&complete)
+	err := q.QueryRowContext(ctx, "SELECT complete_since FROM audit_log_coverage WHERE id = 1").Scan(&complete)
 	if errors.Is(err, sql.ErrNoRows) {
 		return from, nil
 	}
@@ -212,7 +221,7 @@ func changeSource(actor string) string {
 	return "admin"
 }
 
-func (s *Store) userAuditChanges(ctx context.Context, userID, since int64) ([]UserChangeEntry, error) {
+func userAuditChanges(ctx context.Context, q queryer, userID, since int64) ([]UserChangeEntry, error) {
 	args := []any{strconv.FormatInt(userID, 10), since}
 	placeholders := make([]string, 0, len(userChangeAuditActions))
 	for _, action := range userChangeAuditActions {
@@ -222,7 +231,7 @@ func (s *Store) userAuditChanges(ctx context.Context, userID, since int64) ([]Us
 	args = append(args, userChangeLogAuditLimit)
 	// Only "?" placeholders are substituted; every value is still bound.
 	query := strings.Replace(userChangeAuditQuery, "__ACTIONS__", strings.Join(placeholders, ", "), 1)
-	rows, err := s.DB.QueryContext(ctx, query, args...)
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +340,7 @@ type modeChange struct {
 // audited, so the state at time T is the "before" of the first change after T,
 // and the current state when no change follows T.
 type userHistory struct {
-	store       *Store
+	q           queryer
 	userID      int64
 	currentMode int64
 	selections  []selectionChange
@@ -347,8 +356,8 @@ type selectionValue struct {
 	known      bool
 }
 
-func (s *Store) newUserHistory(ctx context.Context, userID, currentMode, since int64) (*userHistory, error) {
-	rows, err := s.DB.QueryContext(ctx, `
+func newUserHistory(ctx context.Context, q queryer, userID, currentMode, since int64) (*userHistory, error) {
+	rows, err := q.QueryContext(ctx, `
 SELECT recorded_at, action, COALESCE(before, ''), COALESCE(after, '')
 FROM audit_log
 WHERE object_type = 'user' AND object_id = ? AND recorded_at >= ?
@@ -358,7 +367,7 @@ ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since)
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }() //nolint:errcheck
-	h := &userHistory{store: s, userID: userID, currentMode: currentMode, selCache: map[selectionKey]selectionValue{}}
+	h := &userHistory{q: q, userID: userID, currentMode: currentMode, selCache: map[selectionKey]selectionValue{}}
 	for rows.Next() {
 		var at int64
 		var action, before, after string
@@ -432,7 +441,7 @@ func (h *userHistory) selectionAt(ctx context.Context, at, modeID int64) (select
 		break
 	}
 	if !found {
-		cats, svcs, err := userModeSelection(ctx, h.store.DB, h.userID, modeID)
+		cats, svcs, err := userModeSelection(ctx, h.q, h.userID, modeID)
 		if err != nil {
 			return selectionValue{}, err
 		}
@@ -467,7 +476,7 @@ func (h *userHistory) reach(ctx context.Context) (modes []int64, categories []st
 	}
 	for m := range modeSet {
 		modes = append(modes, m)
-		cats, svcs, err := userModeSelection(ctx, h.store.DB, h.userID, m)
+		cats, svcs, err := userModeSelection(ctx, h.q, h.userID, m)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -491,8 +500,8 @@ func (h *userHistory) reach(ctx context.Context) (modes []int64, categories []st
 // Selection and mode at each sync come from the audit trail, so changing a
 // selection later doesn't rewrite what an earlier sync meant for the user.
 // A sync that falls before a change the trail can't reconstruct is left out.
-func (s *Store) userFeedSyncChanges(ctx context.Context, userID, currentMode, since int64) ([]UserChangeEntry, error) {
-	history, err := s.newUserHistory(ctx, userID, currentMode, since)
+func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, since int64) ([]UserChangeEntry, error) {
+	history, err := newUserHistory(ctx, q, userID, currentMode, since)
 	if err != nil {
 		return nil, err
 	}
@@ -516,7 +525,7 @@ func (s *Store) userFeedSyncChanges(ctx context.Context, userID, currentMode, si
 	for _, c := range categories {
 		args = append(args, c)
 	}
-	rows, err := s.DB.QueryContext(ctx, strings.NewReplacer(
+	rows, err := q.QueryContext(ctx, strings.NewReplacer(
 		"__MODES__", placeholders(len(modes)),
 		"__CATEGORIES__", placeholders(len(categories)),
 	).Replace(feedSyncScanQuery), args...)

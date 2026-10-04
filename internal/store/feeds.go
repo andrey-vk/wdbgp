@@ -287,6 +287,24 @@ type selectionSnapshot struct {
 	state  selectionAuditPayload
 }
 
+// allModeIDsTx lists every catalog mode ID.
+func allModeIDsTx(ctx context.Context, tx *sql.Tx) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT id FROM catalog_modes ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // modeSelectionSnapshotsTx snapshots every user's selection in each mode.
 func modeSelectionSnapshotsTx(ctx context.Context, tx *sql.Tx, modeIDs []int64) ([]selectionSnapshot, error) {
 	var out []selectionSnapshot
@@ -340,7 +358,14 @@ func (s *Store) DeleteFeed(ctx context.Context, id int64, meta AuditMeta) error 
 				return err
 			}
 		}
-		snapshots, err := modeSelectionSnapshotsTx(ctx, tx, modeIDs)
+		// The pruning below is unscoped: it drops selections that no feed backs in
+		// any mode, including modes the feed was detached from earlier. So every
+		// mode is snapshotted, not only the ones the feed is in now.
+		allModeIDs, err := allModeIDsTx(ctx, tx)
+		if err != nil {
+			return err
+		}
+		snapshots, err := modeSelectionSnapshotsTx(ctx, tx, allModeIDs)
 		if err != nil {
 			return err
 		}

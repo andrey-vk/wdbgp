@@ -716,3 +716,42 @@ func TestPurgeAuditLogPrunesDeletedFeedHistory(t *testing.T) {
 		t.Fatalf("orphaned changes after purge = %d, want 2 (the old sync is gone)", n)
 	}
 }
+
+// TestDeleteFeedAuditsSelectionsInDetachedModes checks that a selection the
+// feed's deletion prunes is audited even in a mode the feed was detached from
+// earlier, since the pruning reaches every mode.
+func TestDeleteFeedAuditsSelectionsInDetachedModes(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	labID, err := s.AddCatalogMode(ctx, "Detached", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, 0)", labID, feedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserModeSelection(ctx, tx, userID, labID, []string{"ai"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveFeedFromMode(ctx, labID, feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.DeleteFeed(ctx, feedID, AuditMeta{Actor: "admin:203.0.113.7", UserAgent: "test"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var rows int
+	if err := s.DB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM audit_log WHERE action = 'user.selections_changed' AND object_id = ? AND before LIKE ?",
+		strconv.FormatInt(userID, 10), `%"mode_id":`+strconv.FormatInt(labID, 10)+`%`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("selection audit rows for the detached mode = %d, want 1", rows)
+	}
+}
