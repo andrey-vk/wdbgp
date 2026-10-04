@@ -99,11 +99,35 @@ func selectionAuditValue(p selectionAuditPayload) any {
 		return p
 	}
 	sum := sha256.Sum256(names)
-	return map[string]any{
-		"categories": len(p.Categories),
-		"services":   len(p.Services),
-		"digest":     hex.EncodeToString(sum[:]),
+	return boundedSelectionPayload{
+		ModeID:     p.ModeID,
+		ModeName:   p.ModeName,
+		Oversized:  true,
+		Categories: len(p.Categories),
+		Services:   len(p.Services),
+		Digest:     hex.EncodeToString(sum[:]),
 	}
+}
+
+// boundedSelectionPayload is a selection too large to store by name. It keeps
+// the mode, so the reader can treat it as unknown for that mode alone.
+type boundedSelectionPayload struct {
+	ModeID     int64  `json:"mode_id"`
+	ModeName   string `json:"mode_name"`
+	Oversized  bool   `json:"oversized"`
+	Categories int    `json:"categories"`
+	Services   int    `json:"services"`
+	Digest     string `json:"digest"`
+}
+
+// decodeBoundedSelection reports whether a selection audit value is a bounded
+// payload, and returns it if so.
+func decodeBoundedSelection(raw string) (boundedSelectionPayload, bool) {
+	var b boundedSelectionPayload
+	if json.Unmarshal([]byte(raw), &b) != nil || !b.Oversized {
+		return boundedSelectionPayload{}, false
+	}
+	return b, true
 }
 
 // selectionAuditState builds the audit payload for one mode's selection. Sorted
@@ -328,6 +352,10 @@ func userAuditChanges(ctx context.Context, q queryer, userID, since, floorID int
 func fillSelectionChange(e *UserChangeEntry, before, after string) {
 	var b, a selectionAuditPayload
 	if json.Unmarshal([]byte(before), &b) != nil || json.Unmarshal([]byte(after), &a) != nil {
+		// Too large to list: name the mode it was in and leave the lists empty.
+		if bounded, ok := decodeBoundedSelection(after); ok {
+			e.Mode = modeNameOr(bounded.ModeName, bounded.ModeID)
+		}
 		return
 	}
 	e.Mode = modeNameOr(a.ModeName, a.ModeID)
@@ -474,7 +502,13 @@ ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since, floorID
 		}
 		var b, a selectionAuditPayload
 		if json.Unmarshal([]byte(before), &b) != nil || json.Unmarshal([]byte(after), &a) != nil {
-			h.selections = append(h.selections, selectionChange{id: id, at: at, legacy: true})
+			// A bounded row is unknown for its own mode only; any other row is
+			// unknown for every mode.
+			var modeID int64
+			if bounded, ok := decodeBoundedSelection(after); ok {
+				modeID = bounded.ModeID
+			}
+			h.selections = append(h.selections, selectionChange{id: id, at: at, legacy: true, modeID: modeID})
 			continue
 		}
 		h.selections = append(h.selections, selectionChange{id: id, at: at, modeID: a.ModeID, before: b})
@@ -509,7 +543,7 @@ func (h *userHistory) selectionAt(ctx context.Context, p syncPoint, modeID int64
 	start := startIndex(len(h.selections), func(i int) (int64, int64) { return h.selections[i].at, h.selections[i].id }, p)
 	for i := start; i < len(h.selections); i++ {
 		c := h.selections[i]
-		if c.legacy {
+		if c.legacy && (c.modeID == 0 || c.modeID == modeID) {
 			v.known = false
 			found = true
 			break

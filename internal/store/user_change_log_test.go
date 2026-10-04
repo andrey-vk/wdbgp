@@ -923,7 +923,7 @@ func TestSelectionAuditValueBoundsLargeSelections(t *testing.T) {
 		t.Fatal("small selection not audited by name")
 	}
 	large := selectionAuditPayload{ModeID: 1, Services: make([]ServiceKey, maxSelectionAuditNames+1)}
-	if _, ok := selectionAuditValue(large).(map[string]any); !ok {
+	if _, ok := selectionAuditValue(large).(boundedSelectionPayload); !ok {
 		t.Fatalf("large selection audited as %#v, want counts", selectionAuditValue(large))
 	}
 	// Same counts, different names: the audited values must still differ.
@@ -986,5 +986,19 @@ func TestRecordFeedSyncWritesEveryServiceAcrossBatches(t *testing.T) {
 	}
 	if got != n {
 		t.Fatalf("recorded services = %d, want %d", got, n)
+	}
+}
+
+// TestBoundedSelectionKeepsItsMode checks that an oversized selection's audit
+// value still names its mode, so the reader can scope it to that mode.
+func TestBoundedSelectionKeepsItsMode(t *testing.T) {
+	large := selectionAuditPayload{ModeID: 7, ModeName: "Lab", Services: make([]ServiceKey, maxSelectionAuditNames+1)}
+	raw, err := json.Marshal(selectionAuditValue(large))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, ok := decodeBoundedSelection(string(raw))
+	if !ok || b.ModeID != 7 || b.ModeName != "Lab" {
+		t.Fatalf("bounded value = %s, want mode 7 (Lab) kept", raw)
 	}
 }
