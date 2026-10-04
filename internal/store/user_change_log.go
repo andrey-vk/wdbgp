@@ -46,6 +46,11 @@ const userChangeLogListLimit = 100
 // userChangeLogEntryLimit caps the entries returned for one user, newest first.
 const userChangeLogEntryLimit = 200
 
+// userChangeHistoryRows bounds the audit rows read to reconstruct a user's
+// selection and mode. Only the newest rows are read; a sync older than the oldest
+// row read is unknown, not placed from a guess.
+const userChangeHistoryRows = 2000
+
 // userChangeLogAuditLimit bounds the raw audit rows read for one user before
 // merging with feed changes.
 const userChangeLogAuditLimit = 500
@@ -440,6 +445,9 @@ type modeChange struct {
 // audited, so the state at time T is the "before" of the first change after T,
 // and the current state when no change follows T.
 type userHistory struct {
+	// horizon is the oldest audit row ID read, when the read was cut short; a sync
+	// older than it can't be placed. Zero when the history is complete.
+	horizon     int64
 	q           queryer
 	userID      int64
 	currentMode int64
@@ -503,24 +511,34 @@ func indexByCategory(services map[ServiceKey]bool) map[string]map[string]bool {
 	return out
 }
 
-func newUserHistory(ctx context.Context, q queryer, userID, currentMode, since, floorID int64) (*userHistory, error) {
+func newUserHistory(ctx context.Context, q queryer, userID, currentMode, since, floorID int64, maxRows int) (*userHistory, error) {
+	// The newest maxRows rows are read, then put in time order.
 	rows, err := q.QueryContext(ctx, `
-SELECT id, recorded_at, action, COALESCE(before, ''), COALESCE(after, '')
-FROM audit_log
-WHERE object_type = 'user' AND object_id = ? AND recorded_at >= ? AND id > ?
-	AND action IN ('user.selections_changed', 'user.mode_changed')
-ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since, floorID)
+SELECT id, recorded_at, action, COALESCE(before, ''), COALESCE(after, '') FROM (
+	SELECT id, recorded_at, action, before, after
+	FROM audit_log
+	WHERE object_type = 'user' AND object_id = ? AND recorded_at >= ? AND id > ?
+		AND action IN ('user.selections_changed', 'user.mode_changed')
+	ORDER BY id DESC
+	LIMIT ?
+) ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since, floorID, maxRows)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }() //nolint:errcheck
 	h := &userHistory{q: q, userID: userID, currentMode: currentMode,
 		selCache: map[selectionKey]selectionValue{}, live: map[int64]selectionValue{}}
+	readRows := 0
+	oldest := int64(0)
 	for rows.Next() {
+		readRows++
 		var id, at int64
 		var action, before, after string
 		if err := rows.Scan(&id, &at, &action, &before, &after); err != nil {
 			return nil, err
+		}
+		if oldest == 0 || id < oldest {
+			oldest = id
 		}
 		if action == "user.mode_changed" {
 			var b modeChangeAuditPayload
@@ -547,7 +565,15 @@ ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since, floorID
 		}
 		h.selections = append(h.selections, selectionChange{id: id, at: at, modeID: a.ModeID, before: b})
 	}
-	return h, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// A full read may have cut older rows off: the oldest row read is then the
+	// horizon. Its ID is recorded with the first row read, which is the oldest.
+	if readRows == maxRows {
+		h.horizon = oldest
+	}
+	return h, nil
 }
 
 // modeAt returns the catalog mode the user was in at time at. A change in the
@@ -670,9 +696,14 @@ func (h *userHistory) reach(ctx context.Context) (modes []int64, categories []st
 // selection later doesn't rewrite what an earlier sync meant for the user.
 // A sync that falls before a change the trail can't reconstruct is left out.
 func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, since, floorID int64) ([]UserChangeEntry, error) {
-	history, err := newUserHistory(ctx, q, userID, currentMode, since, floorID)
+	history, err := newUserHistory(ctx, q, userID, currentMode, since, floorID, userChangeHistoryRows)
 	if err != nil {
 		return nil, err
+	}
+	// Syncs older than the oldest row read can't be placed: their state is only
+	// in rows that weren't read.
+	if history.horizon > floorID {
+		floorID = history.horizon
 	}
 	modes, categories, err := history.reach(ctx)
 	if err != nil {

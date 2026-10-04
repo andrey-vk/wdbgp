@@ -1134,3 +1134,50 @@ func TestUserChangeLogAddsNoEntryForUnselectedChanges(t *testing.T) {
 		t.Fatalf("feed entries = %+v, want none for a sync the user has nothing in", got)
 	}
 }
+
+// TestUserHistoryHorizonWhenRowsAreCut checks that reading only the newest rows
+// sets a horizon at the oldest row read, and that a complete read has none.
+func TestUserHistoryHorizonWhenRowsAreCut(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID := plainChangeLogUser(t, s)
+	base := time.Now().Add(-5 * time.Hour).Unix()
+	var ids []int64
+	for i := 0; i < 5; i++ {
+		recordSelectionAudit(t, s, userID, base+int64(i), nil, []string{"ai"})
+	}
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT id FROM audit_log WHERE object_type = 'user' AND object_id = ? AND action = 'user.selections_changed' ORDER BY id",
+		strconv.FormatInt(userID, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 5 {
+		t.Fatalf("recorded rows = %d, want 5", len(ids))
+	}
+
+	cut, err := newUserHistory(ctx, s.DB, userID, DefaultCatalogModeID, 0, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cut.horizon != ids[3] {
+		t.Fatalf("horizon = %d, want the oldest of the newest two rows (%d)", cut.horizon, ids[3])
+	}
+	full, err := newUserHistory(ctx, s.DB, userID, DefaultCatalogModeID, 0, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.horizon != 0 {
+		t.Fatalf("complete read has horizon %d, want none", full.horizon)
+	}
+}
