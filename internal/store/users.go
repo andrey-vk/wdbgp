@@ -702,8 +702,8 @@ func (s *Store) SaveUserSelectionCounts(
 			return err
 		}
 		afterCats, afterSvcs = len(ac), len(as)
-		before := map[string]int{"categories": beforeCats, "services": beforeSvcs}
-		after := map[string]int{"categories": afterCats, "services": afterSvcs}
+		before := selectionAuditState(modeID, bc, bs)
+		after := selectionAuditState(modeID, ac, as)
 		return AuditEntryTx(ctx, tx, selectionsMeta, "user", strconv.FormatInt(userID, 10), before, after, false)
 	})
 	return beforeCats, beforeSvcs, afterCats, afterSvcs, prevModeID, err

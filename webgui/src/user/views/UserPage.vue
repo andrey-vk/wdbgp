@@ -12,6 +12,8 @@ import userApi from '@/api/client'
 import { useSequencedRequest } from '@/composables/useSequencedRequest'
 import type { UserDataResponse, UserRouteFiltersResult } from '@/types/user-page'
 import type { UserFeedChange } from '@/types/feed-changes'
+import type { UserChangeEntry } from '@/types/change-log'
+import UserChangeLog from '@/user/components/UserChangeLog.vue'
 import type { UserCIDRLookupResult } from '@/types/user-debug'
 
 const { t } = useI18n()
@@ -57,6 +59,9 @@ const routeFiltersInfo = ref<UserRouteFiltersResult | null>(null)
 const routeFiltersRequest = useSequencedRequest()
 const feedChanges = ref<UserFeedChange[]>([])
 const feedChangesRequest = useSequencedRequest()
+// Null until first loaded, so the section stays hidden rather than showing an empty log on failure.
+const changeLog = ref<UserChangeEntry[] | null>(null)
+const changeLogRequest = useSequencedRequest()
 
 // ── Catalog mode ────────────────────────────────────────────
 const selectedModeId = ref<number>(0)
@@ -174,6 +179,7 @@ function resetSessionState(): void {
   checkedServices.value = new Set()
   invalidateRouteFiltersInfo()
   invalidateFeedChanges()
+  invalidateChangeLog()
   lookupQuery.value = ''
   invalidateLookup()
 }
@@ -276,6 +282,7 @@ async function loadUserData(userData: UserDataResponse): Promise<void> {
   await fetchCounts()
   await fetchRouteFiltersInfo()
   await fetchFeedChanges()
+  await fetchChangeLog()
 }
 
 // Bumps routeFiltersRequest's sequence so a GET still in flight at logout
@@ -294,6 +301,26 @@ function invalidateRouteFiltersInfo(): void {
 function invalidateFeedChanges(): void {
   feedChangesRequest.next()
   feedChanges.value = []
+}
+
+function invalidateChangeLog(): void {
+  changeLogRequest.next()
+  changeLog.value = null
+}
+
+// Loads the user's change history. Same sequencing as fetchFeedChanges, so a
+// response for a previous user or an older save can't overwrite a newer one.
+async function fetchChangeLog(): Promise<void> {
+  const token = changeLogRequest.next()
+  try {
+    const resp = await userApi.get<{ entries: UserChangeEntry[] }>('/user/change-log')
+    if (!changeLogRequest.isCurrent(token)) return
+    changeLog.value = resp.data.entries
+  } catch (err) {
+    if (!changeLogRequest.isCurrent(token)) return
+    if (handleAuthError(err)) return
+    changeLog.value = null
+  }
 }
 
 async function fetchFeedChanges(): Promise<void> {
@@ -513,6 +540,7 @@ async function saveSelections(): Promise<void> {
     // still have changed what the notice should list. Refresh either way.
     saving.value = false
     await fetchFeedChanges()
+    await fetchChangeLog()
   }
 }
 
@@ -535,6 +563,7 @@ async function saveFilters(): Promise<void> {
     await fetchRouteFiltersInfo()
     // Route filters decide which of the notice's prefixes are announced.
     await fetchFeedChanges()
+    await fetchChangeLog()
   } catch (err) {
     if (handleAuthError(err)) return
     toast.add({ severity: 'error', summary: 'Error', life: 5000 })
@@ -913,6 +942,9 @@ onMounted(() => {
           </div>
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">{{ t('user.feed_changes_hint') }}</p>
         </div>
+
+        <!-- Changes to this user's selection, filters, and mode, with who made them -->
+        <UserChangeLog v-if="changeLog" :entries="changeLog" />
 
         <!-- Filters in effect (read-only) -->
         <div v-if="routeFiltersInfo" data-testid="route-filters-section" class="p-6 rounded-border shadow-sm mb-6 bg-white dark:bg-gray-900">
