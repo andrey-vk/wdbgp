@@ -234,10 +234,7 @@ func purgeLoop(ctx context.Context, interval time.Duration, db *store.Store, s *
 				}
 			}
 
-			auditDays := s.AuditLogRetentionDays.Get()
-			if auditDays <= 0 {
-				auditDays = 30
-			}
+			auditDays := store.EffectiveAuditRetentionDays(s.AuditLogRetentionDays.Get())
 			if err := db.PurgeAuditLog(ctx, auditDays); err != nil {
 				logging.Error("audit log purge failed", "error", err)
 			}

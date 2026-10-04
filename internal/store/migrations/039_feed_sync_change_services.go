@@ -9,44 +9,106 @@ import (
 // V039NoTxSQL moves feed_sync_changes.feed_id from ON DELETE CASCADE to SET
 // NULL, so deleting a feed keeps the history of its syncs for the users it
 // reached. Changing a foreign key needs a table rebuild, which has to run with
-// foreign keys off, outside the migration transaction (the same approach as
-// migration 031). It rebuilds only while the cascade is still in place, so it is
-// safe to re-run.
+// foreign keys off, outside the migration transaction (as in migration 031).
+//
+// It works from the state the tables are in, so an interrupted run resumes
+// cleanly: a staging table left behind is discarded and rebuilt from the
+// original, which is only dropped once the copy is complete, and a rebuild
+// interrupted after the drop is finished by the rename alone. Everything runs on
+// one connection, so foreign keys are restored on the connection that turned
+// them off.
 func V039NoTxSQL(ctx context.Context, db *sql.DB) error {
-	var cascades int
-	if err := db.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM pragma_foreign_key_list('feed_sync_changes')
-WHERE "table" = 'feeds' AND on_delete = 'CASCADE'`).Scan(&cascades); err != nil {
+	conn, err := db.Conn(ctx)
+	if err != nil {
 		return err
 	}
-	if cascades == 0 {
+	defer func() { _ = conn.Close() }() //nolint:errcheck
+
+	hasOriginal, err := tableExistsOn(ctx, conn, "feed_sync_changes")
+	if err != nil {
+		return err
+	}
+	hasStaging, err := tableExistsOn(ctx, conn, "feed_sync_changes_new")
+	if err != nil {
+		return err
+	}
+	switch {
+	case hasOriginal:
+		cascades, err := feedCascadeCountOn(ctx, conn)
+		if err != nil {
+			return err
+		}
+		if cascades > 0 {
+			if err := rebuildFeedSyncChangesOn(ctx, conn); err != nil {
+				return err
+			}
+		}
+	case hasStaging:
+		// The original was dropped but the rename didn't run.
+		if _, err := conn.ExecContext(ctx, `ALTER TABLE feed_sync_changes_new RENAME TO feed_sync_changes`); err != nil {
+			return err
+		}
+	default:
 		return nil
 	}
-	_, err := db.ExecContext(ctx, `
-PRAGMA foreign_keys = OFF;
-CREATE TABLE feed_sync_changes_new (
-	id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-	feed_id              INTEGER REFERENCES feeds(id) ON DELETE SET NULL,
-	synced_at            INTEGER NOT NULL,
-	added_services       INTEGER NOT NULL,
-	removed_services     INTEGER NOT NULL,
-	added_prefixes       INTEGER NOT NULL,
-	removed_prefixes     INTEGER NOT NULL,
-	added_associations   INTEGER NOT NULL,
-	removed_associations INTEGER NOT NULL,
-	feed_name            TEXT NOT NULL DEFAULT ''
-);
-INSERT INTO feed_sync_changes_new (id, feed_id, synced_at, added_services, removed_services, added_prefixes,
-	removed_prefixes, added_associations, removed_associations, feed_name)
-SELECT id, feed_id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes,
-	added_associations, removed_associations,
-	COALESCE((SELECT name FROM feeds WHERE feeds.id = feed_sync_changes.feed_id), '')
-FROM feed_sync_changes;
-DROP TABLE feed_sync_changes;
-ALTER TABLE feed_sync_changes_new RENAME TO feed_sync_changes;
-CREATE INDEX IF NOT EXISTS idx_feed_sync_changes_feed ON feed_sync_changes(feed_id, synced_at);
-PRAGMA foreign_keys = ON;`)
+	_, err = conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_feed_sync_changes_feed ON feed_sync_changes(feed_id, synced_at)`)
 	return err
+}
+
+func tableExistsOn(ctx context.Context, conn *sql.Conn, name string) (bool, error) {
+	var n int
+	if err := conn.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", name).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func feedCascadeCountOn(ctx context.Context, conn *sql.Conn) (int, error) {
+	var n int
+	err := conn.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM pragma_foreign_key_list('feed_sync_changes')
+WHERE "table" = 'feeds' AND on_delete = 'CASCADE'`).Scan(&n)
+	return n, err
+}
+
+// rebuildFeedSyncChangesOn copies feed_sync_changes into a table with the new
+// foreign key and renames it into place. Foreign keys are turned back on even
+// when a step fails, since the connection outlives this call.
+func rebuildFeedSyncChangesOn(ctx context.Context, conn *sql.Conn) error {
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	defer func() { _, _ = conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`) }() //nolint:errcheck
+	stmts := []string{
+		`DROP TABLE IF EXISTS feed_sync_changes_new`,
+		`CREATE TABLE feed_sync_changes_new (
+			id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+			feed_id              INTEGER REFERENCES feeds(id) ON DELETE SET NULL,
+			synced_at            INTEGER NOT NULL,
+			added_services       INTEGER NOT NULL,
+			removed_services     INTEGER NOT NULL,
+			added_prefixes       INTEGER NOT NULL,
+			removed_prefixes     INTEGER NOT NULL,
+			added_associations   INTEGER NOT NULL,
+			removed_associations INTEGER NOT NULL,
+			feed_name            TEXT NOT NULL DEFAULT ''
+		)`,
+		`INSERT INTO feed_sync_changes_new (id, feed_id, synced_at, added_services, removed_services, added_prefixes,
+			removed_prefixes, added_associations, removed_associations, feed_name)
+		SELECT id, feed_id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes,
+			added_associations, removed_associations,
+			COALESCE((SELECT name FROM feeds WHERE feeds.id = feed_sync_changes.feed_id), '')
+		FROM feed_sync_changes`,
+		`DROP TABLE feed_sync_changes`,
+		`ALTER TABLE feed_sync_changes_new RENAME TO feed_sync_changes`,
+	}
+	for _, stmt := range stmts {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // V039 records what each feed sync changed, by name, for the user change log:

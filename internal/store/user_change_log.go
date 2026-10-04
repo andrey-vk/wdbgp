@@ -14,17 +14,21 @@ import (
 // userChangeLogWindow is the longest span a user's change log reaches back.
 const userChangeLogWindow = 30 * 24 * time.Hour
 
-// UserChangeLogWindow is the span the change log may read: the 30-day cap, but
-// never longer than audit retention. Older audit rows are purged, and a feed
-// sync can only be placed if every change after it is still recorded. A
-// non-positive retention purges the whole audit log on every run, so the window
-// is empty.
-func UserChangeLogWindow(auditRetentionDays int) time.Duration {
-	if auditRetentionDays <= 0 {
-		return 0
+// EffectiveAuditRetentionDays is the retention the audit purge actually applies:
+// a non-positive setting falls back to 30 days.
+func EffectiveAuditRetentionDays(days int) int {
+	if days <= 0 {
+		return 30
 	}
+	return days
+}
+
+// UserChangeLogWindow is the span the change log may read: the 30-day cap, but
+// never longer than the effective audit retention. Older audit rows are purged,
+// and a feed sync can only be placed if every change after it is still recorded.
+func UserChangeLogWindow(auditRetentionDays int) time.Duration {
 	window := userChangeLogWindow
-	if retention := time.Duration(auditRetentionDays) * 24 * time.Hour; retention < window {
+	if retention := time.Duration(EffectiveAuditRetentionDays(auditRetentionDays)) * 24 * time.Hour; retention < window {
 		window = retention
 	}
 	return window

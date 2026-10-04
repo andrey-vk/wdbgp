@@ -525,12 +525,12 @@ func TestUserChangeLogWindowFollowsAuditRetention(t *testing.T) {
 	if got := UserChangeLogWindow(7); got != 7*day {
 		t.Fatalf("window with 7-day retention = %v, want 7 days", got)
 	}
-	// A non-positive retention purges the whole audit log, so nothing is readable.
-	if got := UserChangeLogWindow(0); got != 0 {
-		t.Fatalf("window with zero retention = %v, want 0", got)
+	// A non-positive retention falls back to the 30-day default, as the purge does.
+	if got := UserChangeLogWindow(0); got != userChangeLogWindow {
+		t.Fatalf("window with zero retention = %v, want the %v default", got, userChangeLogWindow)
 	}
-	if got := UserChangeLogWindow(-3); got != 0 {
-		t.Fatalf("window with negative retention = %v, want 0", got)
+	if got := UserChangeLogWindow(-3); got != userChangeLogWindow {
+		t.Fatalf("window with negative retention = %v, want the %v default", got, userChangeLogWindow)
 	}
 }
 
