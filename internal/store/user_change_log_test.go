@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1011,5 +1012,14 @@ func TestBoundedSelectionOfShrinkingChange(t *testing.T) {
 	b, ok := boundedSelectionOf(bounded, small)
 	if !ok || b.ModeID != 7 {
 		t.Fatalf("shrinking change: bounded side not found (got %+v, %v)", b, ok)
+	}
+}
+
+// TestSelectionAuditValueBoundsByBytes checks that one very long name bounds the
+// row even though the selection has few entries.
+func TestSelectionAuditValueBoundsByBytes(t *testing.T) {
+	long := selectionAuditPayload{ModeID: 1, Services: []ServiceKey{{Category: "ai", Service: strings.Repeat("x", maxSelectionAuditBytes+1)}}}
+	if _, ok := selectionAuditValue(long).(boundedSelectionPayload); !ok {
+		t.Fatal("a single oversized name was audited by name")
 	}
 }

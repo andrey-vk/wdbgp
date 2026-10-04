@@ -86,16 +86,20 @@ type selectionAuditPayload struct {
 // than writing a multi-megabyte payload for every edit to a large selection.
 const maxSelectionAuditNames = 1000
 
+// maxSelectionAuditBytes bounds the encoded size of a selection audit value, for
+// the same reason: a single long name can be as costly as many short ones.
+const maxSelectionAuditBytes = 64 << 10
+
 // selectionAuditValue is the value to audit for a selection state: the names,
 // or, once the selection is too large to store them, its counts plus a digest of
 // the names. The digest keeps two different large selections with the same
 // counts from comparing equal, which would drop the edit from the audit.
 func selectionAuditValue(p selectionAuditPayload) any {
-	if len(p.Categories)+len(p.Services) <= maxSelectionAuditNames {
-		return p
-	}
 	names, err := json.Marshal(p)
 	if err != nil {
+		return p
+	}
+	if len(p.Categories)+len(p.Services) <= maxSelectionAuditNames && len(names) <= maxSelectionAuditBytes {
 		return p
 	}
 	sum := sha256.Sum256(names)
