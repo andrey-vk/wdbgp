@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -280,49 +281,86 @@ func (s *Store) FeedModes(ctx context.Context, feedID int64) ([]int64, error) {
 	return modeIDs, rows.Err()
 }
 
-// selectionSnapshot is one user's selection in one mode, as it stood before a
-// deletion pruned it.
-type selectionSnapshot struct {
-	userID int64
-	state  selectionAuditPayload
-}
+// selectionStateKey identifies one user's selection in one mode.
+type selectionStateKey struct{ userID, modeID int64 }
 
-// allModeIDsTx lists every catalog mode ID.
-func allModeIDsTx(ctx context.Context, tx *sql.Tx) ([]int64, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT id FROM catalog_modes ORDER BY id")
+// selectionStatesTx reads every user's selection in every mode in two queries,
+// with the mode names the audit rows carry. Users with no selection have no key.
+func selectionStatesTx(ctx context.Context, tx *sql.Tx) (map[selectionStateKey]selectionAuditPayload, error) {
+	names := map[int64]string{}
+	nameRows, err := tx.QueryContext(ctx, "SELECT id, name FROM catalog_modes")
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }() //nolint:errcheck
-	var ids []int64
-	for rows.Next() {
+	for nameRows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var name string
+		if err := nameRows.Scan(&id, &name); err != nil {
+			_ = nameRows.Close() //nolint:errcheck
 			return nil, err
 		}
-		ids = append(ids, id)
+		names[id] = name
 	}
-	return ids, rows.Err()
-}
+	if err := nameRows.Close(); err != nil {
+		return nil, err
+	}
+	if err := nameRows.Err(); err != nil {
+		return nil, err
+	}
 
-// modeSelectionSnapshotsTx snapshots every user's selection in each mode.
-func modeSelectionSnapshotsTx(ctx context.Context, tx *sql.Tx, modeIDs []int64) ([]selectionSnapshot, error) {
-	var out []selectionSnapshot
-	for _, modeID := range modeIDs {
-		name, err := modeNameTx(ctx, tx, modeID)
-		if err != nil {
+	categories := map[selectionStateKey]map[string]bool{}
+	services := map[selectionStateKey]map[ServiceKey]bool{}
+	catRows, err := tx.QueryContext(ctx, `
+SELECT sc.user_id, sc.mode_id, c.name FROM selected_categories sc
+JOIN categories c ON c.id = sc.category_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = catRows.Close() }() //nolint:errcheck
+	for catRows.Next() {
+		var key selectionStateKey
+		var category string
+		if err := catRows.Scan(&key.userID, &key.modeID, &category); err != nil {
 			return nil, err
 		}
-		userIDs, err := usersWithSelectionsTx(ctx, tx, modeID)
-		if err != nil {
+		if categories[key] == nil {
+			categories[key] = map[string]bool{}
+		}
+		categories[key][category] = true
+	}
+	if err := catRows.Err(); err != nil {
+		return nil, err
+	}
+	svcRows, err := tx.QueryContext(ctx, `
+SELECT ss.user_id, ss.mode_id, c.name, sv.name FROM selected_services ss
+JOIN services sv ON sv.id = ss.service_id
+JOIN categories c ON c.id = sv.category_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = svcRows.Close() }() //nolint:errcheck
+	for svcRows.Next() {
+		var key selectionStateKey
+		var svc ServiceKey
+		if err := svcRows.Scan(&key.userID, &key.modeID, &svc.Category, &svc.Service); err != nil {
 			return nil, err
 		}
-		for _, userID := range userIDs {
-			cats, svcs, err := userModeSelection(ctx, tx, userID, modeID)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, selectionSnapshot{userID: userID, state: selectionAuditState(modeID, name, cats, svcs)})
+		if services[key] == nil {
+			services[key] = map[ServiceKey]bool{}
+		}
+		services[key][svc] = true
+	}
+	if err := svcRows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := map[selectionStateKey]selectionAuditPayload{}
+	for key := range categories {
+		out[key] = selectionAuditState(key.modeID, names[key.modeID], categories[key], services[key])
+	}
+	for key := range services {
+		if _, ok := out[key]; !ok {
+			out[key] = selectionAuditState(key.modeID, names[key.modeID], nil, services[key])
 		}
 	}
 	return out, nil
@@ -360,12 +398,8 @@ func (s *Store) DeleteFeed(ctx context.Context, id int64, meta AuditMeta) error 
 		}
 		// The pruning below is unscoped: it drops selections that no feed backs in
 		// any mode, including modes the feed was detached from earlier. So every
-		// mode is snapshotted, not only the ones the feed is in now.
-		allModeIDs, err := allModeIDsTx(ctx, tx)
-		if err != nil {
-			return err
-		}
-		snapshots, err := modeSelectionSnapshotsTx(ctx, tx, allModeIDs)
+		// selection is read before, not only the ones in the feed's current modes.
+		before, err := selectionStatesTx(ctx, tx)
 		if err != nil {
 			return err
 		}
@@ -412,13 +446,27 @@ WHERE NOT EXISTS (
 			}
 		}
 		selectionMeta := AuditMeta{Actor: meta.Actor, UserAgent: meta.UserAgent, Action: "user.selections_changed"}
-		for _, snap := range snapshots {
-			cats, svcs, err := userModeSelection(ctx, tx, snap.userID, snap.state.ModeID)
-			if err != nil {
-				return err
+		after, err := selectionStatesTx(ctx, tx)
+		if err != nil {
+			return err
+		}
+		keys := make([]selectionStateKey, 0, len(before))
+		for key := range before {
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i].userID != keys[j].userID {
+				return keys[i].userID < keys[j].userID
 			}
-			after := selectionAuditState(snap.state.ModeID, snap.state.ModeName, cats, svcs)
-			if err := AuditEntryTx(ctx, tx, selectionMeta, "user", strconv.FormatInt(snap.userID, 10), snap.state, after, false); err != nil {
+			return keys[i].modeID < keys[j].modeID
+		})
+		for _, key := range keys {
+			b := before[key]
+			a, ok := after[key]
+			if !ok {
+				a = selectionAuditState(key.modeID, b.ModeName, nil, nil)
+			}
+			if err := AuditEntryTx(ctx, tx, selectionMeta, "user", strconv.FormatInt(key.userID, 10), b, a, false); err != nil {
 				return err
 			}
 		}

@@ -140,6 +140,13 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		return nil, err
 	}
 	since := now.Add(-window).Unix()
+	floor, err := userIdentityFloor(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if floor > since {
+		since = floor
+	}
 	entries, err := userAuditChanges(ctx, tx, userID, since)
 	if err != nil {
 		return nil, err
@@ -163,6 +170,17 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		entries = []UserChangeEntry{}
 	}
 	return entries, nil
+}
+
+// userIdentityFloor returns when the current holder of userID's ID began: the
+// last deletion audited for it, or 0 if there was none. IDs are reused after a
+// deletion, so older audit rows describe a predecessor, not this user.
+func userIdentityFloor(ctx context.Context, q queryer, userID int64) (int64, error) {
+	var last sql.NullInt64
+	err := q.QueryRowContext(ctx,
+		"SELECT MAX(recorded_at) FROM audit_log WHERE object_type = 'user' AND object_id = ? AND action = 'user.deleted'",
+		strconv.FormatInt(userID, 10)).Scan(&last)
+	return last.Int64, err
 }
 
 // auditCompleteSince returns the later of from and the audit log's completeness

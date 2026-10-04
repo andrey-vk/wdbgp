@@ -501,17 +501,24 @@ func (s *Store) UpdateUserWithRouteFilters(ctx context.Context, user User, meta,
 	return prevCatalogModeID, err
 }
 
-func (s *Store) DeleteUser(ctx context.Context, id int64) error {
-	result, err := s.DB.ExecContext(ctx, "DELETE FROM users WHERE id = ?", id)
-	if err != nil {
-		return err
-	}
-	if count, err := result.RowsAffected(); err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	} else if count == 0 {
-		return sql.ErrNoRows
-	}
-	return nil
+// DeleteUser deletes a user and audits it as user.deleted. The users table
+// doesn't use AUTOINCREMENT, so the ID can be handed to a later user, and that
+// deletion record is what tells the change log where the new holder's history
+// starts (see userIdentityFloor).
+func (s *Store) DeleteUser(ctx context.Context, id int64, meta AuditMeta) error {
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, "DELETE FROM users WHERE id = ?", id)
+		if err != nil {
+			return err
+		}
+		if count, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		} else if count == 0 {
+			return sql.ErrNoRows
+		}
+		return AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(id, 10),
+			map[string]bool{"exists": true}, map[string]bool{"exists": false}, true)
+	})
 }
 
 func replaceNetworks(ctx context.Context, tx *sql.Tx, userID int64, networks []string) error {

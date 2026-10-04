@@ -782,3 +782,31 @@ func TestUserChangeLogDirectEntriesIgnoreCompleteBoundary(t *testing.T) {
 		t.Fatalf("entries = %+v, want the pre-boundary selection still listed", all)
 	}
 }
+
+// TestUserChangeLogDoesNotInheritReusedUserID checks that a new user who gets a
+// deleted user's ID doesn't see that predecessor's history.
+func TestUserChangeLogDoesNotInheritReusedUserID(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	oldID := plainChangeLogUser(t, s)
+	recordSelectionAudit(t, s, oldID, time.Now().Add(-2*time.Hour).Unix(), nil, []string{"ai"})
+	if err := s.DeleteUser(ctx, oldID, AuditMeta{Actor: "admin:203.0.113.7", UserAgent: "test", Action: "user.deleted"}); err != nil {
+		t.Fatal(err)
+	}
+	newID, err := s.AddUser(ctx, User{Name: "successor", PeerIP: "172.16.9.2", PeerASN: 65098, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID, Networks: []string{"192.168.8.0/24"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newID != oldID {
+		t.Skipf("SQLite did not reuse the ID (%d -> %d); the scenario needs reuse", oldID, newID)
+	}
+
+	entries, err := s.UserChangeLog(ctx, newID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("successor with reused ID %d inherited %+v", newID, entries)
+	}
+}
