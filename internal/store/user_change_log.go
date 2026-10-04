@@ -141,7 +141,9 @@ type UserChangeEntry struct {
 	// so a sync can sit between the audit rows on either side of it: an audit row
 	// is 2*ID, a sync that came after audit row S is 2*S+1. It orders entries that
 	// share a second; it isn't part of the response.
-	order    int64
+	order int64
+	// commit is the sync's change ID, which orders syncs that share a position.
+	commit   int64
 	At       int64          `json:"at"`
 	Source   string         `json:"source"`
 	Kind     string         `json:"kind"`
@@ -192,7 +194,10 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		if entries[i].At != entries[j].At {
 			return entries[i].At > entries[j].At
 		}
-		return entries[i].order > entries[j].order
+		if entries[i].order != entries[j].order {
+			return entries[i].order > entries[j].order
+		}
+		return entries[i].commit > entries[j].commit
 	})
 	if len(entries) > userChangeLogEntryLimit {
 		entries = entries[:userChangeLogEntryLimit]
@@ -662,6 +667,7 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 			if !ok {
 				out = append(out, UserChangeEntry{
 					order:    syncOrder(point),
+					commit:   changeID,
 					At:       syncedAt,
 					Source:   "feed_sync",
 					Kind:     "feed_sync",

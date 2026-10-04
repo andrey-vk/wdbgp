@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -170,14 +171,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT name FROM feeds WHERE id = ?), 
 			return err
 		}
 	}
-	for kind, keys := range map[string][]ServiceKey{"added": diff.AddedServiceKeys, "removed": diff.RemovedServiceKeys} {
-		for _, k := range keys {
-			if _, err := tx.ExecContext(ctx,
-				"INSERT INTO feed_sync_change_services(change_id, kind, category, service) VALUES (?, ?, ?, ?)",
-				changeID, kind, k.Category, k.Service); err != nil {
-				return err
-			}
-		}
+	if err := insertFeedSyncServicesTx(ctx, tx, changeID, "added", diff.AddedServiceKeys); err != nil {
+		return err
+	}
+	if err := insertFeedSyncServicesTx(ctx, tx, changeID, "removed", diff.RemovedServiceKeys); err != nil {
+		return err
 	}
 	// The modes that include this feed right now are the ones this sync reaches,
 	// since the catalog it publishes is what those modes serve.
@@ -204,6 +202,30 @@ WHERE cmf.feed_id = ? AND cmf.exclude = 0`, changeID, feedID); err != nil {
 	}
 	_, err = tx.ExecContext(ctx, "DELETE FROM feed_sync_changes WHERE id IN ("+stale+")", feedID, feedSyncChangeRetention)
 	return err
+}
+
+// feedSyncRowsPerInsert bounds the rows in one multi-row insert of service
+// history, so a large sync writes in a few statements rather than one per service.
+const feedSyncRowsPerInsert = 200
+
+// insertFeedSyncServicesTx writes a sync's added or removed services in batches.
+func insertFeedSyncServicesTx(ctx context.Context, tx *sql.Tx, changeID int64, kind string, keys []ServiceKey) error {
+	for start := 0; start < len(keys); start += feedSyncRowsPerInsert {
+		chunk := keys[start:min(start+feedSyncRowsPerInsert, len(keys))]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, 0, len(chunk)*4)
+		for i, k := range chunk {
+			placeholders[i] = "(?, ?, ?, ?)"
+			args = append(args, changeID, kind, k.Category, k.Service)
+		}
+		//nolint:gosec // G202: concatenated part is "(?, ?, ?, ?)" placeholders only, all values bound
+		query := "INSERT INTO feed_sync_change_services(change_id, kind, category, service) VALUES " +
+			strings.Join(placeholders, ", ")
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type FeedSyncCategory struct {

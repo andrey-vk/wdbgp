@@ -963,3 +963,28 @@ func TestUserChangeLogScansManyCategories(t *testing.T) {
 		t.Fatalf("feed entries = %+v, want the sync placed with its services sorted", got)
 	}
 }
+
+// TestRecordFeedSyncWritesEveryServiceAcrossBatches checks that a sync with more
+// services than one batch holds still records each of them.
+func TestRecordFeedSyncWritesEveryServiceAcrossBatches(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	feedID := historyFeed(t, s)
+	n := feedSyncRowsPerInsert*2 + 50
+	added := make([]ServiceKey, 0, n)
+	for i := 0; i < n; i++ {
+		added = append(added, ServiceKey{Category: "bulk", Service: fmt.Sprintf("svc-%04d", i)})
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return RecordFeedSyncChangeTx(ctx, tx, feedID, FeedSyncDiff{AddedServices: n, AddedServiceKeys: added}, time.Now().Unix())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var got int
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM feed_sync_change_services WHERE kind = 'added'").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != n {
+		t.Fatalf("recorded services = %d, want %d", got, n)
+	}
+}
