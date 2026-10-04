@@ -514,9 +514,18 @@ ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since, floorID
 			continue
 		}
 		var b, a selectionAuditPayload
-		if json.Unmarshal([]byte(before), &b) != nil || json.Unmarshal([]byte(after), &a) != nil {
-			// A bounded row is unknown for its own mode only; any other row is
-			// unknown for every mode.
+		beforeErr := json.Unmarshal([]byte(before), &b)
+		if beforeErr == nil && json.Unmarshal([]byte(after), &a) != nil {
+			// The selection grew past the bound: the state before this change is
+			// still exact, so earlier syncs can be placed against it.
+			if bounded, ok := decodeBoundedSelection(after); ok {
+				h.selections = append(h.selections, selectionChange{id: id, at: at, modeID: bounded.ModeID, before: b})
+				continue
+			}
+		}
+		if beforeErr != nil || json.Unmarshal([]byte(after), &a) != nil {
+			// Unknown: the row is bounded or predates names. A bounded row is unknown
+			// for its own mode only; any other row is unknown for every mode.
 			bounded, _ := boundedSelectionOf(before, after)
 			h.selections = append(h.selections, selectionChange{id: id, at: at, legacy: true, modeID: bounded.ModeID})
 			continue

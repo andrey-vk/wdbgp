@@ -1076,3 +1076,38 @@ func TestUserChangeLogCountsIndividualSelectionsExactly(t *testing.T) {
 		t.Fatalf("entry = %d listed, omitted %d; want %d listed and 50 omitted", len(got[0].Added.Services), got[0].Added.Omitted, maxListedNames)
 	}
 }
+
+// TestUserChangeLogKnownBeforeOfGrowingSelection checks that a selection growing
+// past the bound keeps the exact state before the change, so earlier syncs are
+// placed, rather than the whole row being treated as unknown.
+func TestUserChangeLogKnownBeforeOfGrowingSelection(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	t0 := time.Now().Add(-5 * time.Hour).Unix()
+	before := selectionAuditPayload{ModeID: DefaultCatalogModeID, Categories: []string{"ai"}, Services: []ServiceKey{}}
+	grown := selectionAuditPayload{ModeID: DefaultCatalogModeID, Categories: []string{"ai"}, Services: make([]ServiceKey, maxSelectionAuditNames+1)}
+	beforeJSON, err := json.Marshal(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterJSON, err := json.Marshal(selectionAuditValue(grown))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAuditLog(ctx, AuditLogEntry{
+		RecordedAt: time.Unix(t0+100, 0), Actor: "admin:203.0.113.7", Action: "user.selections_changed",
+		ObjectType: "user", ObjectID: strconv.FormatInt(userID, 10), Before: string(beforeJSON), After: string(afterJSON),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recordHistorySync(t, s, feedID, t0, ServiceKey{Category: "ai", Service: "earlier"})
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := feedSyncEntries(all); len(got) != 1 {
+		t.Fatalf("feed entries = %+v, want the earlier sync placed by the known before state", got)
+	}
+}
