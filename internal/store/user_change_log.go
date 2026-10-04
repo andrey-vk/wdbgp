@@ -654,18 +654,20 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 	if len(modes) == 0 || len(categories) == 0 {
 		return nil, nil
 	}
-	// Only a service in a category the user selected at some point in the
-	// window can ever count (selecting a service also names its category), so
-	// the scan is narrowed to those modes and categories before expanding rows.
-	// A feed's enabled state and mode assignments today say nothing about the
-	// syncs already recorded, so neither filters here: each sync carries the
-	// modes it reached, and history outlives a feed being disabled.
-	type entryKey struct{ changeID, modeID int64 }
-	var out []UserChangeEntry
-	index := map[entryKey]int{}
-	// One statement binds a limited number of variables, and a user's selections
-	// can span more categories than that, so the categories are scanned in chunks.
-	scanChunk := func(chunk []string) error {
+	// The scan counts services per (sync, mode, kind, category) first. Only the
+	// categories and services the user actually selected at each sync are then
+	// read by name, capped, so a huge category isn't expanded row by row. A
+	// feed's enabled state and mode assignments today say nothing about the
+	// syncs already recorded, so neither filters here.
+	type group struct {
+		modeID, changeID, syncedAt, seq int64
+		hasSeq                          bool
+		modeName, feedName, kind, cat   string
+		count                           int
+	}
+	var groups []group
+	for start := 0; start < len(categories); start += maxScanCategories {
+		chunk := categories[start:min(start+maxScanCategories, len(categories))]
 		args := []any{since}
 		for _, m := range modes {
 			args = append(args, m)
@@ -676,63 +678,103 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 		rows, err := q.QueryContext(ctx, strings.NewReplacer(
 			"__MODES__", placeholders(len(modes)),
 			"__CATEGORIES__", placeholders(len(chunk)),
-		).Replace(feedSyncScanQuery), args...)
+		).Replace(feedSyncGroupQuery), args...)
 		if err != nil {
-			return err
-		}
-		defer func() { _ = rows.Close() }() //nolint:errcheck
-		for rows.Next() {
-			var modeID, changeID, syncedAt int64
-			var seq sql.NullInt64
-			var modeName, feedName, kind, category, service string
-			if err := rows.Scan(&modeID, &modeName, &changeID, &feedName, &syncedAt, &seq, &kind, &category, &service); err != nil {
-				return err
-			}
-			point := syncPoint{at: syncedAt, seq: seq.Int64, hasSeq: seq.Valid}
-			// Only syncs after the user's history floor are this user's. A sync with no
-			// sequence predates the audit trail, so it can't be placed at all.
-			if point.seq < floorID || !point.hasSeq {
-				continue
-			}
-			key := ServiceKey{Category: category, Service: service}
-			mode, known := history.modeAt(point)
-			if !known || mode != modeID {
-				continue
-			}
-			sel, err := history.selectionAt(ctx, point, modeID)
-			if err != nil {
-				return err
-			}
-			if !sel.known || (!sel.categories[category] && !sel.services[key]) {
-				continue
-			}
-			ek := entryKey{changeID: changeID, modeID: modeID}
-			i, ok := index[ek]
-			if !ok {
-				out = append(out, UserChangeEntry{
-					order:    syncOrder(point),
-					commit:   changeID,
-					At:       syncedAt,
-					Source:   "feed_sync",
-					Kind:     "feed_sync",
-					Mode:     modeNameOr(modeName, modeID),
-					FeedName: feedName,
-				})
-				i = len(out) - 1
-				index[ek] = i
-			}
-			if kind == "added" {
-				out[i].Added.Services = append(out[i].Added.Services, key)
-			} else {
-				out[i].Removed.Services = append(out[i].Removed.Services, key)
-			}
-		}
-		return rows.Err()
-	}
-	for start := 0; start < len(categories); start += maxScanCategories {
-		if err := scanChunk(categories[start:min(start+maxScanCategories, len(categories))]); err != nil {
 			return nil, err
 		}
+		for rows.Next() {
+			var g group
+			var seq sql.NullInt64
+			if err := rows.Scan(&g.modeID, &g.modeName, &g.changeID, &g.feedName, &g.syncedAt, &seq, &g.kind, &g.cat, &g.count); err != nil {
+				_ = rows.Close() //nolint:errcheck
+				return nil, err
+			}
+			g.seq, g.hasSeq = seq.Int64, seq.Valid
+			groups = append(groups, g)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close() //nolint:errcheck
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+
+	type entryKey struct{ changeID, modeID int64 }
+	var out []UserChangeEntry
+	index := map[entryKey]int{}
+	for _, g := range groups {
+		point := syncPoint{at: g.syncedAt, seq: g.seq, hasSeq: g.hasSeq}
+		// Only syncs after the user's history floor are this user's. A sync with no
+		// sequence predates the audit trail, so it can't be placed at all.
+		if g.seq < floorID || !g.hasSeq {
+			continue
+		}
+		mode, known := history.modeAt(point)
+		if !known || mode != g.modeID {
+			continue
+		}
+		sel, err := history.selectionAt(ctx, point, g.modeID)
+		if err != nil {
+			return nil, err
+		}
+		if !sel.known {
+			continue
+		}
+		var names []string
+		var count int
+		if sel.categories[g.cat] {
+			// The whole category is selected: every service of it counts.
+			names, err = serviceNamesTx(ctx, q, g.changeID, g.kind, g.cat, nil, maxListedNames+1)
+			if err != nil {
+				return nil, err
+			}
+			count = g.count
+		} else {
+			var selected []string
+			for svc := range sel.services {
+				if svc.Category == g.cat {
+					selected = append(selected, svc.Service)
+				}
+			}
+			if len(selected) == 0 {
+				continue
+			}
+			sort.Strings(selected)
+			names, err = serviceNamesTx(ctx, q, g.changeID, g.kind, g.cat, selected, 0)
+			if err != nil {
+				return nil, err
+			}
+			count = len(names)
+		}
+		if count == 0 {
+			continue
+		}
+		listed := min(len(names), maxListedNames)
+		ek := entryKey{changeID: g.changeID, modeID: g.modeID}
+		i, ok := index[ek]
+		if !ok {
+			out = append(out, UserChangeEntry{
+				order:    syncOrder(point),
+				commit:   g.changeID,
+				At:       g.syncedAt,
+				Source:   "feed_sync",
+				Kind:     "feed_sync",
+				Mode:     modeNameOr(g.modeName, g.modeID),
+				FeedName: g.feedName,
+			})
+			i = len(out) - 1
+			index[ek] = i
+		}
+		side := &out[i].Removed
+		if g.kind == "added" {
+			side = &out[i].Added
+		}
+		for _, n := range names[:listed] {
+			side.Services = append(side.Services, ServiceKey{Category: g.cat, Service: n})
+		}
+		side.Omitted += count - listed
 	}
 	for i := range out {
 		sortServiceKeys(out[i].Added.Services)
@@ -747,16 +789,77 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 // SQLite's bound-variable limit.
 const maxScanCategories = 500
 
-// feedSyncScanQuery reads the service rows of recorded syncs for the given modes
-// and categories, oldest first within a sync. __MODES__ and __CATEGORIES__ are
-// replaced with one placeholder per value.
-const feedSyncScanQuery = `
-SELECT cm.mode_id, cm.mode_name, c.id, c.feed_name, c.synced_at, c.audit_seq, s.kind, s.category, s.service
+// feedSyncGroupQuery counts a sync's services per mode, kind, and category.
+// __MODES__ and __CATEGORIES__ are replaced with one placeholder per value.
+const feedSyncGroupQuery = `
+SELECT cm.mode_id, cm.mode_name, c.id, c.feed_name, c.synced_at, c.audit_seq, s.kind, s.category, COUNT(*)
 FROM feed_sync_change_services s
 JOIN feed_sync_changes c ON c.id = s.change_id
 JOIN feed_sync_change_modes cm ON cm.change_id = c.id
 WHERE c.synced_at >= ? AND cm.mode_id IN (__MODES__) AND s.category IN (__CATEGORIES__)
-ORDER BY c.synced_at DESC, c.id DESC, cm.mode_id, s.kind, s.category, s.service`
+GROUP BY cm.mode_id, cm.mode_name, c.id, c.feed_name, c.synced_at, c.audit_seq, s.kind, s.category
+ORDER BY c.synced_at DESC, c.id DESC, cm.mode_id, s.kind, s.category`
+
+// maxListedNames bounds the service names one side of an entry lists.
+const maxListedNames = userChangeLogListLimit
+
+// serviceNamesTx reads the service names one sync added or removed in one
+// category. A nil selected list means the whole category, read up to limit names
+// (0 for no limit); otherwise only the selected names, chunked for the bound
+// variable limit.
+func serviceNamesTx(ctx context.Context, q queryer, changeID int64, kind, category string, selected []string, limit int) ([]string, error) {
+	if selected == nil {
+		query := feedSyncNamesQuery + " LIMIT ?"
+		rows, err := q.QueryContext(ctx, query, changeID, kind, category, limit)
+		if err != nil {
+			return nil, err
+		}
+		return scanNames(rows)
+	}
+	var out []string
+	for start := 0; start < len(selected); start += maxScanCategories {
+		chunk := selected[start:min(start+maxScanCategories, len(selected))]
+		args := []any{changeID, kind, category}
+		for _, n := range chunk {
+			args = append(args, n)
+		}
+		query := strings.NewReplacer("__NAMES__", placeholders(len(chunk))).Replace(feedSyncNamesInQuery)
+		rows, err := q.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, err
+		}
+		names, err := scanNames(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, names...)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func scanNames(rows *sql.Rows) ([]string, error) {
+	defer func() { _ = rows.Close() }() //nolint:errcheck
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+const feedSyncNamesQuery = `
+SELECT service FROM feed_sync_change_services
+WHERE change_id = ? AND kind = ? AND category = ?
+ORDER BY service`
+
+const feedSyncNamesInQuery = `
+SELECT service FROM feed_sync_change_services
+WHERE change_id = ? AND kind = ? AND category = ? AND service IN (__NAMES__)
+ORDER BY service`
 
 // placeholders returns n comma-separated "?" placeholders.
 func placeholders(n int) string {

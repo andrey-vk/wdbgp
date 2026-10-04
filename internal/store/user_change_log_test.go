@@ -1023,3 +1023,27 @@ func TestSelectionAuditValueBoundsByBytes(t *testing.T) {
 		t.Fatal("a single oversized name was audited by name")
 	}
 }
+
+// TestUserChangeLogCountsOmittedNamesExactly checks that a sync touching more
+// services in a selected category than one entry lists reports the exact count
+// as omitted, not the number of rows it happened to read.
+func TestUserChangeLogCountsOmittedNamesExactly(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	n := maxListedNames + 50
+	added := make([]ServiceKey, 0, n)
+	for i := 0; i < n; i++ {
+		added = append(added, ServiceKey{Category: "ai", Service: fmt.Sprintf("svc-%04d", i)})
+	}
+	recordHistorySync(t, s, feedID, time.Now().Add(-time.Hour).Unix(), added...)
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := feedSyncEntries(all)
+	if len(got) != 1 || len(got[0].Added.Services) != maxListedNames || got[0].Added.Omitted != 50 {
+		t.Fatalf("entry = %d listed, omitted %d; want %d listed and 50 omitted", len(got[0].Added.Services), got[0].Added.Omitted, maxListedNames)
+	}
+}
