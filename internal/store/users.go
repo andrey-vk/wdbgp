@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -395,6 +396,23 @@ func (s *Store) AddUser(ctx context.Context, user User) (int64, error) {
 		if err != nil {
 			return err
 		}
+		// The user's history starts at its creation: the creation row is the
+		// floor, so an ID handed on from a deleted user can't see its audit rows
+		// (see users.history_from).
+		created, err := tx.ExecContext(ctx, `INSERT INTO audit_log
+			(recorded_at, actor, user_agent, action, object_type, object_id, before, after)
+			VALUES (?, 'system', '', 'user.created', 'user', ?, '', '')`,
+			time.Now().UTC().Unix(), strconv.FormatInt(id, 10))
+		if err != nil {
+			return err
+		}
+		floor, err := created.LastInsertId()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "UPDATE users SET history_from = ? WHERE id = ?", floor, id); err != nil {
+			return err
+		}
 		return replaceNetworks(ctx, tx, id, user.Networks)
 	})
 	return id, err
@@ -504,7 +522,7 @@ func (s *Store) UpdateUserWithRouteFilters(ctx context.Context, user User, meta,
 // DeleteUser deletes a user and audits it as user.deleted. The users table
 // doesn't use AUTOINCREMENT, so the ID can be handed to a later user, and that
 // deletion record is what tells the change log where the new holder's history
-// starts (see userIdentityFloor).
+// starts (see users.history_from).
 func (s *Store) DeleteUser(ctx context.Context, id int64, meta AuditMeta) error {
 	return s.Transaction(ctx, func(tx *sql.Tx) error {
 		result, err := tx.ExecContext(ctx, "DELETE FROM users WHERE id = ?", id)

@@ -111,6 +111,25 @@ func rebuildFeedSyncChangesOn(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+func addColumnIfMissing(ctx context.Context, tx *sql.Tx, table, name, def string) error {
+	_, err := addColumnIfMissingReport(ctx, tx, table, name, def)
+	return err
+}
+
+// addColumnIfMissingReport adds the column and reports whether it did.
+func addColumnIfMissingReport(ctx context.Context, tx *sql.Tx, table, name, def string) (bool, error) {
+	var n int
+	if err := tx.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", table, name).Scan(&n); err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return false, nil
+	}
+	_, err := tx.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+name+" "+def)
+	return err == nil, err
+}
+
 // V039 records what each feed sync changed, by name, for the user change log:
 // the services it added or removed, and the enabled modes that included the feed
 // at the time. Recording the modes then, rather than reading the current
@@ -119,20 +138,26 @@ func rebuildFeedSyncChangesOn(ctx context.Context, conn *sql.Conn) error {
 func V039(ctx context.Context, tx *sql.Tx) error {
 	// ADD COLUMN isn't idempotent, and the last migration can be re-run (see the
 	// backup tests), so each column is added only when it's missing.
-	for _, col := range []struct{ name, def string }{
-		{"feed_name", "TEXT NOT NULL DEFAULT ''"},
+	for _, col := range []struct{ table, name, def string }{
+		{"feed_sync_changes", "feed_name", "TEXT NOT NULL DEFAULT ''"},
 		// The audit row ID the sync came after; see syncPoint in user_change_log.go.
-		{"audit_seq", "INTEGER"},
+		{"feed_sync_changes", "audit_seq", "INTEGER"},
 	} {
-		var n int
-		if err := tx.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM pragma_table_info('feed_sync_changes') WHERE name = ?", col.name).Scan(&n); err != nil {
+		if err := addColumnIfMissing(ctx, tx, col.table, col.name, col.def); err != nil {
 			return err
 		}
-		if n == 0 {
-			if _, err := tx.ExecContext(ctx, "ALTER TABLE feed_sync_changes ADD COLUMN "+col.name+" "+col.def); err != nil {
-				return err
-			}
+	}
+	// Existing users' history starts at the newest audit row, so nothing from
+	// before the upgrade is read for them. Deletions before this weren't audited,
+	// so those rows can't be tied to the account that owns the ID today.
+	added, err := addColumnIfMissingReport(ctx, tx, "users", "history_from", "INTEGER NOT NULL DEFAULT 0")
+	if err != nil {
+		return err
+	}
+	if added {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE users SET history_from = (SELECT COALESCE(MAX(id), 0) FROM audit_log)"); err != nil {
+			return err
 		}
 	}
 	// The audit log is complete from this point on. Purges move the boundary

@@ -139,19 +139,12 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }() //nolint:errcheck
-	var modeID int64
+	var modeID, floorID int64
 	if err := tx.QueryRowContext(ctx,
-		"SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&modeID); err != nil {
+		"SELECT catalog_mode_id, history_from FROM users WHERE id = ?", userID).Scan(&modeID, &floorID); err != nil {
 		return nil, err
 	}
 	since := now.Add(-window).Unix()
-	floorID, floorAt, err := userIdentityFloor(ctx, tx, userID)
-	if err != nil {
-		return nil, err
-	}
-	if floorAt > since {
-		since = floorAt
-	}
 	entries, err := userAuditChanges(ctx, tx, userID, since, floorID)
 	if err != nil {
 		return nil, err
@@ -162,7 +155,7 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 	if err != nil {
 		return nil, err
 	}
-	feedEntries, err := userFeedSyncChanges(ctx, tx, userID, modeID, complete, floorID, floorAt)
+	feedEntries, err := userFeedSyncChanges(ctx, tx, userID, modeID, complete, floorID)
 	if err != nil {
 		return nil, err
 	}
@@ -180,19 +173,6 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		entries = []UserChangeEntry{}
 	}
 	return entries, nil
-}
-
-// userIdentityFloor returns the audit row ID and time of the last deletion
-// recorded for userID's ID, or zeros if there was none. IDs are reused after a
-// deletion, so audit rows up to that row describe a predecessor, not this user.
-func userIdentityFloor(ctx context.Context, q queryer, userID int64) (id, at int64, err error) {
-	err = q.QueryRowContext(ctx,
-		"SELECT id, recorded_at FROM audit_log WHERE object_type = 'user' AND object_id = ? AND action = 'user.deleted' ORDER BY id DESC LIMIT 1",
-		strconv.FormatInt(userID, 10)).Scan(&id, &at)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, nil
-	}
-	return id, at, err
 }
 
 // auditCompleteSince returns the later of from and the audit log's completeness
@@ -576,7 +556,7 @@ func (h *userHistory) reach(ctx context.Context) (modes []int64, categories []st
 // Selection and mode at each sync come from the audit trail, so changing a
 // selection later doesn't rewrite what an earlier sync meant for the user.
 // A sync that falls before a change the trail can't reconstruct is left out.
-func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, since, floorID, floorAt int64) ([]UserChangeEntry, error) {
+func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, since, floorID int64) ([]UserChangeEntry, error) {
 	history, err := newUserHistory(ctx, q, userID, currentMode, since, floorID)
 	if err != nil {
 		return nil, err
@@ -620,8 +600,9 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 			return nil, err
 		}
 		point := syncPoint{at: syncedAt, seq: seq.Int64, hasSeq: seq.Valid}
-		// A sync from before the ID's last deletion belongs to a predecessor.
-		if floorID > 0 && ((point.hasSeq && point.seq < floorID) || (!point.hasSeq && syncedAt <= floorAt)) {
+		// Only syncs after the user's history floor are this user's. A sync with no
+		// sequence predates the audit trail, so it can't be placed at all.
+		if point.seq < floorID || !point.hasSeq {
 			continue
 		}
 		key := ServiceKey{Category: category, Service: service}

@@ -444,6 +444,8 @@ A feed sync is placed by the user's history, not by their current selection. It 
 
 Deleting a feed keeps its earlier syncs in the log, and records the services it took away as a removal. The selections that lose their last service are audited as administrator changes. Those rows are dropped once they are older than audit retention.
 
+The history of an account starts when the account is created, and for accounts that existed at the upgrade, at the upgrade. So an ID that a deleted account once held never shows that account's history.
+
 Two limits follow from this. Selection changes recorded before the name payload existed hold only counts, so a sync that falls before one of them can't be placed and is left out. And the history reaches back only as far as the audit window.
 
 ### Blast-radius preview
