@@ -16,10 +16,15 @@ const userChangeLogWindow = 30 * 24 * time.Hour
 
 // UserChangeLogWindow is the span the change log may read: the 30-day cap, but
 // never longer than audit retention. Older audit rows are purged, and a feed
-// sync can only be placed if every change after it is still recorded.
+// sync can only be placed if every change after it is still recorded. A
+// non-positive retention purges the whole audit log on every run, so the window
+// is empty.
 func UserChangeLogWindow(auditRetentionDays int) time.Duration {
+	if auditRetentionDays <= 0 {
+		return 0
+	}
 	window := userChangeLogWindow
-	if retention := time.Duration(max(auditRetentionDays, 1)) * 24 * time.Hour; retention < window {
+	if retention := time.Duration(auditRetentionDays) * 24 * time.Hour; retention < window {
 		window = retention
 	}
 	return window
@@ -552,11 +557,10 @@ func (s *Store) userFeedSyncChanges(ctx context.Context, userID, currentMode, si
 // and categories, oldest first within a sync. __MODES__ and __CATEGORIES__ are
 // replaced with one placeholder per value.
 const feedSyncScanQuery = `
-SELECT cm.mode_id, cm.mode_name, c.id, f.name, c.synced_at, s.kind, s.category, s.service
+SELECT cm.mode_id, cm.mode_name, c.id, c.feed_name, c.synced_at, s.kind, s.category, s.service
 FROM feed_sync_change_services s
 JOIN feed_sync_changes c ON c.id = s.change_id
 JOIN feed_sync_change_modes cm ON cm.change_id = c.id
-JOIN feeds f ON f.id = c.feed_id
 WHERE c.synced_at >= ? AND cm.mode_id IN (__MODES__) AND s.category IN (__CATEGORIES__)
 ORDER BY c.synced_at DESC, c.id DESC, cm.mode_id, s.kind, s.category, s.service`
 

@@ -513,8 +513,12 @@ func TestUserChangeLogWindowFollowsAuditRetention(t *testing.T) {
 	if got := UserChangeLogWindow(7); got != 7*day {
 		t.Fatalf("window with 7-day retention = %v, want 7 days", got)
 	}
-	if got := UserChangeLogWindow(0); got != day {
-		t.Fatalf("window with zero retention = %v, want at least one day", got)
+	// A non-positive retention purges the whole audit log, so nothing is readable.
+	if got := UserChangeLogWindow(0); got != 0 {
+		t.Fatalf("window with zero retention = %v, want 0", got)
+	}
+	if got := UserChangeLogWindow(-3); got != 0 {
+		t.Fatalf("window with negative retention = %v, want 0", got)
 	}
 }
 
@@ -540,5 +544,66 @@ func TestUserChangeLogKeepsModeNameAsRecorded(t *testing.T) {
 	got := feedSyncEntries(all)
 	if len(got) != 1 || got[0].Mode != oldName {
 		t.Fatalf("feed entries = %+v, want the mode shown as %q", got, oldName)
+	}
+}
+
+// TestUserChangeLogKeepsFeedNameAsRecorded checks the feed snapshot: a feed
+// renamed after a sync is still shown under the name it had then.
+func TestUserChangeLogKeepsFeedNameAsRecorded(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	recordHistorySync(t, s, feedID, time.Now().Add(-time.Hour).Unix(), ServiceKey{Category: "ai", Service: "named"})
+	if _, err := s.DB.ExecContext(ctx, "UPDATE feeds SET name = 'renamed-feed' WHERE id = ?", feedID); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := feedSyncEntries(all)
+	if len(got) != 1 || got[0].FeedName != "ai-feed" {
+		t.Fatalf("feed entries = %+v, want the feed shown as ai-feed, its name at sync time", got)
+	}
+}
+
+// TestUserChangeLogKeepsSelectionsOfDeletedMode checks that a sync reaching a
+// mode still shows after the mode is deleted, since the deletion audits the
+// selections it cascades away.
+func TestUserChangeLogKeepsSelectionsOfDeletedMode(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	modeID, err := s.AddCatalogMode(ctx, "Lab", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := plainChangeLogUser(t, s)
+	if _, err := s.DB.ExecContext(ctx, "UPDATE users SET catalog_mode_id = ? WHERE id = ?", modeID, userID); err != nil {
+		t.Fatal(err)
+	}
+	feedID := historyFeed(t, s)
+	if _, err := s.DB.ExecContext(ctx,
+		"INSERT INTO catalog_mode_feeds(mode_id, feed_id, exclude) VALUES (?, ?, 0)", modeID, feedID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserModeSelection(ctx, tx, userID, modeID, []string{"ai"}, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recordHistorySync(t, s, feedID, time.Now().Add(-time.Hour).Unix(), ServiceKey{Category: "ai", Service: "in-lab"})
+
+	if _, err := s.DeleteCatalogMode(ctx, modeID, AuditMeta{Actor: "admin:203.0.113.7", UserAgent: "test", Action: "user.mode_changed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := feedSyncEntries(all)
+	if len(got) != 1 || got[0].Mode != "Lab" || len(got[0].Added.Services) != 1 {
+		t.Fatalf("feed entries = %+v, want the sync shown in mode Lab after the mode was deleted", got)
 	}
 }

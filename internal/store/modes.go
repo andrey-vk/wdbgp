@@ -154,6 +154,13 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64, meta AuditMeta)
 		if err != nil {
 			return err
 		}
+		// Deleting the mode cascades away every user's selection in it. Audit
+		// each one first, so the change log can still say what the user had
+		// selected in this mode when a sync reached it.
+		selectionMeta := AuditMeta{Actor: meta.Actor, UserAgent: meta.UserAgent, Action: "user.selections_changed"}
+		if err := auditDeletedModeSelectionsTx(ctx, tx, id, deletedName, selectionMeta); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE users SET catalog_mode_id = 1 WHERE catalog_mode_id = ?", id); err != nil {
 			return err
@@ -300,4 +307,44 @@ func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) er
 		}
 		return rebuildModeEntriesTx(ctx, tx, modeID)
 	})
+}
+
+// auditDeletedModeSelectionsTx writes a selection audit row, emptying the
+// selection, for every user with selections in modeID. Called before the mode
+// is deleted, since the deletion cascades those selections away.
+func auditDeletedModeSelectionsTx(ctx context.Context, tx *sql.Tx, modeID int64, modeName string, meta AuditMeta) error {
+	rows, err := tx.QueryContext(ctx, `
+SELECT user_id FROM selected_categories WHERE mode_id = ?
+UNION
+SELECT user_id FROM selected_services WHERE mode_id = ?`, modeID, modeID)
+	if err != nil {
+		return err
+	}
+	var userIDs []int64
+	for rows.Next() {
+		var userID int64
+		if err := rows.Scan(&userID); err != nil {
+			_ = rows.Close() //nolint:errcheck
+			return err
+		}
+		userIDs = append(userIDs, userID)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	empty := selectionAuditState(modeID, modeName, nil, nil)
+	for _, userID := range userIDs {
+		cats, svcs, err := userModeSelection(ctx, tx, userID, modeID)
+		if err != nil {
+			return err
+		}
+		before := selectionAuditState(modeID, modeName, cats, svcs)
+		if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), before, empty, false); err != nil {
+			return err
+		}
+	}
+	return nil
 }
