@@ -471,7 +471,7 @@ WHERE NOT EXISTS (
 			if !ok {
 				a = selectionAuditState(key.modeID, b.ModeName, nil, nil)
 			}
-			if err := AuditEntryTx(ctx, tx, selectionMeta, "user", strconv.FormatInt(key.userID, 10), b, a, false); err != nil {
+			if err := AuditEntryTx(ctx, tx, selectionMeta, "user", strconv.FormatInt(key.userID, 10), selectionAuditValue(b), selectionAuditValue(a), false); err != nil {
 				return err
 			}
 		}

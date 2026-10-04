@@ -741,7 +741,7 @@ func (s *Store) SaveUserSelectionCounts(
 		}
 		before := selectionAuditState(modeID, modeName, bc, bs)
 		after := selectionAuditState(modeID, modeName, ac, as)
-		return AuditEntryTx(ctx, tx, selectionsMeta, "user", strconv.FormatInt(userID, 10), before, after, false)
+		return AuditEntryTx(ctx, tx, selectionsMeta, "user", strconv.FormatInt(userID, 10), selectionAuditValue(before), selectionAuditValue(after), false)
 	})
 	return beforeCats, beforeSvcs, afterCats, afterSvcs, prevModeID, err
 }

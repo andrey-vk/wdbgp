@@ -912,3 +912,18 @@ func TestSyncSequenceSurvivesAuditPurge(t *testing.T) {
 		t.Fatalf("audit_seq after purge = %+v, want the audit high-water mark, not 0", seq)
 	}
 }
+
+// TestSelectionAuditValueBoundsLargeSelections checks that a selection too
+// large to store by name is audited as counts, which the reader treats as
+// unknown, rather than as a payload of every name.
+func TestSelectionAuditValueBoundsLargeSelections(t *testing.T) {
+	small := selectionAuditPayload{ModeID: 1, Categories: []string{"ai"}, Services: []ServiceKey{{Category: "ai", Service: "x"}}}
+	if _, ok := selectionAuditValue(small).(selectionAuditPayload); !ok {
+		t.Fatal("small selection not audited by name")
+	}
+	large := selectionAuditPayload{ModeID: 1, Services: make([]ServiceKey, maxSelectionAuditNames+1)}
+	v, ok := selectionAuditValue(large).(map[string]int)
+	if !ok || v["services"] != maxSelectionAuditNames+1 {
+		t.Fatalf("large selection audited as %#v, want counts", selectionAuditValue(large))
+	}
+}

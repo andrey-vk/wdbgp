@@ -78,6 +78,21 @@ type selectionAuditPayload struct {
 	Services   []ServiceKey `json:"services"`
 }
 
+// maxSelectionAuditNames bounds the names a selection audit row stores. A row
+// that lists more is written as counts only, like a row from before names were
+// stored: the change log can't reconstruct through it, and that is said, rather
+// than writing a multi-megabyte payload for every edit to a large selection.
+const maxSelectionAuditNames = 1000
+
+// selectionAuditValue is the value to audit for a selection state: the names,
+// or counts once the selection is too large to store them.
+func selectionAuditValue(p selectionAuditPayload) any {
+	if len(p.Categories)+len(p.Services) > maxSelectionAuditNames {
+		return map[string]int{"categories": len(p.Categories), "services": len(p.Services)}
+	}
+	return p
+}
+
 // selectionAuditState builds the audit payload for one mode's selection. Sorted
 // output keeps the JSON stable, so an unchanged selection compares equal.
 func selectionAuditState(modeID int64, modeName string, categories map[string]bool, services map[ServiceKey]bool) selectionAuditPayload {

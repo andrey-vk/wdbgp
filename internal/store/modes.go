@@ -345,7 +345,7 @@ func auditDeletedModeSelectionsTx(ctx context.Context, tx *sql.Tx, modeID int64,
 			return err
 		}
 		before := selectionAuditState(modeID, modeName, cats, svcs)
-		if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), before, empty, false); err != nil {
+		if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), selectionAuditValue(before), selectionAuditValue(empty), false); err != nil {
 			return err
 		}
 	}
