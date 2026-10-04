@@ -260,7 +260,7 @@ func (s *Server) apiFeedsDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid feed ID"})
 		return
 	}
-	if err = s.store.DeleteFeed(r.Context(), id); err != nil {
+	if err = s.store.DeleteFeed(r.Context(), id, store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent")}); err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "Feed not found"})
 			return

@@ -1020,7 +1020,7 @@ func TestAuditHookFeedEnabledChangedSurvivesPostLookupFailure(t *testing.T) {
 	idStr := strconv.FormatInt(feedID, 10)
 
 	feedUpdatePostAuditHook = func(id int64) {
-		if err := st.DeleteFeed(context.Background(), id); err != nil {
+		if err := st.DeleteFeed(context.Background(), id, store.AuditMeta{}); err != nil {
 			t.Fatalf("delete feed mid-update: %v", err)
 		}
 	}
@@ -1102,7 +1102,7 @@ func TestAuditHookAdminUserModeChanged(t *testing.T) {
 	if e.ObjectType != "user" || e.ObjectID != idStr {
 		t.Fatalf("entry = %+v, want user/%s", e, idStr)
 	}
-	if e.Before != `{"catalog_mode_id":1}` {
+	if id := modeChangeAuditID(t, e.Before); id != 1 {
 		t.Fatalf("before = %q, want catalog_mode_id 1", e.Before)
 	}
 }
@@ -1190,10 +1190,10 @@ func TestAuditHookAdminUserModeChangeRevertedByStaleConcurrentUpdateIsAudited(t 
 	}
 	// Newest first: entries[0] is A's revert, entries[1] is B's move.
 	aEntry, bEntry := entries[0], entries[1]
-	if bEntry.Before != `{"catalog_mode_id":1}` || bEntry.After != `{"catalog_mode_id":`+strconv.FormatInt(modeBID, 10)+`}` {
+	if modeChangeAuditID(t, bEntry.Before) != 1 || modeChangeAuditID(t, bEntry.After) != modeBID {
 		t.Fatalf("B's entry: before=%q after=%q, want 1 -> %d", bEntry.Before, bEntry.After, modeBID)
 	}
-	if aEntry.Before != `{"catalog_mode_id":`+strconv.FormatInt(modeBID, 10)+`}` || aEntry.After != `{"catalog_mode_id":1}` {
+	if modeChangeAuditID(t, aEntry.Before) != modeBID || modeChangeAuditID(t, aEntry.After) != 1 {
 		t.Fatalf("A's entry: before=%q after=%q, want %d -> 1 (A's silent revert must still be audited)", aEntry.Before, aEntry.After, modeBID)
 	}
 }
@@ -1471,7 +1471,7 @@ func TestAuditHookUserSwitchMode(t *testing.T) {
 	if !strings.HasPrefix(e.Actor, "user:") {
 		t.Fatalf("actor = %q, want user:<id>", e.Actor)
 	}
-	if e.Before != `{"catalog_mode_id":1}` {
+	if id := modeChangeAuditID(t, e.Before); id != 1 {
 		t.Fatalf("before = %q, want catalog_mode_id 1", e.Before)
 	}
 }
@@ -1633,8 +1633,24 @@ func TestAuditHookModeDeleteReassignsUsersWithAudit(t *testing.T) {
 	if e.ObjectType != "user" || e.ObjectID != strconv.FormatInt(userID, 10) {
 		t.Fatalf("entry = %+v, want user/%d", e, userID)
 	}
-	wantBefore := `{"catalog_mode_id":` + strconv.FormatInt(modeBID, 10) + `}`
-	if e.Before != wantBefore || e.After != `{"catalog_mode_id":1}` {
-		t.Fatalf("before=%q after=%q, want %q -> {\"catalog_mode_id\":1}", e.Before, e.After, wantBefore)
+	// Names are snapshotted with the change, so the deleted mode's name is kept
+	// even though its row no longer exists.
+	wantBefore := `{"catalog_mode_id":` + strconv.FormatInt(modeBID, 10) + `,"catalog_mode_name":"Mode B"}`
+	wantAfter := `{"catalog_mode_id":1,"catalog_mode_name":"OpenCCK"}`
+	if e.Before != wantBefore || e.After != wantAfter {
+		t.Fatalf("before=%q after=%q, want %q -> %q", e.Before, e.After, wantBefore, wantAfter)
 	}
+}
+
+// modeChangeAuditID reads the catalog mode ID from a user.mode_changed payload.
+// The payload also carries the mode's name, which these tests don't pin.
+func modeChangeAuditID(t *testing.T, payload string) int64 {
+	t.Helper()
+	var p struct {
+		CatalogModeID int64 `json:"catalog_mode_id"`
+	}
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		t.Fatalf("decode mode_changed payload %q: %v", payload, err)
+	}
+	return p.CatalogModeID
 }

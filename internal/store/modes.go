@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 )
 
@@ -148,6 +149,19 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64, meta AuditMeta)
 			}
 		}
 
+		// Read the name before the row is deleted, so the audit entries record
+		// what the mode was called rather than a later reuse of its ID.
+		deletedName, err := modeNameTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		// Deleting the mode cascades away every user's selection in it. Audit
+		// each one first, so the change log can still say what the user had
+		// selected in this mode when a sync reached it.
+		selectionMeta := AuditMeta{Actor: meta.Actor, UserAgent: meta.UserAgent, Action: "user.selections_changed"}
+		if err := auditDeletedModeSelectionsTx(ctx, tx, id, selectionMeta); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE users SET catalog_mode_id = 1 WHERE catalog_mode_id = ?", id); err != nil {
 			return err
@@ -165,8 +179,12 @@ func (s *Store) DeleteCatalogMode(ctx context.Context, id int64, meta AuditMeta)
 		// transaction — without this, those moves would have no trace in
 		// the audit log despite user.mode_changed covering every other way
 		// a user's mode can change.
-		before := map[string]int64{"catalog_mode_id": id}
-		after := map[string]int64{"catalog_mode_id": 1}
+		before := modeChangeAuditPayload{CatalogModeID: id, CatalogModeName: deletedName}
+		fallbackName, err := modeNameTx(ctx, tx, 1)
+		if err != nil {
+			return err
+		}
+		after := modeChangeAuditPayload{CatalogModeID: 1, CatalogModeName: fallbackName}
 		for _, userID := range attemptIDs {
 			if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(userID, 10), before, after, false); err != nil {
 				return err
@@ -290,4 +308,29 @@ func (s *Store) RemoveFeedFromMode(ctx context.Context, modeID, feedID int64) er
 		}
 		return rebuildModeEntriesTx(ctx, tx, modeID)
 	})
+}
+
+// auditDeletedModeSelectionsTx writes a selection audit row, emptying the
+// selection, for every user with selections in modeID. Called before the mode
+// is deleted, since the deletion cascades those selections away.
+func auditDeletedModeSelectionsTx(ctx context.Context, tx *sql.Tx, modeID int64, meta AuditMeta) error {
+	states, err := selectionStatesTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	var keys []selectionStateKey
+	for key := range states {
+		if key.modeID == modeID {
+			keys = append(keys, key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].userID < keys[j].userID })
+	for _, key := range keys {
+		before := states[key]
+		empty := selectionAuditState(modeID, before.ModeName, nil, nil)
+		if err := AuditEntryTx(ctx, tx, meta, "user", strconv.FormatInt(key.userID, 10), selectionAuditValue(before), selectionAuditValue(empty), false); err != nil {
+			return err
+		}
+	}
+	return nil
 }

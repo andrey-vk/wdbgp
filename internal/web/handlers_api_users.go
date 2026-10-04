@@ -797,7 +797,7 @@ func (s *Server) apiUsersDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.DeleteUser(r.Context(), id); err != nil {
+	if err := s.store.DeleteUser(r.Context(), id, store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "user.deleted"}); err != nil {
 		if store.IsNotFound(err) {
 			writeJSON(w, http.StatusNotFound, apiResponse{OK: false, Error: "User not found"})
 			return
