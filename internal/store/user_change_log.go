@@ -681,20 +681,158 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 	if len(modes) == 0 || len(categories) == 0 {
 		return nil, nil
 	}
-	// The scan counts services per (sync, mode, kind, category) first. Only the
-	// categories and services the user actually selected at each sync are then
-	// read by name, capped, so a huge category isn't expanded row by row. A
-	// feed's enabled state and mode assignments today say nothing about the
-	// syncs already recorded, so neither filters here.
+	// The scan counts services per (sync, mode, kind, category) one chunk of
+	// categories at a time, and each chunk's groups are handled before the next is
+	// read, so memory follows the chunk, not the whole selection. A feed's enabled
+	// state and mode assignments today say nothing about the syncs already
+	// recorded, so neither filters here.
 	type group struct {
 		modeID, changeID, syncedAt, seq int64
 		hasSeq                          bool
 		modeName, feedName, kind, cat   string
 		count                           int
 	}
-	var groups []group
+	type entryKey struct{ changeID, modeID int64 }
+	var out []UserChangeEntry
+	index := map[entryKey]int{}
+
+	processGroups := func(groups []group) error {
+		// Groups are handled per bucket: one sync, mode, and kind. Each bucket's
+		// selection is read once, and its individually selected services are matched
+		// in one streamed read, so the number of statements doesn't grow with the
+		// number of categories.
+		type bucketKey struct {
+			changeID, modeID int64
+			kind             string
+		}
+		type bucket struct {
+			key    bucketKey
+			head   group
+			groups []group
+		}
+		var order []bucketKey
+		buckets := map[bucketKey]*bucket{}
+		for _, g := range groups {
+			bk := bucketKey{changeID: g.changeID, modeID: g.modeID, kind: g.kind}
+			b, ok := buckets[bk]
+			if !ok {
+				b = &bucket{key: bk, head: g}
+				buckets[bk] = b
+				order = append(order, bk)
+			}
+			b.groups = append(b.groups, g)
+		}
+
+		for _, bk := range order {
+			b := buckets[bk]
+			head := b.head
+			point := syncPoint{at: head.syncedAt, seq: head.seq, hasSeq: head.hasSeq}
+			// Only syncs after the user's history floor are this user's. A sync with no
+			// sequence predates the audit trail, so it can't be placed at all.
+			if head.seq < floorID || !head.hasSeq {
+				continue
+			}
+			mode, known := history.modeAt(point)
+			if !known || mode != bk.modeID {
+				continue
+			}
+			sel, err := history.selectionAt(ctx, point, bk.modeID)
+			if err != nil {
+				return err
+			}
+			if !sel.known {
+				continue
+			}
+			// entry returns the bucket's entry, creating it on first use, and side its
+			// list. room is what is left on the side, read without creating the entry.
+			entry := func() *UserChangeEntry {
+				ek := entryKey{changeID: bk.changeID, modeID: bk.modeID}
+				i, ok := index[ek]
+				if !ok {
+					out = append(out, UserChangeEntry{
+						order:    syncOrder(point),
+						commit:   bk.changeID,
+						At:       head.syncedAt,
+						Source:   "feed_sync",
+						Kind:     "feed_sync",
+						Mode:     modeNameOr(head.modeName, bk.modeID),
+						FeedName: head.feedName,
+					})
+					i = len(out) - 1
+					index[ek] = i
+				}
+				return &out[i]
+			}
+			side := func(e *UserChangeEntry) *UserChangeList {
+				if bk.kind == "added" {
+					return &e.Added
+				}
+				return &e.Removed
+			}
+			roomLeft := func() int {
+				if i, ok := index[entryKey{changeID: bk.changeID, modeID: bk.modeID}]; ok {
+					return max(maxListedNames-len(side(&out[i]).Services), 0)
+				}
+				return maxListedNames
+			}
+
+			// Categories selected whole: every service of the category counts, and the
+			// aggregate count is exact. Names are read only while there is room.
+			var indiv []string
+			for _, g := range b.groups {
+				if sel.categories[g.cat] {
+					room := roomLeft()
+					if room <= 0 {
+						side(entry()).Omitted += g.count
+						continue
+					}
+					names, err := serviceNamesTx(ctx, q, bk.changeID, bk.kind, g.cat, room+1)
+					if err != nil {
+						return err
+					}
+					listed := min(len(names), room)
+					e := entry()
+					for _, n := range names[:listed] {
+						side(e).Services = append(side(e).Services, ServiceKey{Category: g.cat, Service: n})
+					}
+					side(e).Omitted += g.count - listed
+					continue
+				}
+				if len(sel.byCategory[g.cat]) > 0 {
+					indiv = append(indiv, g.cat)
+				}
+			}
+
+			// Services selected individually: one streamed read over the categories,
+			// matched against the selection in memory. Only the names that fit are kept.
+			if len(indiv) > 0 {
+				room := roomLeft()
+				matched := 0
+				var names []ServiceKey
+				for start := 0; start < len(indiv); start += maxScanCategories {
+					chunk := indiv[start:min(start+maxScanCategories, len(indiv))]
+					if err := scanIndividualTx(ctx, q, bk.changeID, bk.kind, chunk, sel.byCategory, func(cat, svc string) {
+						matched++
+						if len(names) < room {
+							names = append(names, ServiceKey{Category: cat, Service: svc})
+						}
+					}); err != nil {
+						return err
+					}
+				}
+				if matched > 0 {
+					e := entry()
+					side(e).Services = append(side(e).Services, names...)
+					side(e).Omitted += matched - len(names)
+				}
+			}
+		}
+		return nil
+	}
+
 	for start := 0; start < len(categories); start += maxScanCategories {
 		chunk := categories[start:min(start+maxScanCategories, len(categories))]
+		var groups []group
 		args := []any{since}
 		for _, m := range modes {
 			args = append(args, m)
@@ -726,141 +864,11 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 		if err := rows.Close(); err != nil {
 			return nil, err
 		}
-	}
-
-	// Groups are handled per bucket: one sync, mode, and kind. Each bucket's
-	// selection is read once, and its individually selected services are matched
-	// in one streamed read, so the number of statements doesn't grow with the
-	// number of categories.
-	type bucketKey struct {
-		changeID, modeID int64
-		kind             string
-	}
-	type bucket struct {
-		key    bucketKey
-		head   group
-		groups []group
-	}
-	var order []bucketKey
-	buckets := map[bucketKey]*bucket{}
-	for _, g := range groups {
-		bk := bucketKey{changeID: g.changeID, modeID: g.modeID, kind: g.kind}
-		b, ok := buckets[bk]
-		if !ok {
-			b = &bucket{key: bk, head: g}
-			buckets[bk] = b
-			order = append(order, bk)
-		}
-		b.groups = append(b.groups, g)
-	}
-
-	type entryKey struct{ changeID, modeID int64 }
-	var out []UserChangeEntry
-	index := map[entryKey]int{}
-	for _, bk := range order {
-		b := buckets[bk]
-		head := b.head
-		point := syncPoint{at: head.syncedAt, seq: head.seq, hasSeq: head.hasSeq}
-		// Only syncs after the user's history floor are this user's. A sync with no
-		// sequence predates the audit trail, so it can't be placed at all.
-		if head.seq < floorID || !head.hasSeq {
-			continue
-		}
-		mode, known := history.modeAt(point)
-		if !known || mode != bk.modeID {
-			continue
-		}
-		sel, err := history.selectionAt(ctx, point, bk.modeID)
-		if err != nil {
+		if err := processGroups(groups); err != nil {
 			return nil, err
 		}
-		if !sel.known {
-			continue
-		}
-		// entry returns the bucket's entry, creating it on first use, and side its
-		// list. room is what is left on the side, read without creating the entry.
-		entry := func() *UserChangeEntry {
-			ek := entryKey{changeID: bk.changeID, modeID: bk.modeID}
-			i, ok := index[ek]
-			if !ok {
-				out = append(out, UserChangeEntry{
-					order:    syncOrder(point),
-					commit:   bk.changeID,
-					At:       head.syncedAt,
-					Source:   "feed_sync",
-					Kind:     "feed_sync",
-					Mode:     modeNameOr(head.modeName, bk.modeID),
-					FeedName: head.feedName,
-				})
-				i = len(out) - 1
-				index[ek] = i
-			}
-			return &out[i]
-		}
-		side := func(e *UserChangeEntry) *UserChangeList {
-			if bk.kind == "added" {
-				return &e.Added
-			}
-			return &e.Removed
-		}
-		roomLeft := func() int {
-			if i, ok := index[entryKey{changeID: bk.changeID, modeID: bk.modeID}]; ok {
-				return max(maxListedNames-len(side(&out[i]).Services), 0)
-			}
-			return maxListedNames
-		}
-
-		// Categories selected whole: every service of the category counts, and the
-		// aggregate count is exact. Names are read only while there is room.
-		var indiv []string
-		for _, g := range b.groups {
-			if sel.categories[g.cat] {
-				room := roomLeft()
-				if room <= 0 {
-					side(entry()).Omitted += g.count
-					continue
-				}
-				names, err := serviceNamesTx(ctx, q, bk.changeID, bk.kind, g.cat, room+1)
-				if err != nil {
-					return nil, err
-				}
-				listed := min(len(names), room)
-				e := entry()
-				for _, n := range names[:listed] {
-					side(e).Services = append(side(e).Services, ServiceKey{Category: g.cat, Service: n})
-				}
-				side(e).Omitted += g.count - listed
-				continue
-			}
-			if len(sel.byCategory[g.cat]) > 0 {
-				indiv = append(indiv, g.cat)
-			}
-		}
-
-		// Services selected individually: one streamed read over the categories,
-		// matched against the selection in memory. Only the names that fit are kept.
-		if len(indiv) > 0 {
-			room := roomLeft()
-			matched := 0
-			var names []ServiceKey
-			for start := 0; start < len(indiv); start += maxScanCategories {
-				chunk := indiv[start:min(start+maxScanCategories, len(indiv))]
-				if err := scanIndividualTx(ctx, q, bk.changeID, bk.kind, chunk, sel.byCategory, func(cat, svc string) {
-					matched++
-					if len(names) < room {
-						names = append(names, ServiceKey{Category: cat, Service: svc})
-					}
-				}); err != nil {
-					return nil, err
-				}
-			}
-			if matched > 0 {
-				e := entry()
-				side(e).Services = append(side(e).Services, names...)
-				side(e).Omitted += matched - len(names)
-			}
-		}
 	}
+
 	for i := range out {
 		sortServiceKeys(out[i].Added.Services)
 		sortServiceKeys(out[i].Removed.Services)
