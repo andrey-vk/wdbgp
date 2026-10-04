@@ -42,7 +42,19 @@ func (s *Store) CommunityMatrix(ctx context.Context) (CommunityMatrix, error) {
 			if err != nil {
 				return err
 			}
-			snaps[mode.ID] = ModeCommunitySnapshot{Communities: rows}
+			// A feed removed from a mode leaves its community rows behind, so only
+			// categories the mode currently serves count as its numbering.
+			present, err := categoriesServedTx(ctx, tx, mode.ID)
+			if err != nil {
+				return err
+			}
+			kept := rows[:0]
+			for _, row := range rows {
+				if present[row.Category] {
+					kept = append(kept, row)
+				}
+			}
+			snaps[mode.ID] = ModeCommunitySnapshot{Communities: kept}
 		}
 		matrix = buildCommunityMatrix(modes, snaps)
 		return nil
@@ -90,4 +102,27 @@ func buildCommunityMatrix(modes []CatalogMode, snaps map[int64]ModeCommunitySnap
 		matrix.Categories = append(matrix.Categories, row)
 	}
 	return matrix
+}
+
+// categoriesServedTx returns the categories a mode currently serves, from its
+// materialized entries.
+func categoriesServedTx(ctx context.Context, tx *sql.Tx, modeID int64) (map[string]bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT DISTINCT c.name FROM catalog_mode_entries cme
+JOIN services sv ON sv.id = cme.service_id
+JOIN categories c ON c.id = sv.category_id
+WHERE cme.mode_id = ?`, modeID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
 }

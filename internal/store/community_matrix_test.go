@@ -85,3 +85,27 @@ func TestCommunityMatrixReadsModesWithoutGenerating(t *testing.T) {
 		t.Fatalf("stored communities changed from %d to %d by reading the matrix", len(before), len(after))
 	}
 }
+
+// TestCommunityMatrixDropsCategoriesTheModeNoLongerServes checks that a stored
+// community for a category the mode doesn't serve (its feed was removed) isn't
+// shown as that mode's numbering.
+func TestCommunityMatrixDropsCategoriesTheModeNoLongerServes(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	modeID, err := s.AddCatalogMode(ctx, "Stale", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCommunity(ctx, modeID, "ghost", "", 55555); err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.CommunityMatrix(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range m.Categories {
+		if row.Category == "ghost" {
+			t.Fatalf("ghost shown though no mode serves it: %+v", row)
+		}
+	}
+}
