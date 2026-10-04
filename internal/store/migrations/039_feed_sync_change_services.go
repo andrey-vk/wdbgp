@@ -3,6 +3,7 @@ package migrations
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 // V039 records what each feed sync changed, by name, for the user change log:
@@ -22,6 +23,20 @@ func V039(ctx context.Context, tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `ALTER TABLE feed_sync_changes ADD COLUMN feed_name TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
+	}
+	// The audit log is complete from this point on. Purges move the boundary
+	// forward, so raising retention later can't widen the change log's window
+	// back over rows that were already deleted. Audit rows older than this
+	// migration may be missing changes, so history before it isn't placed.
+	if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS audit_log_coverage (
+		id             INTEGER PRIMARY KEY CHECK (id = 1),
+		complete_since INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		"INSERT OR IGNORE INTO audit_log_coverage(id, complete_since) VALUES (1, ?)", time.Now().Unix()); err != nil {
+		return err
 	}
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS feed_sync_change_services (

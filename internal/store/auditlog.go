@@ -198,9 +198,17 @@ func AuditEntryTx(ctx context.Context, tx *sql.Tx, meta AuditMeta, objectType, o
 	return err
 }
 
-// PurgeAuditLog deletes entries older than `days`.
+// PurgeAuditLog deletes entries older than `days`. The completeness boundary
+// moves to the cutoff with it, so readers never reconstruct from rows that are
+// gone (see audit_log_coverage).
 func (s *Store) PurgeAuditLog(ctx context.Context, days int) error {
 	cutoff := daysCutoff(days)
-	_, err := s.DB.ExecContext(ctx, "DELETE FROM audit_log WHERE recorded_at < ?", cutoff)
-	return err
+	return s.Transaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM audit_log WHERE recorded_at < ?", cutoff); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			"UPDATE audit_log_coverage SET complete_since = MAX(complete_since, ?) WHERE id = 1", cutoff)
+		return err
+	})
 }

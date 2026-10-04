@@ -9,6 +9,18 @@ import (
 	"time"
 )
 
+// openChangeLogStore opens a test store whose audit completeness boundary is
+// at the epoch. The migration stamps the boundary with the time it ran, which
+// in a fresh test database is now, while these tests place syncs in the past.
+func openChangeLogStore(t *testing.T) *Store {
+	t.Helper()
+	s := openTestStore(t)
+	if _, err := s.DB.ExecContext(context.Background(), "UPDATE audit_log_coverage SET complete_since = 0"); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
 // selectionChangeLogUser returns a user in the default mode with no selection,
 // so each test starts from a known empty state. Only one per test: the blast
 // radius helper creates a feed by URL, so a second call would collide.
@@ -30,7 +42,7 @@ func plainChangeLogUser(t *testing.T, s *Store) int64 {
 }
 
 func TestUserChangeLogAttributesSelfAndAdminSelectionChanges(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID := selectionChangeLogUser(t, s)
 	uid := strconv.FormatInt(userID, 10)
@@ -72,7 +84,7 @@ func TestUserChangeLogAttributesSelfAndAdminSelectionChanges(t *testing.T) {
 }
 
 func TestUserChangeLogShowsFeedChangesOnlyForSelectedCategoriesAndServices(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	// The user selects category ai, plus one specific service tv/unrelated in
 	// a category they don't otherwise select. Relevance is judged against this
@@ -130,7 +142,7 @@ func TestUserChangeLogShowsFeedChangesOnlyForSelectedCategoriesAndServices(t *te
 }
 
 func TestUserChangeLogSkipsFeedChangesForUserWithoutSelection(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	_, feedID := userSelectingFeedChange(t, s, "ai", false)
 	other := plainChangeLogUser(t, s)
@@ -151,7 +163,7 @@ func TestUserChangeLogSkipsFeedChangesForUserWithoutSelection(t *testing.T) {
 }
 
 func TestUserChangeLogReadsLegacyCountPayloadWithoutNames(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID := selectionChangeLogUser(t, s)
 	if err := s.RecordAuditLog(ctx, AuditLogEntry{
@@ -177,7 +189,7 @@ func TestUserChangeLogReadsLegacyCountPayloadWithoutNames(t *testing.T) {
 }
 
 func TestUserChangeLogRouteAndModeAndFilterModeChanges(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID := selectionChangeLogUser(t, s)
 	uid := strconv.FormatInt(userID, 10)
@@ -220,7 +232,7 @@ func TestUserChangeLogRouteAndModeAndFilterModeChanges(t *testing.T) {
 }
 
 func TestUserChangeLogExcludesOtherUsersAndOldRows(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID := selectionChangeLogUser(t, s)
 	other := plainChangeLogUser(t, s)
@@ -332,7 +344,7 @@ func feedSyncEntries(all []UserChangeEntry) []UserChangeEntry {
 }
 
 func TestUserChangeLogUsesSelectionAtSyncTime(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID := plainChangeLogUser(t, s)
 	feedID := historyFeed(t, s)
@@ -361,7 +373,7 @@ func TestUserChangeLogUsesSelectionAtSyncTime(t *testing.T) {
 }
 
 func TestUserChangeLogLegacyRowsHideSyncsItCannotPlace(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID := plainChangeLogUser(t, s)
 	feedID := historyFeed(t, s)
@@ -393,7 +405,7 @@ func TestUserChangeLogLegacyRowsHideSyncsItCannotPlace(t *testing.T) {
 }
 
 func TestUserChangeLogSkipsSyncsMadeInAnotherMode(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID := plainChangeLogUser(t, s)
 	feedID := historyFeed(t, s)
@@ -430,7 +442,7 @@ func TestUserChangeLogSkipsSyncsMadeInAnotherMode(t *testing.T) {
 }
 
 func TestUserChangeLogSameSecondChangeLeavesSyncUnplaced(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID := plainChangeLogUser(t, s)
 	feedID := historyFeed(t, s)
@@ -451,7 +463,7 @@ func TestUserChangeLogSameSecondChangeLeavesSyncUnplaced(t *testing.T) {
 }
 
 func TestUserChangeLogPlacesSyncsByModesTheyReachedThen(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID := plainChangeLogUser(t, s)
 	// The feed syncs while no mode includes it, then is attached to the user's
@@ -481,7 +493,7 @@ func TestUserChangeLogPlacesSyncsByModesTheyReachedThen(t *testing.T) {
 }
 
 func TestUserChangeLogKeepsSyncsOfFeedDisabledLater(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
 	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
@@ -525,7 +537,7 @@ func TestUserChangeLogWindowFollowsAuditRetention(t *testing.T) {
 // TestUserChangeLogKeepsModeNameAsRecorded checks the snapshot: a mode renamed
 // after a sync is still shown under the name it had when the sync ran.
 func TestUserChangeLogKeepsModeNameAsRecorded(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
 	var oldName string
@@ -550,7 +562,7 @@ func TestUserChangeLogKeepsModeNameAsRecorded(t *testing.T) {
 // TestUserChangeLogKeepsFeedNameAsRecorded checks the feed snapshot: a feed
 // renamed after a sync is still shown under the name it had then.
 func TestUserChangeLogKeepsFeedNameAsRecorded(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
 	recordHistorySync(t, s, feedID, time.Now().Add(-time.Hour).Unix(), ServiceKey{Category: "ai", Service: "named"})
@@ -572,7 +584,7 @@ func TestUserChangeLogKeepsFeedNameAsRecorded(t *testing.T) {
 // mode still shows after the mode is deleted, since the deletion audits the
 // selections it cascades away.
 func TestUserChangeLogKeepsSelectionsOfDeletedMode(t *testing.T) {
-	s := openTestStore(t)
+	s := openChangeLogStore(t)
 	ctx := context.Background()
 	modeID, err := s.AddCatalogMode(ctx, "Lab", true)
 	if err != nil {
@@ -605,5 +617,36 @@ func TestUserChangeLogKeepsSelectionsOfDeletedMode(t *testing.T) {
 	got := feedSyncEntries(all)
 	if len(got) != 1 || got[0].Mode != "Lab" || len(got[0].Added.Services) != 1 {
 		t.Fatalf("feed entries = %+v, want the sync shown in mode Lab after the mode was deleted", got)
+	}
+}
+
+// TestUserChangeLogStopsAtPurgeBoundary checks that a purge moves the readable
+// window forward for good: raising retention afterwards doesn't bring back
+// the days that were already deleted, where a sync can't be placed.
+func TestUserChangeLogStopsAtPurgeBoundary(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	old := time.Now().Add(-20 * 24 * time.Hour).Unix()
+	recordHistorySync(t, s, feedID, old, ServiceKey{Category: "ai", Service: "twenty-days-ago"})
+
+	before, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(feedSyncEntries(before)) != 1 {
+		t.Fatalf("before purge: feed entries = %+v, want the sync listed", feedSyncEntries(before))
+	}
+
+	if err := s.PurgeAuditLog(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	// Retention is now 30 days, but the 20-day-old sync predates the purge.
+	after, err := s.UserChangeLog(ctx, userID, time.Now(), UserChangeLogWindow(30))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := feedSyncEntries(after); len(got) != 0 {
+		t.Fatalf("after purge: feed entries = %+v, want none before the purge boundary", got)
 	}
 }

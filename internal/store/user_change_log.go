@@ -124,7 +124,10 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		"SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&modeID); err != nil {
 		return nil, err
 	}
-	since := now.Add(-window).Unix()
+	since, err := s.auditCompleteSince(ctx, now.Add(-window).Unix())
+	if err != nil {
+		return nil, err
+	}
 	entries, err := s.userAuditChanges(ctx, userID, since)
 	if err != nil {
 		return nil, err
@@ -142,6 +145,20 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		entries = []UserChangeEntry{}
 	}
 	return entries, nil
+}
+
+// auditCompleteSince returns the later of from and the audit log's completeness
+// boundary, so the window never reaches back over rows a purge already removed.
+func (s *Store) auditCompleteSince(ctx context.Context, from int64) (int64, error) {
+	var complete int64
+	err := s.DB.QueryRowContext(ctx, "SELECT complete_since FROM audit_log_coverage WHERE id = 1").Scan(&complete)
+	if errors.Is(err, sql.ErrNoRows) {
+		return from, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return max(from, complete), nil
 }
 
 // modeChangeAuditPayload is the before/after shape of a user.mode_changed row.
