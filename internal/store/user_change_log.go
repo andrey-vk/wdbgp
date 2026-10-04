@@ -861,6 +861,16 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 		return nil
 	}
 
+	// Only the newest syncs that touch the user's categories are read. Older ones
+	// are left out, which the CHANGELOG states, so a feed with a long history
+	// can't make one page load read all of it.
+	changes, err := newestFeedSyncs(ctx, q, since, modes, categories, userChangeSyncCandidates)
+	if err != nil {
+		return nil, err
+	}
+	if len(changes) == 0 {
+		return nil, nil
+	}
 	for start := 0; start < len(categories); start += maxScanCategories {
 		chunk := categories[start:min(start+maxScanCategories, len(categories))]
 		var groups []group
@@ -871,9 +881,13 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 		for _, c := range chunk {
 			args = append(args, c)
 		}
+		for _, id := range changes {
+			args = append(args, id)
+		}
 		rows, err := q.QueryContext(ctx, strings.NewReplacer(
 			"__MODES__", placeholders(len(modes)),
 			"__CATEGORIES__", placeholders(len(chunk)),
+			"__CHANGES__", placeholders(len(changes)),
 		).Replace(feedSyncGroupQuery), args...)
 		if err != nil {
 			return nil, err
@@ -921,8 +935,79 @@ FROM feed_sync_change_services s
 JOIN feed_sync_changes c ON c.id = s.change_id
 JOIN feed_sync_change_modes cm ON cm.change_id = c.id
 WHERE c.synced_at >= ? AND cm.mode_id IN (__MODES__) AND s.category IN (__CATEGORIES__)
+	AND c.id IN (__CHANGES__)
 GROUP BY cm.mode_id, cm.mode_name, c.id, c.feed_name, c.synced_at, c.audit_seq, s.kind, s.category
 ORDER BY c.synced_at DESC, c.id DESC, cm.mode_id, s.kind, s.category`
+
+// userChangeSyncCandidates bounds the syncs read for one user: the newest that
+// touch the user's categories. The response shows at most 200 entries, so a
+// larger read adds only cost.
+const userChangeSyncCandidates = 1000
+
+// feedSyncCandidatesQuery lists recent syncs that touch the given modes and
+// categories, newest first.
+const feedSyncCandidatesQuery = `
+SELECT DISTINCT c.id, c.synced_at
+FROM feed_sync_changes c
+JOIN feed_sync_change_modes cm ON cm.change_id = c.id
+JOIN feed_sync_change_services s ON s.change_id = c.id
+WHERE c.synced_at >= ? AND cm.mode_id IN (__MODES__) AND s.category IN (__CATEGORIES__)
+ORDER BY c.synced_at DESC, c.id DESC
+LIMIT ?`
+
+// newestFeedSyncs returns the IDs of the newest limit syncs that touch the given
+// modes and categories, newest first. Categories are checked in chunks, and the
+// newest of the chunks' candidates are kept.
+func newestFeedSyncs(ctx context.Context, q queryer, since int64, modes []int64, categories []string, limit int) ([]int64, error) {
+	newest := map[int64]int64{}
+	for start := 0; start < len(categories); start += maxScanCategories {
+		chunk := categories[start:min(start+maxScanCategories, len(categories))]
+		args := []any{since}
+		for _, m := range modes {
+			args = append(args, m)
+		}
+		for _, c := range chunk {
+			args = append(args, c)
+		}
+		args = append(args, limit)
+		rows, err := q.QueryContext(ctx, strings.NewReplacer(
+			"__MODES__", placeholders(len(modes)),
+			"__CATEGORIES__", placeholders(len(chunk)),
+		).Replace(feedSyncCandidatesQuery), args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id, at int64
+			if err := rows.Scan(&id, &at); err != nil {
+				_ = rows.Close() //nolint:errcheck
+				return nil, err
+			}
+			newest[id] = at
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close() //nolint:errcheck
+			return nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+	}
+	ids := make([]int64, 0, len(newest))
+	for id := range newest {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		if newest[ids[i]] != newest[ids[j]] {
+			return newest[ids[i]] > newest[ids[j]]
+		}
+		return ids[i] > ids[j]
+	})
+	if len(ids) > limit {
+		ids = ids[:limit]
+	}
+	return ids, nil
+}
 
 // maxListedNames bounds the service names one side of an entry lists.
 const maxListedNames = userChangeLogListLimit

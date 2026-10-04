@@ -1181,3 +1181,38 @@ func TestUserHistoryHorizonWhenRowsAreCut(t *testing.T) {
 		t.Fatalf("complete read has horizon %d, want none", full.horizon)
 	}
 }
+
+// TestNewestFeedSyncsKeepsOnlyTheNewest checks the sync bound: with a limit, only
+// the newest syncs touching the categories are candidates.
+func TestNewestFeedSyncsKeepsOnlyTheNewest(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	_, feedID := userSelectingFeedChange(t, s, "ai", false)
+	base := time.Now().Add(-5 * time.Hour).Unix()
+	var ids []int64
+	for i := 0; i < 5; i++ {
+		recordHistorySync(t, s, feedID, base+int64(i)*60, ServiceKey{Category: "ai", Service: fmt.Sprintf("s-%d", i)})
+	}
+	rows, err := s.DB.QueryContext(ctx,
+		"SELECT id FROM feed_sync_changes WHERE id IN (SELECT change_id FROM feed_sync_change_services) ORDER BY synced_at, id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := newestFeedSyncs(ctx, s.DB, base-1, []int64{DefaultCatalogModeID}, []string{"ai"}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != ids[len(ids)-1] || got[1] != ids[len(ids)-2] {
+		t.Fatalf("newest two syncs = %v, want the last two of %v", got, ids)
+	}
+}

@@ -446,7 +446,7 @@ Deleting a feed keeps its earlier syncs in the log, and records the services it 
 
 The history of an account starts when the account is created, and for accounts that existed at the upgrade, at the upgrade. So an ID that a deleted account once held never shows that account's history.
 
-Reconstruction reads the newest 2000 audit rows of an account. A sync older than the oldest of those rows is left out rather than placed from a guess.
+Reconstruction reads the newest 2000 audit rows of an account and the newest 1000 syncs touching its categories. A sync older than the oldest of those rows is left out rather than placed from a guess.
 
 Two limits follow from this. Selection changes recorded before the name payload existed hold only counts, so a sync that falls before one of them can't be placed and is left out. And the history reaches back only as far as the audit window.
 
