@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestBuildCommunityMatrixFlagsDivergence(t *testing.T) {
 	modes := []CatalogMode{{ID: 1, Name: "Default", Enabled: true}, {ID: 2, Name: "Lab", Enabled: true}, {ID: 3, Name: "Old", Enabled: false}}
@@ -54,5 +57,31 @@ func TestBuildCommunityMatrixEmpty(t *testing.T) {
 	m := buildCommunityMatrix(nil, nil)
 	if m.Categories == nil || len(m.Categories) != 0 {
 		t.Fatalf("categories = %#v, want an empty array", m.Categories)
+	}
+}
+
+// TestCommunityMatrixReadsModesWithoutGenerating checks the store path: the
+// seeded modes come back, and reading the matrix builds the grid without
+// generating assignments, so the stored communities are unchanged by it.
+func TestCommunityMatrixReadsModesWithoutGenerating(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	before, err := s.CommunityRows(ctx, DefaultCatalogModeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := s.CommunityMatrix(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Modes) == 0 {
+		t.Fatalf("modes = %+v, want the seeded catalog modes", m.Modes)
+	}
+	after, err := s.CommunityRows(ctx, DefaultCatalogModeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != len(after) {
+		t.Fatalf("stored communities changed from %d to %d by reading the matrix", len(before), len(after))
 	}
 }

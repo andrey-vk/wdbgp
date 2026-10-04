@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"sort"
 )
 
@@ -23,14 +24,30 @@ type CommunityMatrix struct {
 	Categories []CommunityMatrixRow `json:"categories"`
 }
 
-// CommunityMatrix builds the matrix from every mode's communities, read in one
-// transaction so the numbers describe one moment across all modes.
+// CommunityMatrix builds the matrix from the stored communities of every mode,
+// read in one transaction so the numbers describe one moment across all modes.
+// It reads only what the grid shows: no prefix counts, and no generation of
+// missing assignments, so a page view never writes or scans whole catalogs.
+// A category with no stored group-level number shows as missing.
 func (s *Store) CommunityMatrix(ctx context.Context) (CommunityMatrix, error) {
-	modes, snaps, err := s.AllModeCommunitySnapshots(ctx, false)
-	if err != nil {
-		return CommunityMatrix{}, err
-	}
-	return buildCommunityMatrix(modes, snaps), nil
+	var matrix CommunityMatrix
+	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		modes, err := catalogModes(ctx, tx, false)
+		if err != nil {
+			return err
+		}
+		snaps := make(map[int64]ModeCommunitySnapshot, len(modes))
+		for _, mode := range modes {
+			rows, err := communityRows(ctx, tx, mode.ID)
+			if err != nil {
+				return err
+			}
+			snaps[mode.ID] = ModeCommunitySnapshot{Communities: rows}
+		}
+		matrix = buildCommunityMatrix(modes, snaps)
+		return nil
+	})
+	return matrix, err
 }
 
 // buildCommunityMatrix is CommunityMatrix's pure part. Categories are sorted by
