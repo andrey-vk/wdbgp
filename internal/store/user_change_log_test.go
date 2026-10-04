@@ -933,3 +933,33 @@ func TestSelectionAuditValueBoundsLargeSelections(t *testing.T) {
 		t.Fatal("two large selections with equal counts audited as the same value")
 	}
 }
+
+// TestUserChangeLogScansManyCategories checks that a selection spanning more
+// categories than one scan statement can bind still places a sync, and that the
+// entry's services come back sorted.
+func TestUserChangeLogScansManyCategories(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	cats := make([]string, 0, maxScanCategories+100)
+	for i := 0; i < maxScanCategories+100; i++ {
+		cats = append(cats, fmt.Sprintf("cat-%04d", i))
+	}
+	cats = append(cats, "ai")
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserModeSelection(ctx, tx, userID, DefaultCatalogModeID, cats, nil)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recordHistorySync(t, s, feedID, time.Now().Add(-time.Hour).Unix(),
+		ServiceKey{Category: "ai", Service: "zeta"}, ServiceKey{Category: "ai", Service: "alpha"})
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := feedSyncEntries(all)
+	if len(got) != 1 || len(got[0].Added.Services) != 2 || got[0].Added.Services[0].Service != "alpha" {
+		t.Fatalf("feed entries = %+v, want the sync placed with its services sorted", got)
+	}
+}

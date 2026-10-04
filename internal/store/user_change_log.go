@@ -400,6 +400,9 @@ type userHistory struct {
 	selections  []selectionChange
 	modes       []modeChange
 	selCache    map[selectionKey]selectionValue
+	// live is the current selection per mode, read once: every sync that no
+	// later change touches falls back to it.
+	live map[int64]selectionValue
 }
 
 // syncPoint places a sync against the audit trail. Where audit_seq is known,
@@ -450,7 +453,8 @@ ORDER BY recorded_at ASC, id ASC`, strconv.FormatInt(userID, 10), since, floorID
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }() //nolint:errcheck
-	h := &userHistory{q: q, userID: userID, currentMode: currentMode, selCache: map[selectionKey]selectionValue{}}
+	h := &userHistory{q: q, userID: userID, currentMode: currentMode,
+		selCache: map[selectionKey]selectionValue{}, live: map[int64]selectionValue{}}
 	for rows.Next() {
 		var id, at int64
 		var action, before, after string
@@ -525,11 +529,16 @@ func (h *userHistory) selectionAt(ctx context.Context, p syncPoint, modeID int64
 		break
 	}
 	if !found {
-		cats, svcs, err := userModeSelection(ctx, h.q, h.userID, modeID)
-		if err != nil {
-			return selectionValue{}, err
+		live, ok := h.live[modeID]
+		if !ok {
+			cats, svcs, err := userModeSelection(ctx, h.q, h.userID, modeID)
+			if err != nil {
+				return selectionValue{}, err
+			}
+			live = selectionValue{categories: cats, services: svcs, known: true}
+			h.live[modeID] = live
 		}
-		v.categories, v.services = cats, svcs
+		v.categories, v.services = live.categories, live.services
 	}
 	h.selCache[key] = v
 	return v, nil
@@ -602,78 +611,91 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 	// A feed's enabled state and mode assignments today say nothing about the
 	// syncs already recorded, so neither filters here: each sync carries the
 	// modes it reached, and history outlives a feed being disabled.
-	args := []any{since}
-	for _, m := range modes {
-		args = append(args, m)
-	}
-	for _, c := range categories {
-		args = append(args, c)
-	}
-	rows, err := q.QueryContext(ctx, strings.NewReplacer(
-		"__MODES__", placeholders(len(modes)),
-		"__CATEGORIES__", placeholders(len(categories)),
-	).Replace(feedSyncScanQuery), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }() //nolint:errcheck
 	type entryKey struct{ changeID, modeID int64 }
 	var out []UserChangeEntry
 	index := map[entryKey]int{}
-	for rows.Next() {
-		var modeID, changeID, syncedAt int64
-		var seq sql.NullInt64
-		var modeName, feedName, kind, category, service string
-		if err := rows.Scan(&modeID, &modeName, &changeID, &feedName, &syncedAt, &seq, &kind, &category, &service); err != nil {
-			return nil, err
+	// One statement binds a limited number of variables, and a user's selections
+	// can span more categories than that, so the categories are scanned in chunks.
+	scanChunk := func(chunk []string) error {
+		args := []any{since}
+		for _, m := range modes {
+			args = append(args, m)
 		}
-		point := syncPoint{at: syncedAt, seq: seq.Int64, hasSeq: seq.Valid}
-		// Only syncs after the user's history floor are this user's. A sync with no
-		// sequence predates the audit trail, so it can't be placed at all.
-		if point.seq < floorID || !point.hasSeq {
-			continue
+		for _, c := range chunk {
+			args = append(args, c)
 		}
-		key := ServiceKey{Category: category, Service: service}
-		mode, known := history.modeAt(point)
-		if !known || mode != modeID {
-			continue
-		}
-		sel, err := history.selectionAt(ctx, point, modeID)
+		rows, err := q.QueryContext(ctx, strings.NewReplacer(
+			"__MODES__", placeholders(len(modes)),
+			"__CATEGORIES__", placeholders(len(chunk)),
+		).Replace(feedSyncScanQuery), args...)
 		if err != nil {
+			return err
+		}
+		defer func() { _ = rows.Close() }() //nolint:errcheck
+		for rows.Next() {
+			var modeID, changeID, syncedAt int64
+			var seq sql.NullInt64
+			var modeName, feedName, kind, category, service string
+			if err := rows.Scan(&modeID, &modeName, &changeID, &feedName, &syncedAt, &seq, &kind, &category, &service); err != nil {
+				return err
+			}
+			point := syncPoint{at: syncedAt, seq: seq.Int64, hasSeq: seq.Valid}
+			// Only syncs after the user's history floor are this user's. A sync with no
+			// sequence predates the audit trail, so it can't be placed at all.
+			if point.seq < floorID || !point.hasSeq {
+				continue
+			}
+			key := ServiceKey{Category: category, Service: service}
+			mode, known := history.modeAt(point)
+			if !known || mode != modeID {
+				continue
+			}
+			sel, err := history.selectionAt(ctx, point, modeID)
+			if err != nil {
+				return err
+			}
+			if !sel.known || (!sel.categories[category] && !sel.services[key]) {
+				continue
+			}
+			ek := entryKey{changeID: changeID, modeID: modeID}
+			i, ok := index[ek]
+			if !ok {
+				out = append(out, UserChangeEntry{
+					order:    syncOrder(point),
+					At:       syncedAt,
+					Source:   "feed_sync",
+					Kind:     "feed_sync",
+					Mode:     modeNameOr(modeName, modeID),
+					FeedName: feedName,
+				})
+				i = len(out) - 1
+				index[ek] = i
+			}
+			if kind == "added" {
+				out[i].Added.Services = append(out[i].Added.Services, key)
+			} else {
+				out[i].Removed.Services = append(out[i].Removed.Services, key)
+			}
+		}
+		return rows.Err()
+	}
+	for start := 0; start < len(categories); start += maxScanCategories {
+		if err := scanChunk(categories[start:min(start+maxScanCategories, len(categories))]); err != nil {
 			return nil, err
 		}
-		if !sel.known || (!sel.categories[category] && !sel.services[key]) {
-			continue
-		}
-		ek := entryKey{changeID: changeID, modeID: modeID}
-		i, ok := index[ek]
-		if !ok {
-			out = append(out, UserChangeEntry{
-				order:    syncOrder(point),
-				At:       syncedAt,
-				Source:   "feed_sync",
-				Kind:     "feed_sync",
-				Mode:     modeNameOr(modeName, modeID),
-				FeedName: feedName,
-			})
-			i = len(out) - 1
-			index[ek] = i
-		}
-		if kind == "added" {
-			out[i].Added.Services = append(out[i].Added.Services, key)
-		} else {
-			out[i].Removed.Services = append(out[i].Removed.Services, key)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	for i := range out {
+		sortServiceKeys(out[i].Added.Services)
+		sortServiceKeys(out[i].Removed.Services)
 		capChangeList(&out[i].Added)
 		capChangeList(&out[i].Removed)
 	}
 	return out, nil
 }
+
+// maxScanCategories bounds the categories in one scan statement, well under
+// SQLite's bound-variable limit.
+const maxScanCategories = 500
 
 // feedSyncScanQuery reads the service rows of recorded syncs for the given modes
 // and categories, oldest first within a sync. __MODES__ and __CATEGORIES__ are
