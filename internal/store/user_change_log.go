@@ -731,11 +731,43 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 		if !sel.known {
 			continue
 		}
+		// Names are read only while the side has room for them. Past that, a whole
+		// selected category's count is already exact from the aggregate, so no
+		// query is needed to count it.
 		var names []string
 		var count int
+		var room int
+		entry := func() *UserChangeEntry {
+			ek := entryKey{changeID: g.changeID, modeID: g.modeID}
+			i, ok := index[ek]
+			if !ok {
+				out = append(out, UserChangeEntry{
+					order:    syncOrder(point),
+					commit:   g.changeID,
+					At:       g.syncedAt,
+					Source:   "feed_sync",
+					Kind:     "feed_sync",
+					Mode:     modeNameOr(g.modeName, g.modeID),
+					FeedName: g.feedName,
+				})
+				i = len(out) - 1
+				index[ek] = i
+			}
+			return &out[i]
+		}
+		side := func(e *UserChangeEntry) *UserChangeList {
+			if g.kind == "added" {
+				return &e.Added
+			}
+			return &e.Removed
+		}
 		if sel.categories[g.cat] {
-			// The whole category is selected: every service of it counts.
-			names, err = serviceNamesTx(ctx, q, g.changeID, g.kind, g.cat, maxListedNames+1)
+			room = maxListedNames - len(side(entry()).Services)
+			if room <= 0 {
+				side(entry()).Omitted += g.count
+				continue
+			}
+			names, err = serviceNamesTx(ctx, q, g.changeID, g.kind, g.cat, room+1)
 			if err != nil {
 				return nil, err
 			}
@@ -750,38 +782,21 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 			if len(selected) == 0 {
 				continue
 			}
-			names, count, err = matchedServiceNamesTx(ctx, q, g.changeID, g.kind, g.cat, selected, maxListedNames)
+			// Only the names fitting the side are kept, but every match is counted.
+			names, count, err = matchedServiceNamesTx(ctx, q, g.changeID, g.kind, g.cat, selected, max(maxListedNames-len(side(entry()).Services), 0))
 			if err != nil {
 				return nil, err
 			}
+			if count == 0 {
+				continue
+			}
 		}
-		if count == 0 {
-			continue
-		}
-		listed := min(len(names), maxListedNames)
-		ek := entryKey{changeID: g.changeID, modeID: g.modeID}
-		i, ok := index[ek]
-		if !ok {
-			out = append(out, UserChangeEntry{
-				order:    syncOrder(point),
-				commit:   g.changeID,
-				At:       g.syncedAt,
-				Source:   "feed_sync",
-				Kind:     "feed_sync",
-				Mode:     modeNameOr(g.modeName, g.modeID),
-				FeedName: g.feedName,
-			})
-			i = len(out) - 1
-			index[ek] = i
-		}
-		side := &out[i].Removed
-		if g.kind == "added" {
-			side = &out[i].Added
-		}
+		e := entry()
+		listed := min(len(names), max(maxListedNames-len(side(e).Services), 0))
 		for _, n := range names[:listed] {
-			side.Services = append(side.Services, ServiceKey{Category: g.cat, Service: n})
+			side(e).Services = append(side(e).Services, ServiceKey{Category: g.cat, Service: n})
 		}
-		side.Omitted += count - listed
+		side(e).Omitted += count - listed
 	}
 	for i := range out {
 		sortServiceKeys(out[i].Added.Services)
