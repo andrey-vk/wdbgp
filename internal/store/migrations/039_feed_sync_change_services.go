@@ -156,7 +156,7 @@ func V039(ctx context.Context, tx *sql.Tx) error {
 	}
 	if added {
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE users SET history_from = (SELECT COALESCE(MAX(id), 0) FROM audit_log)"); err != nil {
+			"UPDATE users SET history_from = (SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0))"); err != nil {
 			return err
 		}
 	}

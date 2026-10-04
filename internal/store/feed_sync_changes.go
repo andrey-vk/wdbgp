@@ -153,7 +153,7 @@ func RecordFeedSyncChangeTx(ctx context.Context, tx *sql.Tx, feedID int64, diff 
 INSERT INTO feed_sync_changes(feed_id, synced_at, added_services, removed_services, added_prefixes, removed_prefixes,
 	added_associations, removed_associations, feed_name, audit_seq)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT name FROM feeds WHERE id = ?), ''),
-	(SELECT COALESCE(MAX(id), 0) FROM audit_log))`,
+	(SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'audit_log'), 0)))`,
 		feedID, syncedAt, diff.AddedServices, diff.RemovedServices, diff.AddedPrefixes, diff.RemovedPrefixes,
 		diff.AddedAssociations, diff.RemovedAssociations, feedID)
 	if err != nil {

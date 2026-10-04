@@ -890,3 +890,25 @@ func TestDeleteDisabledFeedRecordsNoRemoval(t *testing.T) {
 		t.Fatalf("feed entries = %+v, want none for a feed disabled before deletion", got)
 	}
 }
+
+// TestSyncSequenceSurvivesAuditPurge checks that a sync gets a usable sequence
+// after the old audit rows are purged: the sequence is the audit high-water
+// mark, not the newest row still kept, so it stays after the account's floor.
+func TestSyncSequenceSurvivesAuditPurge(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "ai", false)
+	recordSelectionAudit(t, s, userID, time.Now().Add(-40*24*time.Hour).Unix(), nil, []string{"ai"})
+	if err := s.PurgeAuditLog(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	recordHistorySync(t, s, feedID, time.Now().Add(-time.Hour).Unix(), ServiceKey{Category: "ai", Service: "post-purge"})
+
+	var seq sql.NullInt64
+	if err := s.DB.QueryRowContext(ctx, "SELECT audit_seq FROM feed_sync_changes ORDER BY id DESC LIMIT 1").Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if !seq.Valid || seq.Int64 <= 0 {
+		t.Fatalf("audit_seq after purge = %+v, want the audit high-water mark, not 0", seq)
+	}
+}
