@@ -485,7 +485,22 @@ func startIndex(n int, at func(i int) (int64, int64), p syncPoint) int {
 type selectionValue struct {
 	categories map[string]bool
 	services   map[ServiceKey]bool
+	// byCategory indexes services by category, built once per selection, so a
+	// group reads its category's services without scanning the whole selection.
+	byCategory map[string]map[string]bool
 	known      bool
+}
+
+// indexByCategory groups a selection's services by category.
+func indexByCategory(services map[ServiceKey]bool) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for svc := range services {
+		if out[svc.Category] == nil {
+			out[svc.Category] = map[string]bool{}
+		}
+		out[svc.Category][svc.Service] = true
+	}
+	return out
 }
 
 func newUserHistory(ctx context.Context, q queryer, userID, currentMode, since, floorID int64) (*userHistory, error) {
@@ -593,10 +608,13 @@ func (h *userHistory) selectionAt(ctx context.Context, p syncPoint, modeID int64
 			if err != nil {
 				return selectionValue{}, err
 			}
-			live = selectionValue{categories: cats, services: svcs, known: true}
+			live = selectionValue{categories: cats, services: svcs, byCategory: indexByCategory(svcs), known: true}
 			h.live[modeID] = live
 		}
-		v.categories, v.services = live.categories, live.services
+		v.categories, v.services, v.byCategory = live.categories, live.services, live.byCategory
+	}
+	if v.byCategory == nil {
+		v.byCategory = indexByCategory(v.services)
 	}
 	h.selCache[key] = v
 	return v, nil
@@ -781,12 +799,7 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 			}
 			count = g.count
 		} else {
-			selected := map[string]bool{}
-			for svc := range sel.services {
-				if svc.Category == g.cat {
-					selected[svc.Service] = true
-				}
-			}
+			selected := sel.byCategory[g.cat]
 			if len(selected) == 0 {
 				continue
 			}
