@@ -95,6 +95,7 @@ onMounted(load)
               <td class="px-4 py-2 font-medium">
                 {{ row.category }}
                 <span v-if="row.divergent" class="ml-2 text-xs text-amber-700 dark:text-amber-400">{{ t('community_matrix.divergent') }}</span>
+                <span v-if="row.service_divergence > 0" data-testid="matrix-service-divergence" class="ml-2 text-xs text-amber-700 dark:text-amber-400">{{ t('community_matrix.service_differs', { count: row.service_divergence }) }}</span>
               </td>
               <td
                 v-for="mode in matrix.modes"

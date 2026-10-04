@@ -21,7 +21,7 @@ func TestBuildCommunityMatrixFlagsDivergence(t *testing.T) {
 			{Category: "ai", Service: "", Community: 10000},
 		}},
 	}
-	m := buildCommunityMatrix(modes, snaps, nil)
+	m := buildCommunityMatrix(modes, snaps, nil, nil)
 	if len(m.Categories) != 2 || m.Categories[0].Category != "ai" || m.Categories[1].Category != "tv" {
 		t.Fatalf("categories = %+v, want ai then tv", m.Categories)
 	}
@@ -43,7 +43,7 @@ func TestBuildCommunityMatrixFlagsMissingCategory(t *testing.T) {
 		1: {Communities: []Community{{Category: "ai", Service: "", Community: 10000}}},
 		2: {Communities: []Community{{Category: "ai", Service: "x", Community: 10001}}},
 	}
-	m := buildCommunityMatrix(modes, snaps, nil)
+	m := buildCommunityMatrix(modes, snaps, nil, nil)
 	if len(m.Categories) != 1 {
 		t.Fatalf("categories = %+v, want one", m.Categories)
 	}
@@ -54,7 +54,7 @@ func TestBuildCommunityMatrixFlagsMissingCategory(t *testing.T) {
 }
 
 func TestBuildCommunityMatrixEmpty(t *testing.T) {
-	m := buildCommunityMatrix(nil, nil, nil)
+	m := buildCommunityMatrix(nil, nil, nil, nil)
 	if m.Categories == nil || len(m.Categories) != 0 {
 		t.Fatalf("categories = %#v, want an empty array", m.Categories)
 	}
@@ -119,12 +119,44 @@ func TestBuildCommunityMatrixShowsServedCategoryWithoutNumber(t *testing.T) {
 		2: {Communities: []Community{{Category: "ai", Service: "", Community: 10000}}},
 	}
 	served := map[int64]map[string]bool{1: {"ai": true, "news": true}, 2: {"ai": true}}
-	m := buildCommunityMatrix(modes, snaps, served)
+	m := buildCommunityMatrix(modes, snaps, served, nil)
 	if len(m.Categories) != 2 || m.Categories[1].Category != "news" {
 		t.Fatalf("categories = %+v, want ai and news", m.Categories)
 	}
 	news := m.Categories[1]
 	if !news.Divergent || news.Values[1] != nil || news.Values[2] != nil {
 		t.Fatalf("news = %+v, want missing in both modes and divergent", news)
+	}
+}
+
+// TestBuildCommunityMatrixFlagsServiceThatDiffers checks that a category whose
+// group number matches in every mode still shows as divergent when one of its
+// services has a different number.
+func TestBuildCommunityMatrixFlagsServiceThatDiffers(t *testing.T) {
+	modes := []CatalogMode{{ID: 1, Name: "Default", Enabled: true}, {ID: 2, Name: "Lab", Enabled: true}}
+	snaps := map[int64]ModeCommunitySnapshot{
+		1: {Communities: []Community{
+			{Category: "ai", Service: "", Community: 10000},
+			{Category: "ai", Service: "openai", Community: 10001},
+			{Category: "ai", Service: "anthropic", Community: 10002},
+		}},
+		2: {Communities: []Community{
+			{Category: "ai", Service: "", Community: 10000},
+			{Category: "ai", Service: "openai", Community: 10009},
+			{Category: "ai", Service: "anthropic", Community: 10002},
+		}},
+	}
+	served := map[int64]map[string]bool{1: {"ai": true}, 2: {"ai": true}}
+	servedServices := map[int64]map[ServiceKey]bool{
+		1: {{Category: "ai", Service: "openai"}: true, {Category: "ai", Service: "anthropic"}: true},
+		2: {{Category: "ai", Service: "openai"}: true, {Category: "ai", Service: "anthropic"}: true},
+	}
+	m := buildCommunityMatrix(modes, snaps, served, servedServices)
+	ai := m.Categories[0]
+	if !ai.Divergent || ai.ServiceDivergence != 1 {
+		t.Fatalf("ai = %+v, want divergent with one differing service", ai)
+	}
+	if *ai.Values[1] != 10000 || *ai.Values[2] != 10000 {
+		t.Fatalf("group numbers should still match: %+v", ai.Values)
 	}
 }

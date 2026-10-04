@@ -11,9 +11,13 @@ import (
 // community in that mode. Divergent is set when the modes don't all agree: a
 // different number in two modes, or a mode without one.
 type CommunityMatrixRow struct {
-	Category  string            `json:"category"`
-	Values    map[int64]*uint32 `json:"values"`
-	Divergent bool              `json:"divergent"`
+	Category string            `json:"category"`
+	Values   map[int64]*uint32 `json:"values"`
+	// ServiceDivergence counts the category's services whose number differs
+	// between modes, or that are served by some modes but not others. The group
+	// number alone can match while a service inside the category doesn't.
+	ServiceDivergence int  `json:"service_divergence"`
+	Divergent         bool `json:"divergent"`
 }
 
 // CommunityMatrix shows, per category, the community number every mode gives
@@ -32,6 +36,7 @@ type CommunityMatrix struct {
 func (s *Store) CommunityMatrix(ctx context.Context) (CommunityMatrix, error) {
 	var matrix CommunityMatrix
 	var served map[int64]map[string]bool
+	var servedServices map[int64]map[ServiceKey]bool
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		modes, err := catalogModes(ctx, tx, false)
 		if err != nil {
@@ -39,6 +44,7 @@ func (s *Store) CommunityMatrix(ctx context.Context) (CommunityMatrix, error) {
 		}
 		snaps := make(map[int64]ModeCommunitySnapshot, len(modes))
 		served = make(map[int64]map[string]bool, len(modes))
+		servedServices = make(map[int64]map[ServiceKey]bool, len(modes))
 		for _, mode := range modes {
 			rows, err := communityRows(ctx, tx, mode.ID)
 			if err != nil {
@@ -51,15 +57,22 @@ func (s *Store) CommunityMatrix(ctx context.Context) (CommunityMatrix, error) {
 				return err
 			}
 			served[mode.ID] = present
+			svcs, err := servicesServedTx(ctx, tx, mode.ID)
+			if err != nil {
+				return err
+			}
+			servedServices[mode.ID] = svcs
 			kept := rows[:0]
 			for _, row := range rows {
-				if present[row.Category] {
+				if row.Service == "" && present[row.Category] {
+					kept = append(kept, row)
+				} else if row.Service != "" && svcs[ServiceKey{Category: row.Category, Service: row.Service}] {
 					kept = append(kept, row)
 				}
 			}
 			snaps[mode.ID] = ModeCommunitySnapshot{Communities: kept}
 		}
-		matrix = buildCommunityMatrix(modes, snaps, served)
+		matrix = buildCommunityMatrix(modes, snaps, served, servedServices)
 		return nil
 	})
 	return matrix, err
@@ -69,7 +82,7 @@ func (s *Store) CommunityMatrix(ctx context.Context) (CommunityMatrix, error) {
 // name. A category appears if any mode serves it, even one with no stored
 // group-level community yet, which then shows as missing in that mode. served
 // may be nil, in which case only categories with stored numbers appear.
-func buildCommunityMatrix(modes []CatalogMode, snaps map[int64]ModeCommunitySnapshot, served map[int64]map[string]bool) CommunityMatrix {
+func buildCommunityMatrix(modes []CatalogMode, snaps map[int64]ModeCommunitySnapshot, served map[int64]map[string]bool, servedServices map[int64]map[ServiceKey]bool) CommunityMatrix {
 	matrix := CommunityMatrix{Modes: modes, Categories: []CommunityMatrixRow{}}
 	byCategory := map[string]map[int64]uint32{}
 	for _, mode := range modes {
@@ -90,13 +103,14 @@ func buildCommunityMatrix(modes []CatalogMode, snaps map[int64]ModeCommunitySnap
 			byCategory[c.Category][mode.ID] = c.Community
 		}
 	}
+	serviceDivergence := serviceDivergenceByCategory(modes, snaps, servedServices)
 	names := make([]string, 0, len(byCategory))
 	for name := range byCategory {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		row := CommunityMatrixRow{Category: name, Values: map[int64]*uint32{}}
+		row := CommunityMatrixRow{Category: name, Values: map[int64]*uint32{}, ServiceDivergence: serviceDivergence[name]}
 		distinct := map[uint32]bool{}
 		for _, mode := range modes {
 			if v, ok := byCategory[name][mode.ID]; ok {
@@ -108,7 +122,7 @@ func buildCommunityMatrix(modes []CatalogMode, snaps map[int64]ModeCommunitySnap
 				row.Divergent = true
 			}
 		}
-		if len(distinct) > 1 {
+		if len(distinct) > 1 || row.ServiceDivergence > 0 {
 			row.Divergent = true
 		}
 		matrix.Categories = append(matrix.Categories, row)
@@ -135,6 +149,75 @@ WHERE cme.mode_id = ?`, modeID)
 			return nil, err
 		}
 		out[name] = true
+	}
+	return out, rows.Err()
+}
+
+// serviceDivergenceByCategory counts, per category, the services that don't
+// agree across modes: a service served by some modes but not others, or served
+// by all but with different numbers, or without a number in a mode serving it.
+func serviceDivergenceByCategory(modes []CatalogMode, snaps map[int64]ModeCommunitySnapshot, servedServices map[int64]map[ServiceKey]bool) map[string]int {
+	universe := map[ServiceKey]bool{}
+	for _, mode := range modes {
+		for svc := range servedServices[mode.ID] {
+			universe[svc] = true
+		}
+	}
+	numbers := map[ServiceKey]map[int64]uint32{}
+	for _, mode := range modes {
+		for _, c := range snaps[mode.ID].Communities {
+			if c.Service == "" {
+				continue
+			}
+			key := ServiceKey{Category: c.Category, Service: c.Service}
+			if numbers[key] == nil {
+				numbers[key] = map[int64]uint32{}
+			}
+			numbers[key][mode.ID] = c.Community
+		}
+	}
+	out := map[string]int{}
+	for svc := range universe {
+		distinct := map[uint32]bool{}
+		diverges := false
+		for _, mode := range modes {
+			if !servedServices[mode.ID][svc] {
+				diverges = true
+				continue
+			}
+			v, ok := numbers[svc][mode.ID]
+			if !ok {
+				diverges = true
+				continue
+			}
+			distinct[v] = true
+		}
+		if diverges || len(distinct) > 1 {
+			out[svc.Category]++
+		}
+	}
+	return out
+}
+
+// servicesServedTx returns the services a mode currently serves, from its
+// materialized entries.
+func servicesServedTx(ctx context.Context, tx *sql.Tx, modeID int64) (map[ServiceKey]bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT DISTINCT c.name, sv.name FROM catalog_mode_entries cme
+JOIN services sv ON sv.id = cme.service_id
+JOIN categories c ON c.id = sv.category_id
+WHERE cme.mode_id = ?`, modeID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck
+	out := map[ServiceKey]bool{}
+	for rows.Next() {
+		var k ServiceKey
+		if err := rows.Scan(&k.Category, &k.Service); err != nil {
+			return nil, err
+		}
+		out[k] = true
 	}
 	return out, rows.Err()
 }
