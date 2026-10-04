@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"sort"
@@ -85,12 +87,23 @@ type selectionAuditPayload struct {
 const maxSelectionAuditNames = 1000
 
 // selectionAuditValue is the value to audit for a selection state: the names,
-// or counts once the selection is too large to store them.
+// or, once the selection is too large to store them, its counts plus a digest of
+// the names. The digest keeps two different large selections with the same
+// counts from comparing equal, which would drop the edit from the audit.
 func selectionAuditValue(p selectionAuditPayload) any {
-	if len(p.Categories)+len(p.Services) > maxSelectionAuditNames {
-		return map[string]int{"categories": len(p.Categories), "services": len(p.Services)}
+	if len(p.Categories)+len(p.Services) <= maxSelectionAuditNames {
+		return p
 	}
-	return p
+	names, err := json.Marshal(p)
+	if err != nil {
+		return p
+	}
+	sum := sha256.Sum256(names)
+	return map[string]any{
+		"categories": len(p.Categories),
+		"services":   len(p.Services),
+		"digest":     hex.EncodeToString(sum[:]),
+	}
 }
 
 // selectionAuditState builds the audit payload for one mode's selection. Sorted

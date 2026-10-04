@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"math"
 	"strconv"
 	"testing"
@@ -922,8 +923,13 @@ func TestSelectionAuditValueBoundsLargeSelections(t *testing.T) {
 		t.Fatal("small selection not audited by name")
 	}
 	large := selectionAuditPayload{ModeID: 1, Services: make([]ServiceKey, maxSelectionAuditNames+1)}
-	v, ok := selectionAuditValue(large).(map[string]int)
-	if !ok || v["services"] != maxSelectionAuditNames+1 {
+	if _, ok := selectionAuditValue(large).(map[string]any); !ok {
 		t.Fatalf("large selection audited as %#v, want counts", selectionAuditValue(large))
+	}
+	// Same counts, different names: the audited values must still differ.
+	other := selectionAuditPayload{ModeID: 1, Services: make([]ServiceKey, maxSelectionAuditNames+1)}
+	other.Services[0] = ServiceKey{Category: "x", Service: "y"}
+	if fmt.Sprint(selectionAuditValue(large)) == fmt.Sprint(selectionAuditValue(other)) {
+		t.Fatal("two large selections with equal counts audited as the same value")
 	}
 }
