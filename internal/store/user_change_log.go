@@ -27,11 +27,13 @@ func EffectiveAuditRetentionDays(days int) int {
 // never longer than the effective audit retention. Older audit rows are purged,
 // and a feed sync can only be placed if every change after it is still recorded.
 func UserChangeLogWindow(auditRetentionDays int) time.Duration {
-	window := userChangeLogWindow
-	if retention := time.Duration(EffectiveAuditRetentionDays(auditRetentionDays)) * 24 * time.Hour; retention < window {
-		window = retention
+	// Compared in days before converting: a huge setting would overflow
+	// time.Duration if multiplied first.
+	days := EffectiveAuditRetentionDays(auditRetentionDays)
+	if days >= int(userChangeLogWindow/(24*time.Hour)) {
+		return userChangeLogWindow
 	}
-	return window
+	return time.Duration(days) * 24 * time.Hour
 }
 
 // userChangeLogListLimit caps each list (categories, services, routes) within
@@ -137,15 +139,18 @@ func (s *Store) UserChangeLog(ctx context.Context, userID int64, now time.Time, 
 		"SELECT catalog_mode_id FROM users WHERE id = ?", userID).Scan(&modeID); err != nil {
 		return nil, err
 	}
-	since, err := auditCompleteSince(ctx, tx, now.Add(-window).Unix())
-	if err != nil {
-		return nil, err
-	}
+	since := now.Add(-window).Unix()
 	entries, err := userAuditChanges(ctx, tx, userID, since)
 	if err != nil {
 		return nil, err
 	}
-	feedEntries, err := userFeedSyncChanges(ctx, tx, userID, modeID, since)
+	// Feed syncs are placed from the audit trail, which is only complete from the
+	// boundary on. The direct entries above read whatever the audit still holds.
+	complete, err := auditCompleteSince(ctx, tx, since)
+	if err != nil {
+		return nil, err
+	}
+	feedEntries, err := userFeedSyncChanges(ctx, tx, userID, modeID, complete)
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
 	"strconv"
 	"testing"
 	"time"
@@ -532,6 +533,10 @@ func TestUserChangeLogWindowFollowsAuditRetention(t *testing.T) {
 	if got := UserChangeLogWindow(-3); got != userChangeLogWindow {
 		t.Fatalf("window with negative retention = %v, want the %v default", got, userChangeLogWindow)
 	}
+	// A huge setting must not overflow the duration into a negative window.
+	if got := UserChangeLogWindow(math.MaxInt); got != userChangeLogWindow {
+		t.Fatalf("window with huge retention = %v, want the %v cap", got, userChangeLogWindow)
+	}
 }
 
 // TestUserChangeLogKeepsModeNameAsRecorded checks the snapshot: a mode renamed
@@ -753,5 +758,27 @@ func TestDeleteFeedAuditsSelectionsInDetachedModes(t *testing.T) {
 	}
 	if rows != 1 {
 		t.Fatalf("selection audit rows for the detached mode = %d, want 1", rows)
+	}
+}
+
+// TestUserChangeLogDirectEntriesIgnoreCompleteBoundary checks that the
+// completeness boundary only limits feed reconstruction: a direct audit entry
+// still shows even when the boundary sits after it, as it does right after an
+// upgrade.
+func TestUserChangeLogDirectEntriesIgnoreCompleteBoundary(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID := plainChangeLogUser(t, s)
+	recordSelectionAudit(t, s, userID, time.Now().Add(-time.Hour).Unix(), nil, []string{"ai"})
+	if _, err := s.DB.ExecContext(ctx, "UPDATE audit_log_coverage SET complete_since = ?", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Kind != "selections" {
+		t.Fatalf("entries = %+v, want the pre-boundary selection still listed", all)
 	}
 }
