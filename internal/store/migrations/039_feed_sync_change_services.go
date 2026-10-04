@@ -164,6 +164,13 @@ func V039(ctx context.Context, tx *sql.Tx) error {
 			PRIMARY KEY (change_id, mode_id)
 		)`,
 	}
+	// The history scan filters by category, mode, and sync time, so these keep
+	// it to the matching rows instead of scanning every service row.
+	stmts = append(stmts,
+		`CREATE INDEX IF NOT EXISTS idx_feed_sync_change_services_category ON feed_sync_change_services(category, change_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_feed_sync_change_modes_mode ON feed_sync_change_modes(mode_id, change_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_feed_sync_changes_synced ON feed_sync_changes(synced_at)`,
+	)
 	for _, stmt := range stmts {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
 			return err
