@@ -1111,3 +1111,26 @@ func TestUserChangeLogKnownBeforeOfGrowingSelection(t *testing.T) {
 		t.Fatalf("feed entries = %+v, want the earlier sync placed by the known before state", got)
 	}
 }
+
+// TestUserChangeLogAddsNoEntryForUnselectedChanges checks that a sync touching
+// only services the user didn't select, in a category they selected some of
+// individually, leaves no empty entry behind.
+func TestUserChangeLogAddsNoEntryForUnselectedChanges(t *testing.T) {
+	s := openChangeLogStore(t)
+	ctx := context.Background()
+	userID, feedID := userSelectingFeedChange(t, s, "other", false)
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return SetUserModeSelection(ctx, tx, userID, DefaultCatalogModeID, nil, []ServiceKey{{Category: "ai", Service: "mine"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recordHistorySync(t, s, feedID, time.Now().Add(-time.Hour).Unix(), ServiceKey{Category: "ai", Service: "not-mine"})
+
+	all, err := s.UserChangeLog(ctx, userID, time.Now(), userChangeLogWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := feedSyncEntries(all); len(got) != 0 {
+		t.Fatalf("feed entries = %+v, want none for a sync the user has nothing in", got)
+	}
+}

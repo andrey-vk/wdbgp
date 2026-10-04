@@ -761,8 +761,16 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 			}
 			return &e.Removed
 		}
+		// roomLeft is the room on this side of the entry, without creating the
+		// entry: a group that turns out to match nothing must add no entry.
+		roomLeft := func() int {
+			if i, ok := index[entryKey{changeID: g.changeID, modeID: g.modeID}]; ok {
+				return max(maxListedNames-len(side(&out[i]).Services), 0)
+			}
+			return maxListedNames
+		}
 		if sel.categories[g.cat] {
-			room = maxListedNames - len(side(entry()).Services)
+			room = roomLeft()
 			if room <= 0 {
 				side(entry()).Omitted += g.count
 				continue
@@ -783,7 +791,7 @@ func userFeedSyncChanges(ctx context.Context, q queryer, userID, currentMode, si
 				continue
 			}
 			// Only the names fitting the side are kept, but every match is counted.
-			names, count, err = matchedServiceNamesTx(ctx, q, g.changeID, g.kind, g.cat, selected, max(maxListedNames-len(side(entry()).Services), 0))
+			names, count, err = matchedServiceNamesTx(ctx, q, g.changeID, g.kind, g.cat, selected, roomLeft())
 			if err != nil {
 				return nil, err
 			}
