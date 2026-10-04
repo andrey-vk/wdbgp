@@ -31,12 +31,14 @@ type CommunityMatrix struct {
 // A category with no stored group-level number shows as missing.
 func (s *Store) CommunityMatrix(ctx context.Context) (CommunityMatrix, error) {
 	var matrix CommunityMatrix
+	var served map[int64]map[string]bool
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
 		modes, err := catalogModes(ctx, tx, false)
 		if err != nil {
 			return err
 		}
 		snaps := make(map[int64]ModeCommunitySnapshot, len(modes))
+		served = make(map[int64]map[string]bool, len(modes))
 		for _, mode := range modes {
 			rows, err := communityRows(ctx, tx, mode.ID)
 			if err != nil {
@@ -48,6 +50,7 @@ func (s *Store) CommunityMatrix(ctx context.Context) (CommunityMatrix, error) {
 			if err != nil {
 				return err
 			}
+			served[mode.ID] = present
 			kept := rows[:0]
 			for _, row := range rows {
 				if present[row.Category] {
@@ -56,17 +59,26 @@ func (s *Store) CommunityMatrix(ctx context.Context) (CommunityMatrix, error) {
 			}
 			snaps[mode.ID] = ModeCommunitySnapshot{Communities: kept}
 		}
-		matrix = buildCommunityMatrix(modes, snaps)
+		matrix = buildCommunityMatrix(modes, snaps, served)
 		return nil
 	})
 	return matrix, err
 }
 
 // buildCommunityMatrix is CommunityMatrix's pure part. Categories are sorted by
-// name, and a category appears if any mode gives it a group-level community.
-func buildCommunityMatrix(modes []CatalogMode, snaps map[int64]ModeCommunitySnapshot) CommunityMatrix {
+// name. A category appears if any mode serves it, even one with no stored
+// group-level community yet, which then shows as missing in that mode. served
+// may be nil, in which case only categories with stored numbers appear.
+func buildCommunityMatrix(modes []CatalogMode, snaps map[int64]ModeCommunitySnapshot, served map[int64]map[string]bool) CommunityMatrix {
 	matrix := CommunityMatrix{Modes: modes, Categories: []CommunityMatrixRow{}}
 	byCategory := map[string]map[int64]uint32{}
+	for _, mode := range modes {
+		for name := range served[mode.ID] {
+			if byCategory[name] == nil {
+				byCategory[name] = map[int64]uint32{}
+			}
+		}
+	}
 	for _, mode := range modes {
 		for _, c := range snaps[mode.ID].Communities {
 			if c.Service != "" {

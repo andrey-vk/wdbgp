@@ -21,7 +21,7 @@ func TestBuildCommunityMatrixFlagsDivergence(t *testing.T) {
 			{Category: "ai", Service: "", Community: 10000},
 		}},
 	}
-	m := buildCommunityMatrix(modes, snaps)
+	m := buildCommunityMatrix(modes, snaps, nil)
 	if len(m.Categories) != 2 || m.Categories[0].Category != "ai" || m.Categories[1].Category != "tv" {
 		t.Fatalf("categories = %+v, want ai then tv", m.Categories)
 	}
@@ -43,7 +43,7 @@ func TestBuildCommunityMatrixFlagsMissingCategory(t *testing.T) {
 		1: {Communities: []Community{{Category: "ai", Service: "", Community: 10000}}},
 		2: {Communities: []Community{{Category: "ai", Service: "x", Community: 10001}}},
 	}
-	m := buildCommunityMatrix(modes, snaps)
+	m := buildCommunityMatrix(modes, snaps, nil)
 	if len(m.Categories) != 1 {
 		t.Fatalf("categories = %+v, want one", m.Categories)
 	}
@@ -54,7 +54,7 @@ func TestBuildCommunityMatrixFlagsMissingCategory(t *testing.T) {
 }
 
 func TestBuildCommunityMatrixEmpty(t *testing.T) {
-	m := buildCommunityMatrix(nil, nil)
+	m := buildCommunityMatrix(nil, nil, nil)
 	if m.Categories == nil || len(m.Categories) != 0 {
 		t.Fatalf("categories = %#v, want an empty array", m.Categories)
 	}
@@ -107,5 +107,24 @@ func TestCommunityMatrixDropsCategoriesTheModeNoLongerServes(t *testing.T) {
 		if row.Category == "ghost" {
 			t.Fatalf("ghost shown though no mode serves it: %+v", row)
 		}
+	}
+}
+
+// TestBuildCommunityMatrixShowsServedCategoryWithoutNumber checks that a
+// category a mode serves, with no stored number, appears there as missing.
+func TestBuildCommunityMatrixShowsServedCategoryWithoutNumber(t *testing.T) {
+	modes := []CatalogMode{{ID: 1, Name: "Default", Enabled: true}, {ID: 2, Name: "Lab", Enabled: true}}
+	snaps := map[int64]ModeCommunitySnapshot{
+		1: {Communities: []Community{{Category: "ai", Service: "", Community: 10000}}},
+		2: {Communities: []Community{{Category: "ai", Service: "", Community: 10000}}},
+	}
+	served := map[int64]map[string]bool{1: {"ai": true, "news": true}, 2: {"ai": true}}
+	m := buildCommunityMatrix(modes, snaps, served)
+	if len(m.Categories) != 2 || m.Categories[1].Category != "news" {
+		t.Fatalf("categories = %+v, want ai and news", m.Categories)
+	}
+	news := m.Categories[1]
+	if !news.Divergent || news.Values[1] != nil || news.Values[2] != nil {
+		t.Fatalf("news = %+v, want missing in both modes and divergent", news)
 	}
 }
