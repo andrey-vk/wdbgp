@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 )
 
@@ -158,5 +159,75 @@ func TestBuildCommunityMatrixFlagsServiceThatDiffers(t *testing.T) {
 	}
 	if *ai.Values[1] != 10000 || *ai.Values[2] != 10000 {
 		t.Fatalf("group numbers should still match: %+v", ai.Values)
+	}
+}
+
+// TestGenerateAllMissingCommunitiesFillsEveryMode checks that the explicit
+// action fills in missing numbers across modes, and that the matrix no longer
+// shows those categories as missing afterward.
+func TestGenerateAllMissingCommunitiesFillsEveryMode(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	m1, err := s.AddCatalogMode(ctx, "Alpha", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2, err := s.AddCatalogMode(ctx, "Beta", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedID, err := s.AddFeed(ctx, "matrix-feed", "https://example.test/matrix.json", 1, true, 0, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, modeID := range []int64{m1, m2} {
+		if _, err := s.DB.ExecContext(ctx, "INSERT INTO catalog_mode_feeds(mode_id, feed_id) VALUES (?, ?)", modeID, feedID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		return ReplaceCatalogEntries(ctx, tx, feedID, []CatalogEntry{{Category: "ai", Service: "x", CIDR: "20.0.0.0/24"}})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		for _, modeID := range []int64{m1, m2} {
+			if err := rebuildModeEntriesTx(ctx, tx, modeID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := s.CommunityMatrix(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range before.Categories {
+		if row.Category == "ai" {
+			if row.Values[m1] != nil || row.Values[m2] != nil {
+				t.Fatalf("ai should start with no stored numbers: %+v", row)
+			}
+		}
+	}
+
+	if _, err := s.GenerateAllMissingCommunities(ctx, AuditMeta{}); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := s.CommunityMatrix(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ai *CommunityMatrixRow
+	for i, row := range after.Categories {
+		if row.Category == "ai" {
+			ai = &after.Categories[i]
+		}
+	}
+	if ai == nil || ai.Values[m1] == nil || ai.Values[m2] == nil {
+		t.Fatalf("ai = %+v, want numbers generated for both modes", ai)
 	}
 }

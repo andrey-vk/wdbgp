@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"sort"
+	"strconv"
 )
 
 // CommunityMatrixRow is one category's group-level community in each mode.
@@ -220,4 +221,45 @@ WHERE cme.mode_id = ?`, modeID)
 		out[k] = true
 	}
 	return out, rows.Err()
+}
+
+// GenerateAllMissingCommunities fills in every mode's missing group- and
+// service-level community numbers in one transaction, auditing each mode
+// that actually changed. Opening the matrix itself never does this (it only
+// reads stored numbers, to keep opening it cheap on a large catalog), so a
+// mode nobody has opened recently can show categories as "missing" there
+// even though nothing is wrong — this is the explicit action that clears
+// that, the same generation the single-mode "Regenerate missing" uses.
+func (s *Store) GenerateAllMissingCommunities(ctx context.Context, meta AuditMeta) (count int, err error) {
+	err = s.Transaction(ctx, func(tx *sql.Tx) error {
+		modes, err := catalogModes(ctx, tx, false)
+		if err != nil {
+			return err
+		}
+		before := make(map[int64][]Community, len(modes))
+		for _, mode := range modes {
+			rows, err := communityRows(ctx, tx, mode.ID)
+			if err != nil {
+				return err
+			}
+			before[mode.ID] = rows
+		}
+		count, err = genCommunitiesRuntime(ctx, tx, 0)
+		if err != nil {
+			return err
+		}
+		for _, mode := range modes {
+			after, err := communityRows(ctx, tx, mode.ID)
+			if err != nil {
+				return err
+			}
+			changedBefore, changedAfter := diffCommunityRows(before[mode.ID], after)
+			if err := AuditEntryTx(ctx, tx, meta, "mode", strconv.FormatInt(mode.ID, 10),
+				boundCommunitiesForAudit(changedBefore), boundCommunitiesForAudit(changedAfter), false); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return count, err
 }

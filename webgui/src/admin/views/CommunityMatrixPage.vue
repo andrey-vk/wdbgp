@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useToast } from 'primevue/usetoast'
 import apiClient from '@/api/client'
 import InputText from 'primevue/inputtext'
 import Checkbox from 'primevue/checkbox'
+import Button from 'primevue/button'
 import ErrorPage from '@/components/ErrorPage.vue'
 import { useAsyncPageLoad } from '@/composables/useAsyncPageLoad'
 import { useSequencedRequest } from '@/composables/useSequencedRequest'
 import type { CommunityMatrixResponse } from '@/types/community-matrix'
 
 const { t } = useI18n()
+const toast = useToast()
 
 const matrix = ref<CommunityMatrixResponse>({ modes: [], categories: [] })
 const filter = ref('')
@@ -44,6 +47,24 @@ const visibleRows = computed(() => {
 
 const divergentCount = computed(() => matrix.value.categories.filter((row) => row.divergent).length)
 
+// Opening the matrix only reads stored numbers (generating them for every mode
+// on every view would make a large catalog slow to open), so a mode nobody has
+// generated for yet shows its categories as missing here even when nothing is
+// actually wrong. This is the explicit, visible action that fills those in.
+const generating = ref(false)
+async function handleGenerate(): Promise<void> {
+  generating.value = true
+  try {
+    const resp = await apiClient.post<{ generated: number }>('/admin/communities/matrix/generate')
+    toast.add({ severity: 'success', summary: t('community_matrix.generated', { count: resp.data.generated }), life: 3000 })
+    await load()
+  } catch {
+    toast.add({ severity: 'error', summary: t('community_matrix.generate_failed'), life: 5000 })
+  } finally {
+    generating.value = false
+  }
+}
+
 onMounted(load)
 </script>
 
@@ -54,6 +75,15 @@ onMounted(load)
       <span data-testid="matrix-divergent-count" class="text-sm text-gray-500 dark:text-gray-400">
         {{ t('community_matrix.divergent_count', { count: divergentCount }) }}
       </span>
+      <Button
+        :label="t('community_matrix.generate_missing')"
+        icon="pi pi-refresh"
+        severity="secondary"
+        size="small"
+        :loading="generating"
+        data-testid="matrix-generate"
+        @click="handleGenerate"
+      />
     </div>
 
     <div class="px-5 py-4">

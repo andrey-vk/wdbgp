@@ -44,6 +44,9 @@
   "community_matrix.disabled": "disabled",
   "community_matrix.divergent": "differs",
   "community_matrix.service_differs": "{count} services differ",
+  "community_matrix.generate_missing": "Generate missing",
+  "community_matrix.generated": "Generated {count} missing numbers",
+  "community_matrix.generate_failed": "Failed to generate missing numbers",
   "community_matrix.missing": "No group-level community in this mode",
   "topbar.logout": "Logout",
 

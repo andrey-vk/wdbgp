@@ -5,19 +5,31 @@ import PrimeVue from 'primevue/config'
 import CommunityMatrixPage from '../CommunityMatrixPage.vue'
 import type { CommunityMatrixResponse } from '@/types/community-matrix'
 
-const { mockGet } = vi.hoisted(() => ({ mockGet: vi.fn() }))
+const { mockGet, mockPost } = vi.hoisted(() => ({ mockGet: vi.fn(), mockPost: vi.fn() }))
 
 vi.mock('@/api/client', () => ({
   default: {
     get: mockGet,
+    post: mockPost,
     interceptors: { response: { use: vi.fn() } },
   },
+}))
+
+const mockToastAdd = vi.fn()
+vi.mock('primevue/usetoast', () => ({
+  useToast: () => ({ add: mockToastAdd }),
 }))
 
 const i18n = createI18n({
   legacy: false,
   locale: 'en',
-  messages: { en: { 'community_matrix.divergent_count': '{count} categories differ between modes' } },
+  messages: {
+    en: {
+      'community_matrix.divergent_count': '{count} categories differ between modes',
+      'community_matrix.generated': 'Generated {count} missing numbers',
+      'community_matrix.generate_failed': 'Failed to generate missing numbers',
+    },
+  },
 })
 
 const matrix: CommunityMatrixResponse = {
@@ -48,6 +60,7 @@ async function mountPage() {
           emits: ['update:modelValue'],
           template: '<input type="checkbox" class="stub-checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />',
         },
+        Button: { props: ['label', 'loading'], template: '<button class="stub-btn">{{ label }}</button>' },
       },
     },
   })
@@ -59,6 +72,8 @@ async function mountPage() {
 describe('CommunityMatrixPage', () => {
   beforeEach(() => {
     mockGet.mockReset()
+    mockPost.mockReset()
+    mockToastAdd.mockReset()
   })
 
   it('loads the matrix and shows one row per category with each mode value', async () => {
@@ -83,5 +98,20 @@ describe('CommunityMatrixPage', () => {
     expect(wrapper.findAll('[data-testid="matrix-row"]')).toHaveLength(2)
     await wrapper.find('.stub-input').setValue('tv')
     expect(wrapper.findAll('[data-testid="matrix-row"]')).toHaveLength(1)
+  })
+
+  it('generates missing numbers on demand and reloads the matrix', async () => {
+    const wrapper = await mountPage()
+    mockPost.mockResolvedValue({ data: { generated: 2 } })
+    mockGet.mockClear()
+    mockGet.mockResolvedValue({ data: matrix })
+
+    await wrapper.find('[data-testid="matrix-generate"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(mockPost).toHaveBeenCalledTimes(1)
+    expect(mockPost).toHaveBeenCalledWith('/admin/communities/matrix/generate')
+    expect(mockGet).toHaveBeenCalledTimes(1)
+    expect(mockToastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'success' }))
   })
 })
