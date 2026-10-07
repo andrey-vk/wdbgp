@@ -454,6 +454,8 @@ Two limits follow from this. Selection changes recorded before the name payload 
 
 The admin "Community Matrix" page shows each category's group-level community number in every mode, as a grid. A category whose number differs between modes, or that has no group-level number in one of them, is flagged, and the list can be narrowed to flagged categories. `GET /api/admin/communities/matrix` returns the same grid. A category whose group number matches but has a service with a different number (or a service only some modes serve) is flagged too, with the count. The grid doesn't list individual numbers; check those per service before a migration.
 
+Opening the matrix only reads stored community numbers — it never generates missing ones itself, so it stays cheap to open even on a large catalog. That means a mode nobody has opened or regenerated in a while can show categories as missing even though nothing is actually broken; use the page's "Generate missing" button (`POST /api/admin/communities/matrix/generate`) to fill in every mode's missing numbers in one pass before relying on the grid for a migration.
+
 ### Blast-radius preview
 
 Four admin edits change which prefixes a user actually receives: the global route

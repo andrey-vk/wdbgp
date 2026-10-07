@@ -639,3 +639,17 @@ func (s *Server) apiCommunityMatrix(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, matrix)
 }
+
+// apiCommunityMatrixGenerate handles POST /api/admin/communities/matrix/generate:
+// fills in every mode's missing group- and service-level community numbers, the
+// explicit action for the gap the matrix's lean read leaves (see
+// Store.GenerateAllMissingCommunities).
+func (s *Server) apiCommunityMatrixGenerate(w http.ResponseWriter, r *http.Request) {
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "communities.generated"}
+	count, err := s.store.GenerateAllMissingCommunities(r.Context(), meta)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to generate communities"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"generated": count})
+}
