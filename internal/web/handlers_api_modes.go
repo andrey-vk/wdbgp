@@ -645,11 +645,17 @@ func (s *Server) apiCommunityMatrix(w http.ResponseWriter, r *http.Request) {
 // explicit action for the gap the matrix's lean read leaves (see
 // Store.GenerateAllMissingCommunities).
 func (s *Server) apiCommunityMatrixGenerate(w http.ResponseWriter, r *http.Request) {
+	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "communities.generated"}
 	count, err := s.store.GenerateAllMissingCommunities(r.Context(), meta)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to generate communities"})
 		return
+	}
+	if s.bgp != nil {
+		if err := s.bgp.Reconcile(r.Context()); err != nil {
+			logging.FromContext(r.Context()).Debug("bgp reconcile failed after community matrix generate", "error", err)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"generated": count})
 }
