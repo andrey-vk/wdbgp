@@ -479,18 +479,30 @@ user's password is left exactly as it was.
 
 Applying always previews first — `POST /api/admin/config/import/preview` is read-only
 and returns both the diff against this instance's current configuration and a digest
-fingerprinting the uploaded document. `POST /api/admin/config/import` requires that
-digest back and refuses with `409` if it doesn't match (the document changed, or was
-already applied, since the preview was shown) — the same confirm-with-digest
-discipline "Reset to defaults" (above) already established. `POST /api/admin/config/diff`
-takes two documents directly and returns their diff with nothing read from or written
-to this instance — for comparing two exports, including from two different instances,
-without importing either.
+binding both the uploaded document and that current configuration together. `POST
+/api/admin/config/import` recomputes that same digest against the live configuration
+as it is right now and refuses with `409` if it doesn't match — either the uploaded
+document changed, or the live target itself drifted under it (another admin's edit,
+landing between the preview and this apply) — the same confirm-with-digest discipline
+"Reset to defaults" (above) already established, just binding more than one document's
+own content. `POST /api/admin/config/diff` takes two documents directly and returns
+their diff with nothing read from or written to this instance — for comparing two
+exports, including from two different instances, without importing either.
+
+A document whose `schema_version` doesn't match this instance's own is rejected
+outright by both preview and import, rather than silently decoding its missing fields
+as zero values. An import's networks are checked for a cross-user overlap against
+every other active user's, the same validation the ordinary user create/update forms
+already enforce. A malformed global filter is rejected before anything else in the
+document commits, never after.
 
 Global route filters are the one piece of the document that import applies through
 the settings layer (`internal/settings`) in its own transaction, rather than through
 the same direct database write the rest of the document uses — that layer keeps its
 own in-memory cache, which a direct write would leave stale until the next restart.
+Applying also reloads every created or updated user into the running BGP speaker's own
+peer list — `Reconcile` alone only reconciles routes against peers it already knows
+about, so a new or re-enabled peer needs this to actually start a session.
 
 ### Blast-radius preview
 

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"sort"
 	"time"
@@ -243,8 +244,9 @@ func normalizeRouteFilters(f *RouteFilters) {
 
 // Digest fingerprints snap's normalized content: two snapshots that differ
 // only in field order, slice order, or nil-versus-empty slices produce the
-// same digest. apiConfigImport uses this to confirm an apply is acting on
-// exactly the snapshot its preview diffed, not one that changed in between.
+// same digest. A single snapshot's own fingerprint, used by ConfigImportDigest
+// below — not, on its own, what apiConfigImport confirms against, since it
+// says nothing about what else might have changed in the meantime.
 func (snap ConfigSnapshot) Digest() (string, error) {
 	raw, err := json.Marshal(snap)
 	if err != nil {
@@ -260,6 +262,27 @@ func (snap ConfigSnapshot) Digest() (string, error) {
 		return "", err
 	}
 	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// ConfigImportDigest fingerprints an import's full confirmation state: both
+// the snapshot about to be applied and the live configuration it would be
+// applied onto. Digest alone isn't enough for this — it reflects only the
+// uploaded snapshot, so a preview's digest would still match at apply time
+// even if another admin's edit changed the live target in between, letting
+// an apply silently overwrite it. Binding both means a drifted target
+// produces a different digest, and apiConfigImport refuses it with 409 —
+// the same response as if the uploaded snapshot itself had changed.
+func ConfigImportDigest(current, uploaded ConfigSnapshot) (string, error) {
+	currentDigest, err := current.Digest()
+	if err != nil {
+		return "", err
+	}
+	uploadedDigest, err := uploaded.Digest()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(currentDigest + ":" + uploadedDigest))
 	return hex.EncodeToString(sum[:]), nil
 }
 
@@ -355,6 +378,11 @@ type ConfigApplyResult struct {
 	// broken reference must not fail everything else the import would apply.
 	UnknownFeeds []string `json:"unknown_feeds"`
 	UnknownModes []string `json:"unknown_modes"`
+	// AffectedUserIDs is every user created or updated, for a caller outside
+	// this package (apiConfigImport, in internal/web) that needs to resync
+	// BGP peer state afterward — this package has no access to the BGP
+	// manager, so it reports which users changed rather than acting on it.
+	AffectedUserIDs []int64 `json:"-"`
 }
 
 // ApplyConfigSnapshot creates or updates the modes and users in snap. It is
@@ -469,6 +497,18 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, me
 					return err
 				}
 				result.UsersUpdated = append(result.UsersUpdated, u.Name)
+			}
+			result.AffectedUserIDs = append(result.AffectedUserIDs, userID)
+			// Same cross-user overlap check the admin user create/update
+			// handlers enforce (internal/web's isActiveWebAuth gating) — an
+			// import's networks must not silently let an IP-resolved user
+			// shadow another active user's CIDRs. tx-scoped so it sees this
+			// same import's own not-yet-committed writes to an earlier user
+			// in this loop.
+			if isActiveWebAuth(u.WebAuth) {
+				if err := activeNetworksOverlapTx(ctx, tx, u.Networks, userID); err != nil {
+					return fmt.Errorf("user %q: %w", u.Name, err)
+				}
 			}
 			if err := replaceNetworks(ctx, tx, userID, u.Networks); err != nil {
 				return err

@@ -61,12 +61,24 @@ func TestAPIConfigDiffIsPure(t *testing.T) {
 	}
 }
 
-func TestAPIConfigImportPreviewIsReadOnly(t *testing.T) {
-	srv, st, _ := setupUserTestServer(t)
-	snapshot := store.ConfigSnapshot{
-		Modes: []store.ConfigMode{{Name: "Imported", Enabled: true}},
-		Users: []store.ConfigUser{{Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, CatalogMode: "Imported", Enabled: true}},
+// configImportTestServer wires settings to the SAME store as s.store, as
+// production does (settings.New(db) in cmd/wdbgp/main.go) — unlike
+// setupUserTestServer's testSettings(), which deliberately backs settings
+// with its own disconnected in-memory map and would never show a test's
+// settings writes reflected in st's real database.
+func configImportTestServer(t *testing.T) (*Server, *store.Store, *fakeBGP) {
+	t.Helper()
+	st := setupUserTestStore(t)
+	set, err := settings.New(st)
+	if err != nil {
+		t.Fatal(err)
 	}
+	bgp := &fakeBGP{}
+	return &Server{settings: set, store: st, bgp: bgp}, st, bgp
+}
+
+func previewImport(t *testing.T, srv *Server, snapshot store.ConfigSnapshot) (store.ConfigDiff, string) {
+	t.Helper()
 	body, err := json.Marshal(map[string]any{"snapshot": snapshot})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +87,7 @@ func TestAPIConfigImportPreviewIsReadOnly(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.apiConfigImportPreview(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+		t.Fatalf("preview status = %d body=%s", w.Code, w.Body.String())
 	}
 	var resp struct {
 		Diff   store.ConfigDiff `json:"diff"`
@@ -84,11 +96,22 @@ func TestAPIConfigImportPreviewIsReadOnly(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Digest == "" {
+	return resp.Diff, resp.Digest
+}
+
+func TestAPIConfigImportPreviewIsReadOnly(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	snapshot := store.ConfigSnapshot{
+		SchemaVersion: store.ConfigSnapshotSchemaVersion,
+		Modes:         []store.ConfigMode{{Name: "Imported", Enabled: true}},
+		Users:         []store.ConfigUser{{Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, CatalogMode: "Imported", Enabled: true}},
+	}
+	diff, digest := previewImport(t, srv, snapshot)
+	if digest == "" {
 		t.Fatal("digest is empty")
 	}
-	if len(resp.Diff.Modes.Added) != 1 || len(resp.Diff.Users.Added) != 1 {
-		t.Fatalf("diff = %+v, want one added mode and one added user", resp.Diff)
+	if len(diff.Modes.Added) != 1 || len(diff.Users.Added) != 1 {
+		t.Fatalf("diff = %+v, want one added mode and one added user", diff)
 	}
 
 	var userCount int
@@ -100,53 +123,122 @@ func TestAPIConfigImportPreviewIsReadOnly(t *testing.T) {
 	}
 }
 
+func doImport(snapshot store.ConfigSnapshot, digest string) *http.Request {
+	body, _ := json.Marshal(map[string]any{"snapshot": snapshot, "digest": digest}) //nolint:errcheck // fixed struct, cannot fail
+	return httptest.NewRequest("POST", "/api/admin/config/import", bytes.NewReader(body))
+}
+
 func TestAPIConfigImportRejectsStaleDigest(t *testing.T) {
 	srv, _, _ := setupUserTestServer(t)
-	snapshot := store.ConfigSnapshot{Users: []store.ConfigUser{{Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, CatalogMode: "OpenCCK", Enabled: true}}}
-	body, err := json.Marshal(map[string]any{"snapshot": snapshot, "digest": "not-the-real-digest"})
-	if err != nil {
-		t.Fatal(err)
+	snapshot := store.ConfigSnapshot{
+		SchemaVersion: store.ConfigSnapshotSchemaVersion,
+		Users:         []store.ConfigUser{{Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, CatalogMode: "OpenCCK", Enabled: true}},
 	}
-	req := httptest.NewRequest("POST", "/api/admin/config/import", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	srv.apiConfigImport(w, req)
+	srv.apiConfigImport(w, doImport(snapshot, "not-the-real-digest"))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d body=%s, want 409", w.Code, w.Body.String())
 	}
 }
 
-func TestAPIConfigImportAppliesSnapshotAndGlobalFilters(t *testing.T) {
-	// Builds its own server, with settings backed by the SAME store as
-	// s.store (as production wires them via settings.New(db) in
-	// cmd/wdbgp/main.go), instead of setupUserTestServer's testSettings(),
-	// which deliberately backs settings with its own disconnected in-memory
-	// map — fine for settings-only tests, but it would never show this
-	// test's writes reflected in st's real database.
-	st := setupUserTestStore(t)
-	set, err := settings.New(st)
+func TestAPIConfigImportRejectsUnsupportedSchemaVersion(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+	// The zero value — e.g. an empty {} file — must not be accepted as a
+	// valid, digest-able v1 document: every field would silently decode as
+	// its zero value, including global filters that could then be cleared.
+	snapshot := store.ConfigSnapshot{Users: []store.ConfigUser{{Name: "carol", CatalogMode: "OpenCCK", Enabled: true}}}
+
+	body, err := json.Marshal(map[string]any{"snapshot": snapshot})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bgp := &fakeBGP{}
-	srv := &Server{settings: set, store: st, bgp: bgp}
+	w := httptest.NewRecorder()
+	srv.apiConfigImportPreview(w, httptest.NewRequest("POST", "/api/admin/config/import/preview", bytes.NewReader(body)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("preview status = %d body=%s, want 400", w.Code, w.Body.String())
+	}
 
+	w2 := httptest.NewRecorder()
+	srv.apiConfigImport(w2, doImport(snapshot, "anything"))
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("import status = %d body=%s, want 400", w2.Code, w2.Body.String())
+	}
+}
+
+func TestAPIConfigImportRejectsDriftedLiveTarget(t *testing.T) {
+	srv, st, _ := configImportTestServer(t)
 	snapshot := store.ConfigSnapshot{
+		SchemaVersion: store.ConfigSnapshotSchemaVersion,
+		Users:         []store.ConfigUser{{Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, CatalogMode: "OpenCCK", Enabled: true}},
+	}
+	_, digest := previewImport(t, srv, snapshot)
+
+	// The live configuration changes after the preview but before the apply
+	// (another admin's edit) — the digest must no longer match, even though
+	// the uploaded snapshot itself is byte-for-byte what was previewed.
+	if _, err := st.AddUser(t.Context(), store.User{
+		Name: "dave", PeerIP: "20.0.0.4", PeerASN: 65004, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	srv.apiConfigImport(w, doImport(snapshot, digest))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s, want 409 (the live target drifted since the preview)", w.Code, w.Body.String())
+	}
+
+	var carolCount int
+	if err := st.DB.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM users WHERE name = 'carol'").Scan(&carolCount); err != nil {
+		t.Fatal(err)
+	}
+	if carolCount != 0 {
+		t.Fatal("carol was created despite the rejected, drifted apply")
+	}
+}
+
+func TestAPIConfigImportRejectsInvalidGlobalFilterBeforeCommitting(t *testing.T) {
+	srv, st, _ := configImportTestServer(t)
+	snapshot := store.ConfigSnapshot{
+		SchemaVersion: store.ConfigSnapshotSchemaVersion,
+		GlobalFilters: store.RouteFilters{Allow: []string{"not-a-cidr"}},
+		Users:         []store.ConfigUser{{Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, CatalogMode: "OpenCCK", Enabled: true}},
+	}
+	_, digest := previewImport(t, srv, snapshot)
+
+	w := httptest.NewRecorder()
+	srv.apiConfigImport(w, doImport(snapshot, digest))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400 for an invalid global filter CIDR", w.Code, w.Body.String())
+	}
+
+	// Rejected before anything committed: carol must not have been created
+	// despite the user portion of the snapshot being perfectly valid on its
+	// own — an import must not partially apply behind a response that says
+	// it failed.
+	var carolCount int
+	if err := st.DB.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM users WHERE name = 'carol'").Scan(&carolCount); err != nil {
+		t.Fatal(err)
+	}
+	if carolCount != 0 {
+		t.Fatal("carol was created even though the import was rejected for an invalid global filter")
+	}
+}
+
+func TestAPIConfigImportAppliesSnapshotAndGlobalFilters(t *testing.T) {
+	srv, st, bgp := configImportTestServer(t)
+	snapshot := store.ConfigSnapshot{
+		SchemaVersion: store.ConfigSnapshotSchemaVersion,
 		GlobalFilters: store.RouteFilters{Allow: []string{"10.0.0.0/8"}},
 		Users: []store.ConfigUser{
 			{Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, CatalogMode: "OpenCCK", Enabled: true},
 		},
 	}
-	digest, err := snapshot.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := json.Marshal(map[string]any{"snapshot": snapshot, "digest": digest})
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest("POST", "/api/admin/config/import", bytes.NewReader(body))
+	_, digest := previewImport(t, srv, snapshot)
+
 	w := httptest.NewRecorder()
-	srv.apiConfigImport(w, req)
+	srv.apiConfigImport(w, doImport(snapshot, digest))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
@@ -177,11 +269,18 @@ func TestAPIConfigImportAppliesSnapshotAndGlobalFilters(t *testing.T) {
 	if bgp.reconciles != 1 {
 		t.Fatalf("bgp.reconciles = %d, want 1", bgp.reconciles)
 	}
+	// carol is new and enabled: syncBGPAfterConfigImport must have reloaded
+	// her into the BGP manager's own peer cache, not relied on Reconcile
+	// alone (Reconcile only reconciles routes against peers it already has).
+	if bgp.updates != 1 {
+		t.Fatalf("bgp.updates = %d, want 1 (carol synced via UpdatePeer, which also handles a not-yet-tracked peer)", bgp.updates)
+	}
 
-	// Re-applying the same snapshot is a no-op for global filters.
+	// Re-applying the same snapshot: still valid (nothing has drifted, same
+	// uploaded bytes), but a no-op for global filters.
+	_, digest2 := previewImport(t, srv, snapshot)
 	w2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest("POST", "/api/admin/config/import", bytes.NewReader(body))
-	srv.apiConfigImport(w2, req2)
+	srv.apiConfigImport(w2, doImport(snapshot, digest2))
 	var resp2 struct {
 		GlobalFiltersApplied bool `json:"global_filters_applied"`
 	}
@@ -190,5 +289,33 @@ func TestAPIConfigImportAppliesSnapshotAndGlobalFilters(t *testing.T) {
 	}
 	if resp2.GlobalFiltersApplied {
 		t.Fatal("global_filters_applied = true on a repeat import with unchanged filters, want false")
+	}
+}
+
+func TestAPIConfigImportSyncsDisabledPeerWithBGP(t *testing.T) {
+	srv, st, bgp := configImportTestServer(t)
+	userID, err := st.AddUser(t.Context(), store.User{
+		Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = userID
+
+	snapshot := store.ConfigSnapshot{
+		SchemaVersion: store.ConfigSnapshotSchemaVersion,
+		Users: []store.ConfigUser{
+			{Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, CatalogMode: "OpenCCK", Enabled: false},
+		},
+	}
+	_, digest := previewImport(t, srv, snapshot)
+	w := httptest.NewRecorder()
+	srv.apiConfigImport(w, doImport(snapshot, digest))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	if bgp.deletes != 1 {
+		t.Fatalf("bgp.deletes = %d, want 1 (carol was disabled by the import)", bgp.deletes)
 	}
 }

@@ -51,6 +51,8 @@
   "config.import_apply": "Применить",
   "config.import_done": "Импортировано: пользователей создано {usersCreated}, обновлено {usersUpdated}; режимов создано {modesCreated}, обновлено {modesUpdated}",
   "config.import_filters_applied": "Глобальные фильтры маршрутов тоже обновлены в соответствии с файлом",
+  "config.import_unknown_feeds": "Некоторые связи режим-фид пропущены — в этом инстансе нет подходящего фида: {list}",
+  "config.import_unknown_modes": "Некоторые пользователи пропущены — в этом инстансе нет подходящего режима: {list}",
   "config.import_failed": "Не удалось применить импорт",
   "config.import_stale": "Этот файл изменился или уже был применён после предпросмотра — загрузите его заново",
   "config.compare_section": "Сравнить два экспорта",

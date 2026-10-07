@@ -3,6 +3,7 @@ package web
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -38,6 +39,23 @@ func (s *Server) apiConfigDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"diff": store.DiffConfigSnapshots(body.A, body.B)})
 }
 
+// rejectUnsupportedConfigSchema writes a 400 and reports true if snap isn't
+// this version's schema — e.g. {} (schema_version 0, every field its zero
+// value), which would otherwise decode as a valid, digest-able document that
+// clears every global filter and silently drops every mode-feed link it
+// claims to carry. Only guards the import path (preview and apply): a pure
+// apiConfigDiff comparison of two differently-versioned exports is read-only
+// and has a legitimate use (seeing what a version bump would actually
+// change), so it isn't restricted here.
+func rejectUnsupportedConfigSchema(w http.ResponseWriter, snap store.ConfigSnapshot) bool {
+	if snap.SchemaVersion == store.ConfigSnapshotSchemaVersion {
+		return false
+	}
+	writeJSON(w, http.StatusBadRequest, apiResponse{OK: false,
+		Error: fmt.Sprintf("Unsupported configuration schema version %d (this instance exports and imports version %d)", snap.SchemaVersion, store.ConfigSnapshotSchemaVersion)})
+	return true
+}
+
 // apiConfigImportPreview handles POST /api/admin/config/import/preview: a
 // dry-run diff of an uploaded snapshot against this instance's current
 // configuration, plus the digest apiConfigImport requires. Read-only — it
@@ -50,14 +68,17 @@ func (s *Server) apiConfigImportPreview(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
+	if rejectUnsupportedConfigSchema(w, body.Snapshot) {
+		return
+	}
 	current, err := s.store.ConfigSnapshot(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to build config snapshot"})
 		return
 	}
-	digest, err := body.Snapshot.Digest()
+	digest, err := store.ConfigImportDigest(current, body.Snapshot)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to fingerprint the uploaded snapshot"})
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to fingerprint the import"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -67,9 +88,12 @@ func (s *Server) apiConfigImportPreview(w http.ResponseWriter, r *http.Request) 
 }
 
 // apiConfigImport handles POST /api/admin/config/import: applies an uploaded
-// snapshot. digest must match the one the preview reported for this exact
-// snapshot — a caller that never previewed, or one applying a snapshot that
-// changed since, is rejected rather than applied blindly.
+// snapshot. digest must match store.ConfigImportDigest(current, snapshot)
+// recomputed right now, against the live configuration as it is at apply
+// time — not only the snapshot that was uploaded, so either the uploaded
+// file changing, or the live target drifting under it (another admin's edit,
+// between this preview and this apply), rejects the apply with 409 rather
+// than silently overwriting whatever changed.
 //
 // Import is additive only, by design (see Store.ApplyConfigSnapshot's own
 // doc comment): a user or mode this instance already has, that the snapshot
@@ -79,7 +103,9 @@ func (s *Server) apiConfigImportPreview(w http.ResponseWriter, r *http.Request) 
 // its own in-memory cache, not through a direct database write that would
 // leave that cache stale — so they are applied here, in their own
 // transaction, only when the snapshot's filters actually differ from the
-// current ones.
+// current ones, and validated before Store.ApplyConfigSnapshot runs so an
+// invalid filter can never be reported as a failure after everything else in
+// the snapshot already committed.
 func (s *Server) apiConfigImport(w http.ResponseWriter, r *http.Request) {
 	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
 	var body struct {
@@ -90,14 +116,28 @@ func (s *Server) apiConfigImport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
-	digest, err := body.Snapshot.Digest()
+	if rejectUnsupportedConfigSchema(w, body.Snapshot) {
+		return
+	}
+
+	current, err := s.store.ConfigSnapshot(r.Context())
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to fingerprint the uploaded snapshot"})
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to read the current configuration"})
+		return
+	}
+	digest, err := store.ConfigImportDigest(current, body.Snapshot)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to fingerprint the import"})
 		return
 	}
 	if body.Digest == "" || body.Digest != digest {
 		writeJSON(w, http.StatusConflict, apiResponse{OK: false,
-			Error: "The snapshot does not match the digest from its preview; preview it again before applying"})
+			Error: "The configuration changed, or the uploaded file changed, since the preview; preview it again before applying"})
+		return
+	}
+
+	if err := s.validateGlobalFilters(body.Snapshot.GlobalFilters); err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
 
@@ -109,32 +149,70 @@ func (s *Server) apiConfigImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filtersApplied := false
-	current, err := s.store.GlobalRouteFilters(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to read current global filters"})
-		return
-	}
-	if !routeFiltersEqual(current, body.Snapshot.GlobalFilters) {
-		if err := s.applyGlobalFiltersFromImport(r, body.Snapshot.GlobalFilters, current); err != nil {
+	if !routeFiltersEqual(current.GlobalFilters, body.Snapshot.GlobalFilters) {
+		if err := s.applyGlobalFiltersFromImport(r, body.Snapshot.GlobalFilters, current.GlobalFilters); err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 			return
 		}
 		filtersApplied = true
 	}
 
-	if s.bgp != nil {
-		if err := s.bgp.Reconcile(r.Context()); err != nil {
-			logging.FromContext(r.Context()).Debug("bgp reconcile failed after config import", "error", err)
-		}
-	}
+	s.syncBGPAfterConfigImport(r, result.AffectedUserIDs)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"result":                 result,
 		"global_filters_applied": filtersApplied,
 	})
 }
 
+// syncBGPAfterConfigImport reloads every user an import created or updated
+// into the BGP manager's own peer cache, which Reconcile alone does not do —
+// Reconcile only reconciles announced routes against peerConfigs it already
+// has, so a new peer would never appear, a disabled one would stay
+// configured, and a changed IP/ASN would keep its old session, until a
+// restart or an unrelated single-user edit. Best-effort and logged, not
+// failed: by this point Store.ApplyConfigSnapshot's own transaction has
+// already committed durably, so a BGP-side hiccup here is the same kind of
+// post-commit side effect Reconcile's own failure already is treated as.
+func (s *Server) syncBGPAfterConfigImport(r *http.Request, affectedUserIDs []int64) {
+	if s.bgp == nil {
+		return
+	}
+	for _, uid := range affectedUserIDs {
+		reloaded, err := s.store.User(r.Context(), uid)
+		if err != nil {
+			logging.FromContext(r.Context()).Debug("config import: reload user for bgp sync failed", "error", err, "user_id", uid)
+			continue
+		}
+		if reloaded.Enabled {
+			if err := s.bgp.UpdatePeer(r.Context(), reloaded); err != nil {
+				logging.FromContext(r.Context()).Debug("config import: bgp update peer failed", "error", err, "user_id", uid)
+			}
+		} else if err := s.bgp.DeletePeer(r.Context(), reloaded.PeerIP, reloaded.ID); err != nil {
+			logging.FromContext(r.Context()).Debug("config import: bgp delete peer failed", "error", err, "user_id", uid)
+		}
+	}
+	if err := s.bgp.Reconcile(r.Context()); err != nil {
+		logging.FromContext(r.Context()).Debug("bgp reconcile failed after config import", "error", err)
+	}
+}
+
 func routeFiltersEqual(a, b store.RouteFilters) bool {
 	return strings.Join(a.Allow, "\n") == strings.Join(b.Allow, "\n") && strings.Join(a.Deny, "\n") == strings.Join(b.Deny, "\n")
+}
+
+// validateGlobalFilters runs the same validation Setting.SetTx would, without
+// persisting anything — so an invalid CIDR in an imported snapshot's global
+// filters is caught before Store.ApplyConfigSnapshot commits the rest of the
+// snapshot, not after, which would otherwise leave an import that reports
+// failure having already durably applied every mode and user change.
+func (s *Server) validateGlobalFilters(filters store.RouteFilters) error {
+	if err := s.settings.FilterAllow.Validate(strings.Join(filters.Allow, "\n")); err != nil {
+		return fmt.Errorf("invalid global allow filter: %w", err)
+	}
+	if err := s.settings.FilterDeny.Validate(strings.Join(filters.Deny, "\n")); err != nil {
+		return fmt.Errorf("invalid global deny filter: %w", err)
+	}
+	return nil
 }
 
 // applyGlobalFiltersFromImport sets filter_allow/filter_deny to match an

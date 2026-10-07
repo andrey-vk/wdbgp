@@ -251,6 +251,9 @@ func TestApplyConfigSnapshotIsAdditiveOnly(t *testing.T) {
 	if len(result.UnknownModes) != 1 {
 		t.Fatalf("unknown modes = %+v, want one entry for carol", result.UnknownModes)
 	}
+	if len(result.AffectedUserIDs) != 1 || result.AffectedUserIDs[0] != bobID {
+		t.Fatalf("affected user ids = %+v, want [%d] (bob; carol was skipped)", result.AffectedUserIDs, bobID)
+	}
 
 	// carol was skipped (unknown mode), not created half-finished.
 	if _, err := s.DB.QueryContext(ctx, "SELECT 1 FROM users WHERE name = 'carol'"); err != nil {
@@ -288,5 +291,88 @@ func TestApplyConfigSnapshotIsAdditiveOnly(t *testing.T) {
 	}
 	if len(result2.ModesCreated) != 0 || len(result2.ModesUpdated) != 1 {
 		t.Fatalf("second apply: modes created=%v updated=%v, want none created and Imported updated", result2.ModesCreated, result2.ModesUpdated)
+	}
+}
+
+func TestApplyConfigSnapshotRejectsOverlappingActiveNetworks(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddUser(ctx, User{
+		Name: "existing", PeerIP: "20.0.0.9", PeerASN: 65099, Enabled: true, WebAuth: "network",
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID, Networks: []string{"203.0.113.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := ConfigSnapshot{
+		Users: []ConfigUser{
+			{
+				Name: "newcomer", PeerIP: "20.0.0.10", PeerASN: 65100, CatalogMode: "OpenCCK", Enabled: true,
+				WebAuth: "network", Networks: []string{"203.0.113.128/25"}, // overlaps "existing"'s /24
+			},
+		},
+	}
+	if _, err := s.ApplyConfigSnapshot(ctx, snap, AuditMeta{}); err == nil {
+		t.Fatal("expected an error for a network overlapping an existing active user, got nil")
+	}
+
+	// Rejected entirely, not partially applied: newcomer must not exist.
+	var count int
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE name = 'newcomer'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("newcomer was created despite an active-network overlap with an existing user")
+	}
+}
+
+func TestApplyConfigSnapshotAllowsOverlapForNonActiveWebAuth(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddUser(ctx, User{
+		Name: "existing", PeerIP: "20.0.0.9", PeerASN: 65099, Enabled: true, WebAuth: "network",
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID, Networks: []string{"203.0.113.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snap := ConfigSnapshot{
+		Users: []ConfigUser{
+			{
+				Name: "loginuser", PeerIP: "20.0.0.11", PeerASN: 65101, CatalogMode: "OpenCCK", Enabled: true,
+				WebAuth: "login", Networks: []string{"203.0.113.128/25"},
+			},
+		},
+	}
+	if _, err := s.ApplyConfigSnapshot(ctx, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a login-mode user's networks aren't IP-resolved, so an overlap must not block the import: %v", err)
+	}
+}
+
+func TestConfigImportDigestBindsCurrentState(t *testing.T) {
+	uploaded := ConfigSnapshot{Users: []ConfigUser{{Name: "alice", CatalogMode: "OpenCCK"}}}
+	currentA := ConfigSnapshot{GlobalFilters: RouteFilters{Allow: []string{"10.0.0.0/8"}}}
+	currentB := ConfigSnapshot{GlobalFilters: RouteFilters{Allow: []string{"10.1.0.0/16"}}}
+
+	digestA, err := ConfigImportDigest(currentA, uploaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digestB, err := ConfigImportDigest(currentB, uploaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digestA == digestB {
+		t.Fatal("digest did not change when the current (live) state differed, with the same uploaded snapshot")
+	}
+
+	digestARepeat, err := ConfigImportDigest(currentA, uploaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digestA != digestARepeat {
+		t.Fatal("digest is not stable for the same (current, uploaded) pair")
 	}
 }

@@ -128,6 +128,12 @@ async function confirmImport() {
     if (resp.data.global_filters_applied) {
       toast.add({ severity: 'info', summary: t('config.import_filters_applied'), life: 4000 })
     }
+    if (r.unknown_feeds?.length) {
+      toast.add({ severity: 'warn', summary: t('config.import_unknown_feeds', { list: r.unknown_feeds.join(', ') }), life: 8000 })
+    }
+    if (r.unknown_modes?.length) {
+      toast.add({ severity: 'warn', summary: t('config.import_unknown_modes', { list: r.unknown_modes.join(', ') }), life: 8000 })
+    }
     showImportDialog.value = false
     pendingSnapshot.value = null
   } catch (e: unknown) {
