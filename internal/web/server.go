@@ -104,6 +104,11 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	mux.HandleFunc("POST /api/admin/modes/{id}/communities/reset", server.apiRequireAdmin(server.apiModeCommunitiesReset))
 	mux.HandleFunc("POST /api/admin/modes/{id}/communities/generate", server.apiRequireAdmin(server.apiModeCommunitiesGenerate))
 
+	mux.HandleFunc("GET /api/admin/config/export", server.apiRequireAdmin(server.apiConfigExport))
+	mux.HandleFunc("POST /api/admin/config/diff", server.apiRequireAdmin(server.apiConfigDiff))
+	mux.HandleFunc("POST /api/admin/config/import/preview", server.apiRequireAdmin(server.apiConfigImportPreview))
+	mux.HandleFunc("POST /api/admin/config/import", server.apiRequireAdmin(server.apiConfigImport))
+
 	mux.HandleFunc("POST /api/admin/users/normalize-networks", server.apiRequireAdmin(server.apiUsersNormalizeNetworks))
 	mux.HandleFunc("GET /api/admin/users", server.apiRequireAdmin(server.apiUsersList))
 	mux.HandleFunc("GET /api/admin/users/{id}", server.apiRequireAdmin(server.apiUsersGet))

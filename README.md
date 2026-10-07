@@ -456,6 +456,42 @@ The admin "Community Matrix" page shows each category's group-level community nu
 
 Opening the matrix only reads stored community numbers — it never generates missing ones itself, so it stays cheap to open even on a large catalog. That means a mode nobody has opened or regenerated in a while can show categories as missing even though nothing is actually broken; use the page's "Generate missing" button (`POST /api/admin/communities/matrix/generate`) to fill in every mode's missing numbers in one pass before relying on the grid for a migration.
 
+### Configuration export / import
+
+The admin "Export / Import" page exports this instance's users, global route filters,
+communities, and modes as one JSON document, previews what an uploaded document would
+change, and applies it. Feed definitions are out of scope — a mode's feed membership
+is recorded by feed name, and a name the target instance has no match for is reported
+and skipped rather than failing the whole import — and so are selection templates,
+which don't exist yet.
+
+Import is additive only: an entity (a user or a mode) this instance already has that
+the uploaded document doesn't mention is left alone, never deleted. An entity the
+document does name has its own fields — a user's networks, route filters, and
+selection; a mode's feed membership — replaced wholesale to match it, the same as
+editing them by hand already does, with one exception: community assignments are
+merged (upserted), not replaced, since a partial document's community list isn't meant
+to be the sole authority over a mode's whole numbering, and silently wiping an entry it
+doesn't mention would have real BGP-community consequences. A BGP password is never
+exported (`has_bgp_password` reports only whether one is set) and never touched by
+import — a newly created user gets none and an admin must set one by hand; an existing
+user's password is left exactly as it was.
+
+Applying always previews first — `POST /api/admin/config/import/preview` is read-only
+and returns both the diff against this instance's current configuration and a digest
+fingerprinting the uploaded document. `POST /api/admin/config/import` requires that
+digest back and refuses with `409` if it doesn't match (the document changed, or was
+already applied, since the preview was shown) — the same confirm-with-digest
+discipline "Reset to defaults" (above) already established. `POST /api/admin/config/diff`
+takes two documents directly and returns their diff with nothing read from or written
+to this instance — for comparing two exports, including from two different instances,
+without importing either.
+
+Global route filters are the one piece of the document that import applies through
+the settings layer (`internal/settings`) in its own transaction, rather than through
+the same direct database write the rest of the document uses — that layer keeps its
+own in-memory cache, which a direct write would leave stale until the next restart.
+
 ### Blast-radius preview
 
 Four admin edits change which prefixes a user actually receives: the global route
