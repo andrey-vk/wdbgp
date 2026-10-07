@@ -43,6 +43,7 @@
   "community_matrix.category": "Category",
   "community_matrix.disabled": "disabled",
   "community_matrix.divergent": "differs",
+  "community_matrix.service_differs": "{count} services differ",
   "community_matrix.missing": "No group-level community in this mode",
   "topbar.logout": "Logout",
 

@@ -26,9 +26,9 @@ const matrix: CommunityMatrixResponse = {
     { id: 2, name: 'Lab', enabled: true },
   ],
   categories: [
-    { category: 'ai', values: { '1': 10000, '2': 10000 }, divergent: false },
-    { category: 'tv', values: { '1': 20000, '2': 30000 }, divergent: true },
-    { category: 'news', values: { '1': 40000, '2': null }, divergent: true },
+    { category: 'ai', values: { '1': 10000, '2': 10000 }, service_divergence: 0, divergent: false },
+    { category: 'tv', values: { '1': 20000, '2': 30000 }, service_divergence: 0, divergent: true },
+    { category: 'news', values: { '1': 40000, '2': null }, service_divergence: 0, divergent: true },
   ],
 }
 

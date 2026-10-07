@@ -452,7 +452,7 @@ Two limits follow from this. Selection changes recorded before the name payload 
 
 ### Community matrix
 
-The admin "Community Matrix" page shows each category's group-level community number in every mode, as a grid. A category whose number differs between modes, or that has no group-level number in one of them, is flagged, and the list can be narrowed to flagged categories. `GET /api/admin/communities/matrix` returns the same grid. Per-service numbers aren't in the grid; the matrix is for checking that category numbering agrees before a user moves between modes.
+The admin "Community Matrix" page shows each category's group-level community number in every mode, as a grid. A category whose number differs between modes, or that has no group-level number in one of them, is flagged, and the list can be narrowed to flagged categories. `GET /api/admin/communities/matrix` returns the same grid. A category whose group number matches but has a service with a different number (or a service only some modes serve) is flagged too, with the count. The grid doesn't list individual numbers; check those per service before a migration.
 
 ### Blast-radius preview
 
