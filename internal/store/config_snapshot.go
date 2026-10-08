@@ -535,6 +535,20 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, ex
 		if err != nil {
 			return err
 		}
+		// A staging placeholder is only ever written at stagingPeerIPText, so
+		// the one other way it can collide with something is a snapshot user
+		// whose own IMPORTED identity also lands on that same address (an
+		// unusual but real possibility — nothing stops an export from
+		// legitimately using it). peerASNsForIPTx above only sees what the
+		// table currently holds, not what this import is about to write, so
+		// without this, staging could assign one user a placeholder tuple
+		// that a different user's own real update claims moments later,
+		// rejecting an otherwise fully valid import purely on staging order.
+		for _, u := range snap.Users {
+			if u.PeerIP == stagingPeerIPText {
+				stagingTaken[u.PeerASN] = true
+			}
+		}
 		currentUserByName := make(map[string]ConfigUser, len(current.Users))
 		for _, cu := range current.Users {
 			currentUserByName[cu.Name] = cu

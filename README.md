@@ -545,7 +545,8 @@ user's, the same validation the ordinary user create/update forms already enforc
 malformed global filter is rejected before anything else in the document commits,
 never after. Swapping two users' BGP peer identities in one import stages each
 changed one out of the way first, into a placeholder reserved against whatever this
-instance's own users already hold (not just assumed free); a user whose own catalog
+instance's own users already hold and against every identity this same import is
+about to assign for real (not just assumed free); a user whose own catalog
 mode doesn't resolve on this instance is skipped before that staging step runs, not
 after, so they're never left stuck holding the placeholder as a permanent identity.
 

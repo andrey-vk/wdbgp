@@ -693,3 +693,61 @@ func TestApplyConfigSnapshotReservesStagingIdentityAgainstARealCollision(t *test
 		t.Fatalf("alice = %+v, want her new imported identity", alice)
 	}
 }
+
+func TestApplyConfigSnapshotReservesSnapshotTargetIdentitiesBeforeStaging(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// "amy" sorts before "carol" (ApplyConfigSnapshot processes snap.Users
+	// in name order), which matters here: amy's own real identity update
+	// must run BEFORE carol's staging placeholder is ever vacated, or the
+	// collision below never actually manifests — carol moving off the
+	// contested tuple first would quietly resolve it regardless of whether
+	// it was ever reserved.
+	amyID, err := s.AddUser(ctx, User{
+		Name: "amy", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	carolID, err := s.AddUser(ctx, User{
+		Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// amy's imported identity exactly matches carol's own naive first-guess
+	// staging placeholder (4200000000+carolID) — nothing in the live table
+	// occupies it, so without reserving every snapshot target at the
+	// staging address up front, carol would be staged straight onto exactly
+	// the tuple amy's own update claims moments later (amy sorts first, so
+	// her real write runs while carol is still parked there), rejecting
+	// this entirely valid import on a UNIQUE(peer_ip, peer_asn) violation
+	// purely because of staging order.
+	targetASN := uint32(4200000000) + uint32(carolID) //nolint:gosec
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "amy", PeerIP: stagingPeerIPText, PeerASN: targetASN, CatalogMode: "OpenCCK", Enabled: true},
+		{Name: "carol", PeerIP: "20.0.0.9", PeerASN: 65009, CatalogMode: "OpenCCK", Enabled: true},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a valid import was rejected by an un-reserved snapshot-target collision: %v", err)
+	}
+
+	amy, err := s.User(ctx, amyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amy.PeerIP != stagingPeerIPText || amy.PeerASN != targetASN {
+		t.Fatalf("amy = %+v, want her imported identity at the staging address", amy)
+	}
+	carol, err := s.User(ctx, carolID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if carol.PeerIP != "20.0.0.9" || carol.PeerASN != 65009 {
+		t.Fatalf("carol = %+v, want her new imported identity", carol)
+	}
+}
