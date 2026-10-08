@@ -615,3 +615,81 @@ func TestApplyConfigSnapshotSwapsPeerIdentitiesWithoutTransientCollision(t *test
 		t.Fatalf("bob = %+v, want alice's old identity", bob)
 	}
 }
+
+func TestApplyConfigSnapshotNeverStagesAwayAnUnresolvedModeUsersIdentity(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	daveID := configSnapshotTestUser(t, s, "dave", "20.0.0.3", 65003, DefaultCatalogModeID)
+
+	// dave's peer identity is changing, but his catalog mode doesn't resolve
+	// on this instance — the second loop in ApplyConfigSnapshot skips him
+	// entirely (UnknownModes), without ever writing a real identity back. If
+	// the identity-staging pass ran for him anyway, he'd be left stuck with
+	// the staging placeholder as his permanent identity.
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "dave", PeerIP: "20.0.0.4", PeerASN: 65004, CatalogMode: "no-such-mode", Enabled: true},
+	}}
+	result, err := applyConfigSnapshot(t, s, snap, AuditMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.UnknownModes) != 1 {
+		t.Fatalf("unknown modes = %+v, want one entry for dave", result.UnknownModes)
+	}
+	if len(result.AffectedUserIDs) != 0 {
+		t.Fatalf("affected user ids = %+v, want none: dave was skipped", result.AffectedUserIDs)
+	}
+
+	dave, err := s.User(ctx, daveID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dave.PeerIP != "20.0.0.3" || dave.PeerASN != 65003 {
+		t.Fatalf("dave = %+v, want his original identity untouched, not the staging placeholder", dave)
+	}
+}
+
+func TestApplyConfigSnapshotReservesStagingIdentityAgainstARealCollision(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	aliceID, err := s.AddUser(ctx, User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A real, already-configured user who happens to sit exactly on the
+	// naive first guess stagingPeerIdentity would make for alice (userID
+	// offset from 4200000000) if it didn't check for collisions first —
+	// a lab/test deployment using documentation addresses and private ASNs
+	// is exactly the scenario the finding this test covers describes.
+	collisionASN := uint32(4200000000) + uint32(aliceID) //nolint:gosec
+	if _, err := s.AddUser(ctx, User{
+		Name: "placeholder-squatter", PeerIP: stagingPeerIPText, PeerASN: collisionASN, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// alice's identity changes, which would stage her through
+	// (stagingPeerIPText, collisionASN) — exactly what the squatter already
+	// holds — if the reservation didn't skip already-taken tuples.
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "alice", PeerIP: "20.0.0.9", PeerASN: 65009, CatalogMode: "OpenCCK", Enabled: true},
+		{Name: "placeholder-squatter", PeerIP: stagingPeerIPText, PeerASN: collisionASN, CatalogMode: "OpenCCK", Enabled: true},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a valid import was rejected by a staging-identity collision: %v", err)
+	}
+
+	alice, err := s.User(ctx, aliceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alice.PeerIP != "20.0.0.9" || alice.PeerASN != 65009 {
+		t.Fatalf("alice = %+v, want her new imported identity", alice)
+	}
+}

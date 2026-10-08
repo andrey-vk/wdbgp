@@ -428,3 +428,33 @@ func TestAPIConfigImportRejectsIncompleteSchemaV1Document(t *testing.T) {
 		t.Fatalf("import status = %d body=%s, want 400", w2.Code, w2.Body.String())
 	}
 }
+
+func TestAPIConfigImportRejectsIncompleteGlobalFilters(t *testing.T) {
+	srv, _, _ := setupUserTestServer(t)
+	// global_filters itself is present and non-null, passing the top-level
+	// completeness check — but its own allow/deny keys are missing, which
+	// decodes to an empty RouteFilters and would silently clear both on a
+	// confirmed import, the exact same class of bug the top-level check
+	// above exists to prevent, one level deeper.
+	incomplete := []byte(`{"schema_version":1,"global_filters":{},"modes":[],"users":[]}`)
+
+	w := httptest.NewRecorder()
+	body, err := json.Marshal(map[string]json.RawMessage{"snapshot": incomplete})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.apiConfigImportPreview(w, httptest.NewRequest("POST", "/api/admin/config/import/preview", bytes.NewReader(body)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("preview status = %d body=%s, want 400", w.Code, w.Body.String())
+	}
+
+	w2 := httptest.NewRecorder()
+	body2, err := json.Marshal(map[string]any{"snapshot": json.RawMessage(incomplete), "digest": "anything"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.apiConfigImport(w2, httptest.NewRequest("POST", "/api/admin/config/import", bytes.NewReader(body2)))
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("import status = %d body=%s, want 400", w2.Code, w2.Body.String())
+	}
+}

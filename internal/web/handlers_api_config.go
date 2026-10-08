@@ -64,6 +64,13 @@ func rejectUnsupportedConfigSchema(w http.ResponseWriter, snap store.ConfigSnaps
 // at its zero value, and confirming its preview would clear every global
 // filter. A real export always includes all three keys (ConfigSnapshot's
 // JSON tags have no omitempty), even when a value is a genuinely empty [].
+//
+// The same gap exists one level deeper: {"global_filters":{},...} passes the
+// top-level check above (global_filters itself is present and non-null) but
+// still silently decodes to an empty allow/deny, and a confirmed import
+// would clear both exactly as if they'd been named explicitly as []. So
+// global_filters' own required allow/deny keys are checked the same way,
+// rather than accepting any non-null JSON value there either.
 func decodeCompleteConfigSnapshot(raw json.RawMessage) (store.ConfigSnapshot, error) {
 	var presence struct {
 		GlobalFilters json.RawMessage `json:"global_filters"`
@@ -76,6 +83,16 @@ func decodeCompleteConfigSnapshot(raw json.RawMessage) (store.ConfigSnapshot, er
 	present := func(f json.RawMessage) bool { return len(f) > 0 && string(f) != "null" }
 	if !present(presence.GlobalFilters) || !present(presence.Modes) || !present(presence.Users) {
 		return store.ConfigSnapshot{}, errors.New("incomplete configuration document: missing global_filters, modes, or users")
+	}
+	var filterPresence struct {
+		Allow json.RawMessage `json:"allow"`
+		Deny  json.RawMessage `json:"deny"`
+	}
+	if err := json.Unmarshal(presence.GlobalFilters, &filterPresence); err != nil {
+		return store.ConfigSnapshot{}, err
+	}
+	if !present(filterPresence.Allow) || !present(filterPresence.Deny) {
+		return store.ConfigSnapshot{}, errors.New("incomplete configuration document: global_filters is missing allow or deny")
 	}
 	var snap store.ConfigSnapshot
 	if err := json.Unmarshal(raw, &snap); err != nil {
