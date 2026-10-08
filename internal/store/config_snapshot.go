@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -523,10 +524,46 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, ex
 		// A's) would otherwise have the first one's UPDATE rejected purely
 		// because of write order, the same class of problem the community
 		// pre-clear above solves. Staging moves the OLD identity out of the
-		// way first, to a placeholder guaranteed unique per user ID (and far
-		// outside any ASN or address a real configuration would plausibly
-		// use), so by the time the real writes below run, no leftover old
-		// identity can still be holding a tuple this import wants to reuse.
+		// way first, to a placeholder reserved against whatever this
+		// instance's users table actually holds (see stagingPeerIdentity), so
+		// by the time the real writes below run, no leftover old identity can
+		// still be holding a tuple this import wants to reuse.
+		stagingIPBytes, err := encodeAddrArg(stagingPeerIPText)
+		if err != nil {
+			return err
+		}
+		stagingTaken, err := peerASNsForIPTx(ctx, tx, stagingIPBytes)
+		if err != nil {
+			return err
+		}
+		// A staging placeholder is only ever written at stagingPeerIPText, so
+		// the one other way it can collide with something is a snapshot user
+		// whose own IMPORTED identity also lands on that same address (an
+		// unusual but real possibility — nothing stops an export from
+		// legitimately using it). peerASNsForIPTx above only sees what the
+		// table currently holds, not what this import is about to write, so
+		// without this, staging could assign one user a placeholder tuple
+		// that a different user's own real update claims moments later,
+		// rejecting an otherwise fully valid import purely on staging order.
+		//
+		// Compared as parsed/normalized bytes, not raw strings: encodeAddrArg
+		// (what the real write below actually stores) trims whitespace and
+		// normalizes the address's own representation, so an offline-edited
+		// snapshot using " 192.0.2.1 ", or any other syntactic variant that
+		// parses to the same address, would otherwise go unreserved here
+		// while still landing on the exact same stored BLOB later.
+		for _, u := range snap.Users {
+			ip, err := encodeAddrArg(u.PeerIP)
+			if err != nil {
+				// Fails validation elsewhere (encodeUserAddrs, in the real
+				// write below) and rolls back the whole import anyway, so an
+				// unparsable address can never actually collide with anything.
+				continue
+			}
+			if bytes.Equal(ip, stagingIPBytes) {
+				stagingTaken[u.PeerASN] = true
+			}
+		}
 		currentUserByName := make(map[string]ConfigUser, len(current.Users))
 		for _, cu := range current.Users {
 			currentUserByName[cu.Name] = cu
@@ -536,14 +573,19 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, ex
 			if !existed {
 				continue
 			}
+			if _, ok := modeIDByName[u.CatalogMode]; !ok {
+				// This user's catalog mode doesn't resolve on this instance —
+				// the loop below skips them entirely (UnknownModes), without
+				// ever restoring a real identity. Staging it away here would
+				// leave the placeholder committed as this user's permanent
+				// identity, so it must never be touched in the first place.
+				continue
+			}
 			was := currentUserByName[u.Name]
 			if was.PeerIP == u.PeerIP && was.PeerASN == u.PeerASN {
 				continue
 			}
-			stagingIP, stagingASN, err := stagingPeerIdentity(userID)
-			if err != nil {
-				return err
-			}
+			stagingIP, stagingASN := stagingPeerIdentity(stagingIPBytes, userID, stagingTaken)
 			if _, err := tx.ExecContext(ctx, "UPDATE users SET peer_ip = ?, peer_asn = ? WHERE id = ?",
 				stagingIP, stagingASN, userID); err != nil {
 				return err
@@ -666,20 +708,52 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, ex
 	return result, err
 }
 
-// stagingPeerIdentity derives a (peer_ip, peer_asn) placeholder for userID,
-// unique across every staged row in one ApplyConfigSnapshot run (ids are
-// themselves unique) and never a value a real configuration would plausibly
-// use: 192.0.2.1 is TEST-NET-1 (RFC 5737) — reserved, non-routable, and
-// already in this instance's own default bogon deny list (migration 005) —
-// and the ASN comes from the private-use 32-bit range (RFC 6996), offset by
-// userID so two different users never share a tuple even though they share
-// the same placeholder address.
-func stagingPeerIdentity(userID int64) (peerIP []byte, peerASN uint32, err error) {
-	peerIP, err = encodeAddrArg("192.0.2.1")
+// stagingPeerIPText is the placeholder address ApplyConfigSnapshot's identity
+// staging uses: 192.0.2.1 is TEST-NET-1 (RFC 5737) — reserved, non-routable,
+// and already in this instance's own default bogon deny list (migration
+// 005).
+const stagingPeerIPText = "192.0.2.1"
+
+// peerASNsForIPTx returns every peer_asn this instance currently has stored
+// against ip, so stagingPeerIdentity can pick a value guaranteed not to
+// collide with a real, already-configured user — a lab or test deployment
+// using documentation addresses and private ASNs could plausibly already
+// hold the naive first guess (see stagingPeerIdentity), and staging a
+// different user into that exact tuple would violate the UNIQUE(peer_ip,
+// peer_asn) constraint and roll back an otherwise-valid import.
+func peerASNsForIPTx(ctx context.Context, tx *sql.Tx, ip []byte) (map[uint32]bool, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT peer_asn FROM users WHERE peer_ip = ?", ip)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	return peerIP, 4200000000 + uint32(userID), nil //nolint:gosec // userID is a small, bounded autoincrement id; no overflow risk in practice
+	defer func() { _ = rows.Close() }() //nolint:errcheck
+	taken := map[uint32]bool{}
+	for rows.Next() {
+		var asn uint32
+		if err := rows.Scan(&asn); err != nil {
+			return nil, err
+		}
+		taken[asn] = true
+	}
+	return taken, rows.Err()
+}
+
+// stagingPeerIdentity derives a (peerIP, peer_asn) placeholder for userID:
+// the ASN starts from the private-use 32-bit range (RFC 6996), offset by
+// userID so two different users' first guesses never collide with each
+// other. taken records every tuple already spoken for — by a real,
+// already-configured user peerASNsForIPTx found holding this exact address,
+// or by an earlier call in this same ApplyConfigSnapshot run — and is
+// updated in place with whatever this call ends up returning, so trying the
+// next ASN on a collision can never pick the same already-claimed value
+// twice.
+func stagingPeerIdentity(peerIP []byte, userID int64, taken map[uint32]bool) (out []byte, peerASN uint32) {
+	asn := uint32(4200000000) + uint32(userID) //nolint:gosec // userID is a small, bounded autoincrement id; no overflow risk in practice
+	for taken[asn] {
+		asn++
+	}
+	taken[asn] = true
+	return peerIP, asn
 }
 
 func catalogModeIDsByNameTx(ctx context.Context, tx *sql.Tx) (map[string]int64, error) {

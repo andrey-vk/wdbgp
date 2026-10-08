@@ -537,10 +537,18 @@ exports, including from two different instances, without importing either.
 
 A document whose `schema_version` doesn't match this instance's own is rejected
 outright by both preview and import, rather than silently decoding its missing fields
-as zero values. An import's networks are checked for a cross-user overlap against
-every other active user's, the same validation the ordinary user create/update forms
-already enforce. A malformed global filter is rejected before anything else in the
-document commits, never after.
+as zero values — and the same check applies one level deeper, to `global_filters`
+itself: an empty `{}` there is present and non-null, but still decodes to an empty
+allow/deny and would clear both, so its own `allow`/`deny` keys are required too. An
+import's networks are checked for a cross-user overlap against every other active
+user's, the same validation the ordinary user create/update forms already enforce. A
+malformed global filter is rejected before anything else in the document commits,
+never after. Swapping two users' BGP peer identities in one import stages each
+changed one out of the way first, into a placeholder reserved against whatever this
+instance's own users already hold and against every identity this same import is
+about to assign for real (not just assumed free); a user whose own catalog
+mode doesn't resolve on this instance is skipped before that staging step runs, not
+after, so they're never left stuck holding the placeholder as a permanent identity.
 
 Global route filters are the one piece of the document that import applies through
 the settings layer (`internal/settings`) in its own transaction, rather than through

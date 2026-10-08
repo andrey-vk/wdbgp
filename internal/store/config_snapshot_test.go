@@ -615,3 +615,188 @@ func TestApplyConfigSnapshotSwapsPeerIdentitiesWithoutTransientCollision(t *test
 		t.Fatalf("bob = %+v, want alice's old identity", bob)
 	}
 }
+
+func TestApplyConfigSnapshotNeverStagesAwayAnUnresolvedModeUsersIdentity(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	daveID := configSnapshotTestUser(t, s, "dave", "20.0.0.3", 65003, DefaultCatalogModeID)
+
+	// dave's peer identity is changing, but his catalog mode doesn't resolve
+	// on this instance — the second loop in ApplyConfigSnapshot skips him
+	// entirely (UnknownModes), without ever writing a real identity back. If
+	// the identity-staging pass ran for him anyway, he'd be left stuck with
+	// the staging placeholder as his permanent identity.
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "dave", PeerIP: "20.0.0.4", PeerASN: 65004, CatalogMode: "no-such-mode", Enabled: true},
+	}}
+	result, err := applyConfigSnapshot(t, s, snap, AuditMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.UnknownModes) != 1 {
+		t.Fatalf("unknown modes = %+v, want one entry for dave", result.UnknownModes)
+	}
+	if len(result.AffectedUserIDs) != 0 {
+		t.Fatalf("affected user ids = %+v, want none: dave was skipped", result.AffectedUserIDs)
+	}
+
+	dave, err := s.User(ctx, daveID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dave.PeerIP != "20.0.0.3" || dave.PeerASN != 65003 {
+		t.Fatalf("dave = %+v, want his original identity untouched, not the staging placeholder", dave)
+	}
+}
+
+func TestApplyConfigSnapshotReservesStagingIdentityAgainstARealCollision(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	aliceID, err := s.AddUser(ctx, User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A real, already-configured user who happens to sit exactly on the
+	// naive first guess stagingPeerIdentity would make for alice (userID
+	// offset from 4200000000) if it didn't check for collisions first —
+	// a lab/test deployment using documentation addresses and private ASNs
+	// is exactly the scenario the finding this test covers describes.
+	collisionASN := uint32(4200000000) + uint32(aliceID) //nolint:gosec
+	if _, err := s.AddUser(ctx, User{
+		Name: "placeholder-squatter", PeerIP: stagingPeerIPText, PeerASN: collisionASN, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// alice's identity changes, which would stage her through
+	// (stagingPeerIPText, collisionASN) — exactly what the squatter already
+	// holds — if the reservation didn't skip already-taken tuples.
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "alice", PeerIP: "20.0.0.9", PeerASN: 65009, CatalogMode: "OpenCCK", Enabled: true},
+		{Name: "placeholder-squatter", PeerIP: stagingPeerIPText, PeerASN: collisionASN, CatalogMode: "OpenCCK", Enabled: true},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a valid import was rejected by a staging-identity collision: %v", err)
+	}
+
+	alice, err := s.User(ctx, aliceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alice.PeerIP != "20.0.0.9" || alice.PeerASN != 65009 {
+		t.Fatalf("alice = %+v, want her new imported identity", alice)
+	}
+}
+
+func TestApplyConfigSnapshotReservesSnapshotTargetIdentitiesBeforeStaging(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// "amy" sorts before "carol" (ApplyConfigSnapshot processes snap.Users
+	// in name order), which matters here: amy's own real identity update
+	// must run BEFORE carol's staging placeholder is ever vacated, or the
+	// collision below never actually manifests — carol moving off the
+	// contested tuple first would quietly resolve it regardless of whether
+	// it was ever reserved.
+	amyID, err := s.AddUser(ctx, User{
+		Name: "amy", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	carolID, err := s.AddUser(ctx, User{
+		Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// amy's imported identity exactly matches carol's own naive first-guess
+	// staging placeholder (4200000000+carolID) — nothing in the live table
+	// occupies it, so without reserving every snapshot target at the
+	// staging address up front, carol would be staged straight onto exactly
+	// the tuple amy's own update claims moments later (amy sorts first, so
+	// her real write runs while carol is still parked there), rejecting
+	// this entirely valid import on a UNIQUE(peer_ip, peer_asn) violation
+	// purely because of staging order.
+	targetASN := uint32(4200000000) + uint32(carolID) //nolint:gosec
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "amy", PeerIP: stagingPeerIPText, PeerASN: targetASN, CatalogMode: "OpenCCK", Enabled: true},
+		{Name: "carol", PeerIP: "20.0.0.9", PeerASN: 65009, CatalogMode: "OpenCCK", Enabled: true},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a valid import was rejected by an un-reserved snapshot-target collision: %v", err)
+	}
+
+	amy, err := s.User(ctx, amyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amy.PeerIP != stagingPeerIPText || amy.PeerASN != targetASN {
+		t.Fatalf("amy = %+v, want her imported identity at the staging address", amy)
+	}
+	carol, err := s.User(ctx, carolID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if carol.PeerIP != "20.0.0.9" || carol.PeerASN != 65009 {
+		t.Fatalf("carol = %+v, want her new imported identity", carol)
+	}
+}
+
+func TestApplyConfigSnapshotNormalizesAddressesBeforeReservingStagingTargets(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Same scenario and ordering as the test above, but amy's PeerIP is
+	// written with surrounding whitespace — a raw string comparison against
+	// stagingPeerIPText would miss it, even though encodeAddrArg (what the
+	// real write actually stores) trims it and ends up with the exact same
+	// BLOB as the unpadded form.
+	amyID, err := s.AddUser(ctx, User{
+		Name: "amy", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	carolID, err := s.AddUser(ctx, User{
+		Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetASN := uint32(4200000000) + uint32(carolID) //nolint:gosec
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "amy", PeerIP: " " + stagingPeerIPText + " ", PeerASN: targetASN, CatalogMode: "OpenCCK", Enabled: true},
+		{Name: "carol", PeerIP: "20.0.0.9", PeerASN: 65009, CatalogMode: "OpenCCK", Enabled: true},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a valid import was rejected by an un-normalized staging-target collision: %v", err)
+	}
+
+	amy, err := s.User(ctx, amyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amy.PeerIP != stagingPeerIPText || amy.PeerASN != targetASN {
+		t.Fatalf("amy = %+v, want her imported identity (normalized) at the staging address", amy)
+	}
+	carol, err := s.User(ctx, carolID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if carol.PeerIP != "20.0.0.9" || carol.PeerASN != 65009 {
+		t.Fatalf("carol = %+v, want her new imported identity", carol)
+	}
+}
