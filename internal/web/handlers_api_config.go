@@ -3,6 +3,7 @@ package web
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -88,12 +89,14 @@ func (s *Server) apiConfigImportPreview(w http.ResponseWriter, r *http.Request) 
 }
 
 // apiConfigImport handles POST /api/admin/config/import: applies an uploaded
-// snapshot. digest must match store.ConfigImportDigest(current, snapshot)
-// recomputed right now, against the live configuration as it is at apply
-// time — not only the snapshot that was uploaded, so either the uploaded
-// file changing, or the live target drifting under it (another admin's edit,
-// between this preview and this apply), rejects the apply with 409 rather
-// than silently overwriting whatever changed.
+// snapshot. Store.ApplyConfigSnapshot itself recomputes
+// store.ConfigImportDigest(current, snapshot) against the live
+// configuration from inside its own transaction, immediately before writing
+// anything, and refuses with ErrConfigImportStale (surfaced here as 409) if
+// it doesn't match digest — either the uploaded file changed since whatever
+// preview produced that digest, or the live target itself drifted under it
+// (another admin's edit, landing anywhere up to the instant this apply
+// starts writing), so neither can silently overwrite the other.
 //
 // Import is additive only, by design (see Store.ApplyConfigSnapshot's own
 // doc comment): a user or mode this instance already has, that the snapshot
@@ -119,20 +122,8 @@ func (s *Server) apiConfigImport(w http.ResponseWriter, r *http.Request) {
 	if rejectUnsupportedConfigSchema(w, body.Snapshot) {
 		return
 	}
-
-	current, err := s.store.ConfigSnapshot(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to read the current configuration"})
-		return
-	}
-	digest, err := store.ConfigImportDigest(current, body.Snapshot)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to fingerprint the import"})
-		return
-	}
-	if body.Digest == "" || body.Digest != digest {
-		writeJSON(w, http.StatusConflict, apiResponse{OK: false,
-			Error: "The configuration changed, or the uploaded file changed, since the preview; preview it again before applying"})
+	if body.Digest == "" {
+		writeJSON(w, http.StatusConflict, apiResponse{OK: false, Error: "Preview this import first"})
 		return
 	}
 
@@ -141,16 +132,33 @@ func (s *Server) apiConfigImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "config.imported"}
-	result, err := s.store.ApplyConfigSnapshot(r.Context(), body.Snapshot, meta)
+	// previousFilters is read before ApplyConfigSnapshot, which never
+	// touches filter_allow/filter_deny, so it's equally valid to read right
+	// after — doing it first means a single GlobalRouteFilters call serves
+	// both as "what applyGlobalFiltersFromImport is replacing" (below) and,
+	// implicitly, confirms the settings tables are reachable before the
+	// heavier ApplyConfigSnapshot transaction runs at all.
+	previousFilters, err := s.store.GlobalRouteFilters(r.Context())
 	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to read the current global filters"})
+		return
+	}
+
+	meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "config.imported"}
+	result, err := s.store.ApplyConfigSnapshot(r.Context(), body.Snapshot, body.Digest, meta)
+	if err != nil {
+		if errors.Is(err, store.ErrConfigImportStale) {
+			writeJSON(w, http.StatusConflict, apiResponse{OK: false,
+				Error: "The configuration changed, or the uploaded file changed, since the preview; preview it again before applying"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
 
 	filtersApplied := false
-	if !routeFiltersEqual(current.GlobalFilters, body.Snapshot.GlobalFilters) {
-		if err := s.applyGlobalFiltersFromImport(r, body.Snapshot.GlobalFilters, current.GlobalFilters); err != nil {
+	if !routeFiltersEqual(previousFilters, body.Snapshot.GlobalFilters) {
+		if err := s.applyGlobalFiltersFromImport(r, body.Snapshot.GlobalFilters, previousFilters); err != nil {
 			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 			return
 		}

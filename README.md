@@ -480,12 +480,13 @@ user's password is left exactly as it was.
 Applying always previews first — `POST /api/admin/config/import/preview` is read-only
 and returns both the diff against this instance's current configuration and a digest
 binding both the uploaded document and that current configuration together. `POST
-/api/admin/config/import` recomputes that same digest against the live configuration
-as it is right now and refuses with `409` if it doesn't match — either the uploaded
-document changed, or the live target itself drifted under it (another admin's edit,
-landing between the preview and this apply) — the same confirm-with-digest discipline
-"Reset to defaults" (above) already established, just binding more than one document's
-own content. `POST /api/admin/config/diff` takes two documents directly and returns
+/api/admin/config/import` recomputes that same digest from inside the very transaction
+that applies the import, immediately before writing anything, and refuses with `409`
+if it doesn't match — either the uploaded document changed, or the live target itself
+drifted under it (another admin's edit, landing anywhere up to that instant) — so
+there's no gap afterward for a concurrent edit to land in unnoticed. The same
+confirm-with-digest discipline "Reset to defaults" (above) already established, just
+binding more than one document's own content. `POST /api/admin/config/diff` takes two documents directly and returns
 their diff with nothing read from or written to this instance — for comparing two
 exports, including from two different instances, without importing either.
 

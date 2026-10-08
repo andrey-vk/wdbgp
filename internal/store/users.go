@@ -160,12 +160,20 @@ func scanUserRow(row rowScanner) (User, error) {
 }
 
 func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
+	return usersTx(ctx, s.DB, enabledOnly)
+}
+
+// usersTx is Users' queryer-parameterized implementation — see
+// countSelectionPrefixesTx (catalog.go). Needed by configSnapshotTx
+// (config_snapshot.go), which must read a transactionally-consistent
+// snapshot from inside ApplyConfigSnapshot's own transaction.
+func usersTx(ctx context.Context, q queryer, enabledOnly bool) ([]User, error) {
 	query := "SELECT " + userSelectColumns + " FROM users"
 	if enabledOnly {
 		query += " WHERE enabled = 1"
 	}
 	query += " ORDER BY id"
-	rows, err := s.DB.QueryContext(ctx, query)
+	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +194,7 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 		return nil, err
 	}
 	for index := range users {
-		users[index].Networks, err = s.UserNetworks(ctx, users[index].ID)
+		users[index].Networks, err = userNetworksTx(ctx, q, users[index].ID)
 		if err != nil {
 			return nil, err
 		}
@@ -205,7 +213,13 @@ func (s *Store) User(ctx context.Context, id int64) (User, error) {
 }
 
 func (s *Store) UserNetworks(ctx context.Context, userID int64) ([]string, error) {
-	rows, err := s.DB.QueryContext(ctx,
+	return userNetworksTx(ctx, s.DB, userID)
+}
+
+// userNetworksTx is UserNetworks' queryer-parameterized implementation —
+// see usersTx above.
+func userNetworksTx(ctx context.Context, q queryer, userID int64) ([]string, error) {
+	rows, err := q.QueryContext(ctx,
 		"SELECT ip, bits FROM user_networks WHERE user_id = ? ORDER BY ip, bits", userID)
 	if err != nil {
 		return nil, err

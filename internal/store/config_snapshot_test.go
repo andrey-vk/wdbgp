@@ -4,9 +4,26 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
+
+// applyConfigSnapshot computes the live-state-bound digest ApplyConfigSnapshot
+// now requires (ConfigImportDigest) and applies snap, for tests that don't
+// care about the digest mechanism itself, only about what applying does.
+func applyConfigSnapshot(t *testing.T, s *Store, snap ConfigSnapshot, meta AuditMeta) (ConfigApplyResult, error) {
+	t.Helper()
+	current, err := s.ConfigSnapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := ConfigImportDigest(current, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s.ApplyConfigSnapshot(context.Background(), snap, digest, meta)
+}
 
 func configSnapshotTestUser(t *testing.T, s *Store, name, peerIP string, asn uint32, modeID int64) int64 {
 	t.Helper()
@@ -210,6 +227,22 @@ func TestConfigSnapshotDigestIgnoresOrderAndNilVersusEmpty(t *testing.T) {
 	}
 }
 
+func TestConfigSnapshotDigestIgnoresGeneratedAt(t *testing.T) {
+	a := ConfigSnapshot{GeneratedAt: 1000, Users: []ConfigUser{{Name: "alice", CatalogMode: "OpenCCK"}}}
+	b := ConfigSnapshot{GeneratedAt: 2000, Users: []ConfigUser{{Name: "alice", CatalogMode: "OpenCCK"}}}
+	da, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := b.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if da != db {
+		t.Fatal("digest changed with GeneratedAt alone: two reads of the same unchanged configuration a moment apart would spuriously reject a real, unmodified apply")
+	}
+}
+
 func TestApplyConfigSnapshotIsAdditiveOnly(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
@@ -235,7 +268,7 @@ func TestApplyConfigSnapshotIsAdditiveOnly(t *testing.T) {
 			{Name: "carol", CatalogMode: "no-such-mode", Enabled: true},
 		},
 	}
-	result, err := s.ApplyConfigSnapshot(ctx, snap, AuditMeta{Actor: "admin:203.0.113.7", Action: "config.imported"})
+	result, err := applyConfigSnapshot(t, s, snap, AuditMeta{Actor: "admin:203.0.113.7", Action: "config.imported"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +318,7 @@ func TestApplyConfigSnapshotIsAdditiveOnly(t *testing.T) {
 
 	// Applying again with the same data is idempotent: bob becomes "updated"
 	// again, not newly created, and Imported becomes "updated" too.
-	result2, err := s.ApplyConfigSnapshot(ctx, snap, AuditMeta{})
+	result2, err := applyConfigSnapshot(t, s, snap, AuditMeta{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +346,7 @@ func TestApplyConfigSnapshotRejectsOverlappingActiveNetworks(t *testing.T) {
 			},
 		},
 	}
-	if _, err := s.ApplyConfigSnapshot(ctx, snap, AuditMeta{}); err == nil {
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err == nil {
 		t.Fatal("expected an error for a network overlapping an existing active user, got nil")
 	}
 
@@ -346,7 +379,7 @@ func TestApplyConfigSnapshotAllowsOverlapForNonActiveWebAuth(t *testing.T) {
 			},
 		},
 	}
-	if _, err := s.ApplyConfigSnapshot(ctx, snap, AuditMeta{}); err != nil {
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
 		t.Fatalf("a login-mode user's networks aren't IP-resolved, so an overlap must not block the import: %v", err)
 	}
 }
@@ -374,5 +407,140 @@ func TestConfigImportDigestBindsCurrentState(t *testing.T) {
 	}
 	if digestA != digestARepeat {
 		t.Fatal("digest is not stable for the same (current, uploaded) pair")
+	}
+}
+
+func TestApplyConfigSnapshotRejectsStaleLiveTarget(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, CatalogMode: "OpenCCK", Enabled: true},
+	}}
+	current, err := s.ConfigSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := ConfigImportDigest(current, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The live configuration changes after the digest was computed — another
+	// admin's edit, landing before this apply actually runs.
+	if _, err := s.AddUser(ctx, User{
+		Name: "dave", PeerIP: "20.0.0.4", PeerASN: 65004, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.ApplyConfigSnapshot(ctx, snap, digest, AuditMeta{})
+	if !errors.Is(err, ErrConfigImportStale) {
+		t.Fatalf("err = %v, want ErrConfigImportStale", err)
+	}
+
+	var carolCount int
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM users WHERE name = 'carol'").Scan(&carolCount); err != nil {
+		t.Fatal(err)
+	}
+	if carolCount != 0 {
+		t.Fatal("carol was created despite the rejected, drifted apply")
+	}
+}
+
+func TestApplyConfigSnapshotSwapsCommunityNumbersWithoutTransientCollision(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	modeID, err := s.AddCatalogMode(ctx, "Lab", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCommunity(ctx, modeID, "ai", "", 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCommunity(ctx, modeID, "tv", "", 200); err != nil {
+		t.Fatal(err)
+	}
+
+	// Swapped relative to the current assignment above: applying these in
+	// snapshot order (ai first) would transiently try to set ai=200 while tv
+	// still holds 200, which setCommunityTx would reject by write order alone
+	// if each entry weren't pre-cleared first.
+	snap := ConfigSnapshot{Modes: []ConfigMode{
+		{Name: "Lab", Enabled: true, Communities: []ConfigCommunity{
+			{Category: "ai", Community: 200},
+			{Category: "tv", Community: 100},
+		}},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a valid community swap was rejected: %v", err)
+	}
+
+	rows, err := s.CommunityRows(ctx, modeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]uint32{}
+	for _, r := range rows {
+		got[r.Category] = r.Community
+	}
+	if got["ai"] != 200 || got["tv"] != 100 {
+		t.Fatalf("communities after swap = %+v, want ai=200 tv=100", got)
+	}
+}
+
+func TestApplyConfigSnapshotValidatesNetworkOverlapAgainstFinalState(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	aliceID, err := s.AddUser(ctx, User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true, WebAuth: "network",
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID, Networks: []string{"203.0.113.0/25"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = aliceID
+
+	// The import moves alice off 203.0.113.0/25 and onto a new CIDR, while
+	// handing 203.0.113.0/25 to a brand-new user in the very same import. A
+	// per-user, in-order check (alice processed first, still holding her old
+	// network when newbob's check ran) would reject this; the final combined
+	// state has no overlap at all.
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, CatalogMode: "OpenCCK", Enabled: true,
+			WebAuth: "network", Networks: []string{"203.0.113.128/25"}},
+		{Name: "newbob", PeerIP: "20.0.0.5", PeerASN: 65005, CatalogMode: "OpenCCK", Enabled: true,
+			WebAuth: "network", Networks: []string{"203.0.113.0/25"}},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a valid final-state network reassignment was rejected: %v", err)
+	}
+}
+
+func TestApplyConfigSnapshotChecksOverlapAgainstStoredWebAuthNotRawInput(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddUser(ctx, User{
+		Name: "existing", PeerIP: "20.0.0.9", PeerASN: 65099, Enabled: true, WebAuth: "network",
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID, Networks: []string{"203.0.113.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// An unrecognized web_auth string isn't "login" or any other inactive
+	// mode — it's garbage. webAuthToInt's own fallback stores it as
+	// "network" (the active, IP-resolved mode) regardless, so the overlap
+	// check must follow what actually gets stored, not the input string
+	// (which isActiveWebAuth("garbled-value") alone would read as inactive).
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "newcomer", PeerIP: "20.0.0.10", PeerASN: 65100, CatalogMode: "OpenCCK", Enabled: true,
+			WebAuth: "garbled-value", Networks: []string{"203.0.113.128/25"}},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err == nil {
+		t.Fatal("expected an overlap error for a garbled web_auth that still stores as the active 'network' mode")
 	}
 }

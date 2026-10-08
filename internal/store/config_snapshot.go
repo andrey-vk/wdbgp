@@ -6,7 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"reflect"
 	"sort"
 	"time"
@@ -81,29 +81,39 @@ type ConfigSnapshot struct {
 	Users         []ConfigUser `json:"users"`
 }
 
-// ConfigSnapshot reads the whole admin configuration. Reads are not inside one
-// transaction (unlike the community matrix, which needs cross-table point-in-
-// time consistency for a correctness-sensitive grid): a config export is an
-// infrequent, admin-triggered action, and a rare mid-export edit landing in
-// one entity's favor is a cosmetic concern here, not a routing correctness one.
+// ConfigSnapshot reads the whole admin configuration. See configSnapshotTx
+// for why ApplyConfigSnapshot needs a transaction-scoped twin of this.
 func (s *Store) ConfigSnapshot(ctx context.Context) (ConfigSnapshot, error) {
+	return configSnapshotTx(ctx, s.DB)
+}
+
+// configSnapshotTx is ConfigSnapshot's queryer-parameterized implementation —
+// see usersTx (users.go). A plain ConfigSnapshot call (export, or preview's
+// diff-against-current) has no need for this: an admin-triggered, infrequent
+// read where a rare mid-read edit landing in one entity's favor either way is
+// a cosmetic concern, not a routing-correctness one. ApplyConfigSnapshot's own
+// confirmation check is different — it must see the live configuration
+// exactly as of the moment its own transaction starts writing, with no gap
+// between that read and the writes an unrelated concurrent edit could land
+// in, which only a shared transaction (this same tx) can guarantee.
+func configSnapshotTx(ctx context.Context, q queryer) (ConfigSnapshot, error) {
 	snap := ConfigSnapshot{SchemaVersion: ConfigSnapshotSchemaVersion, GeneratedAt: time.Now().UTC().Unix()}
-	globalFilters, err := s.GlobalRouteFilters(ctx)
+	globalFilters, err := globalRouteFilters(ctx, q)
 	if err != nil {
 		return ConfigSnapshot{}, err
 	}
 	snap.GlobalFilters = globalFilters
 
-	modes, err := s.CatalogModes(ctx, false)
+	modes, err := catalogModes(ctx, q, false)
 	if err != nil {
 		return ConfigSnapshot{}, err
 	}
 	for _, mode := range modes {
-		feeds, err := configModeFeedLinks(ctx, s.DB, mode.ID)
+		feeds, err := configModeFeedLinks(ctx, q, mode.ID)
 		if err != nil {
 			return ConfigSnapshot{}, err
 		}
-		rows, err := s.CommunityRows(ctx, mode.ID)
+		rows, err := communityRows(ctx, q, mode.ID)
 		if err != nil {
 			return ConfigSnapshot{}, err
 		}
@@ -114,16 +124,17 @@ func (s *Store) ConfigSnapshot(ctx context.Context) (ConfigSnapshot, error) {
 		snap.Modes = append(snap.Modes, ConfigMode{Name: mode.Name, Enabled: mode.Enabled, Feeds: feeds, Communities: communities})
 	}
 
-	users, err := s.Users(ctx, false)
+	users, err := usersTx(ctx, q, false)
 	if err != nil {
 		return ConfigSnapshot{}, err
 	}
 	for _, u := range users {
-		filters, err := s.UserRouteFilters(ctx, u.ID)
+		filters, err := readRouteFilters(ctx, q,
+			"SELECT action, ip, bits FROM user_route_filters WHERE user_id = ? ORDER BY action, ip, bits", u.ID)
 		if err != nil {
 			return ConfigSnapshot{}, err
 		}
-		cats, svcs, err := userModeSelection(ctx, s.DB, u.ID, u.CatalogModeID)
+		cats, svcs, err := userModeSelection(ctx, q, u.ID, u.CatalogModeID)
 		if err != nil {
 			return ConfigSnapshot{}, err
 		}
@@ -244,9 +255,14 @@ func normalizeRouteFilters(f *RouteFilters) {
 
 // Digest fingerprints snap's normalized content: two snapshots that differ
 // only in field order, slice order, or nil-versus-empty slices produce the
-// same digest. A single snapshot's own fingerprint, used by ConfigImportDigest
-// below — not, on its own, what apiConfigImport confirms against, since it
-// says nothing about what else might have changed in the meantime.
+// same digest. GeneratedAt is excluded deliberately — ConfigSnapshot stamps
+// it fresh on every read, so two reads of the exact same, unchanged
+// configuration a second apart would otherwise digest differently, and
+// apiConfigImport (via ConfigImportDigest) would then reject an apply that
+// changed nothing at all just because it landed in a different second than
+// its own preview. A single snapshot's own fingerprint, used by
+// ConfigImportDigest below — not, on its own, what apiConfigImport confirms
+// against, since it says nothing about what else might have changed.
 func (snap ConfigSnapshot) Digest() (string, error) {
 	raw, err := json.Marshal(snap)
 	if err != nil {
@@ -257,6 +273,7 @@ func (snap ConfigSnapshot) Digest() (string, error) {
 		return "", err
 	}
 	normalizeConfigSnapshot(&normalized)
+	normalized.GeneratedAt = 0
 	canonical, err := json.Marshal(normalized)
 	if err != nil {
 		return "", err
@@ -385,14 +402,29 @@ type ConfigApplyResult struct {
 	AffectedUserIDs []int64 `json:"-"`
 }
 
-// ApplyConfigSnapshot creates or updates the modes and users in snap. It is
-// strictly additive at the entity level, per the decision this was built to:
-// a mode or user this instance has that isn't in snap is left alone, never
-// deleted, and dry-run diff (DiffConfigSnapshots) is always available first so
-// that is visible before anything is applied. A user's or a new user's
-// BGPPassword is never set or changed by it — ConfigSnapshot never exports it,
-// so there is nothing to restore; a newly created user has none, and an admin
-// must set one by hand.
+// ErrConfigImportStale is returned by ApplyConfigSnapshot when the live
+// configuration, read inside its own transaction right before writing,
+// doesn't match expectedDigest — either the uploaded snapshot changed since
+// whatever preview produced that digest, or (just as importantly) the live
+// target itself drifted under it: another admin's edit, landing anywhere
+// between that preview and this apply. Checked inside the same transaction
+// that performs the writes specifically to close that second case — a
+// digest check made only before the transaction starts would still leave a
+// gap between that check and the writes for an edit to land in unnoticed.
+var ErrConfigImportStale = errors.New("config import: the live configuration or the uploaded snapshot changed since the preview")
+
+// ApplyConfigSnapshot creates or updates the modes and users in snap, but
+// only if expectedDigest — normally the one apiConfigImportPreview returned —
+// still matches ConfigImportDigest(current, snap) computed fresh, from
+// inside this same transaction, against the live configuration as it is
+// right now (see ErrConfigImportStale). It is strictly additive at the
+// entity level, per the decision this was built to: a mode or user this
+// instance has that isn't in snap is left alone, never deleted, and dry-run
+// diff (DiffConfigSnapshots) is always available first so that is visible
+// before anything is applied. A user's or a new user's BGPPassword is never
+// set or changed by it — ConfigSnapshot never exports it, so there is
+// nothing to restore; a newly created user has none, and an admin must set
+// one by hand.
 //
 // Within an entity snap does name, its own exported fields are synced to
 // match snap exactly: a user's networks, route filters and selection, and a
@@ -401,10 +433,24 @@ type ConfigApplyResult struct {
 // (upserted) rather than replaced, since a partial snapshot's community list
 // isn't meant to be the sole authority over a mode's whole numbering, and
 // wiping unlisted entries would have real BGP-community consequences.
-func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, meta AuditMeta) (ConfigApplyResult, error) {
+func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, expectedDigest string, meta AuditMeta) (ConfigApplyResult, error) {
 	normalizeConfigSnapshot(&snap)
-	result := ConfigApplyResult{}
+	var result ConfigApplyResult
 	err := s.Transaction(ctx, func(tx *sql.Tx) error {
+		result = ConfigApplyResult{} // attempt-local: Store.Transaction may retry
+
+		current, err := configSnapshotTx(ctx, tx)
+		if err != nil {
+			return err
+		}
+		digest, err := ConfigImportDigest(current, snap)
+		if err != nil {
+			return err
+		}
+		if digest != expectedDigest {
+			return ErrConfigImportStale
+		}
+
 		modeIDByName, err := catalogModeIDsByNameTx(ctx, tx)
 		if err != nil {
 			return err
@@ -443,6 +489,20 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, me
 			}
 			if err := replaceModeFeedsTx(ctx, tx, modeID, links); err != nil {
 				return err
+			}
+			// Pre-clear every (category, service) pair this mode's community
+			// list names, before setting any of them: setCommunityTx rejects a
+			// value another pair already holds, so applying two entries that
+			// trade numbers with each other (A: 100->200, B: 200->100) in
+			// snapshot order would otherwise reject the first one purely
+			// because of write order, even though the final state is valid.
+			// Clearing first means the only collision setCommunityTx can still
+			// catch is a genuine one, against a pair this snapshot doesn't
+			// mention at all.
+			for _, c := range m.Communities {
+				if err := deleteCommunityTx(ctx, tx, modeID, c.Category, c.Service); err != nil {
+					return err
+				}
 			}
 			for _, c := range m.Communities {
 				if err := setCommunityTx(ctx, tx, modeID, c.Category, c.Service, c.Community); err != nil {
@@ -499,17 +559,6 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, me
 				result.UsersUpdated = append(result.UsersUpdated, u.Name)
 			}
 			result.AffectedUserIDs = append(result.AffectedUserIDs, userID)
-			// Same cross-user overlap check the admin user create/update
-			// handlers enforce (internal/web's isActiveWebAuth gating) — an
-			// import's networks must not silently let an IP-resolved user
-			// shadow another active user's CIDRs. tx-scoped so it sees this
-			// same import's own not-yet-committed writes to an earlier user
-			// in this loop.
-			if isActiveWebAuth(u.WebAuth) {
-				if err := activeNetworksOverlapTx(ctx, tx, u.Networks, userID); err != nil {
-					return fmt.Errorf("user %q: %w", u.Name, err)
-				}
-			}
 			if err := replaceNetworks(ctx, tx, userID, u.Networks); err != nil {
 				return err
 			}
@@ -535,6 +584,38 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, me
 				}
 			}
 		}
+
+		// Cross-user network overlap, checked once per affected user against
+		// the actual now-written state — the same validation the admin user
+		// create/update handlers enforce (internal/web's isActiveWebAuth
+		// gating), but run here only after every user in this import has
+		// already been written, not inline per user as each one is written.
+		// Two reasons it has to be this way, not inline: (1) it must read
+		// back web_auth as this loop actually stored it (webAuthToInt's own
+		// fallback for an unrecognized value), not the snapshot's possibly
+		// invalid raw string, which could otherwise read as inactive and
+		// skip a check that matters for what got stored; and (2) checking
+		// only after every write means two users trading networks with each
+		// other in the same import (A gives up a CIDR, B takes it) validates
+		// against the final combined state, not a half-applied intermediate
+		// one that would reject a globally valid import over write order.
+		for _, userID := range result.AffectedUserIDs {
+			var webAuthInt int
+			if err := tx.QueryRowContext(ctx, "SELECT web_auth FROM users WHERE id = ?", userID).Scan(&webAuthInt); err != nil {
+				return err
+			}
+			if !isActiveWebAuth(webAuthFromInt(webAuthInt)) {
+				continue
+			}
+			networks, err := userNetworksTx(ctx, tx, userID)
+			if err != nil {
+				return err
+			}
+			if err := activeNetworksOverlapTx(ctx, tx, networks, userID); err != nil {
+				return err
+			}
+		}
+
 		// force=true: a confirmed import is worth recording even if, on this
 		// run, every entity already matched and nothing actually changed.
 		return AuditEntryTx(ctx, tx, meta, "config", "import", nil, result, true)
