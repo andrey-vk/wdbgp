@@ -63,6 +63,11 @@ const router = createRouter({
                     path: '/communities/matrix',
                     name: 'communityMatrix',
                     component: () => import('@/admin/views/CommunityMatrixPage.vue')
+                },
+                {
+                    path: '/config',
+                    name: 'config',
+                    component: () => import('@/admin/views/ConfigPage.vue')
                 }
             ]
         },

@@ -276,6 +276,16 @@ func (s *Store) GlobalRouteFilters(ctx context.Context) (RouteFilters, error) {
 	return globalRouteFilters(ctx, s.DB)
 }
 
+// GlobalRouteFiltersTx is GlobalRouteFilters' tx-scoped counterpart, exported
+// (the same reason AuditEntryTx is) for a caller outside this package —
+// apiConfigImport's global-filters-apply step — that must re-check the live
+// value from inside its own transaction immediately before writing, so a
+// concurrent edit landing after that step's own precondition was read
+// upstream can't be silently overwritten.
+func GlobalRouteFiltersTx(ctx context.Context, tx *sql.Tx) (RouteFilters, error) {
+	return globalRouteFilters(ctx, tx)
+}
+
 // globalRouteFilters is GlobalRouteFilters' queryer-parameterized
 // implementation — see countSelectionPrefixesTx (catalog.go).
 func globalRouteFilters(ctx context.Context, q queryer) (RouteFilters, error) {

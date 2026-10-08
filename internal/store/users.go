@@ -160,12 +160,20 @@ func scanUserRow(row rowScanner) (User, error) {
 }
 
 func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
+	return usersTx(ctx, s.DB, enabledOnly)
+}
+
+// usersTx is Users' queryer-parameterized implementation — see
+// countSelectionPrefixesTx (catalog.go). Needed by configSnapshotTx
+// (config_snapshot.go), which must read a transactionally-consistent
+// snapshot from inside ApplyConfigSnapshot's own transaction.
+func usersTx(ctx context.Context, q queryer, enabledOnly bool) ([]User, error) {
 	query := "SELECT " + userSelectColumns + " FROM users"
 	if enabledOnly {
 		query += " WHERE enabled = 1"
 	}
 	query += " ORDER BY id"
-	rows, err := s.DB.QueryContext(ctx, query)
+	rows, err := q.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +194,7 @@ func (s *Store) Users(ctx context.Context, enabledOnly bool) ([]User, error) {
 		return nil, err
 	}
 	for index := range users {
-		users[index].Networks, err = s.UserNetworks(ctx, users[index].ID)
+		users[index].Networks, err = userNetworksTx(ctx, q, users[index].ID)
 		if err != nil {
 			return nil, err
 		}
@@ -205,7 +213,13 @@ func (s *Store) User(ctx context.Context, id int64) (User, error) {
 }
 
 func (s *Store) UserNetworks(ctx context.Context, userID int64) ([]string, error) {
-	rows, err := s.DB.QueryContext(ctx,
+	return userNetworksTx(ctx, s.DB, userID)
+}
+
+// userNetworksTx is UserNetworks' queryer-parameterized implementation —
+// see usersTx above.
+func userNetworksTx(ctx context.Context, q queryer, userID int64) ([]string, error) {
+	rows, err := q.QueryContext(ctx,
 		"SELECT ip, bits FROM user_networks WHERE user_id = ? ORDER BY ip, bits", userID)
 	if err != nil {
 		return nil, err
@@ -266,6 +280,16 @@ func AggregateNetworks(raw []string) ([]string, error) {
 // internal redundancy. Returns an error naming the conflicting user and
 // both CIDRs if a conflict is found.
 func (s *Store) ActiveNetworksOverlap(ctx context.Context, candidates []string, excludeUserID int64) error {
+	return activeNetworksOverlapTx(ctx, s.DB, candidates, excludeUserID)
+}
+
+// activeNetworksOverlapTx is ActiveNetworksOverlap's queryer-parameterized
+// implementation — see countSelectionPrefixesTx (catalog.go). Needed by
+// ApplyConfigSnapshot (config_snapshot.go), which must see its own
+// not-yet-committed writes within the same import transaction: an
+// s.DB-based read here would miss an earlier imported user's networks that
+// this same transaction already wrote but hasn't committed yet.
+func activeNetworksOverlapTx(ctx context.Context, q queryer, candidates []string, excludeUserID int64) error {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -278,7 +302,7 @@ func (s *Store) ActiveNetworksOverlap(ctx context.Context, candidates []string, 
 		candidatePrefixes = append(candidatePrefixes, p.Masked())
 	}
 
-	rows, err := s.DB.QueryContext(ctx, `
+	rows, err := q.QueryContext(ctx, `
 		SELECT un.ip, un.bits, u.name
 		FROM user_networks un
 		JOIN users u ON u.id = un.user_id
@@ -320,6 +344,13 @@ func (s *Store) ActiveNetworksOverlap(ctx context.Context, candidates []string, 
 // (left over from a previous mode) and must be invisible to both. Fixed,
 // literal values — safe to inline directly, no user input involved.
 const activeWebAuthModesSQL = "0, 2, 3" // network, both, any
+
+// isActiveWebAuth is activeNetworksOverlapTx's Go-side counterpart to
+// activeWebAuthModesSQL — see internal/web's isActiveWebAuth, which this
+// must keep naming the same three values as.
+func isActiveWebAuth(mode string) bool {
+	return mode == "network" || mode == "both" || mode == "any"
+}
 
 func (s *Store) UserByIP(ctx context.Context, address string) (User, error) {
 	ip, err := netip.ParseAddr(address)
