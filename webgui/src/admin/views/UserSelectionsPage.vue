@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useToast } from 'primevue/usetoast'
 import Button from 'primevue/button'
 import Select from 'primevue/select'
+import Chart from 'primevue/chart'
 import apiClient from '@/api/client'
 import { useUIStore } from '@/admin/stores/ui'
 import { useSequencedRequest } from '@/composables/useSequencedRequest'
@@ -299,9 +300,43 @@ function goBack() {
   router.push({ name: 'users' })
 }
 
+// ── Prefix history (issue #49 item #10) ─────────────────────
+interface PrefixHistoryPoint { recorded_at: string; v4_count: number; v6_count: number }
+const prefixHistory = ref<PrefixHistoryPoint[]>([])
+
+async function loadPrefixHistory(): Promise<void> {
+  try {
+    const resp = await apiClient.get('/admin/users/' + userId.value + '/prefix-history')
+    prefixHistory.value = resp.data.history || []
+  } catch {
+    prefixHistory.value = []
+  }
+}
+
+const prefixHistoryChartData = computed(() => {
+  if (prefixHistory.value.length < 2) return null
+  const labels = prefixHistory.value.map((p) => p.recorded_at.substring(0, 16).replace('T', ' '))
+  return {
+    labels,
+    datasets: [
+      { label: t('user.ipv4'), data: prefixHistory.value.map((p) => p.v4_count), borderColor: '#3b82f6', backgroundColor: '#3b82f6', fill: false, tension: 0, pointRadius: 0 },
+      { label: t('user.ipv6'), data: prefixHistory.value.map((p) => p.v6_count), borderColor: '#8b5cf6', backgroundColor: '#8b5cf6', fill: false, tension: 0, pointRadius: 0 },
+    ],
+  }
+})
+
+const prefixHistoryChartOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: { mode: 'index', intersect: false },
+  scales: { y: { beginAtZero: true } },
+  plugins: { legend: { position: 'bottom' } },
+}
+
 // ── Lifecycle ───────────────────────────────────────────────
 onMounted(() => {
   loadData()
+  loadPrefixHistory()
 })
 
 onUnmounted(() => {
@@ -464,6 +499,14 @@ onUnmounted(() => {
             <span v-if="countData.delta_v6 !== 0" :class="countData.delta_v6 > 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'">
               {{ formatDelta(countData.delta_v6) }} {{ t('user.ipv6') }}
             </span>
+          </div>
+        </div>
+
+        <!-- Prefix history (issue #49 item #10) -->
+        <div v-if="prefixHistoryChartData" class="p-6 rounded-border shadow-sm mt-4 bg-white dark:bg-gray-900" data-testid="prefix-history-section">
+          <div class="text-sm text-gray-500 dark:text-gray-400 mb-3">{{ t('user.prefix_history') }}</div>
+          <div class="h-[14rem] chart-container">
+            <Chart type="line" :data="prefixHistoryChartData" :options="prefixHistoryChartOptions" class="h-full" />
           </div>
         </div>
       </template>

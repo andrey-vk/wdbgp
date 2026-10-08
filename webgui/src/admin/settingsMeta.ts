@@ -21,6 +21,9 @@ export const defaults: Record<string, string> = {
   adapter_backup_max: '10',
   admin_cookie_secure: 'auto',
   admin_password: '',
+  alert_prefix_baseline_minimum: '10',
+  alert_prefix_drop_threshold_percent: '50',
+  alert_webhook_url: '',
   allow_dynamic_peers: 'false',
   audit_log_retention_days: '30',
   auto_restore_enabled: 'false',
@@ -162,6 +165,14 @@ export const sections: SettingsSection[] = [
     name: 'settings.section_audit_log',
     fields: {
       audit_log_retention_days: { label: 'settings.audit_log_retention_days', hint: 'settings.audit_log_retention_days_hint', type: 'number', envVar: 'WDBGP_AUDIT_LOG_RETENTION_DAYS' },
+    },
+  },
+  {
+    name: 'settings.section_alerting',
+    fields: {
+      alert_webhook_url: { label: 'settings.alert_webhook_url', hint: 'settings.alert_webhook_url_hint', type: 'string', envVar: 'WDBGP_ALERT_WEBHOOK_URL' },
+      alert_prefix_drop_threshold_percent: { label: 'settings.alert_prefix_drop_threshold_percent', hint: 'settings.alert_prefix_drop_threshold_percent_hint', type: 'number', envVar: 'WDBGP_ALERT_PREFIX_DROP_THRESHOLD_PERCENT' },
+      alert_prefix_baseline_minimum: { label: 'settings.alert_prefix_baseline_minimum', hint: 'settings.alert_prefix_baseline_minimum_hint', type: 'number', envVar: 'WDBGP_ALERT_PREFIX_BASELINE_MINIMUM' },
     },
   },
   {

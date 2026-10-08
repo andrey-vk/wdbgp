@@ -456,6 +456,34 @@ The admin "Community Matrix" page shows each category's group-level community nu
 
 Opening the matrix only reads stored community numbers — it never generates missing ones itself, so it stays cheap to open even on a large catalog. That means a mode nobody has opened or regenerated in a while can show categories as missing even though nothing is actually broken; use the page's "Generate missing" button (`POST /api/admin/communities/matrix/generate`) to fill in every mode's missing numbers in one pass before relying on the grid for a migration.
 
+### Withdraw alerting and prefix history
+
+Every enabled user's effective announced prefix count — after selection and route
+filters, the same count the blast-radius preview uses — is measured every 5
+minutes and charted on that user's own admin page. When a measurement falls to
+`alert_prefix_drop_threshold_percent`% (default 50) or more below the last normal
+measurement, and that baseline was at least `alert_prefix_baseline_minimum` (default
+10, to keep a small selection's ordinary noise from counting as a "drop"), a JSON
+document is POSTed to `alert_webhook_url` — empty by default, which disables alerting
+entirely; prefix history keeps being recorded either way. A second document is posted
+when the user recovers. Neither setting matters until a webhook URL is configured.
+
+```json
+{"event": "prefix_drop", "user_id": 23, "user_name": "alice",
+ "detected_at": "2026-10-08T03:14:00Z",
+ "baseline_v4": 900, "baseline_v6": 100, "current_v4": 90, "current_v6": 10,
+ "drop_percent": 90}
+```
+
+A drop is never re-reported while the user stays down — it's a state machine, not a
+threshold checked fresh every tick — and "recovered" is measured against what was
+normal right before the incident, not against wherever the count happens to sit now.
+Delivery retries a transiently-failing attempt for a few seconds; a delivery that
+keeps failing is logged, not retried indefinitely — the next real transition still
+gets its own attempt. The whole feature is gated on the existing `metrics_enabled`
+setting and shares `metrics_history_days` for retention, the same as the per-feed and
+aggregate-user history the dashboard already collects this way.
+
 ### Configuration export / import
 
 The admin "Export / Import" page exports this instance's users, global route filters,

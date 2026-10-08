@@ -259,6 +259,12 @@ func (s *Server) setSetting(ctx context.Context, key string, raw json.RawMessage
 		return callIntSetting(ctx, s.settings.AdapterBackupMax, raw)
 	case "admin_cookie_secure":
 		return callStringSetting(ctx, s.settings.AdminCookieSecure, raw)
+	case "alert_prefix_baseline_minimum":
+		return callIntSetting(ctx, s.settings.AlertPrefixBaselineMinimum, raw)
+	case "alert_prefix_drop_threshold_percent":
+		return callIntSetting(ctx, s.settings.AlertPrefixDropThresholdPercent, raw)
+	case "alert_webhook_url":
+		return callStringSetting(ctx, s.settings.AlertWebhookURL, raw)
 	case "allow_dynamic_peers":
 		return callBoolSetting(ctx, s.settings.AllowDynamicPeers, raw)
 	case "audit_log_retention_days":
@@ -376,6 +382,21 @@ func (s *Server) validateSettingKey(key string, raw json.RawMessage) error {
 			return nil
 		}
 		return callStringValidate(s.settings.AdminCookieSecure, raw)
+	case "alert_prefix_baseline_minimum":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.AlertPrefixBaselineMinimum, raw)
+	case "alert_prefix_drop_threshold_percent":
+		if isReset {
+			return nil
+		}
+		return callIntValidate(s.settings.AlertPrefixDropThresholdPercent, raw)
+	case "alert_webhook_url":
+		if isReset {
+			return nil
+		}
+		return callStringValidate(s.settings.AlertWebhookURL, raw)
 	case "allow_dynamic_peers":
 		if isReset {
 			return nil
@@ -605,6 +626,12 @@ func (s *Server) resetSetting(ctx context.Context, key string) error {
 		return s.settings.AdapterBackupMax.Reset(ctx)
 	case "admin_cookie_secure":
 		return s.settings.AdminCookieSecure.Reset(ctx)
+	case "alert_prefix_baseline_minimum":
+		return s.settings.AlertPrefixBaselineMinimum.Reset(ctx)
+	case "alert_prefix_drop_threshold_percent":
+		return s.settings.AlertPrefixDropThresholdPercent.Reset(ctx)
+	case "alert_webhook_url":
+		return s.settings.AlertWebhookURL.Reset(ctx)
 	case "allow_dynamic_peers":
 		return s.settings.AllowDynamicPeers.Reset(ctx)
 	case "audit_log_retention_days":
