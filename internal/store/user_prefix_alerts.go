@@ -97,17 +97,27 @@ type PrefixAlertTransition struct {
 // *sudden* drop between two consecutive checks, which is what "lost 90% of
 // its prefixes at 03:14" describes, not a slow decline compared to some
 // distant high-water mark.
+//
+// EvaluateUserPrefixAlert always runs this state machine, regardless of
+// whether a webhook is even configured — it has to, so the baseline stays
+// current and a drop that happens while alerting is disabled (or briefly
+// unreachable) is still recorded as having happened. What it does NOT do on
+// its own is guarantee delivery: a drop this call returns may still go
+// un-POSTed (no webhook configured yet, or the request failed), which is
+// why it separately tracks drop_delivered — see PendingPrefixAlertDrop for
+// the retry half of that contract.
 func (s *Store) EvaluateUserPrefixAlert(ctx context.Context, userID int64, currentV4, currentV6, dropThresholdPercent, baselineMinimum int) (*PrefixAlertTransition, error) {
 	var baselineV4, baselineV6 int
 	var alertingSince sql.NullInt64
+	var dropDelivered bool
 	err := s.DB.QueryRowContext(ctx,
-		"SELECT baseline_v4, baseline_v6, alerting_since FROM user_prefix_alert_state WHERE user_id = ?", userID).
-		Scan(&baselineV4, &baselineV6, &alertingSince)
+		"SELECT baseline_v4, baseline_v6, alerting_since, drop_delivered FROM user_prefix_alert_state WHERE user_id = ?", userID).
+		Scan(&baselineV4, &baselineV6, &alertingSince, &dropDelivered)
 	if err == sql.ErrNoRows {
 		// First-ever observation for this user: nothing to compare against
 		// yet, so just establish the baseline.
 		_, err := s.DB.ExecContext(ctx,
-			"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since) VALUES (?, ?, ?, NULL)",
+			"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since, drop_delivered) VALUES (?, ?, ?, NULL, 1)",
 			userID, currentV4, currentV6)
 		return nil, err
 	}
@@ -124,7 +134,7 @@ func (s *Store) EvaluateUserPrefixAlert(ctx context.Context, userID int64, curre
 		if baselineTotal >= baselineMinimum && currentTotal <= dropLine {
 			now := time.Now().UTC().Unix()
 			if _, err := s.DB.ExecContext(ctx,
-				"UPDATE user_prefix_alert_state SET alerting_since = ? WHERE user_id = ?", now, userID); err != nil {
+				"UPDATE user_prefix_alert_state SET alerting_since = ?, drop_delivered = 0 WHERE user_id = ?", now, userID); err != nil {
 				return nil, err
 			}
 			return &PrefixAlertTransition{
@@ -146,12 +156,20 @@ func (s *Store) EvaluateUserPrefixAlert(ctx context.Context, userID int64, curre
 	// alerting_since to NULL and back to set on every single tick, for a
 	// persistent outage that never actually recovered.
 	if currentTotal > dropLine {
-		duration := time.Now().UTC().Unix() - alertingSince.Int64
 		if _, err := s.DB.ExecContext(ctx,
-			"UPDATE user_prefix_alert_state SET baseline_v4 = ?, baseline_v6 = ?, alerting_since = NULL WHERE user_id = ?",
+			"UPDATE user_prefix_alert_state SET baseline_v4 = ?, baseline_v6 = ?, alerting_since = NULL, drop_delivered = 1 WHERE user_id = ?",
 			currentV4, currentV6, userID); err != nil {
 			return nil, err
 		}
+		if !dropDelivered {
+			// This episode's drop was never actually announced (alerting
+			// was disabled, or every delivery attempt failed, for its
+			// entire duration) — reporting "recovered" for an incident
+			// nobody was ever told about is more confusing than useful, so
+			// this one is silently dropped rather than delivered.
+			return nil, nil
+		}
+		duration := time.Now().UTC().Unix() - alertingSince.Int64
 		return &PrefixAlertTransition{
 			Event:      PrefixAlertRecovered,
 			BaselineV4: baselineV4, BaselineV6: baselineV6,
@@ -160,4 +178,44 @@ func (s *Store) EvaluateUserPrefixAlert(ctx context.Context, userID int64, curre
 		}, nil
 	}
 	return nil, nil
+}
+
+// PendingPrefixAlertDrop reports an ongoing drop episode whose webhook was
+// never successfully delivered — because alerting was disabled or
+// unreachable when EvaluateUserPrefixAlert first detected it, or a prior
+// delivery attempt simply failed — so the caller can retry it. currentV4/V6
+// should be this same tick's freshly measured count (not whatever was
+// current when the drop was first detected), so a retried delivery reflects
+// the latest severity rather than a stale snapshot. Returns nil if there is
+// no such pending drop (not currently alerting, or already delivered).
+func (s *Store) PendingPrefixAlertDrop(ctx context.Context, userID int64, currentV4, currentV6 int) (*PrefixAlertTransition, error) {
+	var baselineV4, baselineV6 int
+	var alertingSince sql.NullInt64
+	var dropDelivered bool
+	err := s.DB.QueryRowContext(ctx,
+		"SELECT baseline_v4, baseline_v6, alerting_since, drop_delivered FROM user_prefix_alert_state WHERE user_id = ?", userID).
+		Scan(&baselineV4, &baselineV6, &alertingSince, &dropDelivered)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !alertingSince.Valid || dropDelivered {
+		return nil, nil
+	}
+	return &PrefixAlertTransition{
+		Event:      PrefixAlertDrop,
+		BaselineV4: baselineV4, BaselineV6: baselineV6,
+		CurrentV4: currentV4, CurrentV6: currentV6,
+	}, nil
+}
+
+// MarkPrefixAlertDropDelivered records that the current drop episode's
+// webhook was successfully delivered, so EvaluateUserPrefixAlert's eventual
+// recovery for it is reported normally instead of silently cancelled, and
+// PendingPrefixAlertDrop stops offering it for retry.
+func (s *Store) MarkPrefixAlertDropDelivered(ctx context.Context, userID int64) error {
+	_, err := s.DB.ExecContext(ctx, "UPDATE user_prefix_alert_state SET drop_delivered = 1 WHERE user_id = ?", userID)
+	return err
 }

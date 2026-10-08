@@ -168,7 +168,7 @@ func TestCheckerRunDeliversDropWebhook(t *testing.T) {
 	}
 }
 
-func TestCheckerRunDoesNotConsumeTransitionsWhileWebhookDisabled(t *testing.T) {
+func TestCheckerRunRetriesAnUndeliveredDropOnceTheWebhookIsConfigured(t *testing.T) {
 	checker, st, set := newTestChecker(t)
 	srv, calls, mu := startWebhookServer(t)
 	ctx := context.Background()
@@ -188,24 +188,38 @@ func TestCheckerRunDoesNotConsumeTransitionsWhileWebhookDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := st.DB.ExecContext(ctx,
-		"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since) VALUES (?, 100, 0, NULL)", userID); err != nil {
+		"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since, drop_delivered) VALUES (?, 100, 0, NULL, 1)", userID); err != nil {
 		t.Fatal(err)
 	}
 
-	// A real drop happens while alerting is disabled.
+	// A real drop happens while alerting is disabled. The state machine
+	// still runs (baseline tracking can't stop just because delivery is
+	// off), so alerting_since does get set — but drop_delivered stays
+	// false, since nothing could actually tell anyone about it.
 	if err := checker.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
+	mu.Lock()
+	n := len(*calls)
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("webhook calls while disabled = %d, want 0", n)
+	}
 	var alertingSince *int64
-	if err := st.DB.QueryRowContext(ctx, "SELECT alerting_since FROM user_prefix_alert_state WHERE user_id = ?", userID).Scan(&alertingSince); err != nil {
+	var dropDelivered bool
+	if err := st.DB.QueryRowContext(ctx, "SELECT alerting_since, drop_delivered FROM user_prefix_alert_state WHERE user_id = ?", userID).
+		Scan(&alertingSince, &dropDelivered); err != nil {
 		t.Fatal(err)
 	}
-	if alertingSince != nil {
-		t.Fatal("alerting_since was set while the webhook was disabled: the transition must not be persisted, only history recorded")
+	if alertingSince == nil {
+		t.Fatal("alerting_since was not set: the state machine must keep running even while delivery is disabled")
+	}
+	if dropDelivered {
+		t.Fatal("drop_delivered = true, want false: nothing could have delivered it")
 	}
 
 	// The webhook gets configured while the user is still down. The very
-	// next run must report the (still ongoing) drop as fresh — not stay
+	// next run must retry and deliver the still-pending drop — not stay
 	// silent, and not later report a "recovered" with no drop ever having
 	// been announced for it.
 	if err := set.AlertWebhookURL.Set(ctx, srv.URL); err != nil {
@@ -217,9 +231,72 @@ func TestCheckerRunDoesNotConsumeTransitionsWhileWebhookDisabled(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(*calls) != 1 {
-		t.Fatalf("webhook calls after enabling mid-outage = %d, want 1 (a fresh drop report)", len(*calls))
+		t.Fatalf("webhook calls after enabling mid-outage = %d, want 1 (the retried drop report)", len(*calls))
 	}
 	if (*calls)[0].payload.Event != string(store.PrefixAlertDrop) {
 		t.Fatalf("event = %q, want %q", (*calls)[0].payload.Event, store.PrefixAlertDrop)
+	}
+}
+
+func TestCheckerRunMeasuresAllUsersBeforeDeliveringAnyWebhook(t *testing.T) {
+	checker, st, set := newTestChecker(t)
+	ctx := context.Background()
+	if err := set.AlertPrefixDropThresholdPercent.Set(ctx, 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.AlertPrefixBaselineMinimum.Set(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceID, err := st.AddUser(ctx, store.User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobID, err := st.AddUser(ctx, store.User{
+		Name: "bob", PeerIP: "20.0.0.2", PeerASN: 65002, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{aliceID, bobID} {
+		if _, err := st.DB.ExecContext(ctx,
+			"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since, drop_delivered) VALUES (?, 100, 0, NULL, 1)", id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// alice sorts before bob (lower user id, and Users(ctx, true) orders by
+	// id), so her delivery is attempted first. By then, bob's measurement —
+	// a plain DB write, nothing to do with the webhook — must already be
+	// done, proving the measurement pass for every user completes before
+	// any delivery is attempted, not interleaved user by user.
+	var bobHistoryRowsWhenAliceDelivers int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p webhookPayload
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			t.Error(err)
+		}
+		if p.UserID == aliceID {
+			if err := st.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM user_prefix_history WHERE user_id = ?", bobID).
+				Scan(&bobHistoryRowsWhenAliceDelivers); err != nil {
+				t.Error(err)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	if err := set.AlertWebhookURL.Set(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if bobHistoryRowsWhenAliceDelivers == 0 {
+		t.Fatal("bob's history wasn't recorded yet by the time alice's webhook delivery ran: measurement must fully precede delivery, not interleave with it")
 	}
 }

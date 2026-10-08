@@ -103,6 +103,12 @@ func TestEvaluateUserPrefixAlertDetectsDropAndRecovery(t *testing.T) {
 	if transition.BaselineV4 != 100 || transition.CurrentV4 != 10 {
 		t.Fatalf("transition = %+v, want baseline 100, current 10", transition)
 	}
+	// Simulates Checker successfully delivering the drop webhook — without
+	// this, the eventual recovery below is silently cancelled instead of
+	// reported (see TestEvaluateUserPrefixAlertCancelsRecoveryForAnUndeliveredDrop).
+	if err := s.MarkPrefixAlertDropDelivered(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
 
 	// Still down on the next check: must not re-fire.
 	transition, err = s.EvaluateUserPrefixAlert(ctx, userID, 10, 0, 50, 10)
@@ -175,6 +181,9 @@ func TestEvaluateUserPrefixAlertDoesNotFlapAtExactDropLine(t *testing.T) {
 	if transition == nil || transition.Event != PrefixAlertDrop {
 		t.Fatalf("transition = %+v, want a drop event landing exactly on the line", transition)
 	}
+	if err := s.MarkPrefixAlertDropDelivered(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
 
 	// Parked exactly on the line, unchanged: must still be "alerting", not
 	// bounce to "recovered" and back on every tick despite nothing changing.
@@ -195,5 +204,86 @@ func TestEvaluateUserPrefixAlertDoesNotFlapAtExactDropLine(t *testing.T) {
 	}
 	if transition == nil || transition.Event != PrefixAlertRecovered {
 		t.Fatalf("transition = %+v, want a recovered event once strictly above the drop line", transition)
+	}
+}
+
+func TestEvaluateUserPrefixAlertCancelsRecoveryForAnUndeliveredDrop(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := prefixAlertTestUser(t, s)
+
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 100, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	transition, err := s.EvaluateUserPrefixAlert(ctx, userID, 10, 0, 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition == nil || transition.Event != PrefixAlertDrop {
+		t.Fatalf("transition = %+v, want a drop event", transition)
+	}
+	// Deliberately NOT calling MarkPrefixAlertDropDelivered: simulates
+	// alerting being disabled, or every delivery attempt having failed,
+	// for this entire episode.
+
+	transition, err = s.EvaluateUserPrefixAlert(ctx, userID, 95, 0, 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition != nil {
+		t.Fatalf("transition = %+v, want nil: reporting a recovery for an incident nobody was ever told about is more confusing than useful", transition)
+	}
+
+	// The episode is over and must not still be offered for retry.
+	pending, err := s.PendingPrefixAlertDrop(ctx, userID, 95, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending != nil {
+		t.Fatalf("pending = %+v, want nil: the episode already ended", pending)
+	}
+
+	// A fresh drop afterward must behave normally again.
+	transition, err = s.EvaluateUserPrefixAlert(ctx, userID, 5, 0, 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition == nil || transition.Event != PrefixAlertDrop {
+		t.Fatalf("transition = %+v, want a fresh drop event", transition)
+	}
+}
+
+func TestPendingPrefixAlertDropOffersRetryUntilMarkedDelivered(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := prefixAlertTestUser(t, s)
+
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 100, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 10, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := s.PendingPrefixAlertDrop(ctx, userID, 8, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending == nil || pending.Event != PrefixAlertDrop {
+		t.Fatalf("pending = %+v, want an undelivered drop", pending)
+	}
+	if pending.BaselineV4 != 100 || pending.CurrentV4 != 8 {
+		t.Fatalf("pending = %+v, want baseline 100 (stored) and current 8 (this call's freshly measured value, not the original 10)", pending)
+	}
+
+	if err := s.MarkPrefixAlertDropDelivered(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.PendingPrefixAlertDrop(ctx, userID, 8, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending != nil {
+		t.Fatalf("pending = %+v, want nil once marked delivered", pending)
 	}
 }

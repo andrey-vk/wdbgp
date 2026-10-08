@@ -26,7 +26,8 @@ func V040(ctx context.Context, tx *sql.Tx) error {
 			user_id        INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
 			baseline_v4    INTEGER NOT NULL,
 			baseline_v6    INTEGER NOT NULL,
-			alerting_since INTEGER
+			alerting_since INTEGER,
+			drop_delivered INTEGER NOT NULL DEFAULT 1
 		)`)
 	return err
 }

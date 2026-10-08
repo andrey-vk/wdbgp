@@ -36,12 +36,24 @@ func NewChecker(s *store.Store, st *settings.Settings) *Checker {
 	}
 }
 
-// Run measures every enabled user once. Gated on MetricsEnabled, the same
-// setting user_snapshots/feed_snapshots already use for this kind of
-// periodic background collection — an admin who has turned dashboard
-// history off has already said they don't want this class of background
-// work running. A per-user failure is logged and skipped; it never aborts
-// the rest of the batch.
+// delivery is one (user, transition) pair Run collected during its
+// measurement pass, still needing a webhook attempt.
+type delivery struct {
+	user       store.User
+	transition *store.PrefixAlertTransition
+}
+
+// Run measures every enabled user once, then delivers any resulting
+// webhooks afterward — not interleaved with measurement, so a slow or
+// unreachable webhook endpoint can't delay recording and evaluating the
+// next user's count (at the default 10s timeout plus retry.HTTPConfig's own
+// backoff, a single stuck delivery could otherwise eat a large fraction of
+// the whole 5-minute tick budget once more than a handful of users need
+// one). Gated on MetricsEnabled, the same setting user_snapshots/
+// feed_snapshots already use for this kind of periodic background
+// collection — an admin who has turned dashboard history off has already
+// said they don't want this class of background work running. A per-user
+// failure is logged and skipped; it never aborts the rest of the batch.
 func (c *Checker) Run(ctx context.Context) error {
 	if !c.Settings.MetricsEnabled.Get() {
 		return nil
@@ -54,6 +66,7 @@ func (c *Checker) Run(ctx context.Context) error {
 	threshold := c.Settings.AlertPrefixDropThresholdPercent.Get()
 	baselineMin := c.Settings.AlertPrefixBaselineMinimum.Get()
 
+	var deliveries []delivery
 	for _, u := range users {
 		v4, v6, err := c.Store.CountSelectionPrefixes(ctx, u.ID)
 		if err != nil {
@@ -63,28 +76,48 @@ func (c *Checker) Run(ctx context.Context) error {
 		if err := c.Store.RecordUserPrefixSnapshot(ctx, u.ID, v4, v6); err != nil {
 			logging.Error("prefix alert check: record snapshot failed", "error", err, "user_id", u.ID)
 		}
-		if webhookURL == "" {
-			// Alerting is disabled: don't evaluate or persist a transition
-			// at all, not just skip delivering it. Persisting one anyway
-			// would let a drop that happened while disabled go unreported
-			// (nothing delivers it), and then — once a webhook URL is later
-			// configured, possibly while the user is still down — the
-			// eventual recovery would fire with no drop ever having been
-			// announced for it. Leaving the state untouched means the first
-			// evaluation after a webhook is configured compares against
-			// whatever was last normal, which still correctly reports an
-			// ongoing outage as a fresh drop.
-			continue
-		}
+		// Always evaluated, regardless of whether a webhook is configured —
+		// the baseline has to stay current, and a drop detected while
+		// alerting is disabled still needs to be on record as having
+		// happened (see PendingPrefixAlertDrop) rather than silently
+		// adopting whatever's current as the new "normal" the next time
+		// anyone looks.
 		transition, err := c.Store.EvaluateUserPrefixAlert(ctx, u.ID, v4, v6, threshold, baselineMin)
 		if err != nil {
 			logging.Error("prefix alert check: evaluate failed", "error", err, "user_id", u.ID)
 			continue
 		}
-		if transition == nil {
+		if webhookURL == "" {
 			continue
 		}
-		c.deliver(ctx, webhookURL, u, transition)
+		if transition != nil {
+			deliveries = append(deliveries, delivery{u, transition})
+			continue
+		}
+		// No new transition this tick — but an earlier drop for this user
+		// may still be sitting undelivered (alerting was off, or an
+		// earlier delivery attempt failed, when it first happened). Retry
+		// it now, with this tick's freshly measured count rather than a
+		// stale one.
+		pending, err := c.Store.PendingPrefixAlertDrop(ctx, u.ID, v4, v6)
+		if err != nil {
+			logging.Error("prefix alert check: pending lookup failed", "error", err, "user_id", u.ID)
+			continue
+		}
+		if pending != nil {
+			deliveries = append(deliveries, delivery{u, pending})
+		}
+	}
+
+	for _, d := range deliveries {
+		if !c.deliver(ctx, webhookURL, d.user, d.transition) {
+			continue
+		}
+		if d.transition.Event == store.PrefixAlertDrop {
+			if err := c.Store.MarkPrefixAlertDropDelivered(ctx, d.user.ID); err != nil {
+				logging.Error("prefix alert check: mark delivered failed", "error", err, "user_id", d.user.ID)
+			}
+		}
 	}
 	return nil
 }
@@ -127,16 +160,17 @@ func buildPayload(u store.User, t *store.PrefixAlertTransition) webhookPayload {
 
 // deliver POSTs the transition as JSON, retrying transient failures
 // (retry.HTTPConfig/HTTPTransientError — a few attempts over several
-// seconds) and logging a final failure rather than returning it: a lost
-// notification during a delivery outage is an accepted limitation here, not
-// one this best-effort background loop can meaningfully recover from on its
-// own — the next check still records history and still detects the next
-// real transition.
-func (c *Checker) deliver(ctx context.Context, webhookURL string, u store.User, t *store.PrefixAlertTransition) {
+// seconds) and logging a final failure rather than returning it as an
+// error: the caller only needs to know whether to mark a drop delivered,
+// not why a failure happened. A drop that still fails here stays pending —
+// PendingPrefixAlertDrop offers it again next tick — but a lost recovery
+// notification is an accepted limitation: there is no equivalent retry for
+// it, since the episode it would describe is already over.
+func (c *Checker) deliver(ctx context.Context, webhookURL string, u store.User, t *store.PrefixAlertTransition) bool {
 	body, err := json.Marshal(buildPayload(u, t))
 	if err != nil {
 		logging.Error("prefix alert webhook: marshal failed", "error", err, "user_id", u.ID)
-		return
+		return false
 	}
 	err = retry.Do(ctx, retry.HTTPConfig, func() error {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhookURL, bytes.NewReader(body))
@@ -156,5 +190,7 @@ func (c *Checker) deliver(ctx context.Context, webhookURL string, u store.User, 
 	}, retry.HTTPTransientError)
 	if err != nil {
 		logging.Error("prefix alert webhook delivery failed", "error", err, "user_id", u.ID, "event", string(t.Event))
+		return false
 	}
+	return true
 }

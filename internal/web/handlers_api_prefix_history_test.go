@@ -83,3 +83,32 @@ func TestAPIUserPrefixHistoryAppliesRetentionFallbackForNonPositiveDays(t *testi
 		t.Fatalf("history = %+v, want the just-recorded snapshot despite metrics_history_days=0 (falls back to 14 days, same as purgeLoop)", resp.History)
 	}
 }
+
+func TestAPISettingsPurgeMetricsClearsUserPrefixHistory(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	userID, err := st.AddUser(t.Context(), store.User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordUserPrefixSnapshot(t.Context(), userID, 10, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/api/admin/settings/purge-metrics", nil)
+	w := httptest.NewRecorder()
+	srv.apiSettingsPurgeMetrics(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+
+	history, err := st.UserPrefixHistory(t.Context(), userID, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("history = %+v, want empty after a manual metrics purge", history)
+	}
+}

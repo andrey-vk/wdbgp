@@ -821,5 +821,9 @@ func (s *Server) apiSettingsPurgeMetrics(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
 		return
 	}
+	if _, err := s.store.DB.ExecContext(ctx, "DELETE FROM user_prefix_history"); err != nil {
+		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, apiResponse{OK: true})
 }

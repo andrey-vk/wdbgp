@@ -478,9 +478,16 @@ when the user recovers. Neither setting matters until a webhook URL is configure
 A drop is never re-reported while the user stays down — it's a state machine, not a
 threshold checked fresh every tick — and "recovered" is measured against what was
 normal right before the incident, not against wherever the count happens to sit now.
-Delivery retries a transiently-failing attempt for a few seconds; a delivery that
-keeps failing is logged, not retried indefinitely — the next real transition still
-gets its own attempt. The whole feature is gated on the existing `metrics_enabled`
+The state itself (and the baseline) is always tracked regardless of whether a webhook
+is even configured yet; a drop that couldn't be delivered — alerting was off, or the
+request failed — stays flagged undelivered and is retried on every later check once a
+webhook is reachable, with that check's freshest count. A drop that resolves before it
+was ever delivered is never reported as "recovered" either — telling an operator
+something is fine now for an incident they were never told about is more confusing
+than silence. Delivery happens only after every user has already been measured and
+recorded for that check, not interleaved with it, so one slow or unreachable endpoint
+can't delay anyone else's count; each attempt retries a transiently-failing request for
+a few seconds before giving up. The whole feature is gated on the existing `metrics_enabled`
 setting and shares `metrics_history_days` for retention, the same as the per-feed and
 aggregate-user history the dashboard already collects this way.
 
