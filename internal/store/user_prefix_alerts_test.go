@@ -367,3 +367,160 @@ func TestPendingPrefixAlertDropOffersRetryUntilMarkedDelivered(t *testing.T) {
 		t.Fatalf("pending = %+v, want nil once marked delivered", pending)
 	}
 }
+
+func TestPrefixAlertRecoveryStillPendingTracksTheEpisode(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := prefixAlertTestUser(t, s)
+
+	pending, err := s.PrefixAlertRecoveryStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending {
+		t.Fatal("pending = true, want false: no alert-state row exists yet")
+	}
+
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 100, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 10, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkPrefixAlertDropDelivered(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.PrefixAlertRecoveryStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending {
+		t.Fatal("pending = true, want false: still mid-drop, no recovery yet")
+	}
+
+	transition, err := s.EvaluateUserPrefixAlert(ctx, userID, 95, 0, 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition == nil || transition.Event != PrefixAlertRecovered {
+		t.Fatalf("transition = %+v, want a recovered event", transition)
+	}
+	pending, err = s.PrefixAlertRecoveryStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Fatal("pending = false, want true: the recovery was just detected and not yet delivered")
+	}
+
+	if err := s.MarkPrefixAlertRecoveryDelivered(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.PrefixAlertRecoveryStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending {
+		t.Fatal("pending = true, want false: it was just marked delivered")
+	}
+}
+
+func TestPendingPrefixAlertRecoveryOffersRetryUntilMarkedDelivered(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := prefixAlertTestUser(t, s)
+
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 100, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 10, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkPrefixAlertDropDelivered(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := s.EvaluateUserPrefixAlert(ctx, userID, 95, 0, 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered == nil || recovered.Event != PrefixAlertRecovered {
+		t.Fatalf("recovered = %+v, want a recovered event", recovered)
+	}
+
+	// currentV4/V6 passed here (99, the latest measurement) deliberately
+	// differs from the 95 the recovery actually fired at, confirming the
+	// retried payload reports the freshest count rather than a stale one —
+	// mirroring PendingPrefixAlertDrop's own contract.
+	pending, err := s.PendingPrefixAlertRecovery(ctx, userID, 99, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending == nil || pending.Event != PrefixAlertRecovered {
+		t.Fatalf("pending = %+v, want an undelivered recovery", pending)
+	}
+	if pending.BaselineV4 != 100 || pending.CurrentV4 != 99 {
+		t.Fatalf("pending = %+v, want the pre-incident baseline 100 (frozen, not overwritten) and current 99 (this call's value)", pending)
+	}
+	if pending.DetectedAt != recovered.DetectedAt {
+		t.Fatalf("pending.DetectedAt = %d, want the original recovery time %d", pending.DetectedAt, recovered.DetectedAt)
+	}
+	if pending.DurationSeconds != recovered.DurationSeconds {
+		t.Fatalf("pending.DurationSeconds = %d, want the original %d (frozen, since alerting_since is cleared)", pending.DurationSeconds, recovered.DurationSeconds)
+	}
+
+	if err := s.MarkPrefixAlertRecoveryDelivered(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.PendingPrefixAlertRecovery(ctx, userID, 99, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending != nil {
+		t.Fatalf("pending = %+v, want nil once marked delivered", pending)
+	}
+}
+
+func TestEvaluateUserPrefixAlertCancelsPendingRecoveryOnFreshDrop(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := prefixAlertTestUser(t, s)
+
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 100, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 10, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkPrefixAlertDropDelivered(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 95, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately NOT calling MarkPrefixAlertRecoveryDelivered: simulates
+	// alerting being unreachable when the recovery just fired.
+	pending, err := s.PrefixAlertRecoveryStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Fatal("pending = false, want true: the recovery was just detected, undelivered")
+	}
+
+	// A fresh drop now supersedes it: telling the operator "they recovered"
+	// right after "they dropped again" already fired is stale and confusing.
+	transition, err := s.EvaluateUserPrefixAlert(ctx, userID, 8, 0, 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition == nil || transition.Event != PrefixAlertDrop {
+		t.Fatalf("transition = %+v, want a fresh drop event", transition)
+	}
+	pending, err = s.PrefixAlertRecoveryStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending {
+		t.Fatal("pending = true, want false: the stale recovery must be cancelled by the fresh drop")
+	}
+}

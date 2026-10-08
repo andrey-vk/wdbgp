@@ -484,10 +484,16 @@ request failed — stays flagged undelivered and is retried on every later check
 webhook is reachable, with that check's freshest count. A drop that resolves before it
 was ever delivered is never reported as "recovered" either — telling an operator
 something is fine now for an incident they were never told about is more confusing
-than silence. Delivery happens only after every user has already been measured and
-recorded for that check, not interleaved with it, so one slow or unreachable endpoint
-can't delay anyone else's count; each attempt retries a transiently-failing request for
-a few seconds before giving up. Deliberately not gated on the existing `metrics_enabled`
+than silence. A recovery that was announced but couldn't be delivered is retried the
+same way a drop is, rather than being sent once and given up on — it carries its own
+pre-incident baseline and episode duration, frozen at the moment it was detected, since
+the live baseline moves on to track the new normal immediately and a later retry can't
+read it back off the user's current row; a fresh drop superseding a still-undelivered
+recovery cancels it outright, for the same "more confusing than silence" reason.
+Delivery happens only after every user has already been measured and recorded for that
+check, not interleaved with it, so one slow or unreachable endpoint can't delay anyone
+else's count; each attempt retries a transiently-failing request for a few seconds
+before giving up. Deliberately not gated on the existing `metrics_enabled`
 setting — that one controls the dashboard's own background collection, a different
 feature with no obvious connection by name, and an admin who sets `alert_webhook_url`
 without separately noticing and enabling it would otherwise get no alerts with nothing

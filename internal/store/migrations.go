@@ -53,4 +53,5 @@ var migrations = []Migration{
 	{38, "feed sync changes", m.V038, nil},
 	{39, "feed sync change services", m.V039, m.V039NoTxSQL},
 	{40, "user prefix history and alert state", m.V040, nil},
+	{41, "persistent undelivered-recovery tracking for prefix alerts", m.V041, nil},
 }

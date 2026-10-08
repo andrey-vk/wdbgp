@@ -143,8 +143,14 @@ func (s *Store) EvaluateUserPrefixAlert(ctx context.Context, userID int64, curre
 		// Currently normal.
 		if baselineTotal > 0 && baselineTotal >= baselineMinimum && currentTotal <= dropLine {
 			now := time.Now().UTC().Unix()
+			// recovery_pending = 0: a prior recovery that was still waiting
+			// to be delivered (see PendingPrefixAlertRecovery) is superseded
+			// by this fresh drop and silently cancelled — the mirror image
+			// of an undelivered drop's recovery being cancelled below.
+			// Telling the operator "they recovered" right after "they
+			// dropped again" already fired is stale, confusing information.
 			if _, err := s.DB.ExecContext(ctx,
-				"UPDATE user_prefix_alert_state SET alerting_since = ?, drop_delivered = 0 WHERE user_id = ?", now, userID); err != nil {
+				"UPDATE user_prefix_alert_state SET alerting_since = ?, drop_delivered = 0, recovery_pending = 0 WHERE user_id = ?", now, userID); err != nil {
 				return nil, err
 			}
 			return &PrefixAlertTransition{
@@ -166,25 +172,45 @@ func (s *Store) EvaluateUserPrefixAlert(ctx context.Context, userID int64, curre
 	// alerting_since to NULL and back to set on every single tick, for a
 	// persistent outage that never actually recovered.
 	if currentTotal > dropLine {
-		if _, err := s.DB.ExecContext(ctx,
-			"UPDATE user_prefix_alert_state SET baseline_v4 = ?, baseline_v6 = ?, alerting_since = NULL, drop_delivered = 1 WHERE user_id = ?",
-			currentV4, currentV6, userID); err != nil {
-			return nil, err
-		}
 		if !dropDelivered {
 			// This episode's drop was never actually announced (alerting
 			// was disabled, or every delivery attempt failed, for its
 			// entire duration) — reporting "recovered" for an incident
 			// nobody was ever told about is more confusing than useful, so
-			// this one is silently dropped rather than delivered.
+			// this one is silently dropped rather than delivered. No
+			// recovery_pending to set either, for the same reason.
+			if _, err := s.DB.ExecContext(ctx,
+				"UPDATE user_prefix_alert_state SET baseline_v4 = ?, baseline_v6 = ?, alerting_since = NULL, drop_delivered = 1 WHERE user_id = ?",
+				currentV4, currentV6, userID); err != nil {
+				return nil, err
+			}
 			return nil, nil
 		}
 		now := time.Now().UTC().Unix()
+		duration := now - alertingSince.Int64
+		// The pre-incident baseline (baselineV4/V6, already read above) has
+		// to be preserved in its own columns, not just returned in this call's
+		// transition value: baseline_v4/v6 themselves are about to be
+		// overwritten to the new current value in this same statement, since
+		// that's what resumes tracking "normal" going forward — a retried
+		// delivery via PendingPrefixAlertRecovery needs the ORIGINAL
+		// pre-incident baseline for its payload, not whatever's current by
+		// the time it finally gets through. duration is likewise frozen here
+		// rather than recomputed against alerting_since on retry, since that
+		// column is cleared by this same statement.
+		if _, err := s.DB.ExecContext(ctx,
+			`UPDATE user_prefix_alert_state SET
+				baseline_v4 = ?, baseline_v6 = ?, alerting_since = NULL, drop_delivered = 1,
+				recovery_pending = 1, recovery_detected_at = ?, recovery_baseline_v4 = ?, recovery_baseline_v6 = ?, recovery_duration_seconds = ?
+			 WHERE user_id = ?`,
+			currentV4, currentV6, now, baselineV4, baselineV6, duration, userID); err != nil {
+			return nil, err
+		}
 		return &PrefixAlertTransition{
 			Event: PrefixAlertRecovered, DetectedAt: now,
 			BaselineV4: baselineV4, BaselineV6: baselineV6,
 			CurrentV4: currentV4, CurrentV6: currentV6,
-			DurationSeconds: now - alertingSince.Int64,
+			DurationSeconds: duration,
 		}, nil
 	}
 	return nil, nil
@@ -251,5 +277,70 @@ func (s *Store) PrefixAlertDropStillPending(ctx context.Context, userID int64) (
 // PendingPrefixAlertDrop stops offering it for retry.
 func (s *Store) MarkPrefixAlertDropDelivered(ctx context.Context, userID int64) error {
 	_, err := s.DB.ExecContext(ctx, "UPDATE user_prefix_alert_state SET drop_delivered = 1 WHERE user_id = ?", userID)
+	return err
+}
+
+// PendingPrefixAlertRecovery reports a recovery whose webhook was never
+// successfully delivered — because alerting was disabled or unreachable when
+// EvaluateUserPrefixAlert fired it, or a prior delivery attempt simply
+// failed — so the caller can retry it. Mirrors PendingPrefixAlertDrop, but
+// unlike a drop, a recovery's reported baseline/duration can't be recomputed
+// from the row's live baseline_v4/v6/alerting_since columns on retry — those
+// have already moved on to track whatever's normal now — so this reads back
+// the frozen recovery_baseline_v4/v6/recovery_duration_seconds snapshot
+// EvaluateUserPrefixAlert captured at the moment the recovery fired.
+// currentV4/V6 should be this tick's freshly measured count, same as
+// PendingPrefixAlertDrop. Returns nil if there is no such pending recovery.
+func (s *Store) PendingPrefixAlertRecovery(ctx context.Context, userID int64, currentV4, currentV6 int) (*PrefixAlertTransition, error) {
+	var recoveryPending bool
+	var recoveryDetectedAt, recoveryDuration sql.NullInt64
+	var recoveryBaselineV4, recoveryBaselineV6 sql.NullInt64
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT recovery_pending, recovery_detected_at, recovery_baseline_v4, recovery_baseline_v6, recovery_duration_seconds
+		 FROM user_prefix_alert_state WHERE user_id = ?`, userID).
+		Scan(&recoveryPending, &recoveryDetectedAt, &recoveryBaselineV4, &recoveryBaselineV6, &recoveryDuration)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !recoveryPending {
+		return nil, nil
+	}
+	return &PrefixAlertTransition{
+		Event: PrefixAlertRecovered, DetectedAt: recoveryDetectedAt.Int64,
+		BaselineV4: int(recoveryBaselineV4.Int64), BaselineV6: int(recoveryBaselineV6.Int64),
+		CurrentV4: currentV4, CurrentV6: currentV6,
+		DurationSeconds: recoveryDuration.Int64,
+	}, nil
+}
+
+// PrefixAlertRecoveryStillPending reports whether a user's alert state still
+// describes an undelivered recovery, without needing a fresh measurement —
+// mirrors PrefixAlertDropStillPending, used to revalidate a queued recovery
+// immediately before actually posting it: a fresh drop superseding it (see
+// EvaluateUserPrefixAlert) clears recovery_pending, and sending it anyway
+// would tell the receiver things are fine when a new episode has already
+// started.
+func (s *Store) PrefixAlertRecoveryStillPending(ctx context.Context, userID int64) (bool, error) {
+	var recoveryPending bool
+	err := s.DB.QueryRowContext(ctx,
+		"SELECT recovery_pending FROM user_prefix_alert_state WHERE user_id = ?", userID).
+		Scan(&recoveryPending)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return recoveryPending, nil
+}
+
+// MarkPrefixAlertRecoveryDelivered records that the pending recovery's
+// webhook was successfully delivered, so PendingPrefixAlertRecovery stops
+// offering it for retry.
+func (s *Store) MarkPrefixAlertRecoveryDelivered(ctx context.Context, userID int64) error {
+	_, err := s.DB.ExecContext(ctx, "UPDATE user_prefix_alert_state SET recovery_pending = 0 WHERE user_id = ?", userID)
 	return err
 }
