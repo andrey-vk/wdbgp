@@ -7,10 +7,30 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/settings"
 	"github.com/andrey-vk/wdbgp/internal/store"
 )
+
+// waitForCalls polls until the webhook server has recorded at least n calls,
+// or fails the test — delivery now runs in a detached goroutine (see Run's
+// own comment on why), so a test can no longer assume it has already
+// finished the instant Run itself returns.
+func waitForCalls(t *testing.T, calls *[]webhookCall, mu *sync.Mutex, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got := len(*calls)
+		mu.Unlock()
+		if got >= n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d webhook call(s)", n)
+}
 
 func newTestChecker(t *testing.T) (*Checker, *store.Store, *settings.Settings) {
 	t.Helper()
@@ -139,6 +159,7 @@ func TestCheckerRunDeliversDropWebhook(t *testing.T) {
 	if err := checker.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
+	waitForCalls(t, calls, mu, 1)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -158,11 +179,13 @@ func TestCheckerRunDeliversDropWebhook(t *testing.T) {
 	if p.DropPercent != 100 {
 		t.Fatalf("drop_percent = %d, want 100", p.DropPercent)
 	}
+	mu.Unlock()
 
 	// Still down on the next run: must not re-fire.
 	if err := checker.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
+	mu.Lock()
 	if len(*calls) != 1 {
 		t.Fatalf("webhook calls after a second run with no change = %d, want still 1", len(*calls))
 	}
@@ -228,6 +251,7 @@ func TestCheckerRunRetriesAnUndeliveredDropOnceTheWebhookIsConfigured(t *testing
 	if err := checker.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
+	waitForCalls(t, calls, mu, 1)
 	mu.Lock()
 	defer mu.Unlock()
 	if len(*calls) != 1 {
@@ -274,17 +298,24 @@ func TestCheckerRunMeasuresAllUsersBeforeDeliveringAnyWebhook(t *testing.T) {
 	// a plain DB write, nothing to do with the webhook — must already be
 	// done, proving the measurement pass for every user completes before
 	// any delivery is attempted, not interleaved user by user.
+	var mu sync.Mutex
 	var bobHistoryRowsWhenAliceDelivers int
+	var aliceDelivered bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var p webhookPayload
 		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 			t.Error(err)
 		}
 		if p.UserID == aliceID {
+			var n int
 			if err := st.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM user_prefix_history WHERE user_id = ?", bobID).
-				Scan(&bobHistoryRowsWhenAliceDelivers); err != nil {
+				Scan(&n); err != nil {
 				t.Error(err)
 			}
+			mu.Lock()
+			bobHistoryRowsWhenAliceDelivers = n
+			aliceDelivered = true
+			mu.Unlock()
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -296,7 +327,66 @@ func TestCheckerRunMeasuresAllUsersBeforeDeliveringAnyWebhook(t *testing.T) {
 	if err := checker.Run(ctx); err != nil {
 		t.Fatal(err)
 	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done := aliceDelivered
+		mu.Unlock()
+		if done {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !aliceDelivered {
+		t.Fatal("timed out waiting for alice's webhook delivery")
+	}
 	if bobHistoryRowsWhenAliceDelivers == 0 {
 		t.Fatal("bob's history wasn't recorded yet by the time alice's webhook delivery ran: measurement must fully precede delivery, not interleave with it")
+	}
+}
+
+func TestIsRetriableWebhookErrorClassifiesServerErrorsAndTooManyRequests(t *testing.T) {
+	retriable := []int{http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout}
+	for _, code := range retriable {
+		if !isRetriableWebhookError(&httpStatusError{code: code}) {
+			t.Errorf("status %d: want retriable", code)
+		}
+	}
+	notRetriable := []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound}
+	for _, code := range notRetriable {
+		if isRetriableWebhookError(&httpStatusError{code: code}) {
+			t.Errorf("status %d: want NOT retriable", code)
+		}
+	}
+}
+
+func TestCheckerDeliverRetriesATransientServerError(t *testing.T) {
+	checker, _, _ := newTestChecker(t)
+	var mu sync.Mutex
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n < 3 {
+			w.WriteHeader(http.StatusInternalServerError) // not in retry.HTTPTransientError's own string set
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	ok := checker.deliver(context.Background(), srv.URL, store.User{ID: 1, Name: "alice"},
+		&store.PrefixAlertTransition{Event: store.PrefixAlertDrop, BaselineV4: 100, CurrentV4: 0})
+	if !ok {
+		t.Fatal("deliver returned false, want true: a 500 must be retried until the 3rd attempt succeeds")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
 	}
 }

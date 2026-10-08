@@ -9,8 +9,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/andrey-vk/wdbgp/internal/logging"
@@ -26,6 +28,13 @@ type Checker struct {
 	Store    *store.Store
 	Settings *settings.Settings
 	Client   *http.Client
+
+	// deliveringMu/delivering bound delivery to at most one in-flight batch
+	// at a time — see Run's own comment for why delivery is detached from
+	// the measurement tick entirely, and why a second concurrent batch
+	// would risk double-delivering the same pending drop.
+	deliveringMu sync.Mutex
+	delivering   bool
 }
 
 func NewChecker(s *store.Store, st *settings.Settings) *Checker {
@@ -43,17 +52,25 @@ type delivery struct {
 	transition *store.PrefixAlertTransition
 }
 
-// Run measures every enabled user once, then delivers any resulting
-// webhooks afterward — not interleaved with measurement, so a slow or
-// unreachable webhook endpoint can't delay recording and evaluating the
-// next user's count (at the default 10s timeout plus retry.HTTPConfig's own
-// backoff, a single stuck delivery could otherwise eat a large fraction of
-// the whole 5-minute tick budget once more than a handful of users need
-// one). Gated on MetricsEnabled, the same setting user_snapshots/
-// feed_snapshots already use for this kind of periodic background
-// collection — an admin who has turned dashboard history off has already
-// said they don't want this class of background work running. A per-user
-// failure is logged and skipped; it never aborts the rest of the batch.
+// Run measures every enabled user once, then hands any resulting webhooks
+// off to a detached goroutine instead of delivering them itself — Run
+// returns as soon as measurement is done, so a slow or unreachable webhook
+// endpoint can never delay the *next* tick's measurement either (collecting
+// every user's deliveries before attempting any, on its own, only protects
+// users within the same tick — prefixAlertLoop still calls Run itself on a
+// fixed ticker, and would be delayed exactly as much if Run blocked on
+// delivery before returning). At most one delivery batch runs at a time
+// (deliveringMu/delivering): if the previous tick's batch is still working
+// through a backlog, this tick's is simply skipped — not dropped, since
+// nothing here is time-sensitive before it's retried: history is already
+// recorded, state is already evaluated, and any pending drop is still
+// flagged undelivered for the next tick to pick up (or this same goroutine,
+// if it's still running, already has it queued). Gated on MetricsEnabled,
+// the same setting user_snapshots/feed_snapshots already use for this kind
+// of periodic background collection — an admin who has turned dashboard
+// history off has already said they don't want this class of background
+// work running. A per-user failure is logged and skipped; it never aborts
+// the rest of the batch.
 func (c *Checker) Run(ctx context.Context) error {
 	if !c.Settings.MetricsEnabled.Get() {
 		return nil
@@ -109,16 +126,37 @@ func (c *Checker) Run(ctx context.Context) error {
 		}
 	}
 
-	for _, d := range deliveries {
-		if !c.deliver(ctx, webhookURL, d.user, d.transition) {
-			continue
-		}
-		if d.transition.Event == store.PrefixAlertDrop {
-			if err := c.Store.MarkPrefixAlertDropDelivered(ctx, d.user.ID); err != nil {
-				logging.Error("prefix alert check: mark delivered failed", "error", err, "user_id", d.user.ID)
+	if len(deliveries) == 0 {
+		return nil
+	}
+	c.deliveringMu.Lock()
+	if c.delivering {
+		c.deliveringMu.Unlock()
+		logging.Debug("prefix alert check: previous delivery batch still running, deferring this tick's deliveries")
+		return nil
+	}
+	c.delivering = true
+	c.deliveringMu.Unlock()
+
+	// ctx, not a fresh background one: deliveries are tied to the loop's own
+	// lifetime (cancelled on shutdown), just no longer to this one tick's.
+	go func() {
+		defer func() {
+			c.deliveringMu.Lock()
+			c.delivering = false
+			c.deliveringMu.Unlock()
+		}()
+		for _, d := range deliveries {
+			if !c.deliver(ctx, webhookURL, d.user, d.transition) {
+				continue
+			}
+			if d.transition.Event == store.PrefixAlertDrop {
+				if err := c.Store.MarkPrefixAlertDropDelivered(ctx, d.user.ID); err != nil {
+					logging.Error("prefix alert check: mark delivered failed", "error", err, "user_id", d.user.ID)
+				}
 			}
 		}
-	}
+	}()
 	return nil
 }
 
@@ -140,7 +178,7 @@ func buildPayload(u store.User, t *store.PrefixAlertTransition) webhookPayload {
 		Event:      string(t.Event),
 		UserID:     u.ID,
 		UserName:   u.Name,
-		DetectedAt: time.Now().UTC().Format(time.RFC3339),
+		DetectedAt: time.Unix(t.DetectedAt, 0).UTC().Format(time.RFC3339),
 		BaselineV4: t.BaselineV4,
 		BaselineV6: t.BaselineV6,
 		CurrentV4:  t.CurrentV4,
@@ -158,10 +196,30 @@ func buildPayload(u store.User, t *store.PrefixAlertTransition) webhookPayload {
 	return p
 }
 
-// deliver POSTs the transition as JSON, retrying transient failures
-// (retry.HTTPConfig/HTTPTransientError — a few attempts over several
-// seconds) and logging a final failure rather than returning it as an
-// error: the caller only needs to know whether to mark a drop delivered,
+// httpStatusError lets isRetriableWebhookError classify a non-2xx response
+// by its actual numeric status, rather than depending on retry.
+// HTTPTransientError's generic substring matching — which recognizes 429,
+// 503, and 504 by their literal digits (and a handful of textual phrases),
+// but not 500 or 502, both of which are just as transient in practice.
+type httpStatusError struct{ code int }
+
+func (e *httpStatusError) Error() string { return fmt.Sprintf("webhook responded %d", e.code) }
+
+func isRetriableWebhookError(err error) bool {
+	var se *httpStatusError
+	if errors.As(err, &se) {
+		return se.code == http.StatusTooManyRequests || se.code >= http.StatusInternalServerError
+	}
+	// Not an HTTP status (connection refused, timeout, DNS failure, ...):
+	// retry.HTTPTransientError's own string-based classification already
+	// covers these network-level cases.
+	return retry.HTTPTransientError(err)
+}
+
+// deliver POSTs the transition as JSON, retrying a transient failure
+// (isRetriableWebhookError — a few attempts over several seconds via
+// retry.HTTPConfig) and logging a final failure rather than returning it as
+// an error: the caller only needs to know whether to mark a drop delivered,
 // not why a failure happened. A drop that still fails here stays pending —
 // PendingPrefixAlertDrop offers it again next tick — but a lost recovery
 // notification is an accepted limitation: there is no equivalent retry for
@@ -184,10 +242,10 @@ func (c *Checker) deliver(ctx context.Context, webhookURL string, u store.User, 
 		}
 		defer func() { _ = resp.Body.Close() }() //nolint:errcheck
 		if resp.StatusCode >= 300 {
-			return fmt.Errorf("webhook responded %d", resp.StatusCode)
+			return &httpStatusError{code: resp.StatusCode}
 		}
 		return nil
-	}, retry.HTTPTransientError)
+	}, isRetriableWebhookError)
 	if err != nil {
 		logging.Error("prefix alert webhook delivery failed", "error", err, "user_id", u.ID, "event", string(t.Event))
 		return false

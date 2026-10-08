@@ -68,9 +68,14 @@ const (
 // detected — the caller (internal/alerts) is expected to deliver this as a
 // webhook. Baseline is the last known-normal count: the count just before a
 // drop for a PrefixAlertDrop event, or what it was before the incident
-// started for a PrefixAlertRecovered one.
+// started for a PrefixAlertRecovered one. DetectedAt is when this episode's
+// drop actually started (unix seconds) — not necessarily when this
+// particular PrefixAlertTransition value was produced: a drop retried via
+// PendingPrefixAlertDrop carries the original detection time forward, so a
+// webhook enabled hours into an outage still reports when it actually began.
 type PrefixAlertTransition struct {
 	Event           PrefixAlertEvent
+	DetectedAt      int64
 	BaselineV4      int
 	BaselineV6      int
 	CurrentV4       int
@@ -138,7 +143,7 @@ func (s *Store) EvaluateUserPrefixAlert(ctx context.Context, userID int64, curre
 				return nil, err
 			}
 			return &PrefixAlertTransition{
-				Event:      PrefixAlertDrop,
+				Event: PrefixAlertDrop, DetectedAt: now,
 				BaselineV4: baselineV4, BaselineV6: baselineV6,
 				CurrentV4: currentV4, CurrentV6: currentV6,
 			}, nil
@@ -169,12 +174,12 @@ func (s *Store) EvaluateUserPrefixAlert(ctx context.Context, userID int64, curre
 			// this one is silently dropped rather than delivered.
 			return nil, nil
 		}
-		duration := time.Now().UTC().Unix() - alertingSince.Int64
+		now := time.Now().UTC().Unix()
 		return &PrefixAlertTransition{
-			Event:      PrefixAlertRecovered,
+			Event: PrefixAlertRecovered, DetectedAt: now,
 			BaselineV4: baselineV4, BaselineV6: baselineV6,
 			CurrentV4: currentV4, CurrentV6: currentV6,
-			DurationSeconds: duration,
+			DurationSeconds: now - alertingSince.Int64,
 		}, nil
 	}
 	return nil, nil
@@ -205,7 +210,7 @@ func (s *Store) PendingPrefixAlertDrop(ctx context.Context, userID int64, curren
 		return nil, nil
 	}
 	return &PrefixAlertTransition{
-		Event:      PrefixAlertDrop,
+		Event: PrefixAlertDrop, DetectedAt: alertingSince.Int64,
 		BaselineV4: baselineV4, BaselineV6: baselineV6,
 		CurrentV4: currentV4, CurrentV6: currentV6,
 	}, nil

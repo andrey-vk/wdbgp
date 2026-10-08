@@ -261,8 +261,12 @@ func TestPendingPrefixAlertDropOffersRetryUntilMarkedDelivered(t *testing.T) {
 	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 100, 0, 50, 10); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 10, 0, 50, 10); err != nil {
+	drop, err := s.EvaluateUserPrefixAlert(ctx, userID, 10, 0, 50, 10)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if drop == nil || drop.DetectedAt == 0 {
+		t.Fatalf("drop = %+v, want a non-zero DetectedAt", drop)
 	}
 
 	pending, err := s.PendingPrefixAlertDrop(ctx, userID, 8, 0)
@@ -274,6 +278,9 @@ func TestPendingPrefixAlertDropOffersRetryUntilMarkedDelivered(t *testing.T) {
 	}
 	if pending.BaselineV4 != 100 || pending.CurrentV4 != 8 {
 		t.Fatalf("pending = %+v, want baseline 100 (stored) and current 8 (this call's freshly measured value, not the original 10)", pending)
+	}
+	if pending.DetectedAt != drop.DetectedAt {
+		t.Fatalf("pending.DetectedAt = %d, want the original detection time %d (not a fresh timestamp from this retry)", pending.DetectedAt, drop.DetectedAt)
 	}
 
 	if err := s.MarkPrefixAlertDropDelivered(ctx, userID); err != nil {
