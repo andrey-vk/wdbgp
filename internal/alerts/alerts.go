@@ -29,12 +29,14 @@ type Checker struct {
 	Settings *settings.Settings
 	Client   *http.Client
 
-	// deliveringMu/delivering bound delivery to at most one in-flight batch
-	// at a time — see Run's own comment for why delivery is detached from
-	// the measurement tick entirely, and why a second concurrent batch
-	// would risk double-delivering the same pending drop.
+	// deliveringMu guards delivering and queued together: at most one
+	// in-flight delivery batch at a time (a second concurrent one would
+	// risk double-delivering the same pending drop), with anything Run
+	// collects while busy appended to queued rather than discarded — see
+	// Run and deliverLoop.
 	deliveringMu sync.Mutex
 	delivering   bool
+	queued       []delivery
 }
 
 func NewChecker(s *store.Store, st *settings.Settings) *Checker {
@@ -61,11 +63,12 @@ type delivery struct {
 // fixed ticker, and would be delayed exactly as much if Run blocked on
 // delivery before returning). At most one delivery batch runs at a time
 // (deliveringMu/delivering): if the previous tick's batch is still working
-// through a backlog, this tick's is simply skipped — not dropped, since
-// nothing here is time-sensitive before it's retried: history is already
-// recorded, state is already evaluated, and any pending drop is still
-// flagged undelivered for the next tick to pick up (or this same goroutine,
-// if it's still running, already has it queued). Gated on MetricsEnabled,
+// through a backlog, this tick's deliveries are queued for that same
+// goroutine to pick up once it's done with its current pass, rather than
+// attempting a second concurrent batch or discarding them outright — a drop
+// would simply be rediscovered next tick via PendingPrefixAlertDrop either
+// way, but a recovery fires exactly once and would be lost for good if
+// dropped here. Gated on MetricsEnabled,
 // the same setting user_snapshots/feed_snapshots already use for this kind
 // of periodic background collection — an admin who has turned dashboard
 // history off has already said they don't want this class of background
@@ -131,8 +134,15 @@ func (c *Checker) Run(ctx context.Context) error {
 	}
 	c.deliveringMu.Lock()
 	if c.delivering {
+		// A batch is already working through a backlog. A drop found again
+		// here would just be rediscovered next tick via PendingPrefixAlertDrop
+		// — but a recovery fires exactly once (EvaluateUserPrefixAlert has
+		// already cleared alerting_since by the time it returns one), so
+		// simply discarding it here would lose it permanently. Queue
+		// instead: the running goroutine drains c.queued before it actually
+		// stops (see below).
+		c.queued = append(c.queued, deliveries...)
 		c.deliveringMu.Unlock()
-		logging.Debug("prefix alert check: previous delivery batch still running, deferring this tick's deliveries")
 		return nil
 	}
 	c.delivering = true
@@ -140,13 +150,33 @@ func (c *Checker) Run(ctx context.Context) error {
 
 	// ctx, not a fresh background one: deliveries are tied to the loop's own
 	// lifetime (cancelled on shutdown), just no longer to this one tick's.
-	go func() {
-		defer func() {
-			c.deliveringMu.Lock()
-			c.delivering = false
-			c.deliveringMu.Unlock()
-		}()
-		for _, d := range deliveries {
+	go c.deliverLoop(ctx, webhookURL, deliveries)
+	return nil
+}
+
+// deliverLoop delivers batch, then keeps draining whatever Run queued while
+// it was busy (plain reslicing under deliveringMu, not a channel — batches
+// are created at most once per tick and delivery is comparatively rare, so a
+// small lock held only for a slice swap is simpler than a channel here).
+func (c *Checker) deliverLoop(ctx context.Context, webhookURL string, batch []delivery) {
+	for {
+		for _, d := range batch {
+			if d.transition.Event == store.PrefixAlertDrop {
+				// A batch can sit queued across more than one measurement
+				// tick (see above) — long enough for the episode it
+				// describes to have already resolved, evaluated fresh by a
+				// later tick while this one was still waiting its turn.
+				// Sending it anyway would tell the receiver an outage is
+				// still ongoing when it already isn't.
+				stillPending, err := c.Store.PrefixAlertDropStillPending(ctx, d.user.ID)
+				if err != nil {
+					logging.Error("prefix alert check: pending re-check failed", "error", err, "user_id", d.user.ID)
+					continue
+				}
+				if !stillPending {
+					continue
+				}
+			}
 			if !c.deliver(ctx, webhookURL, d.user, d.transition) {
 				continue
 			}
@@ -156,8 +186,15 @@ func (c *Checker) Run(ctx context.Context) error {
 				}
 			}
 		}
-	}()
-	return nil
+		c.deliveringMu.Lock()
+		if len(c.queued) == 0 {
+			c.delivering = false
+			c.deliveringMu.Unlock()
+			return
+		}
+		batch, c.queued = c.queued, nil
+		c.deliveringMu.Unlock()
+	}
 }
 
 type webhookPayload struct {

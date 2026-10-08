@@ -253,6 +253,79 @@ func TestEvaluateUserPrefixAlertCancelsRecoveryForAnUndeliveredDrop(t *testing.T
 	}
 }
 
+func TestEvaluateUserPrefixAlertNeverFiresOnAZeroBaseline(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := prefixAlertTestUser(t, s)
+
+	// Baseline of 0, and baselineMinimum of 0 too (an admin-accepted value —
+	// validateNonNegative allows 0): without an explicit baselineTotal > 0
+	// guard, 0 >= 0 would satisfy the floor check, and 0 <= dropLine(0)
+	// would satisfy the drop check, firing a "drop" for a user who has
+	// always had nothing and still has nothing.
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 0, 0, 50, 0); err != nil {
+		t.Fatal(err)
+	}
+	transition, err := s.EvaluateUserPrefixAlert(ctx, userID, 0, 0, 50, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition != nil {
+		t.Fatalf("transition = %+v, want nil: a zero baseline can never meaningfully drop", transition)
+	}
+}
+
+func TestPrefixAlertDropStillPendingTracksTheEpisode(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := prefixAlertTestUser(t, s)
+
+	pending, err := s.PrefixAlertDropStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending {
+		t.Fatal("pending = true, want false: no alert-state row exists yet")
+	}
+
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 100, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 10, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.PrefixAlertDropStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending {
+		t.Fatal("pending = false, want true: the drop was just detected and not yet delivered")
+	}
+
+	if err := s.MarkPrefixAlertDropDelivered(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.PrefixAlertDropStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending {
+		t.Fatal("pending = true, want false: it was just marked delivered")
+	}
+
+	// Recovers: the episode is over, so it's no longer "pending" either.
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 95, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = s.PrefixAlertDropStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending {
+		t.Fatal("pending = true, want false: the user has recovered")
+	}
+}
+
 func TestPendingPrefixAlertDropOffersRetryUntilMarkedDelivered(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

@@ -91,10 +91,15 @@ type PrefixAlertTransition struct {
 // user stays down).
 //
 // A "drop" fires when the new total (v4+v6) falls to dropThresholdPercent%
-// or more below the baseline, and the baseline total is at least
-// baselineMinimum — below that floor, a percentage swing isn't meaningful
-// (a user with 2 prefixes going to 1 is a 50% "drop" that is, in practice,
-// just noise). While a drop is active, the baseline is held at its pre-drop
+// or more below the baseline, the baseline total is positive, and it's at
+// least baselineMinimum — below that floor, a percentage swing isn't
+// meaningful (a user with 2 prefixes going to 1 is a 50% "drop" that is, in
+// practice, just noise). The baseline must be positive regardless of how
+// low baselineMinimum itself is set (0 is a valid, accepted setting value):
+// a user who has always had zero prefixes and still has zero cannot
+// meaningfully "drop" — without this, a zero baseline and a zero
+// baselineMinimum both being accepted as satisfying "baseline >= minimum"
+// would fire a drop for a user who never had anything to lose. While a drop is active, the baseline is held at its pre-drop
 // value rather than tracking the still-low current count, so "recovered"
 // is measured against what was normal before the incident, not against
 // whatever the user happens to be at right now. Outside of an active drop,
@@ -136,7 +141,7 @@ func (s *Store) EvaluateUserPrefixAlert(ctx context.Context, userID int64, curre
 
 	if !alertingSince.Valid {
 		// Currently normal.
-		if baselineTotal >= baselineMinimum && currentTotal <= dropLine {
+		if baselineTotal > 0 && baselineTotal >= baselineMinimum && currentTotal <= dropLine {
 			now := time.Now().UTC().Unix()
 			if _, err := s.DB.ExecContext(ctx,
 				"UPDATE user_prefix_alert_state SET alerting_since = ?, drop_delivered = 0 WHERE user_id = ?", now, userID); err != nil {
@@ -214,6 +219,30 @@ func (s *Store) PendingPrefixAlertDrop(ctx context.Context, userID int64, curren
 		BaselineV4: baselineV4, BaselineV6: baselineV6,
 		CurrentV4: currentV4, CurrentV6: currentV6,
 	}, nil
+}
+
+// PrefixAlertDropStillPending reports whether a user's alert state still
+// describes an active, undelivered drop, without needing a fresh
+// measurement — just whether EvaluateUserPrefixAlert has moved them out of
+// that state since. Used to revalidate a drop immediately before actually
+// posting it: internal/alerts' delivery can be queued behind a slow or
+// backlogged batch, long enough for the episode it describes to have
+// already resolved in the meantime (a later tick's own fresh evaluation),
+// and sending it anyway would tell the receiver an outage is still ongoing
+// when it no longer is.
+func (s *Store) PrefixAlertDropStillPending(ctx context.Context, userID int64) (bool, error) {
+	var alertingSince sql.NullInt64
+	var dropDelivered bool
+	err := s.DB.QueryRowContext(ctx,
+		"SELECT alerting_since, drop_delivered FROM user_prefix_alert_state WHERE user_id = ?", userID).
+		Scan(&alertingSince, &dropDelivered)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return alertingSince.Valid && !dropDelivered, nil
 }
 
 // MarkPrefixAlertDropDelivered records that the current drop episode's

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -34,7 +35,13 @@ func waitForCalls(t *testing.T, calls *[]webhookCall, mu *sync.Mutex, n int) {
 
 func newTestChecker(t *testing.T) (*Checker, *store.Store, *settings.Settings) {
 	t.Helper()
-	st, err := store.Open(":memory:", false, "", false)
+	// A real file, not ":memory:" — store.Open's connection pool allows up
+	// to 4 connections (mainDBMaxOpenConns), and ":memory:" gives each one
+	// its own separate, empty database unless using a shared-cache DSN.
+	// Harmless for every other test here (one goroutine, one connection
+	// reused throughout), but genuinely wrong for ones that have the
+	// delivery goroutine and the test goroutine both querying concurrently.
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.sqlite3"), false, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,5 +395,125 @@ func TestCheckerDeliverRetriesATransientServerError(t *testing.T) {
 	defer mu.Unlock()
 	if attempts != 3 {
 		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestCheckerRunQueuesANewDeliveryInsteadOfLosingItWhileABatchIsBusy(t *testing.T) {
+	// A real recovery can only happen for a user whose measured count goes
+	// back up — which, for a user with no actual catalog selection (as
+	// every user in this package's tests necessarily is, with no feed data
+	// to select from), can never happen: CountSelectionPrefixes always
+	// measures 0 for them, and a baseline can't recover to 0. So this
+	// exercises the same at-risk branch (the queue-not-discard decision in
+	// Run, which treats every delivery alike regardless of event type) with
+	// two drops instead of a drop and a recovery: alice's is already
+	// pending when the test starts, and bob's is detected fresh on the
+	// second Run() call, made deliberately while alice's delivery is still
+	// blocked — confirming bob's doesn't get silently discarded.
+	checker, st, set := newTestChecker(t)
+	ctx := context.Background()
+	if err := set.AlertPrefixDropThresholdPercent.Set(ctx, 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.AlertPrefixBaselineMinimum.Set(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceID, err := st.AddUser(ctx, store.User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobID, err := st.AddUser(ctx, store.User{
+		Name: "bob", PeerIP: "20.0.0.2", PeerASN: 65002, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// alice: a fresh, undelivered drop — her delivery request blocks below
+	// to keep a batch "in flight" long enough for the second Run() call.
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since, drop_delivered) VALUES (?, 100, 0, ?, 0)",
+		aliceID, time.Now().UTC().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceBlock := make(chan struct{})
+	var mu sync.Mutex
+	var events []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p webhookPayload
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			t.Error(err)
+		}
+		if p.UserID == aliceID {
+			<-aliceBlock // held open until the test says bob's drop has been queued
+		}
+		mu.Lock()
+		events = append(events, p.Event)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	if err := set.AlertWebhookURL.Set(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	// First Run(): bob has no alert-state row yet, so his first-ever
+	// observation just establishes a baseline matching his (always 0,
+	// selectionless) measured count — no transition. Alice's pending drop
+	// is collected and starts delivering; her request blocks.
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		checker.deliveringMu.Lock()
+		busy := checker.delivering
+		checker.deliveringMu.Unlock()
+		if busy {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Simulates bob having actually been fine until just now: his stored
+	// baseline is bumped directly (CountSelectionPrefixes can't be made to
+	// report anything but 0 for a selectionless test user, so his "drop" has
+	// to be engineered this way instead). The second Run(), made while
+	// alice's delivery is still blocked, measures his real (0) count against
+	// this new baseline and detects a fresh drop.
+	if _, err := st.DB.ExecContext(ctx, "UPDATE user_prefix_alert_state SET baseline_v4 = 100 WHERE user_id = ?", bobID); err != nil {
+		t.Fatal(err)
+	}
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	close(aliceBlock)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(events)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 {
+		t.Fatalf("events = %v, want 2 (alice's pending drop and bob's freshly-detected one, the latter queued rather than discarded while alice's batch was busy)", events)
+	}
+	for _, e := range events {
+		if e != string(store.PrefixAlertDrop) {
+			t.Fatalf("events = %v, want both to be drops", events)
+		}
 	}
 }
