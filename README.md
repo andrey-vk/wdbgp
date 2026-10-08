@@ -487,9 +487,13 @@ something is fine now for an incident they were never told about is more confusi
 than silence. Delivery happens only after every user has already been measured and
 recorded for that check, not interleaved with it, so one slow or unreachable endpoint
 can't delay anyone else's count; each attempt retries a transiently-failing request for
-a few seconds before giving up. The whole feature is gated on the existing `metrics_enabled`
-setting and shares `metrics_history_days` for retention, the same as the per-feed and
-aggregate-user history the dashboard already collects this way.
+a few seconds before giving up. Deliberately not gated on the existing `metrics_enabled`
+setting — that one controls the dashboard's own background collection, a different
+feature with no obvious connection by name, and an admin who sets `alert_webhook_url`
+without separately noticing and enabling it would otherwise get no alerts with nothing
+anywhere to say why. History is still retained for `metrics_history_days`, the same as
+the per-feed and aggregate-user history the dashboard already collects this way, and
+purged regardless of `metrics_enabled` for the same reason.
 
 ### Configuration export / import
 

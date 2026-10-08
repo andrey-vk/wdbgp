@@ -223,20 +223,26 @@ func purgeLoop(ctx context.Context, interval time.Duration, db *store.Store, s *
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			days := s.MetricsHistoryDays.Get()
+			if days <= 0 {
+				days = 14
+			}
 			if s.MetricsEnabled.Get() {
-				days := s.MetricsHistoryDays.Get()
-				if days <= 0 {
-					days = 14
-				}
 				if err := db.PurgeUserSnapshots(ctx, days); err != nil {
 					logging.Error("metrics purge failed for user snapshots", "error", err)
 				}
 				if err := db.PurgeFeedSnapshots(ctx, days); err != nil {
 					logging.Error("metrics purge failed for feed snapshots", "error", err)
 				}
-				if err := db.PurgeUserPrefixHistory(ctx, days); err != nil {
-					logging.Error("metrics purge failed for user prefix history", "error", err)
-				}
+			}
+			// Not gated on MetricsEnabled: withdraw alerting's own history
+			// collection isn't either (internal/alerts' own Checker.Run),
+			// since it's a separate feature from the dashboard metrics that
+			// setting controls — gating its retention the same way would
+			// let this table grow unbounded while MetricsEnabled is off but
+			// alert_webhook_url is set.
+			if err := db.PurgeUserPrefixHistory(ctx, days); err != nil {
+				logging.Error("metrics purge failed for user prefix history", "error", err)
 			}
 
 			auditDays := store.EffectiveAuditRetentionDays(s.AuditLogRetentionDays.Get())

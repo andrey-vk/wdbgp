@@ -68,16 +68,18 @@ type delivery struct {
 // attempting a second concurrent batch or discarding them outright — a drop
 // would simply be rediscovered next tick via PendingPrefixAlertDrop either
 // way, but a recovery fires exactly once and would be lost for good if
-// dropped here. Gated on MetricsEnabled,
-// the same setting user_snapshots/feed_snapshots already use for this kind
-// of periodic background collection — an admin who has turned dashboard
-// history off has already said they don't want this class of background
-// work running. A per-user failure is logged and skipped; it never aborts
-// the rest of the batch.
+// dropped here.
+//
+// Deliberately NOT gated on MetricsEnabled: that setting controls the
+// dashboard's own background collection (user_snapshots/feed_snapshots),
+// a different feature this one doesn't otherwise depend on. Gating withdraw
+// alerting on it too would mean an admin who sets alert_webhook_url (and
+// leaves MetricsEnabled at its default of off, since the two have no
+// obvious connection by name) gets no alerts at all, with nothing anywhere
+// to say why — exactly the kind of silent failure this feature exists to
+// avoid in the first place. A per-user failure is logged and skipped; it
+// never aborts the rest of the batch.
 func (c *Checker) Run(ctx context.Context) error {
-	if !c.Settings.MetricsEnabled.Get() {
-		return nil
-	}
 	users, err := c.Store.Users(ctx, true)
 	if err != nil {
 		return fmt.Errorf("alerts: list users: %w", err)

@@ -82,12 +82,17 @@ func startWebhookServer(t *testing.T) (*httptest.Server, *[]webhookCall, *sync.M
 	return srv, &calls, &mu
 }
 
-func TestCheckerRunSkipsEverythingWhenMetricsDisabled(t *testing.T) {
+func TestCheckerRunIgnoresMetricsEnabled(t *testing.T) {
+	// Withdraw alerting must not depend on the dashboard's own MetricsEnabled
+	// toggle (a different feature, off by default) — an admin who sets
+	// alert_webhook_url but never notices that unrelated setting must still
+	// get alerted, not silently get nothing with no indication why.
 	checker, st, set := newTestChecker(t)
-	if _, err := st.AddUser(context.Background(), store.User{
+	userID, err := st.AddUser(context.Background(), store.User{
 		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
 		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := set.MetricsEnabled.Set(context.Background(), false); err != nil {
@@ -97,12 +102,12 @@ func TestCheckerRunSkipsEverythingWhenMetricsDisabled(t *testing.T) {
 	if err := checker.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	history, err := st.UserPrefixHistory(context.Background(), 1, 30)
+	history, err := st.UserPrefixHistory(context.Background(), userID, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 0 {
-		t.Fatal("expected no history recorded while MetricsEnabled is false")
+	if len(history) != 1 {
+		t.Fatal("expected history to still be recorded with MetricsEnabled false")
 	}
 }
 
