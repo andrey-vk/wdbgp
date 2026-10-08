@@ -515,6 +515,41 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, ex
 		if err != nil {
 			return err
 		}
+
+		// Stage any existing user whose peer identity (peer_ip, peer_asn) is
+		// actually changing, before any real write below: users(peer_ip,
+		// peer_asn) has a UNIQUE constraint, so two users trading identities
+		// with each other in the same import (A takes B's old tuple, B takes
+		// A's) would otherwise have the first one's UPDATE rejected purely
+		// because of write order, the same class of problem the community
+		// pre-clear above solves. Staging moves the OLD identity out of the
+		// way first, to a placeholder guaranteed unique per user ID (and far
+		// outside any ASN or address a real configuration would plausibly
+		// use), so by the time the real writes below run, no leftover old
+		// identity can still be holding a tuple this import wants to reuse.
+		currentUserByName := make(map[string]ConfigUser, len(current.Users))
+		for _, cu := range current.Users {
+			currentUserByName[cu.Name] = cu
+		}
+		for _, u := range snap.Users {
+			userID, existed := userIDByName[u.Name]
+			if !existed {
+				continue
+			}
+			was := currentUserByName[u.Name]
+			if was.PeerIP == u.PeerIP && was.PeerASN == u.PeerASN {
+				continue
+			}
+			stagingIP, stagingASN, err := stagingPeerIdentity(userID)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE users SET peer_ip = ?, peer_asn = ? WHERE id = ?",
+				stagingIP, stagingASN, userID); err != nil {
+				return err
+			}
+		}
+
 		for _, u := range snap.Users {
 			modeID, ok := modeIDByName[u.CatalogMode]
 			if !ok {
@@ -599,12 +634,20 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, ex
 		// other in the same import (A gives up a CIDR, B takes it) validates
 		// against the final combined state, not a half-applied intermediate
 		// one that would reject a globally valid import over write order.
+		//
+		// A disabled candidate is skipped regardless of its web_auth: a
+		// disabled user is already excluded from the *other*-user side of
+		// activeNetworksOverlapTx's own query, and from UserByIP's
+		// resolution entirely, so its networks — vestigial by the same
+		// reasoning ActiveNetworksOverlap's doc comment already gives —
+		// cannot create any real ambiguity regardless of what they overlap.
 		for _, userID := range result.AffectedUserIDs {
 			var webAuthInt int
-			if err := tx.QueryRowContext(ctx, "SELECT web_auth FROM users WHERE id = ?", userID).Scan(&webAuthInt); err != nil {
+			var enabled bool
+			if err := tx.QueryRowContext(ctx, "SELECT web_auth, enabled FROM users WHERE id = ?", userID).Scan(&webAuthInt, &enabled); err != nil {
 				return err
 			}
-			if !isActiveWebAuth(webAuthFromInt(webAuthInt)) {
+			if !enabled || !isActiveWebAuth(webAuthFromInt(webAuthInt)) {
 				continue
 			}
 			networks, err := userNetworksTx(ctx, tx, userID)
@@ -621,6 +664,22 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, ex
 		return AuditEntryTx(ctx, tx, meta, "config", "import", nil, result, true)
 	})
 	return result, err
+}
+
+// stagingPeerIdentity derives a (peer_ip, peer_asn) placeholder for userID,
+// unique across every staged row in one ApplyConfigSnapshot run (ids are
+// themselves unique) and never a value a real configuration would plausibly
+// use: 192.0.2.1 is TEST-NET-1 (RFC 5737) — reserved, non-routable, and
+// already in this instance's own default bogon deny list (migration 005) —
+// and the ASN comes from the private-use 32-bit range (RFC 6996), offset by
+// userID so two different users never share a tuple even though they share
+// the same placeholder address.
+func stagingPeerIdentity(userID int64) (peerIP []byte, peerASN uint32, err error) {
+	peerIP, err = encodeAddrArg("192.0.2.1")
+	if err != nil {
+		return nil, 0, err
+	}
+	return peerIP, 4200000000 + uint32(userID), nil //nolint:gosec // userID is a small, bounded autoincrement id; no overflow risk in practice
 }
 
 func catalogModeIDsByNameTx(ctx context.Context, tx *sql.Tx) (map[string]int64, error) {

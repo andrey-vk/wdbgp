@@ -57,18 +57,52 @@ func rejectUnsupportedConfigSchema(w http.ResponseWriter, snap store.ConfigSnaps
 	return true
 }
 
+// decodeCompleteConfigSnapshot parses raw as a ConfigSnapshot, additionally
+// requiring global_filters, modes, and users to actually be present in the
+// document (and not JSON null) — matching schema_version alone isn't
+// enough: {"schema_version":1} also decodes cleanly, with every other field
+// at its zero value, and confirming its preview would clear every global
+// filter. A real export always includes all three keys (ConfigSnapshot's
+// JSON tags have no omitempty), even when a value is a genuinely empty [].
+func decodeCompleteConfigSnapshot(raw json.RawMessage) (store.ConfigSnapshot, error) {
+	var presence struct {
+		GlobalFilters json.RawMessage `json:"global_filters"`
+		Modes         json.RawMessage `json:"modes"`
+		Users         json.RawMessage `json:"users"`
+	}
+	if err := json.Unmarshal(raw, &presence); err != nil {
+		return store.ConfigSnapshot{}, err
+	}
+	present := func(f json.RawMessage) bool { return len(f) > 0 && string(f) != "null" }
+	if !present(presence.GlobalFilters) || !present(presence.Modes) || !present(presence.Users) {
+		return store.ConfigSnapshot{}, errors.New("incomplete configuration document: missing global_filters, modes, or users")
+	}
+	var snap store.ConfigSnapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		return store.ConfigSnapshot{}, err
+	}
+	return snap, nil
+}
+
 // apiConfigImportPreview handles POST /api/admin/config/import/preview: a
 // dry-run diff of an uploaded snapshot against this instance's current
 // configuration, plus the digest apiConfigImport requires. Read-only — it
 // writes nothing.
 func (s *Server) apiConfigImportPreview(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Snapshot store.ConfigSnapshot `json:"snapshot"`
+	var raw struct {
+		Snapshot json.RawMessage `json:"snapshot"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
+	var body struct{ Snapshot store.ConfigSnapshot }
+	snap, err := decodeCompleteConfigSnapshot(raw.Snapshot)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	body.Snapshot = snap
 	if rejectUnsupportedConfigSchema(w, body.Snapshot) {
 		return
 	}
@@ -109,16 +143,32 @@ func (s *Server) apiConfigImportPreview(w http.ResponseWriter, r *http.Request) 
 // current ones, and validated before Store.ApplyConfigSnapshot runs so an
 // invalid filter can never be reported as a failure after everything else in
 // the snapshot already committed.
+// apiConfigImportPreFiltersHook, if set, runs in apiConfigImport right after
+// Store.ApplyConfigSnapshot commits but before the global-filters step —
+// for a test simulating a concurrent edit to global filters landing in
+// exactly that gap (see TestAPIConfigImportReportsPartialSuccessWhenFiltersDrift).
+var apiConfigImportPreFiltersHook func()
+
 func (s *Server) apiConfigImport(w http.ResponseWriter, r *http.Request) {
 	extendWriteDeadline(w, r) // synchronous BGP reconcile can outlive WriteTimeout
-	var body struct {
-		Snapshot store.ConfigSnapshot `json:"snapshot"`
-		Digest   string               `json:"digest"`
+	var raw struct {
+		Snapshot json.RawMessage `json:"snapshot"`
+		Digest   string          `json:"digest"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: "Invalid request body"})
 		return
 	}
+	var body struct {
+		Snapshot store.ConfigSnapshot
+		Digest   string
+	}
+	snap, err := decodeCompleteConfigSnapshot(raw.Snapshot)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, apiResponse{OK: false, Error: err.Error()})
+		return
+	}
+	body.Snapshot, body.Digest = snap, raw.Digest
 	if rejectUnsupportedConfigSchema(w, body.Snapshot) {
 		return
 	}
@@ -156,20 +206,42 @@ func (s *Server) apiConfigImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if apiConfigImportPreFiltersHook != nil {
+		apiConfigImportPreFiltersHook()
+	}
+
+	// By this point Store.ApplyConfigSnapshot has already committed every
+	// mode and user change durably — a failure in this filters step from
+	// here on is reported as a partial success (global_filters_applied:
+	// false plus global_filters_error), never as an overall import failure.
+	// Reporting 500/409 here instead would tell the admin the whole import
+	// failed while the entity changes it actually made stay applied, and —
+	// worse — would skip the BGP peer sync below entirely, leaving the
+	// speaker's peer cache stale for changes that did commit.
 	filtersApplied := false
+	var filtersError string
 	if !routeFiltersEqual(previousFilters, body.Snapshot.GlobalFilters) {
 		if err := s.applyGlobalFiltersFromImport(r, body.Snapshot.GlobalFilters, previousFilters); err != nil {
-			writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: err.Error()})
-			return
+			if errors.Is(err, store.ErrConfigImportStale) {
+				filtersError = "Global filters changed since the preview; apply them separately via Settings"
+			} else {
+				filtersError = "Failed to apply global filters: " + err.Error()
+			}
+			logging.FromContext(r.Context()).Debug("config import: global filters apply failed after entities committed", "error", err)
+		} else {
+			filtersApplied = true
 		}
-		filtersApplied = true
 	}
 
 	s.syncBGPAfterConfigImport(r, result.AffectedUserIDs)
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"result":                 result,
 		"global_filters_applied": filtersApplied,
-	})
+	}
+	if filtersError != "" {
+		resp["global_filters_error"] = filtersError
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // syncBGPAfterConfigImport reloads every user an import created or updated
@@ -230,11 +302,27 @@ func (s *Server) validateGlobalFilters(filters store.RouteFilters) error {
 // apiSettingsPut's filter handling documents. Audited under the same action
 // the Settings page itself uses, so the admin audit log doesn't need a
 // second action name for the same kind of change.
-func (s *Server) applyGlobalFiltersFromImport(r *http.Request, newFilters, before store.RouteFilters) error {
+//
+// expectedBefore is rechecked against the live value from inside this same
+// transaction, immediately before writing — the caller read it earlier
+// (before Store.ApplyConfigSnapshot even ran), and without this recheck a
+// second admin's edit to the global filters landing in the gap between that
+// read and this call would be silently overwritten despite this import's
+// own digest check having already passed. Returns store.ErrConfigImportStale
+// on a mismatch, the same sentinel ApplyConfigSnapshot itself uses, so the
+// caller handles both with one error check.
+func (s *Server) applyGlobalFiltersFromImport(r *http.Request, newFilters, expectedBefore store.RouteFilters) error {
 	ctx := r.Context()
 	var commits []func()
 	txErr := s.store.Transaction(ctx, func(tx *sql.Tx) error {
 		commits = nil // attempt-local: Store.Transaction may retry
+		actualBefore, err := store.GlobalRouteFiltersTx(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if !routeFiltersEqual(actualBefore, expectedBefore) {
+			return store.ErrConfigImportStale
+		}
 		_, commitAllow, err := s.settings.FilterAllow.SetTx(ctx, tx, strings.Join(newFilters.Allow, "\n"))
 		if err != nil {
 			return err
@@ -247,7 +335,7 @@ func (s *Server) applyGlobalFiltersFromImport(r *http.Request, newFilters, befor
 		commits = append(commits, commitDeny)
 		meta := store.AuditMeta{Actor: s.adminActor(r), UserAgent: r.Header.Get("User-Agent"), Action: "route_filters.global_updated"}
 		return store.AuditEntryTx(ctx, tx, meta, "settings", "",
-			store.BoundRouteFiltersForAudit(before), store.BoundRouteFiltersForAudit(newFilters), false)
+			store.BoundRouteFiltersForAudit(actualBefore), store.BoundRouteFiltersForAudit(newFilters), false)
 	})
 	if txErr != nil {
 		return txErr

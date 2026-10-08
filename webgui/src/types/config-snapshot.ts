@@ -97,4 +97,10 @@ export interface ConfigImportPreviewResponse {
 export interface ConfigImportResponse {
   result: ConfigApplyResult
   global_filters_applied: boolean
+  // Present only when global_filters_applied is false because applying them
+  // specifically failed after the rest of the import already committed —
+  // not simply because the file's filters already matched. See
+  // apiConfigImport's own comment on why that's reported as a partial
+  // success rather than an overall import failure.
+  global_filters_error?: string
 }

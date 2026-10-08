@@ -51,6 +51,7 @@
   "config.import_apply": "Apply",
   "config.import_done": "Imported: {usersCreated} user(s) created, {usersUpdated} updated; {modesCreated} mode(s) created, {modesUpdated} updated",
   "config.import_filters_applied": "Global route filters were also updated to match the file",
+  "config.import_filters_apply_failed": "The rest of the import succeeded, but applying global filters failed: {error}",
   "config.import_unknown_feeds": "Some mode-feed links were skipped — this instance has no feed matching: {list}",
   "config.import_unknown_modes": "Some users were skipped — this instance has no mode matching: {list}",
   "config.import_failed": "Failed to apply the import",

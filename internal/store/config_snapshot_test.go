@@ -544,3 +544,74 @@ func TestApplyConfigSnapshotChecksOverlapAgainstStoredWebAuthNotRawInput(t *test
 		t.Fatal("expected an overlap error for a garbled web_auth that still stores as the active 'network' mode")
 	}
 }
+
+func TestApplyConfigSnapshotSkipsOverlapValidationForDisabledUsers(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.AddUser(ctx, User{
+		Name: "existing", PeerIP: "20.0.0.9", PeerASN: 65099, Enabled: true, WebAuth: "network",
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID, Networks: []string{"203.0.113.0/24"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Disabled: this user's networks are already excluded from UserByIP and
+	// from the OTHER-user side of activeNetworksOverlapTx's own query, so
+	// they cannot create any real ambiguity regardless of what they overlap.
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "newcomer", PeerIP: "20.0.0.10", PeerASN: 65100, CatalogMode: "OpenCCK", Enabled: false,
+			WebAuth: "network", Networks: []string{"203.0.113.128/25"}},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a disabled user's overlapping networks must not block the import: %v", err)
+	}
+}
+
+func TestApplyConfigSnapshotSwapsPeerIdentitiesWithoutTransientCollision(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	aliceID, err := s.AddUser(ctx, User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobID, err := s.AddUser(ctx, User{
+		Name: "bob", PeerIP: "20.0.0.2", PeerASN: 65002, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Swapped relative to their current rows: applying in snapshot order
+	// (alice first) would transiently try to give alice bob's current tuple
+	// while bob still holds it, violating users(peer_ip, peer_asn)'s UNIQUE
+	// constraint purely because of write order, unless each changed
+	// identity is staged out of the way first.
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "alice", PeerIP: "20.0.0.2", PeerASN: 65002, CatalogMode: "OpenCCK", Enabled: true},
+		{Name: "bob", PeerIP: "20.0.0.1", PeerASN: 65001, CatalogMode: "OpenCCK", Enabled: true},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a valid peer identity swap was rejected: %v", err)
+	}
+
+	alice, err := s.User(ctx, aliceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := s.User(ctx, bobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alice.PeerIP != "20.0.0.2" || alice.PeerASN != 65002 {
+		t.Fatalf("alice = %+v, want bob's old identity", alice)
+	}
+	if bob.PeerIP != "20.0.0.1" || bob.PeerASN != 65001 {
+		t.Fatalf("bob = %+v, want alice's old identity", bob)
+	}
+}

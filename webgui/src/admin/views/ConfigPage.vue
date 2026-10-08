@@ -127,6 +127,8 @@ async function confirmImport() {
     })
     if (resp.data.global_filters_applied) {
       toast.add({ severity: 'info', summary: t('config.import_filters_applied'), life: 4000 })
+    } else if (resp.data.global_filters_error) {
+      toast.add({ severity: 'warn', summary: t('config.import_filters_apply_failed', { error: resp.data.global_filters_error }), life: 8000 })
     }
     if (r.unknown_feeds?.length) {
       toast.add({ severity: 'warn', summary: t('config.import_unknown_feeds', { list: r.unknown_feeds.join(', ') }), life: 8000 })
