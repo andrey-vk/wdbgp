@@ -138,13 +138,26 @@ func (c *Checker) Run(ctx context.Context) error {
 		// earlier delivery attempt failed, when it first happened). Retry
 		// it now, with this tick's freshly measured count rather than a
 		// stale one.
-		pending, err := c.Store.PendingPrefixAlertDrop(ctx, u.ID, v4, v6)
+		pendingDrop, err := c.Store.PendingPrefixAlertDrop(ctx, u.ID, v4, v6)
 		if err != nil {
 			logging.Error("prefix alert check: pending lookup failed", "error", err, "user_id", u.ID)
 			continue
 		}
-		if pending != nil {
-			deliveries = append(deliveries, delivery{u, pending})
+		if pendingDrop != nil {
+			deliveries = append(deliveries, delivery{u, pendingDrop})
+			continue
+		}
+		// Same, for a recovery whose own webhook never got through. A user
+		// can only have one of these pending at a time by construction
+		// (EvaluateUserPrefixAlert clears recovery_pending the moment a
+		// fresh drop supersedes it), so checking both costs nothing extra.
+		pendingRecovery, err := c.Store.PendingPrefixAlertRecovery(ctx, u.ID, v4, v6)
+		if err != nil {
+			logging.Error("prefix alert check: pending recovery lookup failed", "error", err, "user_id", u.ID)
+			continue
+		}
+		if pendingRecovery != nil {
+			deliveries = append(deliveries, delivery{u, pendingRecovery})
 		}
 	}
 
@@ -153,13 +166,12 @@ func (c *Checker) Run(ctx context.Context) error {
 	}
 	c.deliveringMu.Lock()
 	if c.delivering {
-		// A batch is already working through a backlog. A drop found again
-		// here would just be rediscovered next tick via PendingPrefixAlertDrop
-		// — but a recovery fires exactly once (EvaluateUserPrefixAlert has
-		// already cleared alerting_since by the time it returns one), so
-		// simply discarding it here would lose it permanently. Merge
-		// instead (by user, last one wins): the running goroutine drains
-		// c.queued before it actually stops (see below).
+		// A batch is already working through a backlog. Either event found
+		// again here would be rediscovered on a later tick via
+		// PendingPrefixAlertDrop/PendingPrefixAlertRecovery, but merging it
+		// into c.queued now (by user, last one wins) delivers it sooner
+		// instead of waiting for that rediscovery. The running goroutine
+		// drains c.queued before it actually stops (see below).
 		if c.queued == nil {
 			c.queued = make(map[int64]delivery, len(deliveries))
 		}
@@ -203,16 +215,25 @@ func (c *Checker) deliverLoop(ctx context.Context, batch []delivery) {
 			return
 		}
 		for _, d := range batch {
+			// A batch can sit queued across more than one measurement
+			// tick (see above) — long enough for the episode it
+			// describes to have already resolved, evaluated fresh by a
+			// later tick while this one was still waiting its turn.
+			// Sending it anyway would tell the receiver an outage (or a
+			// recovery) is still current when it already isn't.
 			if d.transition.Event == store.PrefixAlertDrop {
-				// A batch can sit queued across more than one measurement
-				// tick (see above) — long enough for the episode it
-				// describes to have already resolved, evaluated fresh by a
-				// later tick while this one was still waiting its turn.
-				// Sending it anyway would tell the receiver an outage is
-				// still ongoing when it already isn't.
 				stillPending, err := c.Store.PrefixAlertDropStillPending(ctx, d.user.ID)
 				if err != nil {
 					logging.Error("prefix alert check: pending re-check failed", "error", err, "user_id", d.user.ID)
+					continue
+				}
+				if !stillPending {
+					continue
+				}
+			} else {
+				stillPending, err := c.Store.PrefixAlertRecoveryStillPending(ctx, d.user.ID)
+				if err != nil {
+					logging.Error("prefix alert check: pending recovery re-check failed", "error", err, "user_id", d.user.ID)
 					continue
 				}
 				if !stillPending {
@@ -225,6 +246,10 @@ func (c *Checker) deliverLoop(ctx context.Context, batch []delivery) {
 			if d.transition.Event == store.PrefixAlertDrop {
 				if err := c.Store.MarkPrefixAlertDropDelivered(ctx, d.user.ID); err != nil {
 					logging.Error("prefix alert check: mark delivered failed", "error", err, "user_id", d.user.ID)
+				}
+			} else {
+				if err := c.Store.MarkPrefixAlertRecoveryDelivered(ctx, d.user.ID); err != nil {
+					logging.Error("prefix alert check: mark recovery delivered failed", "error", err, "user_id", d.user.ID)
 				}
 			}
 		}
@@ -302,11 +327,10 @@ func isRetriableWebhookError(err error) bool {
 // deliver POSTs the transition as JSON, retrying a transient failure
 // (isRetriableWebhookError — a few attempts over several seconds via
 // retry.HTTPConfig) and logging a final failure rather than returning it as
-// an error: the caller only needs to know whether to mark a drop delivered,
-// not why a failure happened. A drop that still fails here stays pending —
-// PendingPrefixAlertDrop offers it again next tick — but a lost recovery
-// notification is an accepted limitation: there is no equivalent retry for
-// it, since the episode it would describe is already over.
+// an error: the caller only needs to know whether to mark it delivered, not
+// why a failure happened. Either event that still fails here stays
+// pending — a drop via PendingPrefixAlertDrop, a recovery via
+// PendingPrefixAlertRecovery — and is offered again on a later tick.
 func (c *Checker) deliver(ctx context.Context, webhookURL string, u store.User, t *store.PrefixAlertTransition) bool {
 	body, err := json.Marshal(buildPayload(u, t))
 	if err != nil {

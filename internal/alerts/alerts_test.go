@@ -274,6 +274,84 @@ func TestCheckerRunRetriesAnUndeliveredDropOnceTheWebhookIsConfigured(t *testing
 	}
 }
 
+func TestCheckerRunRetriesAnUndeliveredRecoveryOnceTheWebhookIsConfigured(t *testing.T) {
+	// Mirrors TestCheckerRunRetriesAnUndeliveredDropOnceTheWebhookIsConfigured,
+	// but for the recovery side of the same retry mechanism. A user's count
+	// can't actually be made to recover in this package's tests (every test
+	// user is selectionless, so CountSelectionPrefixes always measures 0),
+	// so the "already recovered, still undelivered" state is seeded directly
+	// instead of being produced by a real EvaluateUserPrefixAlert call.
+	checker, st, set := newTestChecker(t)
+	srv, calls, mu := startWebhookServer(t)
+	ctx := context.Background()
+	// AlertWebhookURL left empty: alerting is disabled.
+
+	userID, err := st.AddUser(ctx, store.User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recoveredAt := time.Now().UTC().Unix() - 120
+	if _, err := st.DB.ExecContext(ctx,
+		`INSERT INTO user_prefix_alert_state(
+			user_id, baseline_v4, baseline_v6, alerting_since, drop_delivered,
+			recovery_pending, recovery_detected_at, recovery_baseline_v4, recovery_baseline_v6, recovery_duration_seconds
+		 ) VALUES (?, 0, 0, NULL, 1, 1, ?, 100, 0, 300)`,
+		userID, recoveredAt); err != nil {
+		t.Fatal(err)
+	}
+
+	// A tick with alerting still disabled must not deliver anything, and
+	// must leave the pending recovery exactly as it was.
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	n := len(*calls)
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("webhook calls while disabled = %d, want 0", n)
+	}
+
+	// The webhook gets configured after the fact. The very next run must
+	// retry and deliver the still-pending recovery, using the frozen
+	// pre-incident baseline/duration captured when it was first detected —
+	// not whatever the row's live baseline_v4/v6 columns hold now (0, since
+	// EvaluateUserPrefixAlert moved them on to track the new normal).
+	if err := set.AlertWebhookURL.Set(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, calls, mu, 1)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*calls) != 1 {
+		t.Fatalf("webhook calls after enabling = %d, want 1 (the retried recovery report)", len(*calls))
+	}
+	p := (*calls)[0].payload
+	if p.Event != string(store.PrefixAlertRecovered) {
+		t.Fatalf("event = %q, want %q", p.Event, store.PrefixAlertRecovered)
+	}
+	if p.BaselineV4 != 100 {
+		t.Fatalf("baseline_v4 = %d, want the frozen pre-incident baseline 100, not the live (post-recovery) one", p.BaselineV4)
+	}
+	if p.DurationSeconds != 300 {
+		t.Fatalf("duration_seconds = %d, want the frozen 300", p.DurationSeconds)
+	}
+
+	pending, err := st.PrefixAlertRecoveryStillPending(ctx, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending {
+		t.Fatal("recovery still pending after a successful delivery, want it marked delivered")
+	}
+}
+
 func TestCheckerRunMeasuresAllUsersBeforeDeliveringAnyWebhook(t *testing.T) {
 	checker, st, set := newTestChecker(t)
 	ctx := context.Background()
