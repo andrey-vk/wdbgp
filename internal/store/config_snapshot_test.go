@@ -751,3 +751,52 @@ func TestApplyConfigSnapshotReservesSnapshotTargetIdentitiesBeforeStaging(t *tes
 		t.Fatalf("carol = %+v, want her new imported identity", carol)
 	}
 }
+
+func TestApplyConfigSnapshotNormalizesAddressesBeforeReservingStagingTargets(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Same scenario and ordering as the test above, but amy's PeerIP is
+	// written with surrounding whitespace — a raw string comparison against
+	// stagingPeerIPText would miss it, even though encodeAddrArg (what the
+	// real write actually stores) trims it and ends up with the exact same
+	// BLOB as the unpadded form.
+	amyID, err := s.AddUser(ctx, User{
+		Name: "amy", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	carolID, err := s.AddUser(ctx, User{
+		Name: "carol", PeerIP: "20.0.0.3", PeerASN: 65003, Enabled: true,
+		FilterMode: FilterModeGlobal, CatalogModeID: DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetASN := uint32(4200000000) + uint32(carolID) //nolint:gosec
+	snap := ConfigSnapshot{Users: []ConfigUser{
+		{Name: "amy", PeerIP: " " + stagingPeerIPText + " ", PeerASN: targetASN, CatalogMode: "OpenCCK", Enabled: true},
+		{Name: "carol", PeerIP: "20.0.0.9", PeerASN: 65009, CatalogMode: "OpenCCK", Enabled: true},
+	}}
+	if _, err := applyConfigSnapshot(t, s, snap, AuditMeta{}); err != nil {
+		t.Fatalf("a valid import was rejected by an un-normalized staging-target collision: %v", err)
+	}
+
+	amy, err := s.User(ctx, amyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amy.PeerIP != stagingPeerIPText || amy.PeerASN != targetASN {
+		t.Fatalf("amy = %+v, want her imported identity (normalized) at the staging address", amy)
+	}
+	carol, err := s.User(ctx, carolID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if carol.PeerIP != "20.0.0.9" || carol.PeerASN != 65009 {
+		t.Fatalf("carol = %+v, want her new imported identity", carol)
+	}
+}

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -544,8 +545,22 @@ func (s *Store) ApplyConfigSnapshot(ctx context.Context, snap ConfigSnapshot, ex
 		// without this, staging could assign one user a placeholder tuple
 		// that a different user's own real update claims moments later,
 		// rejecting an otherwise fully valid import purely on staging order.
+		//
+		// Compared as parsed/normalized bytes, not raw strings: encodeAddrArg
+		// (what the real write below actually stores) trims whitespace and
+		// normalizes the address's own representation, so an offline-edited
+		// snapshot using " 192.0.2.1 ", or any other syntactic variant that
+		// parses to the same address, would otherwise go unreserved here
+		// while still landing on the exact same stored BLOB later.
 		for _, u := range snap.Users {
-			if u.PeerIP == stagingPeerIPText {
+			ip, err := encodeAddrArg(u.PeerIP)
+			if err != nil {
+				// Fails validation elsewhere (encodeUserAddrs, in the real
+				// write below) and rolls back the whole import anyway, so an
+				// unparsable address can never actually collide with anything.
+				continue
+			}
+			if bytes.Equal(ip, stagingIPBytes) {
 				stagingTaken[u.PeerASN] = true
 			}
 		}
