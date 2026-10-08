@@ -48,3 +48,38 @@ func TestAPIUserPrefixHistoryReturnsRecordedSnapshots(t *testing.T) {
 		t.Fatalf("history = %+v, want one row {v4:10 v6:2}", resp.History)
 	}
 }
+
+func TestAPIUserPrefixHistoryAppliesRetentionFallbackForNonPositiveDays(t *testing.T) {
+	srv, st, _ := setupUserTestServer(t)
+	userID, err := st.AddUser(t.Context(), store.User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecordUserPrefixSnapshot(t.Context(), userID, 10, 2); err != nil {
+		t.Fatal(err)
+	}
+	// MetricsHistoryDays has no range validator — an admin can set it to 0.
+	if err := srv.settings.MetricsHistoryDays.Set(t.Context(), 0); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/admin/users/x/prefix-history", nil)
+	req.SetPathValue("id", strconv.FormatInt(userID, 10))
+	w := httptest.NewRecorder()
+	srv.apiUserPrefixHistory(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		History []store.UserPrefixSnapshot `json:"history"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.History) != 1 {
+		t.Fatalf("history = %+v, want the just-recorded snapshot despite metrics_history_days=0 (falls back to 14 days, same as purgeLoop)", resp.History)
+	}
+}

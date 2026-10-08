@@ -63,12 +63,25 @@ func (c *Checker) Run(ctx context.Context) error {
 		if err := c.Store.RecordUserPrefixSnapshot(ctx, u.ID, v4, v6); err != nil {
 			logging.Error("prefix alert check: record snapshot failed", "error", err, "user_id", u.ID)
 		}
+		if webhookURL == "" {
+			// Alerting is disabled: don't evaluate or persist a transition
+			// at all, not just skip delivering it. Persisting one anyway
+			// would let a drop that happened while disabled go unreported
+			// (nothing delivers it), and then — once a webhook URL is later
+			// configured, possibly while the user is still down — the
+			// eventual recovery would fire with no drop ever having been
+			// announced for it. Leaving the state untouched means the first
+			// evaluation after a webhook is configured compares against
+			// whatever was last normal, which still correctly reports an
+			// ongoing outage as a fresh drop.
+			continue
+		}
 		transition, err := c.Store.EvaluateUserPrefixAlert(ctx, u.ID, v4, v6, threshold, baselineMin)
 		if err != nil {
 			logging.Error("prefix alert check: evaluate failed", "error", err, "user_id", u.ID)
 			continue
 		}
-		if transition == nil || webhookURL == "" {
+		if transition == nil {
 			continue
 		}
 		c.deliver(ctx, webhookURL, u, transition)

@@ -140,8 +140,12 @@ func (s *Store) EvaluateUserPrefixAlert(ctx context.Context, userID int64, curre
 		return nil, err
 	}
 
-	// Currently in a drop episode.
-	if currentTotal >= dropLine {
+	// Currently in a drop episode. Strictly above dropLine, not >=: the drop
+	// condition above fires at currentTotal <= dropLine, so a count parked
+	// exactly on the line would otherwise satisfy both predicates — flipping
+	// alerting_since to NULL and back to set on every single tick, for a
+	// persistent outage that never actually recovered.
+	if currentTotal > dropLine {
 		duration := time.Now().UTC().Unix() - alertingSince.Int64
 		if _, err := s.DB.ExecContext(ctx,
 			"UPDATE user_prefix_alert_state SET baseline_v4 = ?, baseline_v6 = ?, alerting_since = NULL WHERE user_id = ?",

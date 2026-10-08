@@ -158,3 +158,42 @@ func TestEvaluateUserPrefixAlertIgnoresDropsBelowBaselineMinimum(t *testing.T) {
 		t.Fatalf("transition = %+v, want nil: baseline is below the minimum floor", transition)
 	}
 }
+
+func TestEvaluateUserPrefixAlertDoesNotFlapAtExactDropLine(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	userID := prefixAlertTestUser(t, s)
+
+	// Baseline of 100, 50% threshold -> dropLine is exactly 50.
+	if _, err := s.EvaluateUserPrefixAlert(ctx, userID, 100, 0, 50, 10); err != nil {
+		t.Fatal(err)
+	}
+	transition, err := s.EvaluateUserPrefixAlert(ctx, userID, 50, 0, 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition == nil || transition.Event != PrefixAlertDrop {
+		t.Fatalf("transition = %+v, want a drop event landing exactly on the line", transition)
+	}
+
+	// Parked exactly on the line, unchanged: must still be "alerting", not
+	// bounce to "recovered" and back on every tick despite nothing changing.
+	for i := 0; i < 3; i++ {
+		transition, err = s.EvaluateUserPrefixAlert(ctx, userID, 50, 0, 50, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if transition != nil {
+			t.Fatalf("tick %d: transition = %+v, want nil: a count parked exactly on the drop line is still an active drop, not a recovery", i, transition)
+		}
+	}
+
+	// Only strictly above the line counts as recovered.
+	transition, err = s.EvaluateUserPrefixAlert(ctx, userID, 51, 0, 50, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transition == nil || transition.Event != PrefixAlertRecovered {
+		t.Fatalf("transition = %+v, want a recovered event once strictly above the drop line", transition)
+	}
+}

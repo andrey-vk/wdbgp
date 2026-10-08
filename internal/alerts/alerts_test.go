@@ -167,3 +167,59 @@ func TestCheckerRunDeliversDropWebhook(t *testing.T) {
 		t.Fatalf("webhook calls after a second run with no change = %d, want still 1", len(*calls))
 	}
 }
+
+func TestCheckerRunDoesNotConsumeTransitionsWhileWebhookDisabled(t *testing.T) {
+	checker, st, set := newTestChecker(t)
+	srv, calls, mu := startWebhookServer(t)
+	ctx := context.Background()
+	if err := set.AlertPrefixDropThresholdPercent.Set(ctx, 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.AlertPrefixBaselineMinimum.Set(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	// AlertWebhookURL left empty: alerting is disabled.
+
+	userID, err := st.AddUser(ctx, store.User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since) VALUES (?, 100, 0, NULL)", userID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A real drop happens while alerting is disabled.
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var alertingSince *int64
+	if err := st.DB.QueryRowContext(ctx, "SELECT alerting_since FROM user_prefix_alert_state WHERE user_id = ?", userID).Scan(&alertingSince); err != nil {
+		t.Fatal(err)
+	}
+	if alertingSince != nil {
+		t.Fatal("alerting_since was set while the webhook was disabled: the transition must not be persisted, only history recorded")
+	}
+
+	// The webhook gets configured while the user is still down. The very
+	// next run must report the (still ongoing) drop as fresh — not stay
+	// silent, and not later report a "recovered" with no drop ever having
+	// been announced for it.
+	if err := set.AlertWebhookURL.Set(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*calls) != 1 {
+		t.Fatalf("webhook calls after enabling mid-outage = %d, want 1 (a fresh drop report)", len(*calls))
+	}
+	if (*calls)[0].payload.Event != string(store.PrefixAlertDrop) {
+		t.Fatalf("event = %q, want %q", (*calls)[0].payload.Event, store.PrefixAlertDrop)
+	}
+}

@@ -25,7 +25,14 @@ func (s *Server) apiUserPrefixHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same fallback purgeLoop already applies for this setting: it has no
+	// range validator, so an admin can set it to 0 or negative, and
+	// daysCutoff(0) would otherwise return only this exact second — an
+	// effectively-empty chart that disagrees with what's actually retained.
 	days := s.settings.MetricsHistoryDays.Get()
+	if days <= 0 {
+		days = 14
+	}
 	history, err := s.store.UserPrefixHistory(r.Context(), id, days)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, apiResponse{OK: false, Error: "Failed to load prefix history"})
