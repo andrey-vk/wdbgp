@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/andrey-vk/wdbgp/internal/alerts"
 	"github.com/andrey-vk/wdbgp/internal/bgp"
 	"github.com/andrey-vk/wdbgp/internal/feeds"
 	"github.com/andrey-vk/wdbgp/internal/logging"
@@ -158,6 +159,7 @@ func serve(s *settings.Settings, db *store.Store) error {
 	syncer := feeds.NewSyncer(db, s)
 	go syncLoop(ctx, time.Duration(s.SyncInterval.Get())*time.Second, syncer, bgpManager, db, s)
 	go purgeLoop(ctx, time.Hour, db, s)
+	go prefixAlertLoop(ctx, prefixAlertInterval, alerts.NewChecker(db, s))
 
 	webServer := web.New(s, db, syncer, bgpManager)
 	// Tie the async 202 feed syncs to the signal context and wait for them
@@ -221,11 +223,11 @@ func purgeLoop(ctx context.Context, interval time.Duration, db *store.Store, s *
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			days := s.MetricsHistoryDays.Get()
+			if days <= 0 {
+				days = 14
+			}
 			if s.MetricsEnabled.Get() {
-				days := s.MetricsHistoryDays.Get()
-				if days <= 0 {
-					days = 14
-				}
 				if err := db.PurgeUserSnapshots(ctx, days); err != nil {
 					logging.Error("metrics purge failed for user snapshots", "error", err)
 				}
@@ -233,10 +235,45 @@ func purgeLoop(ctx context.Context, interval time.Duration, db *store.Store, s *
 					logging.Error("metrics purge failed for feed snapshots", "error", err)
 				}
 			}
+			// Not gated on MetricsEnabled: withdraw alerting's own history
+			// collection isn't either (internal/alerts' own Checker.Run),
+			// since it's a separate feature from the dashboard metrics that
+			// setting controls — gating its retention the same way would
+			// let this table grow unbounded while MetricsEnabled is off but
+			// alert_webhook_url is set.
+			if err := db.PurgeUserPrefixHistory(ctx, days); err != nil {
+				logging.Error("metrics purge failed for user prefix history", "error", err)
+			}
 
 			auditDays := store.EffectiveAuditRetentionDays(s.AuditLogRetentionDays.Get())
 			if err := db.PurgeAuditLog(ctx, auditDays); err != nil {
 				logging.Error("audit log purge failed", "error", err)
+			}
+		}
+	}
+}
+
+// prefixAlertInterval is how often prefixAlertLoop measures every enabled
+// user's effective prefix count. Not a setting — like purgeLoop's hourly
+// interval, this is an implementation detail of how often the background
+// check runs, not something an admin needs to tune; what they do tune
+// (AlertPrefixDropThresholdPercent, AlertPrefixBaselineMinimum) is the
+// question "how big a drop matters", not "how often do you look".
+const prefixAlertInterval = 5 * time.Minute
+
+// prefixAlertLoop periodically measures every enabled user's effective
+// prefix count, records it, and pushes a webhook when alerts.Checker
+// detects a sudden drop or a recovery from one — see internal/alerts.
+func prefixAlertLoop(ctx context.Context, interval time.Duration, checker *alerts.Checker) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := checker.Run(ctx); err != nil {
+				logging.Error("prefix alert check failed", "error", err)
 			}
 		}
 	}

@@ -120,6 +120,7 @@ func New(st *settings.Settings, s *store.Store, syncer *feeds.Syncer, bgp BGP) *
 	mux.HandleFunc("PUT /api/admin/users/{id}/credentials", server.apiRequireAdmin(server.apiUserCredentialsSet))
 	mux.HandleFunc("DELETE /api/admin/users/{id}/credentials", server.apiRequireAdmin(server.apiUserCredentialsDelete))
 	mux.HandleFunc("GET /api/admin/users/{id}/peer-state", server.apiRequireAdmin(server.apiUserPeerState))
+	mux.HandleFunc("GET /api/admin/users/{id}/prefix-history", server.apiRequireAdmin(server.apiUserPrefixHistory))
 	mux.HandleFunc("GET /api/admin/users/statuses", server.apiRequireAdmin(server.apiUserStatuses))
 	mux.HandleFunc("GET /api/admin/users/{id}/catalog", server.apiRequireAdmin(server.apiAdminUserCatalog))
 	mux.HandleFunc("PUT /api/admin/users/{id}/selections", server.apiRequireAdmin(server.apiAdminUserSaveSelections))

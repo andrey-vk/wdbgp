@@ -99,6 +99,9 @@ describe('settingsSchema', () => {
       adapter_backup_max: mkInt(null, 10, false),
       admin_cookie_secure: mkStr('auto', 'auto', false),
       admin_password: mkStr(null, '', false),
+      alert_prefix_baseline_minimum: mkInt(null, 10, false),
+      alert_prefix_drop_threshold_percent: mkInt(null, 50, false),
+      alert_webhook_url: mkStr(null, '', false),
       allow_dynamic_peers: mkBool(false, false, false),
       audit_log_retention_days: mkInt(null, 30, false),
       auto_restore_enabled: mkBool(false, false, false),
@@ -178,6 +181,9 @@ describe('settingsResponseSchema', () => {
       adapter_backup_max: mkInt(null, 10, false),
       admin_cookie_secure: mkStr('auto', 'auto', false),
       admin_password: mkStr(null, '', false),
+      alert_prefix_baseline_minimum: mkInt(null, 10, false),
+      alert_prefix_drop_threshold_percent: mkInt(null, 50, false),
+      alert_webhook_url: mkStr(null, '', false),
       allow_dynamic_peers: mkBool(false, false, false),
       audit_log_retention_days: mkInt(null, 30, false),
       auto_restore_enabled: mkBool(false, false, false),
@@ -241,6 +247,9 @@ describe('settingsResponseSchema', () => {
   // the field as env-overridden.
   it('retains audit_log_retention_days through a partial response', () => {
     const response = {
+      alert_prefix_baseline_minimum: { value: null, default_value: 10, env_override: false },
+      alert_prefix_drop_threshold_percent: { value: null, default_value: 50, env_override: false },
+      alert_webhook_url: { value: null, default_value: '', env_override: false },
       audit_log_retention_days: { value: null, default_value: 30, env_override: false },
     }
     const result = settingsSchema.partial().parse(response)
