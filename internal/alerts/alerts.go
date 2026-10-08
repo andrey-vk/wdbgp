@@ -32,18 +32,35 @@ type Checker struct {
 	// deliveringMu guards delivering and queued together: at most one
 	// in-flight delivery batch at a time (a second concurrent one would
 	// risk double-delivering the same pending drop), with anything Run
-	// collects while busy appended to queued rather than discarded — see
-	// Run and deliverLoop.
+	// collects while busy merged into queued rather than discarded — see
+	// Run and deliverLoop. queued is keyed by user ID, not a plain slice: a
+	// drop still undelivered after several ticks is rediscovered by every
+	// one of them (PendingPrefixAlertDrop has no memory of what's already
+	// queued), and a plain append would grow queued by one entry per tick
+	// for as long as delivery stays slower than the check interval — the
+	// map just holds the latest transition for that user instead.
 	deliveringMu sync.Mutex
 	delivering   bool
-	queued       []delivery
+	queued       map[int64]delivery
 }
 
 func NewChecker(s *store.Store, st *settings.Settings) *Checker {
 	return &Checker{
 		Store:    s,
 		Settings: st,
-		Client:   &http.Client{Timeout: 10 * time.Second},
+		Client: &http.Client{
+			Timeout: 10 * time.Second,
+			// Go's default redirect handling turns a 301/302/303 into a
+			// bodyless GET — silently dropping the JSON payload. A
+			// redirected endpoint that then answers 2xx would make deliver
+			// report success for an alert the receiver never actually got
+			// (e.g. a webhook URL entered as http:// that the server
+			// redirects to https://). Returning the redirect response
+			// itself instead means deliver's own resp.StatusCode >= 300
+			// check already treats it as a failure, same as any other
+			// non-2xx.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
 	}
 }
 
@@ -140,10 +157,15 @@ func (c *Checker) Run(ctx context.Context) error {
 		// here would just be rediscovered next tick via PendingPrefixAlertDrop
 		// — but a recovery fires exactly once (EvaluateUserPrefixAlert has
 		// already cleared alerting_since by the time it returns one), so
-		// simply discarding it here would lose it permanently. Queue
-		// instead: the running goroutine drains c.queued before it actually
-		// stops (see below).
-		c.queued = append(c.queued, deliveries...)
+		// simply discarding it here would lose it permanently. Merge
+		// instead (by user, last one wins): the running goroutine drains
+		// c.queued before it actually stops (see below).
+		if c.queued == nil {
+			c.queued = make(map[int64]delivery, len(deliveries))
+		}
+		for _, d := range deliveries {
+			c.queued[d.user.ID] = d
+		}
 		c.deliveringMu.Unlock()
 		return nil
 	}
@@ -152,16 +174,34 @@ func (c *Checker) Run(ctx context.Context) error {
 
 	// ctx, not a fresh background one: deliveries are tied to the loop's own
 	// lifetime (cancelled on shutdown), just no longer to this one tick's.
-	go c.deliverLoop(ctx, webhookURL, deliveries)
+	go c.deliverLoop(ctx, deliveries)
 	return nil
 }
 
 // deliverLoop delivers batch, then keeps draining whatever Run queued while
-// it was busy (plain reslicing under deliveringMu, not a channel — batches
-// are created at most once per tick and delivery is comparatively rare, so a
-// small lock held only for a slice swap is simpler than a channel here).
-func (c *Checker) deliverLoop(ctx context.Context, webhookURL string, batch []delivery) {
+// it was busy (a map swap under deliveringMu, not a channel — batches are
+// created at most once per tick and delivery is comparatively rare, so a
+// small lock held only for the swap is simpler than a channel here). The
+// webhook URL is re-read fresh on every pass, not just once when Run first
+// launched this goroutine — an admin changing or clearing it while a batch
+// is still working through a backlog must take effect on whatever's still
+// queued, not keep going to a URL that's no longer current.
+func (c *Checker) deliverLoop(ctx context.Context, batch []delivery) {
 	for {
+		webhookURL := c.Settings.AlertWebhookURL.Get()
+		if webhookURL == "" {
+			// Alerting was disabled mid-backlog. Whatever's left in batch
+			// (and in c.queued) stays correctly represented by the
+			// persisted DB state (drop_delivered still 0 for any undelivered
+			// drop), so nothing here needs to survive this goroutine ending
+			// — a future Run, once a URL is configured again, rediscovers
+			// it via PendingPrefixAlertDrop same as always.
+			c.deliveringMu.Lock()
+			c.delivering = false
+			c.queued = nil
+			c.deliveringMu.Unlock()
+			return
+		}
 		for _, d := range batch {
 			if d.transition.Event == store.PrefixAlertDrop {
 				// A batch can sit queued across more than one measurement
@@ -194,7 +234,11 @@ func (c *Checker) deliverLoop(ctx context.Context, webhookURL string, batch []de
 			c.deliveringMu.Unlock()
 			return
 		}
-		batch, c.queued = c.queued, nil
+		batch = make([]delivery, 0, len(c.queued))
+		for _, d := range c.queued {
+			batch = append(batch, d)
+		}
+		c.queued = nil
 		c.deliveringMu.Unlock()
 	}
 }

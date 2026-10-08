@@ -447,6 +447,8 @@ func TestCheckerRunQueuesANewDeliveryInsteadOfLosingItWhileABatchIsBusy(t *testi
 	}
 
 	aliceBlock := make(chan struct{})
+	var closeOnce sync.Once
+
 	var mu sync.Mutex
 	var events []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -463,6 +465,15 @@ func TestCheckerRunQueuesANewDeliveryInsteadOfLosingItWhileABatchIsBusy(t *testi
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
+	// A plain defer, registered after defer srv.Close() above so it runs
+	// FIRST (defers are LIFO): t.Cleanup would run too late here — it fires
+	// only after this goroutine has already exited, by which point the
+	// defer above is already blocked in srv.Close() waiting for aliceBlock
+	// to close, which is exactly what this is for. Guards against an
+	// assertion below failing (t.Fatal) before the explicit close further
+	// down ever runs, which would otherwise leave the handler — and so
+	// httptest.Server.Close — blocked forever.
+	defer closeOnce.Do(func() { close(aliceBlock) })
 	if err := set.AlertWebhookURL.Set(ctx, srv.URL); err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +509,7 @@ func TestCheckerRunQueuesANewDeliveryInsteadOfLosingItWhileABatchIsBusy(t *testi
 		t.Fatal(err)
 	}
 
-	close(aliceBlock)
+	closeOnce.Do(func() { close(aliceBlock) })
 
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -520,5 +531,277 @@ func TestCheckerRunQueuesANewDeliveryInsteadOfLosingItWhileABatchIsBusy(t *testi
 		if e != string(store.PrefixAlertDrop) {
 			t.Fatalf("events = %v, want both to be drops", events)
 		}
+	}
+}
+
+func TestCheckerRunDeduplicatesQueuedDropsByUser(t *testing.T) {
+	checker, st, set := newTestChecker(t)
+	ctx := context.Background()
+	if err := set.AlertPrefixDropThresholdPercent.Set(ctx, 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.AlertPrefixBaselineMinimum.Set(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceID, err := st.AddUser(ctx, store.User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobID, err := st.AddUser(ctx, store.User{
+		Name: "bob", PeerIP: "20.0.0.2", PeerASN: 65002, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only alice's drop is seeded up front — she's the one whose delivery
+	// blocks, keeping a batch "busy" for the rest of the test.
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since, drop_delivered) VALUES (?, 100, 0, ?, 0)",
+		aliceID, time.Now().UTC().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceBlock := make(chan struct{})
+	var closeOnce sync.Once
+
+	var mu sync.Mutex
+	var bobDeliveries int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p webhookPayload
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			t.Error(err)
+		}
+		if p.UserID == aliceID {
+			<-aliceBlock
+		} else {
+			mu.Lock()
+			bobDeliveries++
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	// See the identical comment in the queueing test above for why this is
+	// a plain defer (registered after defer srv.Close(), to run first) and
+	// not t.Cleanup.
+	defer closeOnce.Do(func() { close(aliceBlock) })
+	if err := set.AlertWebhookURL.Set(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	// First Run(): bob has no alert-state row yet, so this just establishes
+	// his baseline (matching his real, selectionless, always-0 count) — no
+	// transition for him. Alice's pending drop starts delivering and blocks.
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		checker.deliveringMu.Lock()
+		busy := checker.delivering
+		checker.deliveringMu.Unlock()
+		if busy {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Simulates bob having a single real drop, the same way the queueing
+	// test above does (his count can't be made to actually change).
+	if _, err := st.DB.ExecContext(ctx, "UPDATE user_prefix_alert_state SET baseline_v4 = 100 WHERE user_id = ?", bobID); err != nil {
+		t.Fatal(err)
+	}
+
+	// One more tick: alice's delivery is still stuck, so her own pending
+	// drop is rediscovered via PendingPrefixAlertDrop too — not just bob's,
+	// fresh this time. Both land in c.queued, one entry each.
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	checker.deliveringMu.Lock()
+	queuedLen := len(checker.queued)
+	checker.deliveringMu.Unlock()
+	if queuedLen != 2 {
+		t.Fatalf("len(queued) = %d, want exactly 2 (alice and bob, one entry each)", queuedLen)
+	}
+
+	// Several more ticks while the batch is still stuck: the exact same two
+	// still-undelivered drops are rediscovered every single time. Without
+	// deduplication, c.queued would grow by two more copies per call —
+	// confirmed by checking the count stays exactly where it was, not that
+	// it merely stays small, since staying at a wrong-but-stable number
+	// would hide the same class of bug.
+	for i := 0; i < 5; i++ {
+		if err := checker.Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checker.deliveringMu.Lock()
+	queuedLen = len(checker.queued)
+	checker.deliveringMu.Unlock()
+	if queuedLen != 2 {
+		t.Fatalf("len(queued) = %d, want still exactly 2 after 5 more ticks rediscovering the same two drops (no growth)", queuedLen)
+	}
+
+	closeOnce.Do(func() { close(aliceBlock) })
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := bobDeliveries
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if bobDeliveries != 1 {
+		t.Fatalf("bob's drop was delivered %d times, want exactly 1", bobDeliveries)
+	}
+}
+
+func TestCheckerDeliverLoopUsesTheCurrentWebhookURL(t *testing.T) {
+	checker, st, set := newTestChecker(t)
+	ctx := context.Background()
+	if err := set.AlertPrefixDropThresholdPercent.Set(ctx, 50); err != nil {
+		t.Fatal(err)
+	}
+	if err := set.AlertPrefixBaselineMinimum.Set(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceID, err := st.AddUser(ctx, store.User{
+		Name: "alice", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobID, err := st.AddUser(ctx, store.User{
+		Name: "bob", PeerIP: "20.0.0.2", PeerASN: 65002, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since, drop_delivered) VALUES (?, 100, 0, ?, 0)",
+		aliceID, time.Now().UTC().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceBlock := make(chan struct{})
+	var closeOnce sync.Once
+	var mu sync.Mutex
+	oldSrvHit := false
+	newSrvHit := false
+
+	oldSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		oldSrvHit = true
+		mu.Unlock()
+		<-aliceBlock
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer oldSrv.Close()
+
+	newSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		newSrvHit = true
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer newSrv.Close()
+	// See the identical comment in the queueing test above for why this is
+	// a plain defer (registered after both defer ....Close() above, to run
+	// before either) and not t.Cleanup.
+	defer closeOnce.Do(func() { close(aliceBlock) })
+
+	if err := set.AlertWebhookURL.Set(ctx, oldSrv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// delivering itself is set synchronously inside Run, before the
+	// goroutine even starts — polling it here wouldn't prove oldSrv's
+	// handler has actually been reached yet, only that Run decided to
+	// launch one. Poll the handler's own flag instead.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		hit := oldSrvHit
+		mu.Unlock()
+		if hit {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	hit := oldSrvHit
+	mu.Unlock()
+	if !hit {
+		t.Fatal("alice's drop never reached oldSrv")
+	}
+
+	// The admin repoints the webhook while alice's delivery is still
+	// in-flight, and bob's fresh drop is queued behind it. bob's own first
+	// Run() call above (bundled into the same measurement pass as alice's)
+	// already established his baseline at 0, his real selectionless
+	// measured count — bumped here directly, the same technique the
+	// queueing test above uses, to simulate him having actually been fine
+	// until just now.
+	if err := set.AlertWebhookURL.Set(ctx, newSrv.URL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.ExecContext(ctx, "UPDATE user_prefix_alert_state SET baseline_v4 = 100 WHERE user_id = ?", bobID); err != nil {
+		t.Fatal(err)
+	}
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	closeOnce.Do(func() { close(aliceBlock) })
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		hit := newSrvHit
+		mu.Unlock()
+		if hit {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !newSrvHit {
+		t.Fatal("bob's drop never reached newSrv: deliverLoop kept using the URL captured when Run first launched it")
+	}
+}
+
+func TestCheckerDeliverTreatsARedirectAsFailureNotSuccess(t *testing.T) {
+	checker, _, _ := newTestChecker(t)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// If the redirect were followed, this handler would see a bodyless
+		// GET and could easily answer 200 — exactly the false "delivered"
+		// deliver must not report.
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	ok := checker.deliver(context.Background(), redirector.URL, store.User{ID: 1, Name: "alice"},
+		&store.PrefixAlertTransition{Event: store.PrefixAlertDrop, BaselineV4: 100, CurrentV4: 0})
+	if ok {
+		t.Fatal("deliver returned true for a redirected request: the payload was never actually received by the real target")
 	}
 }
