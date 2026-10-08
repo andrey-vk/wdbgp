@@ -69,8 +69,14 @@ func rejectUnsupportedConfigSchema(w http.ResponseWriter, snap store.ConfigSnaps
 // top-level check above (global_filters itself is present and non-null) but
 // still silently decodes to an empty allow/deny, and a confirmed import
 // would clear both exactly as if they'd been named explicitly as []. So
-// global_filters' own required allow/deny keys are checked the same way,
-// rather than accepting any non-null JSON value there either.
+// global_filters' own allow/deny keys are required to exist too — but,
+// unlike the top-level check, a present key whose value is null is accepted
+// here, not rejected: RouteFilters{} (a legitimate, normal "no filters"
+// value) is exactly what Go's own json.Marshal produces as
+// {"allow":null,"deny":null} for a nil slice with no omitempty, and that is
+// real, valid output this codebase's own export can genuinely produce
+// (before normalizeConfigSnapshot turns it into []), not a sign of a
+// malformed document. Only the key being absent altogether is incomplete.
 func decodeCompleteConfigSnapshot(raw json.RawMessage) (store.ConfigSnapshot, error) {
 	var presence struct {
 		GlobalFilters json.RawMessage `json:"global_filters"`
@@ -91,7 +97,8 @@ func decodeCompleteConfigSnapshot(raw json.RawMessage) (store.ConfigSnapshot, er
 	if err := json.Unmarshal(presence.GlobalFilters, &filterPresence); err != nil {
 		return store.ConfigSnapshot{}, err
 	}
-	if !present(filterPresence.Allow) || !present(filterPresence.Deny) {
+	keyPresent := func(f json.RawMessage) bool { return len(f) > 0 }
+	if !keyPresent(filterPresence.Allow) || !keyPresent(filterPresence.Deny) {
 		return store.ConfigSnapshot{}, errors.New("incomplete configuration document: global_filters is missing allow or deny")
 	}
 	var snap store.ConfigSnapshot
