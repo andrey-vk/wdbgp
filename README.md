@@ -493,7 +493,12 @@ recovery cancels it outright, for the same "more confusing than silence" reason.
 Delivery happens only after every user has already been measured and recorded for that
 check, not interleaved with it, so one slow or unreachable endpoint can't delay anyone
 else's count; each attempt retries a transiently-failing request for a few seconds
-before giving up. Deliberately not gated on the existing `metrics_enabled`
+before giving up. A drop or recovery still waiting its turn behind a busy delivery
+batch is revalidated against that *specific* episode right before it's actually sent,
+not just "is something still undelivered for this user" — a batch can sit queued long
+enough for the user to resolve that exact episode and start a new one, and the looser
+check would otherwise send the stale episode's outdated data and wrongly mark the new,
+correct one delivered without ever actually sending it. Deliberately not gated on the existing `metrics_enabled`
 setting — that one controls the dashboard's own background collection, a different
 feature with no obvious connection by name, and an admin who sets `alert_webhook_url`
 without separately noticing and enabling it would otherwise get no alerts with nothing
