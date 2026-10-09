@@ -248,15 +248,19 @@ func (s *Store) PendingPrefixAlertDrop(ctx context.Context, userID int64, curren
 }
 
 // PrefixAlertDropStillPending reports whether a user's alert state still
-// describes an active, undelivered drop, without needing a fresh
-// measurement — just whether EvaluateUserPrefixAlert has moved them out of
-// that state since. Used to revalidate a drop immediately before actually
-// posting it: internal/alerts' delivery can be queued behind a slow or
-// backlogged batch, long enough for the episode it describes to have
-// already resolved in the meantime (a later tick's own fresh evaluation),
-// and sending it anyway would tell the receiver an outage is still ongoing
-// when it no longer is.
-func (s *Store) PrefixAlertDropStillPending(ctx context.Context, userID int64) (bool, error) {
+// describes the SAME active, undelivered drop episode identified by
+// detectedAt (the DetectedAt the queued transition itself carries), without
+// needing a fresh measurement — not just whether some undelivered drop
+// happens to be active right now. Used to revalidate a drop immediately
+// before actually posting it: internal/alerts' delivery can be queued behind
+// a slow or backlogged batch, long enough for the user to recover from this
+// exact episode AND drop again into a new one by the time delivery actually
+// runs. Comparing only "is some drop currently undelivered" (without this
+// episode check) would wrongly treat the NEW episode as confirmation the
+// stale, queued OLD episode is still the right thing to send — posting a
+// wrong detected_at/baseline/count, and then wrongly marking the new episode
+// "delivered" too, silently swallowing its own, correct notification.
+func (s *Store) PrefixAlertDropStillPending(ctx context.Context, userID int64, detectedAt int64) (bool, error) {
 	var alertingSince sql.NullInt64
 	var dropDelivered bool
 	err := s.DB.QueryRowContext(ctx,
@@ -268,7 +272,7 @@ func (s *Store) PrefixAlertDropStillPending(ctx context.Context, userID int64) (
 	if err != nil {
 		return false, err
 	}
-	return alertingSince.Valid && !dropDelivered, nil
+	return alertingSince.Valid && alertingSince.Int64 == detectedAt && !dropDelivered, nil
 }
 
 // MarkPrefixAlertDropDelivered records that the current drop episode's
@@ -317,24 +321,30 @@ func (s *Store) PendingPrefixAlertRecovery(ctx context.Context, userID int64, cu
 }
 
 // PrefixAlertRecoveryStillPending reports whether a user's alert state still
-// describes an undelivered recovery, without needing a fresh measurement —
-// mirrors PrefixAlertDropStillPending, used to revalidate a queued recovery
-// immediately before actually posting it: a fresh drop superseding it (see
-// EvaluateUserPrefixAlert) clears recovery_pending, and sending it anyway
-// would tell the receiver things are fine when a new episode has already
-// started.
-func (s *Store) PrefixAlertRecoveryStillPending(ctx context.Context, userID int64) (bool, error) {
+// describes the SAME undelivered recovery episode identified by detectedAt
+// (the DetectedAt the queued transition itself carries), without needing a
+// fresh measurement — mirrors PrefixAlertDropStillPending, including why a
+// bare recoveryPending boolean isn't enough on its own: a fresh drop
+// superseding an undelivered recovery clears recovery_pending (see
+// EvaluateUserPrefixAlert), but a SECOND recovery firing before the first
+// one's queued delivery runs sets recovery_pending back to 1 with a new
+// recovery_detected_at — and checking only the boolean would then wrongly
+// confirm the stale, queued FIRST recovery as still valid, posting its
+// outdated payload and marking the second, correct recovery as delivered
+// without ever actually sending it.
+func (s *Store) PrefixAlertRecoveryStillPending(ctx context.Context, userID int64, detectedAt int64) (bool, error) {
 	var recoveryPending bool
+	var recoveryDetectedAt sql.NullInt64
 	err := s.DB.QueryRowContext(ctx,
-		"SELECT recovery_pending FROM user_prefix_alert_state WHERE user_id = ?", userID).
-		Scan(&recoveryPending)
+		"SELECT recovery_pending, recovery_detected_at FROM user_prefix_alert_state WHERE user_id = ?", userID).
+		Scan(&recoveryPending, &recoveryDetectedAt)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return recoveryPending, nil
+	return recoveryPending && recoveryDetectedAt.Valid && recoveryDetectedAt.Int64 == detectedAt, nil
 }
 
 // MarkPrefixAlertRecoveryDelivered records that the pending recovery's

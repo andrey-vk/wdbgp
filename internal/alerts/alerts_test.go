@@ -343,7 +343,7 @@ func TestCheckerRunRetriesAnUndeliveredRecoveryOnceTheWebhookIsConfigured(t *tes
 		t.Fatalf("duration_seconds = %d, want the frozen 300", p.DurationSeconds)
 	}
 
-	pending, err := st.PrefixAlertRecoveryStillPending(ctx, userID)
+	pending, err := st.PrefixAlertRecoveryStillPending(ctx, userID, recoveredAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,6 +741,168 @@ func TestCheckerRunDeduplicatesQueuedDropsByUser(t *testing.T) {
 	defer mu.Unlock()
 	if bobDeliveries != 1 {
 		t.Fatalf("bob's drop was delivered %d times, want exactly 1", bobDeliveries)
+	}
+}
+
+func TestCheckerDeliverLoopRevalidatesAgainstTheSpecificQueuedEpisode(t *testing.T) {
+	// Reproduces the exact scenario a Codex review of PR #61 flagged (never
+	// addressed before that PR merged): a drop batch already handed to
+	// deliverLoop can carry a STALE episode's data if the user recovers and
+	// drops again (a second, distinct episode) while that batch is still
+	// stuck delivering to someone else. PrefixAlertDropStillPending/
+	// PrefixAlertRecoveryStillPending revalidating by user ID alone (not the
+	// specific episode) would wrongly confirm the stale entry as still
+	// postable, post its outdated payload, and mark the FRESH episode
+	// "delivered" without it ever actually being sent.
+	checker, st, set := newTestChecker(t)
+	ctx := context.Background()
+
+	// aaron sorts/IDs before alice (added first), so his entry is processed
+	// first in the batch slice — his blocking is what lets this test
+	// manipulate alice's row before the loop ever reaches her entry.
+	aaronID, err := st.AddUser(ctx, store.User{
+		Name: "aaron", PeerIP: "20.0.0.1", PeerASN: 65001, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliceID, err := st.AddUser(ctx, store.User{
+		Name: "alice", PeerIP: "20.0.0.2", PeerASN: 65002, Enabled: true,
+		FilterMode: store.FilterModeGlobal, CatalogModeID: store.DefaultCatalogModeID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staleDetectedAt := time.Now().UTC().Unix() - 500
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since, drop_delivered) VALUES (?, 100, 0, ?, 0)",
+		aaronID, time.Now().UTC().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.ExecContext(ctx,
+		"INSERT INTO user_prefix_alert_state(user_id, baseline_v4, baseline_v6, alerting_since, drop_delivered) VALUES (?, 100, 0, ?, 0)",
+		aliceID, staleDetectedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	aaronBlock := make(chan struct{})
+	var closeOnce sync.Once
+	var mu sync.Mutex
+	var aliceCalls, aaronCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p webhookPayload
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			t.Error(err)
+		}
+		mu.Lock()
+		if p.UserID == aaronID {
+			aaronCalls++
+		} else {
+			aliceCalls++
+		}
+		mu.Unlock()
+		if p.UserID == aaronID {
+			<-aaronBlock
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	// See the identical comment on the queueing test above for why this is
+	// a plain defer (registered after defer srv.Close(), to run first) and
+	// not t.Cleanup.
+	defer closeOnce.Do(func() { close(aaronBlock) })
+	if err := set.AlertWebhookURL.Set(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both pending drops land in the SAME initial batch (aaron processed
+	// first, blocking before the loop ever reaches alice's entry).
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		hit := aaronCalls > 0
+		mu.Unlock()
+		if hit {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	hit := aaronCalls > 0
+	mu.Unlock()
+	if !hit {
+		t.Fatal("aaron's webhook was never reached — the test can't control timing without this")
+	}
+
+	// While aaron's delivery is blocked, alice recovers and drops again into
+	// a SECOND, distinct episode — applied directly via SQL for determinism
+	// (same reasoning as the store-level tests this mirrors): her stale
+	// entry is still sitting in the original batch, captured before this.
+	freshDetectedAt := staleDetectedAt + 1000
+	if _, err := st.DB.ExecContext(ctx,
+		"UPDATE user_prefix_alert_state SET alerting_since = ?, drop_delivered = 0 WHERE user_id = ?",
+		freshDetectedAt, aliceID); err != nil {
+		t.Fatal(err)
+	}
+
+	closeOnce.Do(func() { close(aaronBlock) })
+
+	// Give deliverLoop time to finish processing the batch (aaron, then
+	// alice's now-stale entry) and exit.
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		checker.deliveringMu.Lock()
+		busy := checker.delivering
+		checker.deliveringMu.Unlock()
+		if !busy {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	mu.Lock()
+	gotAliceCalls := aliceCalls
+	mu.Unlock()
+	if gotAliceCalls != 0 {
+		t.Fatalf("alice's webhook was called %d times for the stale batch entry, want 0 — the stale episode must be silently skipped, not delivered", gotAliceCalls)
+	}
+	var aliceDropDelivered bool
+	var aliceAlertingSince int64
+	if err := st.DB.QueryRowContext(ctx, "SELECT drop_delivered, alerting_since FROM user_prefix_alert_state WHERE user_id = ?", aliceID).
+		Scan(&aliceDropDelivered, &aliceAlertingSince); err != nil {
+		t.Fatal(err)
+	}
+	if aliceDropDelivered {
+		t.Fatal("alice's drop_delivered = true: the stale batch entry must not mark the FRESH episode delivered")
+	}
+	if aliceAlertingSince != freshDetectedAt {
+		t.Fatalf("alice's alerting_since = %d, want it unchanged at the fresh episode's %d", aliceAlertingSince, freshDetectedAt)
+	}
+
+	// A later tick correctly discovers and delivers alice's still-genuinely-
+	// pending (fresh) episode.
+	if err := checker.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := aliceCalls
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if aliceCalls != 1 {
+		t.Fatalf("alice's webhook was delivered %d times for the fresh episode, want exactly 1", aliceCalls)
 	}
 }
 

@@ -220,9 +220,15 @@ func (c *Checker) deliverLoop(ctx context.Context, batch []delivery) {
 			// describes to have already resolved, evaluated fresh by a
 			// later tick while this one was still waiting its turn.
 			// Sending it anyway would tell the receiver an outage (or a
-			// recovery) is still current when it already isn't.
+			// recovery) is still current when it already isn't. Checked
+			// against this specific episode (d.transition.DetectedAt), not
+			// just "is some episode currently undelivered" — long enough
+			// idle in the queue, the user could have resolved THIS episode
+			// and already be mid-way through a NEW one, which would
+			// otherwise look identical to "still pending" and both send a
+			// stale payload and wrongly mark the new episode delivered too.
 			if d.transition.Event == store.PrefixAlertDrop {
-				stillPending, err := c.Store.PrefixAlertDropStillPending(ctx, d.user.ID)
+				stillPending, err := c.Store.PrefixAlertDropStillPending(ctx, d.user.ID, d.transition.DetectedAt)
 				if err != nil {
 					logging.Error("prefix alert check: pending re-check failed", "error", err, "user_id", d.user.ID)
 					continue
@@ -231,7 +237,7 @@ func (c *Checker) deliverLoop(ctx context.Context, batch []delivery) {
 					continue
 				}
 			} else {
-				stillPending, err := c.Store.PrefixAlertRecoveryStillPending(ctx, d.user.ID)
+				stillPending, err := c.Store.PrefixAlertRecoveryStillPending(ctx, d.user.ID, d.transition.DetectedAt)
 				if err != nil {
 					logging.Error("prefix alert check: pending recovery re-check failed", "error", err, "user_id", d.user.ID)
 					continue
