@@ -14,6 +14,7 @@ import (
 type CommunityMatrixRow struct {
 	Category string            `json:"category"`
 	Values   map[int64]*uint32 `json:"values"`
+	Served   map[int64]bool    `json:"served"`
 	// ServiceDivergence counts the category's services whose number differs
 	// between modes, or that are served by some modes but not others. The group
 	// number alone can match while a service inside the category doesn't.
@@ -111,9 +112,10 @@ func buildCommunityMatrix(modes []CatalogMode, snaps map[int64]ModeCommunitySnap
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		row := CommunityMatrixRow{Category: name, Values: map[int64]*uint32{}, ServiceDivergence: serviceDivergence[name]}
+		row := CommunityMatrixRow{Category: name, Values: map[int64]*uint32{}, Served: map[int64]bool{}, ServiceDivergence: serviceDivergence[name]}
 		distinct := map[uint32]bool{}
 		for _, mode := range modes {
+			row.Served[mode.ID] = served[mode.ID][name]
 			if v, ok := byCategory[name][mode.ID]; ok {
 				value := v
 				row.Values[mode.ID] = &value

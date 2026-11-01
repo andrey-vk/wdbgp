@@ -56,7 +56,7 @@ async function handleGenerate(): Promise<void> {
   generating.value = true
   try {
     const resp = await apiClient.post<{ generated: number }>('/admin/communities/matrix/generate')
-    toast.add({ severity: 'success', summary: t('community_matrix.generated', { count: resp.data.generated }), life: 3000 })
+    toast.add({ severity: 'success', summary: resp.data.generated === 0 ? t('community_matrix.nothing_to_generate') : t('community_matrix.generated', { count: resp.data.generated }), life: 5000 })
     await load()
   } catch {
     toast.add({ severity: 'error', summary: t('community_matrix.generate_failed'), life: 5000 })
@@ -133,7 +133,8 @@ onMounted(load)
                 class="px-4 py-2 text-right tabular-nums"
                 :data-testid="`matrix-cell-${row.category}-${mode.id}`"
               >
-                <span v-if="row.values[mode.id] === null || row.values[mode.id] === undefined" class="text-gray-400" :title="t('community_matrix.missing')">—</span>
+                <span v-if="row.values[mode.id] == null && row.served[mode.id]" class="text-amber-700 dark:text-amber-400">{{ t('community_matrix.missing') }}</span>
+                <span v-else-if="row.values[mode.id] == null" class="text-gray-400">{{ t('community_matrix.not_served') }}</span>
                 <span v-else>{{ row.values[mode.id] }}</span>
               </td>
             </tr>

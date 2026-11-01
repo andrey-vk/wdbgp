@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-11-01
+
+### Fixed
+- The community matrix distinguishes categories absent from a mode from categories that need a community number, and explains when generating missing numbers has nothing to do.
+
 ## [1.1.1] — 2026-11-01
 
 ### Added
