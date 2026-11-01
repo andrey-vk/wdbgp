@@ -28,6 +28,9 @@ const i18n = createI18n({
       'community_matrix.divergent_count': '{count} categories differ between modes',
       'community_matrix.generated': 'Generated {count} missing numbers',
       'community_matrix.generate_failed': 'Failed to generate missing numbers',
+      'community_matrix.nothing_to_generate': 'All needed numbers already exist',
+      'community_matrix.missing': 'No number',
+      'community_matrix.not_served': 'No category',
     },
   },
 })
@@ -38,9 +41,9 @@ const matrix: CommunityMatrixResponse = {
     { id: 2, name: 'Lab', enabled: true },
   ],
   categories: [
-    { category: 'ai', values: { '1': 10000, '2': 10000 }, service_divergence: 0, divergent: false },
-    { category: 'tv', values: { '1': 20000, '2': 30000 }, service_divergence: 0, divergent: true },
-    { category: 'news', values: { '1': 40000, '2': null }, service_divergence: 0, divergent: true },
+    { category: 'ai', values: { '1': 10000, '2': 10000 }, served: { '1': true, '2': true }, service_divergence: 0, divergent: false },
+    { category: 'tv', values: { '1': 20000, '2': 30000 }, served: { '1': true, '2': true }, service_divergence: 0, divergent: true },
+    { category: 'news', values: { '1': null, '2': null }, served: { '1': true, '2': false }, service_divergence: 0, divergent: true },
   ],
 }
 
@@ -88,7 +91,8 @@ describe('CommunityMatrixPage', () => {
     const rows = wrapper.findAll('[data-testid="matrix-row"]')
     expect(rows[0].attributes('data-divergent')).toBe('false')
     expect(rows[1].attributes('data-divergent')).toBe('true')
-    expect(wrapper.find('[data-testid="matrix-cell-news-2"]').text()).toBe('—')
+    expect(wrapper.find('[data-testid="matrix-cell-news-1"]').text()).toBe('No number')
+    expect(wrapper.find('[data-testid="matrix-cell-news-2"]').text()).toBe('No category')
     expect(wrapper.find('[data-testid="matrix-divergent-count"]').text()).toContain('2')
   })
 
@@ -113,5 +117,13 @@ describe('CommunityMatrixPage', () => {
     expect(mockPost).toHaveBeenCalledWith('/admin/communities/matrix/generate')
     expect(mockGet).toHaveBeenCalledTimes(1)
     expect(mockToastAdd).toHaveBeenCalledWith(expect.objectContaining({ severity: 'success' }))
+  })
+
+  it('explains when there are no numbers to generate', async () => {
+    const wrapper = await mountPage()
+    mockPost.mockResolvedValue({ data: { generated: 0 } })
+    await wrapper.find('[data-testid="matrix-generate"]').trigger('click')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(mockToastAdd).toHaveBeenCalledWith(expect.objectContaining({ summary: 'All needed numbers already exist' }))
   })
 })

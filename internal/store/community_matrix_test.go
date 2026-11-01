@@ -128,6 +128,9 @@ func TestBuildCommunityMatrixShowsServedCategoryWithoutNumber(t *testing.T) {
 	if !news.Divergent || news.Values[1] != nil || news.Values[2] != nil {
 		t.Fatalf("news = %+v, want missing in both modes and divergent", news)
 	}
+	if !news.Served[1] || news.Served[2] {
+		t.Fatalf("news served = %+v, want present without a number in mode 1 and absent in mode 2", news.Served)
+	}
 }
 
 // TestBuildCommunityMatrixFlagsServiceThatDiffers checks that a category whose

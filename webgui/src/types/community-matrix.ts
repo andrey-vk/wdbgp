@@ -9,6 +9,7 @@ export interface CommunityMatrixMode {
 export interface CommunityMatrixRow {
   category: string
   values: Record<string, number | null>
+  served: Record<string, boolean>
   // Services whose number differs between modes, or that only some modes serve.
   service_divergence: number
   divergent: boolean
