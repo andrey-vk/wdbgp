@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-11-01
+
+### Added
+- First stable release of the features introduced in 1.1.0-alpha, including prefix history and alerting, configuration export/import, audit and change history, and the community matrix. See the 1.1.0-alpha section below for details.
+
+### Security
+- Build with Go 1.26.10 and update golang.org/x/net and related modules.
+- Update Vue I18n, Zod, Happy DOM, Vitest and affected transitive dependencies; override minimatch and glob to patched versions pending upstream support.
+
 ## [1.1.0-alpha] — 2026-10-09
 
 ### Added
