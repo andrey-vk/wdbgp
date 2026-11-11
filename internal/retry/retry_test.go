@@ -4,6 +4,7 @@ package retry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -208,6 +209,21 @@ func TestHTTPTransientError_Detection(t *testing.T) {
 		{
 			name:     "HTTP 404",
 			err:      errors.New("HTTP 404 Not Found"),
+			expected: false,
+		},
+		{
+			name:     "StatusError 501 wrapped",
+			err:      fmt.Errorf("failed for https://h/x: %w", &StatusError{Code: 501, Status: "501 Not Implemented"}),
+			expected: true,
+		},
+		{
+			name:     "StatusError 429",
+			err:      &StatusError{Code: 429, Status: "429 Too Many Requests"},
+			expected: true,
+		},
+		{
+			name:     "StatusError 404 with retryable digits in URL",
+			err:      fmt.Errorf("failed for https://h/503/x: %w", &StatusError{Code: 404, Status: "404 Not Found"}),
 			expected: false,
 		},
 	}

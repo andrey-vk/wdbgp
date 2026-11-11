@@ -244,9 +244,9 @@ func (a *adapterRunner) get(rawURL string) (string, error) {
 	if err != nil {
 		// Check if it's a context error
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return "", fmt.Errorf("adapter HTTP request timeout: %w", err)
+			return "", fmt.Errorf("adapter HTTP request timeout for %s: %w", parsed.Redacted(), err)
 		}
-		return "", fmt.Errorf("adapter HTTP request failed: %w", err)
+		return "", fmt.Errorf("adapter HTTP request failed for %s: %w", parsed.Redacted(), err)
 	}
 
 	return string(result), nil
@@ -271,9 +271,9 @@ func (a *adapterRunner) getBytes(rawURL string) ([]byte, error) {
 
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, fmt.Errorf("adapter HTTP request timeout: %w", err)
+			return nil, fmt.Errorf("adapter HTTP request timeout for %s: %w", parsed.Redacted(), err)
 		}
-		return nil, fmt.Errorf("adapter HTTP request failed: %w", err)
+		return nil, fmt.Errorf("adapter HTTP request failed for %s: %w", parsed.Redacted(), err)
 	}
 
 	return result, nil
@@ -319,7 +319,7 @@ func (a *adapterRunner) doHTTPRequest(parsed *url.URL) ([]byte, error) {
 	}()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %s", response.Status)
+		return nil, &retry.StatusError{Code: response.StatusCode, Status: response.Status}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, int64(a.limits.MaxResponseBytes)+1))
