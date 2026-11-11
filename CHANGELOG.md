@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Feed downloads and adapter `httpGet`/`srsGet` now retry any 5xx response, not only 503/504 (and 429). A single `501 Not Implemented` that raw.githubusercontent.com occasionally returns used to fail the whole feed sync until the next interval. Non-2xx responses are classified by their numeric status instead of by substrings of the error text.
+- Adapter HTTP errors include the request URL (credentials redacted), so a failing adapter that fetches many files shows which one failed.
+
 ## [1.1.2] — 2026-11-01
 
 ### Fixed

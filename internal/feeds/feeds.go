@@ -508,7 +508,7 @@ func (s *Syncer) doDownload(ctx context.Context, rawURL string) ([]byte, error) 
 	}()
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP %s", response.Status)
+		return nil, &retry.StatusError{Code: response.StatusCode, Status: response.Status}
 	}
 
 	return io.ReadAll(response.Body)

@@ -3,9 +3,19 @@ package retry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"time"
 )
+
+// StatusError is a non-2xx HTTP response. HTTPTransientError classifies it
+// by its numeric code instead of by substrings of the error text.
+type StatusError struct {
+	Code   int
+	Status string // e.g. "501 Not Implemented", as in http.Response.Status
+}
+
+func (e *StatusError) Error() string { return fmt.Sprintf("HTTP %s", e.Status) }
 
 // Config holds retry configuration.
 type Config struct {
@@ -100,6 +110,13 @@ func HTTPTransientError(err error) bool {
 	// Context errors are not transient
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
+	}
+
+	// Any 5xx is retried: CDNs (e.g. raw.githubusercontent.com) occasionally
+	// answer 501 for a request that succeeds seconds later.
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Code == 429 || statusErr.Code >= 500
 	}
 
 	// Check for network errors
